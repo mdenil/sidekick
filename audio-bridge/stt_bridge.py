@@ -326,6 +326,13 @@ async def _run_stt(
             threshold=VAD_RMS_THRESHOLD,
             hold_frames=VAD_HOLD_FRAMES,
         )
+        # PWA's "Barge-in" toggle short-circuits the VAD entirely.
+        # When disabled, mic frames during TTS still get gated to
+        # silence (the half-duplex echo guard) but the gate.feed()
+        # call is skipped — TTS plays through to the end regardless
+        # of any false-positive mic activity. Set at offer time
+        # (signaling.py:peer.extra["barge_enabled"]); defaults True.
+        barge_enabled = bool(peer.extra.get("barge_enabled", True))
         # Observability state — sampled and logged every VAD_OBS_LOG_EVERY
         # frames so we can see what RMS values the mic is actually
         # producing during a TTS turn without flooding the log.
@@ -370,9 +377,11 @@ async def _run_stt(
                 #      reset_turn() in the was_active branch below
                 #      re-arms it on TTS-end (which halt() forces
                 #      immediately on barge fire).
+                #   5) the PWA hasn't disabled barge for this peer
+                #      (offer carries barge_enabled — see signaling.py).
                 # Tunable via SIDEKICK_VAD_RMS_THRESHOLD /
                 # SIDEKICK_VAD_HOLD_FRAMES.
-                if gate.feed(rms):
+                if barge_enabled and gate.feed(rms):
                     logger.info(
                         "[stt-bridge] peer %s: barge fired (rms=%d, threshold=%d)",
                         peer.peer_id, rms, VAD_RMS_THRESHOLD,

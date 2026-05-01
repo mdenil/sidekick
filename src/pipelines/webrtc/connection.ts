@@ -34,6 +34,7 @@
 import { log, diag } from '../../util/log.ts';
 import { playFeedback } from '../../audio/feedback.ts';
 import * as audioPlatform from '../../audio/platform.ts';
+import * as settings from '../../settings.ts';
 import type {
   STTProvider,
   TranscriptEvent as STTTranscriptEvent,
@@ -397,12 +398,19 @@ export async function open(
     keyterms = (await loadOrSeed()) || [];
   } catch {}
   log('[webrtc] offer keyterms=', keyterms.length, keyterms.length ? `(first: ${keyterms[0]})` : '');
+  // Honour the user's "Barge-in" toggle on the bridge side. Without
+  // this, the bridge's RMS VAD fires regardless of the PWA setting —
+  // the toggle previously only gated client-side barge logic that no
+  // longer exists. The setting is sampled at call-open time; toggling
+  // it mid-call requires hanging up + reopening to take effect (cheap
+  // enough; document if ever annoying).
   const offerPayload: Record<string, unknown> = {
     sdp: pc.localDescription?.sdp ?? '',
     type: pc.localDescription?.type ?? 'offer',
     mode,
     conv_name: opts?.sessionId || null,
     keyterms,
+    barge_enabled: !!settings.get().bargeIn,
   };
   if (opts?.chatId) offerPayload.chat_id = opts.chatId;
 

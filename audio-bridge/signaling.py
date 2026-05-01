@@ -170,6 +170,15 @@ async def handle_offer(request: "web.Request") -> "web.Response":
         f"first={peer.extra['keyterms'][0]!r}" if peer.extra["keyterms"] else "(empty)",
     )
 
+    # Honour the PWA's "Barge-in" setting. Default True for backward
+    # compatibility (older PWA builds don't send the flag). When False,
+    # stt_bridge skips the VAD gate entirely — TTS plays through to
+    # the end regardless of mic activity. Sampled at offer time;
+    # mid-call setting flips don't take effect until next call.
+    peer.extra["barge_enabled"] = bool(payload.get("barge_enabled", True))
+    if not peer.extra["barge_enabled"]:
+        logger.info("[signaling] peer %s barge DISABLED by PWA setting", peer_id)
+
     # Defer to bridge modules to install ontrack / outbound track wiring.
     # The dispatch listener handles inbound DataChannel control messages
     # ({type:'dispatch', text} from the PWA).
