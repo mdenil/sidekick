@@ -1004,15 +1004,9 @@ async function boot() {
       webrtcDictation.handleUserFinal(ev.text);
       return;
     }
-    // ev.role === 'assistant' branch removed in Phase 1.2 of the audio
-    // refactor (2026-05-01). Bubble rendering, chime triggers, and
-    // suppress state-machine calls all migrated to the SSE
-    // handleReplyDelta / handleReplyFinal path so assistant content has
-    // a single render origin regardless of how the user initiated the
-    // turn (text, voice, telegram, etc). The bridge still emits these
-    // envelopes (it has no way to know the PWA also subscribes to the
-    // SSE) but the PWA ignores them — they're a transport duplicate of
-    // content the SSE already delivers.
+    // Assistant transcripts arrive on the SSE handleReplyDelta /
+    // handleReplyFinal path (single render origin); the bridge's
+    // ev.role === 'assistant' duplicates are intentionally ignored.
   });
 
   // Populate the mic picker once on boot. It needs prior getUserMedia
