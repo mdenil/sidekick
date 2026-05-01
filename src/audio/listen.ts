@@ -1,0 +1,336 @@
+/**
+ * @fileoverview Listen — turn-based handsfree mic mode. Records locally
+ * with MediaRecorder (mirroring memo), runs Web Speech API for sendword
+ * detection in parallel (Phase 2), and on commit ships the FULL
+ * buffered blob to /v1/transcribe (via /transcribe). Reply renders +
+ * plays through the existing playReplyTts path (caller-owned). After
+ * audio.ended + a small grace window, re-arms for the next turn.
+ *
+ * Listen is wiring on top of existing primitives, NOT a new pipeline.
+ * WebRTC (talk + stream) stays untouched — Listen lives alongside.
+ *
+ * State machine:
+ *   idle       — start() not yet called or stop() returned.
+ *   armed      — recording, watching for silence (+ sendword in Phase 2).
+ *   committing — silence/sendword fired; awaiting onCommit caller.
+ *   playing    — caller invoked notifyReplyPlayback(true); waiting
+ *                for notifyReplyPlayback(false) → grace → re-arm.
+ *
+ * Disarm: mic-button tap or menu-toggle off, both wired through stop().
+ *
+ * Test hooks: when ?listen_mock_mic=1 is set on the URL, the module
+ * exposes window.__listen.{state, injectSilence, injectSpeech} so the
+ * Playwright smoke can drive synthetic frames into the silence detector
+ * without a real getUserMedia stream.
+ */
+
+import { log, diag } from '../util/log.ts';
+import * as audioPlatform from './platform.ts';
+import * as settings from '../settings.ts';
+import { playFeedback } from './feedback.ts';
+
+export type ListenState = 'idle' | 'armed' | 'committing' | 'playing' | 'cooldown';
+
+export type ListenOpts = {
+  /** Called when a turn commits (silence elapsed or sendword detected).
+   *  Receives the recorded audio blob; caller is responsible for posting
+   *  it to /transcribe and rendering the reply. The caller MUST drive
+   *  notifyReplyPlayback(true/false) around TTS playback so Listen knows
+   *  when to re-arm. Returning a rejected promise leaves Listen in the
+   *  cooldown → armed transition (best-effort recovery). */
+  onCommit: (blob: Blob) => Promise<void> | void;
+  /** Called when the trash button is tapped or stop() is invoked while
+   *  armed without a commit. UI should clear the listening indicator. */
+  onCancel?: () => void;
+  /** Optional hook fired on each state transition. Useful for the
+   *  status-line indicator + button class wiring in main.ts. */
+  onState?: (s: ListenState) => void;
+};
+
+const REARM_GRACE_MS = 500;
+const SILENCE_WARMUP_MS = 500;
+const SILENCE_FRAME_MS = 50;
+
+let state: ListenState = 'idle';
+let opts: ListenOpts | null = null;
+let mediaStream: MediaStream | null = null;
+let mediaRecorder: MediaRecorder | null = null;
+let audioChunks: Blob[] = [];
+let analyser: AnalyserNode | null = null;
+let silenceLoop: ReturnType<typeof setInterval> | null = null;
+let armedAt = 0;
+let lastVoiceAt = 0;
+let mockFrames: { type: 'silence' | 'speech'; remainingMs: number } | null = null;
+let cooldownTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** External read of the current state. */
+export function getState(): ListenState { return state; }
+
+/** Notify Listen that reply playback started/ended. The PWA's reply
+ *  pipeline owns the audio element; Listen just observes. While
+ *  playing, the mic stays open but silence/sendword detection is
+ *  paused (no barge logic — settled decision). */
+export function notifyReplyPlayback(playing: boolean): void {
+  if (playing) {
+    if (state === 'committing' || state === 'armed' || state === 'playing') {
+      transition('playing');
+    }
+    return;
+  }
+  if (state === 'playing') {
+    // Grace window before re-arming so the audio tail and any trailing
+    // events (audio.onended → next event-loop tick) settle.
+    transition('cooldown');
+    if (cooldownTimer) clearTimeout(cooldownTimer);
+    cooldownTimer = setTimeout(() => {
+      cooldownTimer = null;
+      if (state !== 'cooldown') return;
+      // Re-arm by rebuilding the recorder. The mic stream is still
+      // alive; we just need a fresh blob accumulator.
+      armRecorder().catch((e) => {
+        diag('listen: re-arm failed', e?.message);
+        // Fall back to idle; caller can re-tap to retry.
+        teardown();
+      });
+    }, REARM_GRACE_MS);
+  }
+}
+
+/** Start arming Listen. Acquires the mic, builds analyser + recorder,
+ *  starts the silence loop. Idempotent: if already non-idle, returns
+ *  the current state. */
+export async function start(o: ListenOpts): Promise<boolean> {
+  if (state !== 'idle') return true;
+  opts = o;
+  // Reuse the shared AudioContext primed by the caller's gesture.
+  const ctx = audioPlatform.getSharedAudioCtx();
+  if (!ctx) {
+    log('listen: no shared AudioContext — was primeAudio() skipped?');
+    return false;
+  }
+  if (ctx.state !== 'running') {
+    try { await ctx.resume(); } catch { /* ignore */ }
+  }
+  try {
+    mediaStream = await audioPlatform.getMicStream('listen');
+  } catch (e: any) {
+    log('listen: mic error:', e?.message);
+    teardown();
+    return false;
+  }
+  analyser = audioPlatform.getMicAnalyser(mediaStream, 256);
+  if (!analyser) {
+    log('listen: analyser unavailable — silence detection disabled');
+  }
+  await armRecorder();
+  // "Listening" chime — same audible cue memo uses, so the user gets a
+  // consistent "we're hearing you" signal across the two modes.
+  try { playFeedback('listening'); } catch { /* noop */ }
+  installTestHooksIfRequested();
+  return true;
+}
+
+async function armRecorder(): Promise<void> {
+  if (!mediaStream) {
+    teardown();
+    return;
+  }
+  audioChunks = [];
+  try {
+    mediaRecorder = new MediaRecorder(mediaStream, { mimeType: 'audio/webm;codecs=opus' });
+  } catch {
+    mediaRecorder = new MediaRecorder(mediaStream);
+  }
+  mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunks.push(e.data); };
+  mediaRecorder.start(1000);
+  armedAt = Date.now();
+  lastVoiceAt = armedAt;
+  startSilenceLoop();
+  transition('armed');
+}
+
+function startSilenceLoop(): void {
+  if (silenceLoop) clearInterval(silenceLoop);
+  silenceLoop = setInterval(tickSilence, SILENCE_FRAME_MS);
+}
+
+function stopSilenceLoop(): void {
+  if (silenceLoop) { clearInterval(silenceLoop); silenceLoop = null; }
+}
+
+/** One frame of silence detection. Reads peak from the analyser (or the
+ *  injected mock-frame queue when a smoke test is driving us). When the
+ *  gap since the last speech frame exceeds settings.listenSilenceSec,
+ *  fires commit. */
+function tickSilence(): void {
+  if (state !== 'armed') return;
+  const now = Date.now();
+  if (now - armedAt < SILENCE_WARMUP_MS) {
+    // Skip the warmup window so the "listening" chime + late mic
+    // unmute don't get counted as silence.
+    return;
+  }
+
+  const s = settings.get();
+  // settings.listenSilenceSec lives in DEFAULTS as of Phase 1; default 8s.
+  const silenceMs = (((s as any).listenSilenceSec as number) || 8) * 1000;
+
+  let isSpeech = false;
+  if (mockFrames && mockFrames.remainingMs > 0) {
+    isSpeech = mockFrames.type === 'speech';
+    mockFrames.remainingMs -= SILENCE_FRAME_MS;
+    if (mockFrames.remainingMs <= 0) mockFrames = null;
+  } else if (analyser) {
+    isSpeech = readPeak(analyser) > ((s.bargeThreshold as number) || 0.20);
+  }
+
+  if (isSpeech) {
+    lastVoiceAt = now;
+    return;
+  }
+  if (now - lastVoiceAt >= silenceMs) {
+    void commitNow('silence');
+  }
+}
+
+function readPeak(node: AnalyserNode): number {
+  const data = new Uint8Array(node.frequencyBinCount);
+  node.getByteTimeDomainData(data);
+  let peak = 0;
+  for (let i = 0; i < data.length; i++) {
+    const v = Math.abs((data[i] - 128) / 128);
+    if (v > peak) peak = v;
+  }
+  return peak;
+}
+
+/** Internal: stop the recorder, harvest the blob, fire onCommit. */
+async function commitNow(reason: 'silence' | 'sendword'): Promise<void> {
+  if (state !== 'armed') return;
+  transition('committing');
+  stopSilenceLoop();
+  const blob = await stopRecorder();
+  log(`listen: commit (${reason}) blob=${blob ? blob.size : 0}b`);
+  if (!blob || blob.size === 0) {
+    // Empty blob — re-arm directly without invoking onCommit.
+    armRecorder().catch(() => teardown());
+    return;
+  }
+  try {
+    const out = opts?.onCommit?.(blob);
+    if (out && typeof (out as Promise<void>).then === 'function') {
+      await out;
+    }
+  } catch (e: any) {
+    diag('listen: onCommit threw', e?.message);
+    // Best-effort recovery — re-arm so the user isn't stranded.
+    armRecorder().catch(() => teardown());
+    return;
+  }
+  // If the caller never moved us to 'playing' (e.g. the reply was
+  // empty so playReplyTts skipped), re-arm directly after a grace.
+  // Read via getState() so TS doesn't narrow on the literal we set above.
+  if (getState() === 'committing') {
+    transition('cooldown');
+    if (cooldownTimer) clearTimeout(cooldownTimer);
+    cooldownTimer = setTimeout(() => {
+      cooldownTimer = null;
+      if (getState() === 'cooldown') {
+        armRecorder().catch(() => teardown());
+      }
+    }, REARM_GRACE_MS);
+  }
+}
+
+async function stopRecorder(): Promise<Blob | null> {
+  if (!mediaRecorder || mediaRecorder.state === 'inactive') return null;
+  const mimeType = mediaRecorder.mimeType;
+  await new Promise<void>((resolve) => {
+    mediaRecorder!.onstop = () => resolve();
+    try { mediaRecorder!.stop(); } catch { resolve(); }
+    setTimeout(resolve, 1000);
+  });
+  if (audioChunks.length === 0) return null;
+  return new Blob(audioChunks, { type: mimeType });
+}
+
+/** Force a commit now (sendword detector path). Safe to call only from
+ *  state==='armed'; otherwise no-op. */
+export function commitFromSendword(): void {
+  if (state !== 'armed') return;
+  void commitNow('sendword');
+}
+
+/** Cancel without committing (trash button, mic-button-off). Releases
+ *  the mic and resets state to idle. */
+export function cancel(): void {
+  const wasArmed = state !== 'idle';
+  teardown();
+  if (wasArmed && opts?.onCancel) {
+    try { opts.onCancel(); } catch { /* noop */ }
+  }
+}
+
+/** Stop and release everything. Equivalent to cancel() but doesn't
+ *  invoke the onCancel callback — used by the menu-toggle off path. */
+export function stop(): void {
+  teardown();
+}
+
+function teardown(): void {
+  stopSilenceLoop();
+  if (cooldownTimer) { clearTimeout(cooldownTimer); cooldownTimer = null; }
+  try {
+    if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
+  } catch { /* noop */ }
+  mediaRecorder = null;
+  audioChunks = [];
+  if (mediaStream) {
+    audioPlatform.releaseMicStream('listen');
+    mediaStream = null;
+  }
+  analyser = null;
+  mockFrames = null;
+  transition('idle');
+}
+
+function transition(s: ListenState): void {
+  if (state === s) return;
+  state = s;
+  try { opts?.onState?.(s); } catch { /* noop */ }
+  // Refresh the test hook surface every transition so polling sees fresh state.
+  installTestHooksIfRequested();
+}
+
+// ── Test hooks ─────────────────────────────────────────────────────────
+// Activated only when ?listen_mock_mic=1 is on the URL. Smokes drive
+// synthetic frames in via injectSilence/injectSpeech instead of routing
+// real mic audio.
+
+function isMockMicEnabled(): boolean {
+  try {
+    const qs = new URLSearchParams(location.search);
+    return qs.get('listen_mock_mic') === '1';
+  } catch {
+    return false;
+  }
+}
+
+function installTestHooksIfRequested(): void {
+  if (typeof window === 'undefined') return;
+  if (!isMockMicEnabled()) return;
+  (window as any).__listen = {
+    get state() { return state; },
+    injectSilence(durationMs: number) {
+      mockFrames = { type: 'silence', remainingMs: durationMs };
+      // Also pretend we never heard speech — set lastVoiceAt back so
+      // the configured silence window can elapse.
+      lastVoiceAt = Date.now() - durationMs;
+    },
+    injectSpeech(durationMs: number) {
+      mockFrames = { type: 'speech', remainingMs: durationMs };
+      lastVoiceAt = Date.now();
+    },
+    commit() { void commitNow('sendword'); },
+  };
+}

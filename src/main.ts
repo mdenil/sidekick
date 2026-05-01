@@ -31,6 +31,7 @@ import { miniMarkdown } from './util/markdown.ts';
 import * as ambient from './ambient.ts';
 import { playFeedback } from './audio/feedback.ts';
 import * as memo from './audio/memo.ts';
+import * as listen from './audio/listen.ts';
 import * as queue from './queue.ts';
 import * as voiceMemos from './voiceMemos.ts';
 import * as memoCard from './memoCard.ts';
@@ -1890,10 +1891,80 @@ async function boot() {
     await webrtcControls.closeIfOpen();
   }
 
+  // ── Listen mode (turn-based handsfree) ─────────────────────────────
+  // Listen is the third handsfree mic mode: records locally with
+  // MediaRecorder (like memo), commits the buffered blob to /transcribe
+  // on silence (Phase 1) or sendword (Phase 2), drops the transcript
+  // into the composer, auto-submits, then re-arms after reply playback.
+  // Lives alongside Talk/Stream — never replaces them.
+  let listenActive = false;
+  async function startListen(): Promise<void> {
+    if (listenActive) return;
+    if (memoActive) return;
+    if (dictateActive) await webrtcDictate.stop();
+    if (webrtcControls.isOpen()) await webrtcControls.closeIfOpen();
+    primeAudio(player);
+    audioSession.prepareForCapture();
+    const ok = await listen.start({
+      onCommit: async (blob) => {
+        // Post the blob to /transcribe (mirrors the memo path) and route
+        // the resulting transcript through composer.appendText +
+        // composer.submit — same canonical send path as the user typing
+        // a message + hitting Enter. Auto-send is ALWAYS on for Listen.
+        try {
+          const res = await fetch('/transcribe', {
+            method: 'POST',
+            headers: { 'Content-Type': blob.type || 'audio/webm' },
+            body: blob,
+          });
+          const data = await res.json().catch(() => ({} as any));
+          const text = String((data && data.transcript) || '').trim();
+          if (!text) {
+            log('listen: empty transcript, skipping send');
+            return;
+          }
+          composer.appendText(text);
+          composer.submit();
+        } catch (e: any) {
+          diag('listen: /transcribe failed', e?.message);
+        }
+      },
+      onCancel: () => {
+        listenActive = false;
+        if (btnMic) btnMic.classList.remove('listening-armed', 'listening');
+        status.setStatus('');
+      },
+      onState: (s) => {
+        if (btnMic) {
+          btnMic.classList.toggle('listening-armed', s === 'armed' || s === 'committing');
+          btnMic.classList.toggle('listening', s === 'armed');
+        }
+        if (s === 'armed') status.setStatus('Listen: armed', 'live');
+        else if (s === 'committing') status.setStatus('Listen: sending…', null);
+        else if (s === 'playing') status.setStatus('Listen: speaking…', null);
+        else if (s === 'cooldown') status.setStatus('Listen: re-arming…', null);
+        else if (s === 'idle') status.setStatus('');
+      },
+    });
+    if (!ok) {
+      listenActive = false;
+      status.setStatus('Mic not available', 'err');
+      return;
+    }
+    listenActive = true;
+  }
+
+  function stopListen(): void {
+    if (!listenActive) return;
+    listenActive = false;
+    listen.stop();
+    if (btnMic) btnMic.classList.remove('listening-armed', 'listening');
+  }
+
   /** Whether some voice path is currently active. Used by the click
    *  toggle to decide start vs stop. */
   function voiceActive(): boolean {
-    return memoActive || dictateActive || webrtcControls.isOpen();
+    return memoActive || dictateActive || webrtcControls.isOpen() || listenActive;
   }
 
   /** Stop whichever voice path is active. Idempotent / safe to call
@@ -1912,6 +1983,10 @@ async function boot() {
     }
     if (webrtcControls.isOpen()) {
       await stopCallStream();
+      return;
+    }
+    if (listenActive) {
+      stopListen();
       return;
     }
   }
@@ -2653,6 +2728,20 @@ async function boot() {
     }).catch(() => {});
   }
 
+  // Listen mode bootstrap — URL flag for headless smoke tests. Auto-arms
+  // Listen on boot when ?listen=1 is present so the smoke can drive
+  // synthetic frames in (?listen_mock_mic=1). The flag also accepts
+  // ?silence_sec=N to compress the silence window for fast tests.
+  try {
+    const qs = new URLSearchParams(location.search);
+    if (qs.get('listen') === '1') {
+      const sec = Number(qs.get('silence_sec'));
+      if (Number.isFinite(sec) && sec > 0) settings.set('listenSilenceSec', sec);
+      // Defer briefly so settings.load() + audio prime can settle.
+      setTimeout(() => { void startListen(); }, 50);
+    }
+  } catch { /* noop */ }
+
   log('page loaded, UA:', navigator.userAgent);
 }
 
@@ -3318,8 +3407,39 @@ function handleReplyFinal({ replyId, text, content = [], conversation, messageId
     // call (call mode owns audio via its own peer-track TTS), synth
     // the reply through Deepgram Aura via /tts. Best-effort —
     // failures log + drop, never blocking bubble rendering.
-    if (settings.get().tts && !webrtcControls.isOpen()) {
-      void playReplyTts(finalText, settings.get().voice);
+    //
+    // Listen mode is forced into the speak-replies path so the user
+    // hears the answer handsfree, regardless of the user-facing toggle.
+    // We notify listen.notifyReplyPlayback around the call so it
+    // suspends silence detection and re-arms after audio.ended.
+    const inListen = listen.getState() !== 'idle';
+    if ((settings.get().tts || inListen) && !webrtcControls.isOpen()) {
+      const player = document.getElementById('player') as HTMLAudioElement | null;
+      if (inListen) listen.notifyReplyPlayback(true);
+      const onEnded = () => {
+        if (inListen) listen.notifyReplyPlayback(false);
+        player?.removeEventListener('ended', onEnded);
+        player?.removeEventListener('error', onEnded);
+      };
+      player?.addEventListener('ended', onEnded);
+      player?.addEventListener('error', onEnded);
+      void playReplyTts(finalText, settings.get().voice).then(() => {
+        // playReplyTts returns when fetch+play started, not when audio
+        // finishes. The audio.ended listener above drives re-arm. If the
+        // promise rejects (network error, no text), drop the listener
+        // and re-arm directly.
+      }).catch(() => {
+        if (inListen) {
+          listen.notifyReplyPlayback(false);
+          player?.removeEventListener('ended', onEnded);
+          player?.removeEventListener('error', onEnded);
+        }
+      });
+    } else if (inListen) {
+      // No TTS in flight (rare — settings.tts off AND not in Listen
+      // would have skipped). Still notify so re-arm fires.
+      listen.notifyReplyPlayback(true);
+      listen.notifyReplyPlayback(false);
     }
 
     try {

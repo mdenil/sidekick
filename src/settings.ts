@@ -187,11 +187,23 @@ const DEFAULTS = {
   hotkeyAutoSend: 'Cmd+Shift+S',
   hotkeyToggleMic: 'Cmd+Shift+D',
   agentActivity: 'summary' as 'off' | 'summary' | 'full',
+  // Listen mode — third handsfree mic mode. listenMode is the menu
+  // toggle (when true, mic-tap arms Listen instead of opening a call).
+  // listenSendword falls back to commitPhrase when blank. listenSttEngine
+  // is reserved for v1 (only 'local' + 'silence-only' are wired).
+  listenMode: false,
+  listenSendword: '',
+  listenSilenceSec: 8,
+  listenSttEngine: 'local' as 'local' | 'server' | 'silence-only',
 };
 
 /** Settings whose value is hardware-specific to the browser; stay
- *  in localStorage rather than yaml. Everything else is yaml-backed. */
-const PER_DEVICE_KEYS = new Set<string>(['micDevice', 'ttsVoiceLocal']);
+ *  in localStorage rather than yaml. Everything else is yaml-backed.
+ *  listenSttEngine is per-device because Web Speech API support varies
+ *  by browser (Safari quirks, Firefox unsupported) and 'silence-only'
+ *  may be a sensible local fallback even when the deployment-wide
+ *  default is 'local'. */
+const PER_DEVICE_KEYS = new Set<string>(['micDevice', 'ttsVoiceLocal', 'listenSttEngine']);
 
 let current = { ...DEFAULTS };
 
