@@ -28,6 +28,7 @@ import { log, diag } from '../util/log.ts';
 import * as audioPlatform from './platform.ts';
 import * as settings from '../settings.ts';
 import { playFeedback } from './feedback.ts';
+import * as sendwordDetector from './sendwordDetector.ts';
 
 export type ListenState = 'idle' | 'armed' | 'committing' | 'playing' | 'cooldown';
 
@@ -74,6 +75,9 @@ export function notifyReplyPlayback(playing: boolean): void {
   if (playing) {
     if (state === 'committing' || state === 'armed' || state === 'playing') {
       transition('playing');
+      // Pause the sendword detector during TTS — the user's mic would
+      // otherwise pick up the agent's voice and trip a false match.
+      try { sendwordDetector.stop(); } catch { /* noop */ }
     }
     return;
   }
@@ -84,9 +88,10 @@ export function notifyReplyPlayback(playing: boolean): void {
     if (cooldownTimer) clearTimeout(cooldownTimer);
     cooldownTimer = setTimeout(() => {
       cooldownTimer = null;
-      if (state !== 'cooldown') return;
+      if (getState() !== 'cooldown') return;
       // Re-arm by rebuilding the recorder. The mic stream is still
-      // alive; we just need a fresh blob accumulator.
+      // alive; we just need a fresh blob accumulator. armRecorder()
+      // also restarts the sendword detector.
       armRecorder().catch((e) => {
         diag('listen: re-arm failed', e?.message);
         // Fall back to idle; caller can re-tap to retry.
@@ -146,6 +151,17 @@ async function armRecorder(): Promise<void> {
   armedAt = Date.now();
   lastVoiceAt = armedAt;
   startSilenceLoop();
+  // Sendword detector: empty listenSendword falls back to commitPhrase
+  // (per-spec). Fail-soft — if SR is unsupported, listen continues with
+  // silence-only commits.
+  const s = settings.get();
+  const phrase = (((s as any).listenSendword as string) || s.commitPhrase || '').trim();
+  if (phrase) {
+    sendwordDetector.start({
+      phrase,
+      onMatch: () => commitFromSendword(),
+    });
+  }
   transition('armed');
 }
 
@@ -209,6 +225,7 @@ async function commitNow(reason: 'silence' | 'sendword'): Promise<void> {
   if (state !== 'armed') return;
   transition('committing');
   stopSilenceLoop();
+  try { sendwordDetector.stop(); } catch { /* noop */ }
   const blob = await stopRecorder();
   log(`listen: commit (${reason}) blob=${blob ? blob.size : 0}b`);
   if (!blob || blob.size === 0) {
@@ -291,6 +308,7 @@ function teardown(): void {
   }
   analyser = null;
   mockFrames = null;
+  try { sendwordDetector.stop(); } catch { /* noop */ }
   transition('idle');
 }
 
