@@ -23,7 +23,7 @@ export default async function run({ page, log, fail, url }) {
   // Open settings panel — find the gear button.
   await page.evaluate(() => {
     const btn = document.querySelector('[data-action="settings"], #btn-settings, #sb-settings');
-    (btn as HTMLElement | null)?.click();
+    btn?.click();
   });
 
   // Wait for our rows to be present.
@@ -35,17 +35,17 @@ export default async function run({ page, log, fail, url }) {
 
   // Set + dispatch change for sendword.
   await page.evaluate(() => {
-    const el = document.getElementById('set-listen-sendword') as HTMLInputElement;
+    const el = document.getElementById('set-listen-sendword');
     el.value = 'send';
     el.dispatchEvent(new Event('change', { bubbles: true }));
   });
   await page.evaluate(() => {
-    const el = document.getElementById('set-listen-silence') as HTMLInputElement;
+    const el = document.getElementById('set-listen-silence');
     el.value = '3';
     el.dispatchEvent(new Event('input', { bubbles: true }));
   });
   await page.evaluate(() => {
-    const el = document.getElementById('set-listen-stt') as HTMLSelectElement;
+    const el = document.getElementById('set-listen-stt');
     el.value = 'silence-only';
     el.dispatchEvent(new Event('change', { bubbles: true }));
   });

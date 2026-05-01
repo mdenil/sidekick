@@ -31,8 +31,8 @@ export default async function run({ page, log, fail, url, mock }) {
 
   // Capture which navigation calls fire by spying on navigateSibling.
   await page.evaluate(() => {
-    (window).__navHits = [];
-    const orig = ((window) as any).__sessionDrawer?.navigateSibling;
+    window.__navHits = [];
+    const orig = window.__sessionDrawer?.navigateSibling;
     // The session drawer exposes its module via a global only when wired
     // by test hooks; in production it doesn't. Just count the active row
     // changes instead — mediaSession handlers call navigateSibling which
