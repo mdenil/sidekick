@@ -226,6 +226,31 @@ function renderToolEntry(entry: ToolEntry): HTMLElement {
   return wrap;
 }
 
+/** Tool results arrive as JSON strings — sometimes single-encoded
+ *  (`{"key":"value"}`), sometimes double-encoded as `{"result":"<escaped JSON>"}`
+ *  (the agent's tool wrapper does this for some result shapes). Try
+ *  to parse and pretty-print so the user sees indented JSON instead
+ *  of `\"key\":\"value\"` walls of escaped quotes. Falls back to the
+ *  raw string on any parse failure — non-JSON tool outputs (plain
+ *  text, markdown) render unchanged. */
+function prettifyMaybeJson(raw: string): string {
+  if (!raw || raw[0] !== '{' && raw[0] !== '[') return raw;
+  try {
+    let parsed = JSON.parse(raw);
+    // Double-encoded shape: { "result": "{\"...\":\"...\"}" }. Unwrap.
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        && typeof (parsed as any).result === 'string') {
+      const inner = (parsed as any).result.trim();
+      if (inner && (inner[0] === '{' || inner[0] === '[')) {
+        try { (parsed as any).result = JSON.parse(inner); } catch { /* leave string */ }
+      }
+    }
+    return JSON.stringify(parsed, null, 2);
+  } catch {
+    return raw;
+  }
+}
+
 function updateToolEntryResult(entry: ToolEntry): void {
   if (!entry.resultEl || !entry.fullEl) return;
   const meta = entry.fullEl.querySelector('.tool-row-meta') as HTMLElement | null;
@@ -238,10 +263,11 @@ function updateToolEntryResult(entry: ToolEntry): void {
     entry.resultEl.innerHTML = `<div class="tool-result-empty">no result</div>`;
     return;
   }
-  // Truncate to 500 chars for the inline view; expanded shows the full
-  // (already 50KB-capped on the wire) string. Adapter sets truncated
-  // when ITS 50KB cap fired; render that as a hint either way.
-  const full = entry.result || '';
+  // Pretty-print the result if it looks like JSON; raw passthrough
+  // otherwise. The original `entry.result` stays available for the
+  // copy button (see below) so users can copy the wire format.
+  const rawResult = entry.result || '';
+  const full = prettifyMaybeJson(rawResult);
   const SHOW_LIMIT = 500;
   const isLong = full.length > SHOW_LIMIT;
   const shortText = isLong ? full.slice(0, SHOW_LIMIT) + '…' : full;
@@ -276,7 +302,9 @@ function updateToolEntryResult(entry: ToolEntry): void {
         copy.className = 'tool-result-copy';
         copy.textContent = 'copy';
         copy.onclick = () => {
-          try { navigator.clipboard?.writeText(full); } catch {}
+          // Copy the RAW wire format (not the prettified version) so
+          // a user pasting into a script gets the original payload.
+          try { navigator.clipboard?.writeText(rawResult); } catch {}
         };
         entry.resultEl?.appendChild(copy);
       } else if (expanded && existing) {
