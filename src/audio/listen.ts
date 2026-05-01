@@ -127,12 +127,45 @@ export async function start(o: ListenOpts): Promise<boolean> {
   if (!analyser) {
     log('listen: analyser unavailable — silence detection disabled');
   }
+  ensureVisibilityHandler();
   await armRecorder();
   // "Listening" chime — same audible cue memo uses, so the user gets a
   // consistent "we're hearing you" signal across the two modes.
   try { playFeedback('listening'); } catch { /* noop */ }
   installTestHooksIfRequested();
   return true;
+}
+
+/** Visibility-change handler — pause sendword detection when the tab
+ *  goes to the background. Web Speech API is unreliable while hidden
+ *  on iOS Safari (sessions get killed silently, restart loop fails);
+ *  on resume we re-arm the detector if Listen is still active. The
+ *  silence loop keeps running so a memo recorded while pocketed still
+ *  commits — only sendword pauses. */
+let visibilityHandlerInstalled = false;
+function ensureVisibilityHandler(): void {
+  if (visibilityHandlerInstalled) return;
+  if (typeof document === 'undefined') return;
+  visibilityHandlerInstalled = true;
+  document.addEventListener('visibilitychange', () => {
+    if (state !== 'armed' && state !== 'committing') return;
+    if (document.visibilityState === 'hidden') {
+      try { sendwordDetector.stop(); } catch { /* noop */ }
+    } else {
+      // Re-arm sendword on resume if we're still in armed state.
+      if (state === 'armed') {
+        const s = settings.get();
+        const engine = (s as any).listenSttEngine || 'local';
+        const phrase = (((s as any).listenSendword as string) || s.commitPhrase || '').trim();
+        if (phrase && engine !== 'silence-only') {
+          sendwordDetector.start({
+            phrase,
+            onMatch: () => commitFromSendword(),
+          });
+        }
+      }
+    }
+  });
 }
 
 async function armRecorder(): Promise<void> {

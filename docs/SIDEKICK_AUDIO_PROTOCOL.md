@@ -425,3 +425,67 @@ known chat_ids — see the `session_changed envelope` section in
 `backends/hermes/plugin/sidekick_platform.py` for cadence + envelope shape.
 Trade-off: ~1s lag on title refresh after compression, no hermes-core
 patch required.
+
+## Listen mode
+
+Listen is the third handsfree mic mode (alongside Memo and Talk/Stream).
+It records locally with `MediaRecorder` — same primitives as Memo —
+and runs the Web Speech API in parallel for sendword detection. On
+commit (silence elapses or sendword fires), the FULL buffered audio
+blob is shipped to the existing `POST /transcribe` endpoint. The
+returned transcript drops into `composer.appendText` + `composer.submit`,
+so the rest of the send pipeline (agent dispatch, reply rendering,
+text TTS) runs unchanged. Reply playback drives re-arm via
+`listen.notifyReplyPlayback` plus a 500ms grace.
+
+### Why not WebRTC
+
+Listen is **wiring on top of existing primitives, not a new pipeline**.
+WebRTC (talk + stream modes) stays untouched and remains the path for
+inevitable duplex-model backends (Gemini Live, OpenAI Realtime). Listen
+trades real-time interaction for **zero-packet-loss transcription**:
+the user's full utterance is captured locally and uploaded as one blob,
+so a flaky cell connection that would corrupt a streaming session
+either commits or queues the blob (offline-capable, like Memo).
+
+### State machine
+
+```
+   idle  ───start()───►  armed  ──silence/sendword──►  committing
+    ▲                      ▲                              │
+    │                      │                              │
+    │                  cooldown ◄──audio.ended+grace── playing
+    │                                                     │
+    └─────────────cancel()/stop()─────────────────────────┘
+```
+
+Disarm is `stop()` (mic-button tap or menu-toggle off). Listen has
+**no barge logic** — the mic is implicitly muted during TTS playback
+and re-armed when the audio element fires `ended`.
+
+### Settings
+
+- `listenMode` (per-user, mic-menu toggle): when true, mic-button taps
+  arm Listen instead of opening a call.
+- `listenSendword` (per-user): word/phrase that fires commit.
+  Empty = falls back to `commitPhrase`.
+- `listenSilenceSec` (per-user): silence cutoff in seconds, default 8.
+- `listenSttEngine` (per-device): `'local'` (Web Speech) or
+  `'silence-only'` (opt-out path). `'server'` is reserved for v1.
+
+### iOS notes
+
+- First arming each browser session needs a user gesture (audio prime).
+  After a screen-lock cycle the user wakes the device and re-arms once.
+- Sendword detector pauses on `visibilitychange → hidden` and re-arms
+  on `visible`. Silence detection is unaffected — a memo recorded while
+  pocketed still commits.
+- Web Speech API session lifetime is ~30s on Safari; the detector's
+  `onend` handler auto-restarts unless `stop()` was explicitly called.
+
+### Reply cache
+
+`text-tts.ts` memoizes `(text, voice) → mp3 Blob` in an LRU
+(`src/audio/replyCache.ts`, cap 10 / 5MB). Repeated identical replies
+play instantly without re-hitting `/tts`. Listen amplifies the value:
+hands-free "wait, what did you say?" is a common pattern.
