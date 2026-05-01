@@ -53,6 +53,20 @@ export interface GatewayConversationSummary extends ConversationSummary {
   };
 }
 
+/** Slash-command catalog entry — agent-declared via /v1/commands.
+ *  Surfaced in the PWA composer's autocomplete popover. The shape
+ *  mirrors hermes_cli.commands.CommandDef (the upstream's single
+ *  source of truth). Aliases stay on the canonical row — the PWA
+ *  matches both names against the same entry. */
+export interface CommandDef {
+  name: string;
+  description: string;
+  category: string;
+  aliases: string[];
+  args_hint: string;
+  subcommands: string[];
+}
+
 /** Agent-declared user-facing setting — see
  *  docs/ABSTRACT_AGENT_PROTOCOL.md "Optional settings extension". */
 export interface SettingDef {
@@ -134,6 +148,11 @@ export interface UpstreamAgent {
    *  with the upstream's response body included on `.cause` so the
    *  proxy can pass status + body through to the PWA. */
   updateSetting(id: string, value: unknown): Promise<SettingDef>;
+
+  /** Optional slash-command catalog. Returns null when the upstream
+   *  doesn't implement /v1/commands (404); the proxy surfaces 404 to
+   *  the PWA so the autocomplete popover stays disabled. */
+  listCommands(): Promise<CommandDef[] | null>;
 }
 
 /** Error thrown by HTTPAgentUpstream when the upstream returns a 4xx
@@ -242,6 +261,16 @@ export class HTTPAgentUpstream implements UpstreamAgent {
       first_id: j?.first_id ?? null,
       has_more: !!j?.has_more,
     };
+  }
+
+  async listCommands(): Promise<CommandDef[] | null> {
+    const r = await fetch(`${this.url}/v1/commands`, {
+      headers: this.headers(),
+    });
+    if (r.status === 404) return null;
+    if (!r.ok) throw new Error(`upstream listCommands: HTTP ${r.status}`);
+    const j: any = await r.json();
+    return Array.isArray(j?.data) ? j.data : [];
   }
 
   async getSettingsSchema(): Promise<SettingDef[] | null> {

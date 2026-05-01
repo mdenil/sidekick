@@ -32,6 +32,7 @@ export {
   handleSidekickSettingsSchema,
   handleSidekickSettingsUpdate,
 } from './settings.ts';
+export { handleSidekickCommands } from './commands.ts';
 
 let upstream: UpstreamAgent | null = null;
 

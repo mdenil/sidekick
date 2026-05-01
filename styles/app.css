@@ -628,6 +628,79 @@
   }
   .cmdk-close-row button:hover { background: var(--border-strong); }
 
+  /* ── Slash-command popover ──
+     Anchored above the composer (positioned in JS via slashCommands.ts).
+     Cosmetic kin to .cmdk-dialog but inline / non-modal — no backdrop,
+     no Esc-built-in, no centered-dialog framing. The list itself reuses
+     the visual rules from .cmdk-row where it can. */
+  .slash-popover {
+    position: fixed;
+    z-index: 9999;
+    background: var(--surface);
+    color: var(--fg);
+    border: 1px solid var(--border-strong);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+    overflow: hidden;
+    max-height: 50vh;
+    display: flex;
+    flex-direction: column;
+  }
+  .slash-popover-list {
+    overflow-y: auto;
+    padding: 4px 0;
+    flex: 1 1 auto;
+  }
+  .slash-popover-row {
+    padding: 6px 12px;
+    cursor: pointer;
+    border-left: 2px solid transparent;
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    font-size: 13px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .slash-popover-row.active,
+  .slash-popover-row:hover {
+    background: var(--surface-2, var(--surface));
+    border-left-color: var(--primary);
+  }
+  .slash-popover-name {
+    color: var(--fg);
+    font-family: var(--mono-font, ui-monospace, SFMono-Regular, monospace);
+    font-weight: 600;
+  }
+  .slash-popover-args {
+    color: var(--muted);
+    font-family: var(--mono-font, ui-monospace, SFMono-Regular, monospace);
+    font-size: 12px;
+  }
+  .slash-popover-desc {
+    color: var(--muted);
+    font-size: 12px;
+    margin-left: auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+  }
+  .slash-popover-empty {
+    padding: 8px 12px;
+    color: var(--muted);
+    font-style: italic;
+    font-size: 13px;
+  }
+  .slash-arghint {
+    border-top: 1px solid var(--border);
+    padding: 6px 12px;
+    color: var(--muted);
+    font-family: var(--mono-font, ui-monospace, SFMono-Regular, monospace);
+    font-size: 12px;
+  }
+  .slash-arghint[hidden] { display: none; }
+
   /* ── Fast tooltips (replace slow native HTML title=) ──
      Native browser tooltips fire after ~1.5-3s. We render our own at
      ~600ms via JS in main.ts. Tooltip element is appended to <body>

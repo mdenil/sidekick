@@ -38,6 +38,7 @@ import * as memoCard from './memoCard.ts';
 import * as attachments from './attachments.ts';
 import * as draft from './draft.ts';
 import * as composer from './composer.ts';
+import * as slashCommands from './slashCommands.ts';
 import * as webrtcControls from './pipelines/webrtc/controls.ts';
 import * as webrtcConnection from './pipelines/webrtc/connection.ts';
 import * as webrtcDictation from './pipelines/webrtc/dictation.ts';
@@ -774,6 +775,12 @@ async function boot() {
         // for. Errors silently — the existing on-panel-open path still
         // re-tries.
         agentSettingsMod.load().catch(() => {});
+        // Refresh the slash-command catalog from the agent. Cheap
+        // (one ~50-row JSON), fires on every (re)connect so plugin-
+        // installed commands and registry updates land without a page
+        // reload. No-op silently if the agent doesn't implement
+        // /v1/commands.
+        slashCommands.refresh().catch(() => {});
       } else {
         status.setStatus('Gateway: disconnected');
       }
@@ -1078,29 +1085,14 @@ async function boot() {
         releaseCaptureIfActive();
         return;
       }
-      // Slash commands that reset session state should also wipe local UI
-      if (/^\/(reset|new|clear)\b/i.test(text)) {
-        diag('reset history: slash command');
-        releaseCaptureIfActive();
-        renderedMessages.clear();
-        activityRow.clearAll();
-        draft.dismiss();
-        voiceMemos.clearAll().catch(() => {});
-        historyLoaded = false;
-        const optsCmd = hasAttachments ? { attachments: attachments.toSendPayload() } : {};
-        try { backend.sendMessage(text, optsCmd); }
-        catch (e: any) {
-          const msg = e?.message || String(e);
-          diag(`sendMessage failed: ${msg}`);
-          status.setStatus(`Send failed: ${msg}`, 'err');
-          releaseCaptureIfActive();
-          return;
-        }
-        attachments.clear();
-        playFeedback('send');
-        composerInput.value = '';
-        autoResize();
-        updateSendButtonState();
+      // Slash commands: route through slashCommands so the popover's
+      // dispatch path AND the manually-typed-then-Enter path share one
+      // codepath. slashCommands.dispatch fires onResetSignal (if the
+      // command is /new, /reset, /clear) and then calls onDispatch
+      // — which here is the bare-bones backend.sendMessage (no
+      // optimistic bubble; the agent's reply IS the response).
+      if (slashCommands.isCommand(text)) {
+        slashCommands.dispatch(text);
         return;
       }
       // Atomic-bubble path (Q1): bubble starts `.pending`. On agent's
@@ -1181,6 +1173,41 @@ async function boot() {
     interim: document.getElementById('composer-interim'),
     onChange: updateSendButtonState,
     onSubmit: sendTypedMessage,
+  });
+  // Slash-command popover. Backend-declared registry, frontend-rendered
+  // — see src/slashCommands.ts. The onResetSignal callback is the only
+  // sidekick-side state callback (per design): main.ts owns the local
+  // wipe, slashCommands owns the dispatch + popover. onDispatch here
+  // is the bare-bones backend send (no optimistic bubble — the agent's
+  // reply IS the response).
+  slashCommands.init({
+    input: composerInput,
+    onDispatch: (cmdText) => {
+      const hasAtt = attachments.hasPending();
+      const opts = hasAtt ? { attachments: attachments.toSendPayload() } : {};
+      try { backend.sendMessage(cmdText, opts); }
+      catch (e: any) {
+        const msg = e?.message || String(e);
+        diag(`slash sendMessage failed: ${msg}`);
+        status.setStatus(`Send failed: ${msg}`, 'err');
+        releaseCaptureIfActive();
+        return;
+      }
+      attachments.clear();
+      playFeedback('send');
+      composerInput.value = '';
+      autoResize();
+      updateSendButtonState();
+    },
+    onResetSignal: () => {
+      diag('reset history: slash command');
+      releaseCaptureIfActive();
+      renderedMessages.clear();
+      activityRow.clearAll();
+      draft.dismiss();
+      voiceMemos.clearAll().catch(() => {});
+      historyLoaded = false;
+    },
   });
   composerInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendTypedMessage(); }

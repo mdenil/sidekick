@@ -323,6 +323,29 @@ export async function installMockBackend(page) {
     return route.fallback();
   });
 
+  // /api/sidekick/commands — slash-command catalog. Tests configure
+  // via mock.setCommandsCatalog([...]). null = upstream agent doesn't
+  // implement the extension (route returns 404), matching the
+  // contract for opt-out agents. Default is null so existing smokes
+  // see a no-op slashCommands module.
+  let commandsCatalog = null;        // null | CommandDef[]
+  await page.route(/.*\/api\/sidekick\/commands(\?.*)?$/, async (route) => {
+    if (route.request().method() !== 'GET') return route.fallback();
+    if (commandsCatalog === null) {
+      await route.fulfill({
+        status: 404,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: { message: 'commands not supported' } }),
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ object: 'list', data: commandsCatalog }),
+    });
+  });
+
   // GET /api/keyterms — empty list, harmless.
   await page.route('**/api/keyterms', async (route) => {
     if (route.request().method() !== 'GET') return route.fallback();
@@ -378,6 +401,12 @@ export async function installMockBackend(page) {
       lastSettingsPost = null;
     },
     getLastSettingsPost() { return lastSettingsPost; },
+    /** Configure /api/sidekick/commands. Pass null to declare the
+     *  agent doesn't implement the extension (route returns 404).
+     *  Each entry is a CommandDef from
+     *  proxy/sidekick/upstream.ts — { name, description, category,
+     *  aliases, args_hint, subcommands }. */
+    setCommandsCatalog(catalog) { commandsCatalog = catalog; },
 
     /** Inspect/snapshot. */
     chatCount() { return chats.size; },
