@@ -21,6 +21,11 @@ let speakerCount = 0;
 const DB_NAME = 'sidekick-chat';
 const STORE = 'transcripts';
 const SNAPSHOT_KEY = 'current';
+// Legacy sessionStorage key from before the IDB migration. The read
+// path was dropped 2026-05-01; only the cleanup `removeItem` in
+// clearSnapshot remains to evict stale entries on long-installed
+// PWAs (Jonathan's mom's iPhone). After 2026-07-01, delete the
+// constant + the `removeItem` line entirely.
 const LEGACY_SS_KEY = 'sidekick.transcript.v1';
 
 function dbOpen(): Promise<IDBDatabase> {
@@ -48,12 +53,6 @@ async function loadSnapshot(): Promise<{ html: string; sessionId?: string } | nu
     const rec = await reqP(db.transaction(STORE, 'readonly').objectStore(STORE).get(SNAPSHOT_KEY));
     db.close();
     if (rec?.html) return { html: rec.html, sessionId: rec.sessionId };
-  } catch {}
-  // One-time migration from the old sessionStorage snapshot so in-progress
-  // sessions don't lose their chat when this version deploys.
-  try {
-    const legacy = sessionStorage.getItem(LEGACY_SS_KEY);
-    if (legacy) return { html: legacy };
   } catch {}
   return null;
 }
