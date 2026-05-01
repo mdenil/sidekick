@@ -2401,7 +2401,7 @@ async function boot() {
           : key === 'micAutoSend'
             ? 'Auto-send — dispatch on end-of-utterance (vs. drafting into composer)'
             : key === 'realtime'
-              ? 'Realtime — when ON, calls use WebRTC for sub-100ms duplex audio (best for upcoming duplex models). When OFF (default), calls use turn-based recording: full audio buffered locally, sent only when you finish speaking. Turn-based optimizes for fidelity and reliability over latency; recommended on flaky networks and for tool-using agents where reply latency is dominated by the LLM round-trip anyway.'
+              ? 'Realtime: ON = WebRTC duplex audio (low latency, lossy on flaky networks). OFF (default) = turn-based recording (full fidelity, sent on end-of-utterance).'
               : 'Speak replies — TTS audio output during a call (talk mode vs. stream mode)';
         b.title = prettyHk ? `${desc} · ${prettyHk}` : desc;
       });
