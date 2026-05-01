@@ -232,7 +232,13 @@ function renderToolEntry(entry: ToolEntry): HTMLElement {
  *  to parse and pretty-print so the user sees indented JSON instead
  *  of `\"key\":\"value\"` walls of escaped quotes. Falls back to the
  *  raw string on any parse failure — non-JSON tool outputs (plain
- *  text, markdown) render unchanged. */
+ *  text, markdown) render unchanged.
+ *
+ *  Multi-line string values (shell output, log dumps, code snippets)
+ *  get the `\n` escapes expanded into actual newlines for readability.
+ *  The output is no longer strictly valid JSON after that — the "copy"
+ *  button still copies the original wire format so paste-into-script
+ *  works. */
 function prettifyMaybeJson(raw: string): string {
   if (!raw || raw[0] !== '{' && raw[0] !== '[') return raw;
   try {
@@ -245,7 +251,25 @@ function prettifyMaybeJson(raw: string): string {
         try { (parsed as any).result = JSON.parse(inner); } catch { /* leave string */ }
       }
     }
-    return JSON.stringify(parsed, null, 2);
+    let out = JSON.stringify(parsed, null, 2);
+    // Multi-line string values: rewrite `"key": "long\nstring"` as a
+    // pipe-prefixed block so shell logs / code snippets render with
+    // actual line breaks. Only fires when the value contains a literal
+    // \n escape — single-line values keep their inline form. Output
+    // ceases to be valid JSON; we accept that for display because the
+    // copy button preserves the raw wire format anyway.
+    out = out.replace(
+      /^( *)"([^"\\]+)": "((?:[^"\\]|\\.)*?\\n(?:[^"\\]|\\.)*?)"(,?)$/gm,
+      (_match, indent, key, encVal, comma) => {
+        let decoded: string;
+        try { decoded = JSON.parse('"' + encVal + '"'); }
+        catch { return _match; }
+        const blockIndent = indent + '  ';
+        const body = decoded.split('\n').map(l => blockIndent + l).join('\n');
+        return `${indent}"${key}": |\n${body}${comma}`;
+      },
+    );
+    return out;
   } catch {
     return raw;
   }
