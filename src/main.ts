@@ -238,6 +238,16 @@ async function boot() {
       // No-op: WebRTC peer connection auto-recovers via ICE; classic-mode's
       // SR-recovery hop isn't needed.
     },
+    // BT track-skip / lock-screen skip → chat navigation. Useful for
+    // memo + talk too, ships now because Listen amplifies the hands-
+    // free value (user with phone pocketed can step through chats
+    // without waking the screen).
+    onNextTrack: () => { sessionDrawer.navigateSibling(1); },
+    onPrevTrack: () => { sessionDrawer.navigateSibling(-1); },
+    // seekto: not yet wired to anything chat-side. The hook is here so
+    // a future "seek to position N in the conversation" feature can land
+    // without re-touching audio/session.ts. No-op for now.
+    onSeekTo: (_seconds: number) => { /* reserved */ },
   });
   if (!audioSession.isStandalone()) {
     log('NOTE: not running as installed PWA — background audio will be limited');

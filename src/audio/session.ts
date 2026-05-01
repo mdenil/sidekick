@@ -50,6 +50,14 @@ type SessionHandlers = {
   onPause?: () => void;
   onStop?: () => void;
   onForeground?: () => void;
+  /** BT headset / car infotainment "skip forward" — typically used to
+   *  navigate to the next chat. Listen mode amplifies the value of
+   *  these handlers because the user is hands-free. */
+  onNextTrack?: () => void;
+  /** BT headset / car infotainment "skip backward". */
+  onPrevTrack?: () => void;
+  /** Lock-screen scrub. Value is the requested offset in seconds. */
+  onSeekTo?: (seconds: number) => void;
 };
 let handlers: SessionHandlers = {};
 
@@ -88,10 +96,39 @@ async function initMediaSession() {
   set('play',  () => { log('mediaSession: play');  handlers.onPlay?.(); });
   set('pause', () => { log('mediaSession: pause'); handlers.onPause?.(); });
   set('stop',  () => { log('mediaSession: stop');  handlers.onStop?.(); });
-  // Track nav handlers (nexttrack / previoustrack / seekto) intentionally
-  // omitted — per-turn replay machinery was gutted with the classic
-  // pipeline. WebRTC's full-duplex talk-mode is a continuous call, not a
-  // sequence of replayable tracks.
+  // Track-nav handlers — repurposed for chat navigation (next/prev
+  // session in the drawer). BT headset double-tap on iOS, track-skip on
+  // car infotainment, and the lock-screen skip buttons all route here.
+  // Listen mode amplifies the value: hands-free user with their phone
+  // pocketed gets per-chat navigation without waking the screen.
+  // No-op when the host hasn't wired the callback (graceful degrade).
+  set('nexttrack',     () => { log('mediaSession: nexttrack');     handlers.onNextTrack?.(); });
+  set('previoustrack', () => { log('mediaSession: previoustrack'); handlers.onPrevTrack?.(); });
+  set('seekto', (details: any) => {
+    log('mediaSession: seekto', details?.seekTime);
+    if (handlers.onSeekTo && Number.isFinite(details?.seekTime)) {
+      handlers.onSeekTo(details.seekTime);
+    }
+  });
+  // Test hook — when the listen-mode-toggle / mediasession-skip smoke
+  // synthesizes BT button presses, it can't actually invoke a real
+  // mediaSession action. Expose a fireAction(name) bridge through
+  // window so Playwright can drive the registered callbacks directly.
+  // Production code never reads this, no behavioral effect.
+  if (typeof window !== 'undefined') {
+    (window as any).__audioSessionTest = {
+      fireAction(name: string, details?: any) {
+        if (name === 'play')          handlers.onPlay?.();
+        else if (name === 'pause')    handlers.onPause?.();
+        else if (name === 'stop')     handlers.onStop?.();
+        else if (name === 'nexttrack')     handlers.onNextTrack?.();
+        else if (name === 'previoustrack') handlers.onPrevTrack?.();
+        else if (name === 'seekto' && Number.isFinite(details?.seekTime)) {
+          handlers.onSeekTo?.(details.seekTime);
+        }
+      },
+    };
+  }
   log('mediaSession handlers installed');
 }
 

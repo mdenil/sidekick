@@ -279,6 +279,10 @@ function installSelectionKeyboardListener(): void {
  *
  *  Returns true if the navigation happened (so the caller can
  *  preventDefault on the keypress event). */
+export function navigateSibling(direction: -1 | 1): boolean {
+  return navigateByKey(direction);
+}
+
 function navigateByKey(direction: -1 | 1): boolean {
   if (visibleRowIds.length === 0) return false;
   const anchor = optimisticActiveId || viewedSessionId;
