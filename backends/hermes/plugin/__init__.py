@@ -241,6 +241,66 @@ class _SettingsNotFoundError(KeyError):
     Maps to HTTP 404 in _handle_settings_update."""
 
 
+def _serialize_command_registry() -> List[Dict[str, Any]]:
+    """Build the JSON payload served by ``GET /v1/commands``.
+
+    Pulls from the central ``hermes_cli.commands.COMMAND_REGISTRY`` and
+    any plugin-registered commands (via the existing
+    ``_iter_plugin_command_entries`` helper). Filtering mirrors the
+    other gateway surfaces (telegram BotCommands, Slack subcommand
+    mapping) — drop ``cli_only`` entries unless their
+    ``gateway_config_gate`` is truthy.
+
+    Aliases stay on the canonical row (the PWA matches both names
+    against the same entry — no separate row per alias). Returns an
+    empty list if ``hermes_cli`` is unavailable, so non-hermes test
+    contexts don't blow up.
+    """
+    try:
+        from hermes_cli.commands import (
+            COMMAND_REGISTRY,
+            _is_gateway_available,
+            _iter_plugin_command_entries,
+            _resolve_config_gates,
+        )
+    except Exception:
+        return []
+    try:
+        overrides = _resolve_config_gates()
+    except Exception:
+        overrides = set()
+    out: List[Dict[str, Any]] = []
+    for cmd in COMMAND_REGISTRY:
+        try:
+            available = _is_gateway_available(cmd, overrides)
+        except Exception:
+            available = not getattr(cmd, "cli_only", False)
+        if not available:
+            continue
+        out.append({
+            "name": cmd.name,
+            "description": cmd.description,
+            "category": cmd.category,
+            "aliases": list(cmd.aliases),
+            "args_hint": cmd.args_hint,
+            "subcommands": list(cmd.subcommands),
+        })
+    try:
+        plugin_entries = _iter_plugin_command_entries()
+    except Exception:
+        plugin_entries = []
+    for name, description, args_hint in plugin_entries:
+        out.append({
+            "name": name,
+            "description": description,
+            "category": "Plugins",
+            "aliases": [],
+            "args_hint": args_hint or "",
+            "subcommands": [],
+        })
+    return out
+
+
 def check_sidekick_requirements() -> bool:
     """Return True when adapter dependencies are available.
 
@@ -429,6 +489,13 @@ class SidekickAdapter(BasePlatformAdapter):
         )
         self._app.router.add_post(
             "/v1/settings/{id}", self._handle_settings_update
+        )
+        # Slash-command catalog. Surfaced as JSON so the PWA composer
+        # can render an autocomplete popover from the same registry the
+        # CLI / Telegram / Slack consume. See proposal in the sidekick
+        # repo's slashCommands.ts module.
+        self._app.router.add_get(
+            "/v1/commands", self._handle_list_commands
         )
 
         self._runner = web.AppRunner(self._app)
@@ -1591,6 +1658,40 @@ class SidekickAdapter(BasePlatformAdapter):
                 status=500,
             )
         return web.json_response(updated)
+
+    async def _handle_list_commands(self, request: "web.Request") -> "web.Response":
+        """GET /v1/commands — slash-command catalog for the sidekick PWA.
+
+        Serializes the central CommandDef registry from
+        ``hermes_cli.commands`` plus any plugin-registered commands so
+        the PWA composer can render an autocomplete popover. Filter
+        rules mirror the gateway's other surfaces (telegram BotCommands,
+        Slack subcommand mapping): drop ``cli_only`` entries unless
+        their ``gateway_config_gate`` is truthy. Aliases ride on the
+        canonical row (no separate entries) — the PWA matches both.
+
+        Response shape:
+
+            {
+              "object": "list",
+              "data": [
+                {"name": "new", "description": "...", "category": "Session",
+                 "aliases": ["reset"], "args_hint": "", "subcommands": []},
+                ...
+              ]
+            }
+        """
+        if not self._check_http_auth(request):
+            return web.Response(status=401, text="invalid token")
+        try:
+            data = await asyncio.to_thread(_serialize_command_registry)
+        except Exception as e:
+            logger.exception("[sidekick] /v1/commands build failed")
+            return web.json_response(
+                {"error": {"type": "server_error", "message": str(e)}},
+                status=500,
+            )
+        return web.json_response({"object": "list", "data": data})
 
     def _apply_setting(self, sid: str, value: Any) -> Dict[str, Any]:
         """Apply one setting and return the updated def. Synchronous —
