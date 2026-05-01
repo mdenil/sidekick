@@ -398,12 +398,12 @@ export async function open(
     keyterms = (await loadOrSeed()) || [];
   } catch {}
   log('[webrtc] offer keyterms=', keyterms.length, keyterms.length ? `(first: ${keyterms[0]})` : '');
-  // Honour the user's "Barge-in" toggle on the bridge side. Without
-  // this, the bridge's RMS VAD fires regardless of the PWA setting —
-  // the toggle previously only gated client-side barge logic that no
-  // longer exists. The setting is sampled at call-open time; toggling
-  // it mid-call requires hanging up + reopening to take effect (cheap
-  // enough; document if ever annoying).
+  // Honour the user's "Barge-in" toggle + sensitivity on the bridge
+  // side. Both used to be no-ops since the WebRTC pivot — only the
+  // (now-removed) client-side barge ever read them. The threshold is
+  // PWA-internal 0..1 (where 0 = fire on anything, 0.5 = needs loud
+  // sound); bridge maps to integer RMS internally. Sampled at
+  // call-open time; mid-call setting flips need a hangup + reopen.
   const offerPayload: Record<string, unknown> = {
     sdp: pc.localDescription?.sdp ?? '',
     type: pc.localDescription?.type ?? 'offer',
@@ -411,6 +411,7 @@ export async function open(
     conv_name: opts?.sessionId || null,
     keyterms,
     barge_enabled: !!settings.get().bargeIn,
+    barge_threshold: Number(settings.get().bargeThreshold) || 0,
   };
   if (opts?.chatId) offerPayload.chat_id = opts.chatId;
 

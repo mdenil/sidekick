@@ -322,8 +322,18 @@ async def _run_stt(
         # again now that the fire path calls tts_track.halt(): a
         # false-positive halt-then-reset_turn cycle re-arms the gate
         # within the next mic frame (see BargeGate docstring).
+        # Threshold: peer can override via offer's barge_threshold
+        # (PWA's bargeThreshold setting, 0..1). Mapping to integer RMS
+        # gives 300 at sensitivity 100% (= threshold 0.0) and ~3300 at
+        # 0% (= threshold 0.5). Headphones can keep low; desktop with
+        # speakers benefits from higher to ride out TTS→mic echo bleed.
+        thr_01 = peer.extra.get("barge_threshold_01")
+        if thr_01 is not None:
+            peer_threshold = int(VAD_RMS_THRESHOLD + float(thr_01) * 6000)
+        else:
+            peer_threshold = VAD_RMS_THRESHOLD
         gate = BargeGate(
-            threshold=VAD_RMS_THRESHOLD,
+            threshold=peer_threshold,
             hold_frames=VAD_HOLD_FRAMES,
         )
         # PWA's "Barge-in" toggle short-circuits the VAD entirely.
@@ -348,7 +358,7 @@ async def _run_stt(
                 if not was_active:
                     logger.info(
                         "[stt-bridge] peer %s: gating mic→Deepgram (TTS active, vad_threshold=%d, hold=%d)",
-                        peer.peer_id, VAD_RMS_THRESHOLD, VAD_HOLD_FRAMES,
+                        peer.peer_id, peer_threshold, VAD_HOLD_FRAMES,
                     )
                     was_active = True
                 # Compute RMS once — used by both VAD and observability.
@@ -356,13 +366,13 @@ async def _run_stt(
                 obs_frames += 1
                 if rms > obs_max_rms:
                     obs_max_rms = rms
-                if rms >= VAD_RMS_THRESHOLD:
+                if rms >= peer_threshold:
                     obs_above += 1
                 if obs_frames >= VAD_OBS_LOG_EVERY:
                     logger.info(
                         "[stt-bridge] peer %s: vad-obs frames=%d max_rms=%d above_thresh=%d/%d (need %d consecutive ≥%d)",
                         peer.peer_id, obs_frames, obs_max_rms, obs_above, obs_frames,
-                        VAD_HOLD_FRAMES, VAD_RMS_THRESHOLD,
+                        VAD_HOLD_FRAMES, peer_threshold,
                     )
                     obs_frames = 0
                     obs_max_rms = 0
@@ -384,7 +394,7 @@ async def _run_stt(
                 if barge_enabled and gate.feed(rms):
                     logger.info(
                         "[stt-bridge] peer %s: barge fired (rms=%d, threshold=%d)",
-                        peer.peer_id, rms, VAD_RMS_THRESHOLD,
+                        peer.peer_id, rms, peer_threshold,
                     )
                     # Halt bridge-side TTS BEFORE the envelope so the
                     # next iteration of this loop sees is_active()=False

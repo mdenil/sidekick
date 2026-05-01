@@ -179,6 +179,18 @@ async def handle_offer(request: "web.Request") -> "web.Response":
     if not peer.extra["barge_enabled"]:
         logger.info("[signaling] peer %s barge DISABLED by PWA setting", peer_id)
 
+    # Per-peer barge sensitivity. PWA sends 0..1 ratio (0 = fire on any
+    # sound, ~0.5 = need loud sound). Bridge maps to integer RMS
+    # threshold via stt_bridge._barge_threshold_rms. Older PWAs that
+    # don't send the field fall back to None → bridge uses the env-var
+    # default. Desktop/laptop with speakers benefits from higher values
+    # (~0.2-0.3) because of speaker→mic bleed; headphones can go lower.
+    raw_thr = payload.get("barge_threshold")
+    if isinstance(raw_thr, (int, float)) and 0.0 <= float(raw_thr) <= 1.0:
+        peer.extra["barge_threshold_01"] = float(raw_thr)
+    else:
+        peer.extra["barge_threshold_01"] = None
+
     # Defer to bridge modules to install ontrack / outbound track wiring.
     # The dispatch listener handles inbound DataChannel control messages
     # ({type:'dispatch', text} from the PWA).
