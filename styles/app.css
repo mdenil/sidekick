@@ -1287,6 +1287,24 @@
   }
   .line .copy-btn svg { width: 18px; height: 18px; }
   .line .copy-btn:hover { opacity: 0.8; color: var(--primary); }
+  /* Per-bubble replay button on agent lines. Sits next to the copy
+   * button. Same opacity/hover treatment for visual consistency. */
+  .line.agent .replay-btn {
+    position: absolute; top: 4px; right: 30px;
+    background: none; border: none; color: var(--muted);
+    cursor: pointer; opacity: 0.3; padding: 4px;
+    transition: opacity 0.15s ease, color 0.15s ease;
+    display: flex; align-items: center; justify-content: center;
+    z-index: 2;
+  }
+  .line.agent .replay-btn svg { width: 18px; height: 18px; }
+  .line.agent .replay-btn:hover { opacity: 0.85; color: var(--primary); }
+  /* Visual highlight on the bubble currently being replayed. Subtle
+   * accent border on the left edge — distinct from .pending / .failed
+   * (which have stronger color cues). Cleared by replyNavigator on
+   * audio.ended / .error / chat-switch. */
+  .line.agent.replaying { box-shadow: -3px 0 0 0 var(--primary); }
+  .line.agent.replaying .replay-btn { opacity: 0.9; color: var(--primary); }
   .line .line-ts {
     position: absolute; top: 6px; right: 34px;
     font-family: var(--font-mono); font-size: 10.5px;

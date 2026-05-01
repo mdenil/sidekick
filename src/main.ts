@@ -20,6 +20,7 @@ import * as multiSelect from './multiSelect.ts';
 import * as agentSettingsMod from './agentSettings.ts';
 import { primeAudio, getSharedAudioCtx } from './audio/platform.ts';
 import { playReplyTts, cancelReplyTts } from './audio/text-tts.ts';
+import * as replyNavigator from './audio/replyNavigator.ts';
 import * as audioSession from './audio/session.ts';
 import * as capture from './audio/capture.ts';
 import * as fakeLock from './ios/fakeLock.ts';
@@ -238,15 +239,17 @@ async function boot() {
       // No-op: WebRTC peer connection auto-recovers via ICE; classic-mode's
       // SR-recovery hop isn't needed.
     },
-    // BT track-skip / lock-screen skip → chat navigation. Useful for
-    // memo + talk too, ships now because Listen amplifies the hands-
-    // free value (user with phone pocketed can step through chats
-    // without waking the screen).
-    onNextTrack: () => { sessionDrawer.navigateSibling(1); },
-    onPrevTrack: () => { sessionDrawer.navigateSibling(-1); },
-    // seekto: not yet wired to anything chat-side. The hook is here so
-    // a future "seek to position N in the conversation" feature can land
-    // without re-touching audio/session.ts. No-op for now.
+    // BT track-skip / lock-screen skip → per-reply replay within the
+    // current chat. Skip-forward = next agent reply (re-synth via /tts
+    // if not cached); skip-back = previous agent reply (cache hit on
+    // anything already played this session). Replaces the earlier
+    // chat-navigation wiring per Jonathan's classic-pipeline design:
+    // "move a pointer back and forward over agent replies, generating
+    // them if needed."
+    onNextTrack: () => { void replyNavigator.playNext(); },
+    onPrevTrack: () => { void replyNavigator.playPrev(); },
+    // seekto: reserved for a future "seek inside the current TTS reply"
+    // feature (skip 30s into a long answer). Not wired today.
     onSeekTo: (_seconds: number) => { /* reserved */ },
   });
   if (!audioSession.isStandalone()) {
@@ -2877,6 +2880,11 @@ function replaySessionMessages(
     // would otherwise wipe the just-rendered tool-call summary,
     // leaving no record of what the agent did.
     activityRow.clearAll();
+    // Reset the per-reply playback pointer + cancel any in-flight
+    // replay so a stale `.replaying` highlight doesn't survive into
+    // the new transcript and BT skip-fwd starts from the new chat's
+    // most-recent reply.
+    replyNavigator.reset();
   }
   historyLoaded = true;  // we just populated history ourselves; skip backfill
   // Tell the drawer which session is ACTUALLY on screen — covers edge

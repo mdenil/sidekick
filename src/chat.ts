@@ -358,9 +358,27 @@ export function addLine(speaker: string, text: string, cls = '', opts: {
   };
   div.appendChild(copyBtn);
 
-  // Per-turn replay machinery gutted with the classic pipeline: no
-  // bubble-level play button or scrub bar. The WebRTC talk-mode track
-  // is the only audio surface; if you can see the text, you can read it.
+  // Per-bubble replay icon for AGENT lines. Click → plays the bubble's
+  // text via the cache-backed text-tts path. Same engine as BT skip-
+  // forward / skip-back (src/audio/replyNavigator.ts) so a click and
+  // a headphone press drive the same playback. Visible in both Realtime
+  // and turn-based modes — replay always uses HTTP /tts regardless of
+  // how the original audio was emitted (cache hit on already-played
+  // text avoids the round-trip; cache miss does a fresh /tts call).
+  if (cls.includes('agent')) {
+    const playSvg = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 3.5l7 4.5-7 4.5z" stroke-linejoin="round"/></svg>`;
+    const playBtn = document.createElement('button');
+    playBtn.className = 'replay-btn';
+    playBtn.title = 'Replay this reply';
+    playBtn.innerHTML = playSvg;
+    playBtn.onclick = (e) => {
+      e.stopPropagation();
+      // Lazy-import to avoid pulling text-tts into chat.ts's static
+      // import graph (chat.ts is loaded earlier in the boot path).
+      import('./audio/replyNavigator.ts').then((m) => m.playSpecific(div)).catch(() => {});
+    };
+    div.appendChild(playBtn);
+  }
 
   // All links in rendered markdown open in new tab
   if (opts.markdown) {
