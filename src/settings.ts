@@ -368,6 +368,10 @@ export function hydrate(handlers: {
   const setNavPrev = $inp('set-nav-prev');
   const setNavNext = $inp('set-nav-next');
   const setNavPause = $inp('set-nav-pause');
+  const setListenSendword = $inp('set-listen-sendword');
+  const setListenSilence = $inp('set-listen-silence');
+  const setListenSilenceVal = $any('set-listen-silence-val');
+  const setListenStt = $sel('set-listen-stt');
   const setBarge = $inp('set-barge');
   const setBargeSens = $inp('set-barge-sens');
   const setBargeSensVal = $any('set-barge-sens-val');
@@ -399,6 +403,10 @@ export function hydrate(handlers: {
     if (setNavPrev) setNavPrev.value = current.navPrev;
     if (setNavNext) setNavNext.value = current.navNext;
     if (setNavPause) setNavPause.value = current.navPause;
+    if (setListenSendword) setListenSendword.value = (current as any).listenSendword || '';
+    if (setListenSilence) setListenSilence.value = String((current as any).listenSilenceSec ?? 8);
+    if (setListenSilenceVal) setListenSilenceVal.textContent = `${(current as any).listenSilenceSec ?? 8}s`;
+    if (setListenStt) setListenStt.value = (current as any).listenSttEngine || 'local';
     if (setBarge) setBarge.checked = current.bargeIn;
     // Sensitivity slider is the INVERSE of threshold. Map threshold 0..0.5 onto
     // slider 100..0 so "100%" = fire on any sound, "0%" = basically never.
@@ -575,6 +583,20 @@ export function hydrate(handlers: {
   if (setNavPrev) setNavPrev.onchange = () => { set('navPrev', setNavPrev.value.trim().toLowerCase()); };
   if (setNavNext) setNavNext.onchange = () => { set('navNext', setNavNext.value.trim().toLowerCase()); };
   if (setNavPause) setNavPause.onchange = () => { set('navPause', setNavPause.value.trim().toLowerCase()); };
+  // Listen-mode settings — sendword falls back to commitPhrase when blank
+  // (handled inside listen.ts), silence cutoff in seconds, STT engine
+  // local|silence-only (server reserved for v1).
+  if (setListenSendword) setListenSendword.onchange = () => {
+    set('listenSendword' as any, setListenSendword.value.trim().toLowerCase());
+  };
+  if (setListenSilence) setListenSilence.oninput = () => {
+    const v = parseInt(setListenSilence.value, 10);
+    set('listenSilenceSec' as any, v);
+    if (setListenSilenceVal) setListenSilenceVal.textContent = `${v}s`;
+  };
+  if (setListenStt) setListenStt.onchange = () => {
+    set('listenSttEngine' as any, setListenStt.value);
+  };
   if (setBarge) setBarge.onchange = () => { set('bargeIn', setBarge.checked); };
   if (setAudioFeedback) setAudioFeedback.oninput = () => {
     const pct = parseInt(setAudioFeedback.value, 10);

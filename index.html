@@ -321,6 +321,26 @@
   </div>
 
   <div class="settings-group">
+    <div class="group-label">Listen mode</div>
+    <div class="row">
+      <label for="set-listen-sendword">Sendword</label>
+      <input type="text" id="set-listen-sendword" class="text-input" placeholder="(blank = use Send word above)">
+    </div>
+    <div class="row">
+      <label for="set-listen-silence">Silence cutoff</label>
+      <input type="range" id="set-listen-silence" min="2" max="20" step="1" value="8">
+      <span class="val" id="set-listen-silence-val">8s</span>
+    </div>
+    <div class="row">
+      <label for="set-listen-stt">STT engine</label>
+      <select id="set-listen-stt" class="text-input">
+        <option value="local">Web Speech (this device)</option>
+        <option value="silence-only">Silence only (fallback)</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="settings-group">
     <div class="group-label">Interaction</div>
     <div class="row">
       <label for="set-barge">Barge-in</label>

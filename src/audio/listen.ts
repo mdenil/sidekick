@@ -153,10 +153,12 @@ async function armRecorder(): Promise<void> {
   startSilenceLoop();
   // Sendword detector: empty listenSendword falls back to commitPhrase
   // (per-spec). Fail-soft — if SR is unsupported, listen continues with
-  // silence-only commits.
+  // silence-only commits. listenSttEngine='silence-only' forces the
+  // user-side opt-out path even when SR IS available.
   const s = settings.get();
+  const engine = (s as any).listenSttEngine || 'local';
   const phrase = (((s as any).listenSendword as string) || s.commitPhrase || '').trim();
-  if (phrase) {
+  if (phrase && engine !== 'silence-only') {
     sendwordDetector.start({
       phrase,
       onMatch: () => commitFromSendword(),
