@@ -1,26 +1,25 @@
 /**
  * @fileoverview TTS (text-to-speech) provider abstraction.
  *
- * Vendor-neutral interface for spoken replies. Sidekick's primary TTS
- * path today is the WebRTC "talk" mode (server adds an outbound TTS
- * track to the peer connection answer SDP, audio plays through a
- * hidden <audio srcObject> element — see
- * `src/pipelines/webrtc/connection.ts`). The legacy chunked-synthesis
- * client path used `POST /tts` (server.ts proxy) but the in-tree
- * playback module that consumed it is gone; the proxy endpoint
- * remains as a future seam.
+ * Interface intentionally not adopted yet. Today's TTS path goes
+ * through the audio-bridge directly (see
+ * `audio-bridge/tts_bridge.py`): in WebRTC talk mode the server
+ * attaches an outbound TTS track to the peer connection answer SDP
+ * and the PWA plays it through a hidden `<audio srcObject>` element
+ * (`src/pipelines/webrtc/connection.ts`). No PWA code currently
+ * implements this interface.
  *
- * The interface here captures the minimum a future client-side or
- * peer-track-driven TTS implementation needs to expose so callers
- * (composer "speak this" actions, future replay buttons) don't bind
- * directly to a vendor API. Concrete implementations land alongside
- * their transports; e.g. a `WebRTCTTSProvider` would be the talk-mode
- * peer-connection wrapper, and a hypothetical `HTTPTTSProvider` would
- * call `POST /tts` and play the returned audio through Web Audio.
+ * If the WebRTC TTS reliability migration ships (see
+ * project_webrtc_tts_reliability) and switches talk-mode TTS to the
+ * HTTP `/tts` proxy path, the natural shape is an
+ * `HTTPTTSProvider implements TTSProvider` that POSTs `/tts` and
+ * plays the returned audio through Web Audio. The interface is
+ * preserved as a design breadcrumb for that future — keeping the
+ * call-site contract narrow (speak / cancel / onState) lets that
+ * migration land without touching every "speak this" caller.
  *
- * Like `STTProvider`, this contract is intentionally narrow: enough to
- * unbind sidekick from any specific vendor at the call site; not a
- * full audio pipeline.
+ * Like `STTProvider`, the shape is deliberately minimal: enough to
+ * unbind callers from a specific vendor; not a full audio pipeline.
  */
 
 /** Unsubscribe handle returned by listener-registering methods. */
