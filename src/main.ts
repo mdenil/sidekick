@@ -1919,7 +1919,7 @@ async function boot() {
     primeAudio(player);
     audioSession.prepareForCapture();
     const ok = await listen.start({
-      onCommit: async (blob) => {
+      onCommit: async (blob, reason) => {
         // Post the blob to /transcribe (mirrors the memo path) and route
         // the resulting transcript through composer.appendText +
         // composer.submit — same canonical send path as the user typing
@@ -1931,7 +1931,19 @@ async function boot() {
             body: blob,
           });
           const data = await res.json().catch(() => ({} as any));
-          const text = String((data && data.transcript) || '').trim();
+          let text = String((data && data.transcript) || '').trim();
+          // Strip the trailing sendword (only when sendword actually
+          // triggered the commit — silence-triggered commits keep the
+          // full transcript). Pulls the live setting so a renamed
+          // sendword takes effect on next turn. Allows trailing
+          // punctuation; case-insensitive.
+          if (text && reason === 'sendword') {
+            const phrase = (settings.get().listenSendword || settings.get().commitPhrase || 'over').trim();
+            if (phrase) {
+              const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+              text = text.replace(new RegExp(`\\s+${escaped}\\s*[.!?,]?\\s*$`, 'i'), '').trim();
+            }
+          }
           if (!text) {
             log('listen: empty transcript, skipping send');
             return;

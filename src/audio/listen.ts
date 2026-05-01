@@ -39,7 +39,11 @@ export type ListenOpts = {
    *  notifyReplyPlayback(true/false) around TTS playback so Listen knows
    *  when to re-arm. Returning a rejected promise leaves Listen in the
    *  cooldown → armed transition (best-effort recovery). */
-  onCommit: (blob: Blob) => Promise<void> | void;
+  /** `reason` lets the caller know whether this turn ended via the
+   *  silence timeout or because the sendword fired. Only the latter
+   *  needs the trailing sendword stripped from the transcript before
+   *  rendering. Defaults to 'silence' for callers that don't care. */
+  onCommit: (blob: Blob, reason?: 'silence' | 'sendword') => Promise<void> | void;
   /** Called when the trash button is tapped or stop() is invoked while
    *  armed without a commit. UI should clear the listening indicator. */
   onCancel?: () => void;
@@ -269,7 +273,7 @@ async function commitNow(reason: 'silence' | 'sendword'): Promise<void> {
     return;
   }
   try {
-    const out = opts?.onCommit?.(blob);
+    const out = opts?.onCommit?.(blob, reason);
     if (out && typeof (out as Promise<void>).then === 'function') {
       await out;
     }
