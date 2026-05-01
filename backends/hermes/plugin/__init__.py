@@ -2313,35 +2313,31 @@ class SidekickAdapter(BasePlatformAdapter):
         )
         return SendResult(success=ok, message_id=message_id)
 
-    # The base class default for edit_message returns success=False with
-    # "Not supported". Override so the streaming consumer can keep editing the
-    # same bubble across token deltas.
-    async def edit_message(
-        self,
-        chat_id: str,
-        message_id: str,
-        content: str,
-        *,
-        finalize: bool = False,
-    ) -> SendResult:
-        await self._safe_send_envelope(
-            {
-                "type": "reply_delta",
-                "chat_id": chat_id,
-                "text": content,
-                "message_id": message_id,
-                "edit": True,
-            }
-        )
-        if finalize:
-            await self._safe_send_envelope(
-                {
-                    "type": "reply_final",
-                    "chat_id": chat_id,
-                    "message_id": message_id,
-                }
-            )
-        return SendResult(success=True, message_id=message_id)
+    # NOTE: We deliberately DO NOT override edit_message. The base class
+    # default returns success=False with "Not supported", which the
+    # gateway's tool-progress sender (gateway/run.py:9576) interprets as
+    # "this adapter doesn't support edit-in-place" — and consequently
+    # drains the entire progress queue silently without invoking the
+    # adapter at all.
+    #
+    # That's the behaviour we want here. Tool-progress messages
+    # (`⚙️ tool_name: "preview"` lines) reach sidekick TWICE on every
+    # tool call: once via the gateway's progress_callback path (would
+    # become reply_delta text bubbles if we accepted them) and once via
+    # this plugin's own on_pre_tool_call hook (which emits proper
+    # `tool_call` envelopes that the PWA routes to the activity-row,
+    # collapsed-by-default per agentActivity=summary). Accepting both
+    # produced the bug Jonathan hit 2026-05-01: N consecutive cumulative
+    # agent bubbles with tool-call lines, the actual agent reply buried
+    # beneath them, only re-rendering cleanly after a session-switch
+    # (which re-fetches from state.db where the ephemeral progress
+    # messages were never persisted).
+    #
+    # The agent's actual reply text still flows through `send()` as a
+    # single full-text message (gateway/platforms/base.py:2150-2157
+    # uses `_send_with_retry` which calls `adapter.send()` once with
+    # the full text — no per-token edits), so dropping edit_message
+    # costs us nothing for real replies.
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Best-effort typing indicator. Cosmetic; PWA may ignore."""

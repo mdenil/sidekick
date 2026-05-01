@@ -21,15 +21,16 @@ content now renders inline on the agent bubble that produced it
 
 ## What's still live
 
-The reusable pieces stayed in `src/canvas/`:
+The reusable pieces stayed in `src/cards/` (the directory was
+renamed from `src/canvas/` after this experiment was archived):
 
-- `registry.mjs`, `validate.mjs`, `validators.mjs` — card protocol.
-- `fallback.mjs` — `parseCardsFromText` / `extractImageBlocks`.
-- `cards/*.mjs` — per-kind renderers (image, youtube, spotify,
+- `registry.ts`, `validate.ts`, `validators.ts` — card protocol.
+- `fallback.ts` — `parseCardsFromText` / `extractImageBlocks`.
+- `kinds/*.ts` — per-kind renderers (image, youtube, spotify,
   links, markdown, loading). Each `render(card, container)` still
   works; we now pass a per-bubble attachment container instead of
   the side-pane body.
-- `attach.mjs` — new thin glue that validates a card, dedups against
+- `attach.ts` — thin glue that validates a card, dedups against
   prior attachments on the same bubble, and calls the kind's render().
 
 ## If you ever want the side-pane back
