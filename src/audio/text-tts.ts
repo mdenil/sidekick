@@ -23,6 +23,7 @@
  */
 
 import { log, diag } from '../util/log.ts';
+import * as replyCache from './replyCache.ts';
 
 /** Tracks the active fetch + playback so a follow-up reply can cancel
  *  it. Module-level singleton — only one text-mode TTS plays at a time
@@ -99,18 +100,25 @@ export async function playReplyTts(
 
   let blobUrl: string | null = null;
   try {
-    const res = await fetch('/tts', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ text, model: voice }),
-      signal: abort.signal,
-    });
-    if (!res.ok) {
-      diag(`[text-tts] /tts ${res.status}`);
-      return;
+    // Try the LRU cache first — repeated identical (text, voice) pairs
+    // (e.g. "replay last answer") avoid the /tts round-trip + Deepgram
+    // quota.
+    let blob = replyCache.get(text, voice);
+    if (!blob) {
+      const res = await fetch('/tts', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ text, model: voice }),
+        signal: abort.signal,
+      });
+      if (!res.ok) {
+        diag(`[text-tts] /tts ${res.status}`);
+        return;
+      }
+      blob = await res.blob();
+      if (abort.signal.aborted) return;
+      replyCache.set(text, voice, blob);
     }
-    const blob = await res.blob();
-    if (abort.signal.aborted) return;
     blobUrl = URL.createObjectURL(blob);
     player.src = blobUrl;
     // Avoid pausing in the click-to-pause case from the WebRTC peer

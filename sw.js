@@ -11,7 +11,7 @@
  * network-first, so first-load pulls anything missed and caches on the
  * way through.
  */
-const CACHE_NAME = 'v0.348';
+const CACHE_NAME = 'v0.349';
 
 // Minimum viable shell for offline boot. Bundle JS modules used to be
 // listed here too — that was the source of the 2026-05-01 cache.addAll
