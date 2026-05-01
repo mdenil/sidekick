@@ -1546,7 +1546,7 @@ class SidekickAdapter(BasePlatformAdapter):
                 if not mid:
                     continue
                 label = f"{mid} ({tag})" if tag else mid
-                catalog.append({"value": mid, "label": label})
+                catalog.append({"value": mid, "label": label, "group": "OpenRouter"})
         except Exception as e:
             logger.warning("[sidekick] settings: openrouter catalog fetch failed: %s", e)
 
@@ -1584,7 +1584,7 @@ class SidekickAdapter(BasePlatformAdapter):
                     if not mid or mid in seen:
                         continue
                     if any(fnmatch.fnmatch(mid, g) for g in preferred):
-                        catalog.append({"value": mid, "label": mid})
+                        catalog.append({"value": mid, "label": mid, "group": "OpenRouter"})
                         seen.add(mid)
             except Exception as e:
                 logger.warning(
@@ -1620,7 +1620,8 @@ class SidekickAdapter(BasePlatformAdapter):
                         continue
                     catalog.append({
                         "value": f"{slug}:{mid_s}",
-                        "label": f"{mid_s} ({name})",
+                        "label": mid_s,
+                        "group": name,
                     })
         except Exception as e:
             logger.warning(
@@ -1630,12 +1631,26 @@ class SidekickAdapter(BasePlatformAdapter):
         # Always include the current model in the options[] list so the
         # picker can show "what's set now" even if the catalog filter
         # excluded it. Use the encoded value (with provider prefix for
-        # non-openrouter) so the picker matches what's stored.
+        # non-openrouter) so the picker matches what's stored. Group it
+        # under "Current" so it shows at the top of the dropdown for
+        # easy visibility.
         if current_value and not any(e["value"] == current_value for e in catalog):
-            catalog.insert(0, {"value": current_value, "label": current_value})
+            catalog.insert(0, {
+                "value": current_value,
+                "label": current_value,
+                "group": "Current",
+            })
 
-        # Stable sort by label for the dropdown.
-        catalog.sort(key=lambda e: (e["label"] or "").lower())
+        # Sort by (group_order, label) so the dropdown stays grouped:
+        # Current first (if any), then OpenRouter (the largest catalog),
+        # then other providers alphabetically. Within a group, sort by
+        # label.
+        _GROUP_RANK = {"Current": 0, "OpenRouter": 1}
+        catalog.sort(key=lambda e: (
+            _GROUP_RANK.get(e.get("group", ""), 2),
+            (e.get("group") or "").lower(),
+            (e.get("label") or "").lower(),
+        ))
 
         return [
             {

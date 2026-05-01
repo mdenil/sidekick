@@ -24,6 +24,13 @@ export interface AgentSettingOption {
   value: string;
   label: string;
   description?: string;
+  /** Optional grouping label. When ANY option in an enum has a group,
+   *  the renderer emits `<optgroup>` blocks; ungrouped options fall
+   *  into a default "Other" group at the end. Backend-controlled — the
+   *  agent decides whether to group. Today: model picker uses this to
+   *  cluster by provider (OpenRouter, OpenAI Codex, GitHub Copilot,
+   *  Anthropic). */
+  group?: string;
 }
 
 export interface AgentSettingDef {
@@ -82,12 +89,42 @@ function renderRow(def: AgentSettingDef): HTMLElement | null {
     case 'enum': {
       const sel = document.createElement('select');
       sel.id = `agent-set-${def.id}`;
-      for (const opt of def.options ?? []) {
-        const o = document.createElement('option');
-        o.value = String(opt.value);
-        o.textContent = opt.label;
-        if (opt.description) o.title = opt.description;
-        sel.appendChild(o);
+      const opts = def.options ?? [];
+      // If ANY option carries a group, render as <optgroup> blocks so
+      // visually-similar IDs (e.g. `gpt-5.4 (Codex)` vs `gpt-5.4 (Copilot)`
+      // vs `openai/gpt-5.4-nano` from OpenRouter) cluster by provider.
+      // Group iteration order = first-appearance in the options list,
+      // so the backend controls ordering. Ungrouped options fall into
+      // a final "Other" optgroup.
+      const anyGrouped = opts.some(o => !!o.group);
+      if (anyGrouped) {
+        const byGroup = new Map<string, AgentSettingOption[]>();
+        for (const opt of opts) {
+          const g = opt.group || 'Other';
+          let bucket = byGroup.get(g);
+          if (!bucket) { bucket = []; byGroup.set(g, bucket); }
+          bucket.push(opt);
+        }
+        for (const [groupName, groupOpts] of byGroup) {
+          const og = document.createElement('optgroup');
+          og.label = groupName;
+          for (const opt of groupOpts) {
+            const o = document.createElement('option');
+            o.value = String(opt.value);
+            o.textContent = opt.label;
+            if (opt.description) o.title = opt.description;
+            og.appendChild(o);
+          }
+          sel.appendChild(og);
+        }
+      } else {
+        for (const opt of opts) {
+          const o = document.createElement('option');
+          o.value = String(opt.value);
+          o.textContent = opt.label;
+          if (opt.description) o.title = opt.description;
+          sel.appendChild(o);
+        }
       }
       sel.value = String(def.value ?? '');
       sel.onchange = () => onSubmit(def, sel.value, sel);
