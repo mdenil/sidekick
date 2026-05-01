@@ -31,7 +31,7 @@ brew install poppler
 Knobs (`~/.hermes/.env`): `SIDEKICK_PDF_DPI` (150),
 `SIDEKICK_PDF_MAX_PAGES` (50), `SIDEKICK_PDF_RASTERIZE_TIMEOUT_S` (30),
 `SIDEKICK_PDF_MAX_BYTES` (20 MiB). See
-`docs/PDF_RASTERIZATION_PROPOSAL.md` for design notes.
+`docs/archive/PDF_RASTERIZATION_PROPOSAL.md` for design notes.
 
 ## Tests
 

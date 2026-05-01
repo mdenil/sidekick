@@ -80,8 +80,8 @@ Knobs (env, with defaults sized for a Pi 5 host):
 ``SIDEKICK_PDF_RASTERIZE_TIMEOUT_S`` (30),
 ``SIDEKICK_PDF_MAX_BYTES`` (20 MiB).
 
-See ``docs/PDF_RASTERIZATION_PROPOSAL.md`` in the sidekick repo for
-design notes.
+See ``docs/archive/PDF_RASTERIZATION_PROPOSAL.md`` in the sidekick
+repo for design notes.
 
 Install
 -------
