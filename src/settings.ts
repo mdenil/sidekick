@@ -187,11 +187,17 @@ const DEFAULTS = {
   hotkeyAutoSend: 'Cmd+Shift+S',
   hotkeyToggleMic: 'Cmd+Shift+D',
   agentActivity: 'summary' as 'off' | 'summary' | 'full',
-  // Listen mode — third handsfree mic mode. listenMode is the menu
-  // toggle (when true, mic-tap arms Listen instead of opening a call).
-  // listenSendword falls back to commitPhrase when blank. listenSttEngine
-  // is reserved for v1 (only 'local' + 'silence-only' are wired).
-  listenMode: false,
+  // Voice-call transport selector. The `realtime` flag is the mic-menu
+  // toggle: when ON, a mic-button tap opens a WebRTC realtime call
+  // (sub-100ms duplex audio, optimized for upcoming duplex models).
+  // When OFF (the default), a mic-button tap arms turn-based Listen
+  // mode (full local audio buffer, sent to the server only when the
+  // user finishes speaking — optimized for fidelity + reliability over
+  // mobile networks, matches what classic 3-phase pipelines did but
+  // with the modern audio shim). listenSendword falls back to
+  // commitPhrase when blank. listenSttEngine is reserved for v2 —
+  // only 'local' + 'silence-only' are wired in v1.
+  realtime: false,
   listenSendword: '',
   listenSilenceSec: 8,
   listenSttEngine: 'local' as 'local' | 'server' | 'silence-only',

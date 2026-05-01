@@ -54,10 +54,12 @@ export const FRONTEND_SETTINGS = {
   micCall:                { category: 'composer',        default: false },
   micAutoSend:            { category: 'composer',        default: false },
   autoAdvanceOnNew:       { category: 'composer',        default: false },
-  // Listen mode — mic-menu toggle + per-mode tunables. listenSttEngine
-  // stays in localStorage (per-device) because Web Speech API support
-  // varies by browser; the proxy doesn't carry it.
-  listenMode:             { category: 'composer',        default: false },
+  // Voice transport selector + Listen-mode tunables. `realtime` is the
+  // mic-menu toggle: ON = WebRTC realtime call, OFF (default) = turn-
+  // based Listen mode. listenSttEngine stays in localStorage (per-
+  // device) because Web Speech API support varies by browser; the
+  // proxy doesn't carry it.
+  realtime:               { category: 'composer',        default: false },
   listenSendword:         { category: 'streaming',       default: '' },
   listenSilenceSec:       { category: 'streaming',       default: 8 },
 } as const;
