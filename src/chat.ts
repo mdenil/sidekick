@@ -6,10 +6,9 @@ import { escapeHtml } from './util/dom.ts';
 import { miniMarkdown } from './util/markdown.ts';
 import { diag, log } from './util/log.ts';
 
-let transcriptEl = null;
-/** @type {HTMLElement|null} */
-let scrollToBottomBtn = null;
-const speakerNames = {};
+let transcriptEl: HTMLElement | null = null;
+let scrollToBottomBtn: HTMLElement | null = null;
+const speakerNames: Record<string | number, string> = {};
 let speakerCount = 0;
 
 // Transcript snapshot persistence. Moved from sessionStorage to IndexedDB
@@ -80,7 +79,7 @@ export function getRestoredViewedSessionId(): string | null {
   return restoredViewedSessionId;
 }
 
-async function saveSnapshot(html) {
+async function saveSnapshot(html: string): Promise<void> {
   try {
     const db = await dbOpen();
     await reqP(db.transaction(STORE, 'readwrite').objectStore(STORE).put({
@@ -90,7 +89,7 @@ async function saveSnapshot(html) {
   } catch {}
 }
 
-async function clearSnapshot() {
+async function clearSnapshot(): Promise<void> {
   try {
     const db = await dbOpen();
     await reqP(db.transaction(STORE, 'readwrite').objectStore(STORE).delete(SNAPSHOT_KEY));
@@ -108,13 +107,13 @@ const PINNED_THRESHOLD_PX = 80;
 let pinnedToBottom = true;
 let missedWhileScrolled = 0;
 
-function isPinned() {
+function isPinned(): boolean {
   if (!transcriptEl) return true;
   const distance = transcriptEl.scrollHeight - transcriptEl.scrollTop - transcriptEl.clientHeight;
   return distance <= PINNED_THRESHOLD_PX;
 }
 
-function updateButton() {
+function updateButton(): void {
   if (!scrollToBottomBtn) return;
   scrollToBottomBtn.classList.toggle('visible', !pinnedToBottom);
   scrollToBottomBtn.classList.toggle('has-unread', missedWhileScrolled > 0);
@@ -135,7 +134,7 @@ function updateButton() {
  *  smooth` in CSS each call animates separately and the user sees a stutter.
  *  Streaming deltas still go through autoScroll() which keeps smooth so the
  *  follow-along during reply still glides. */
-export function forceScrollToBottom() {
+export function forceScrollToBottom(): void {
   if (!transcriptEl) return;
   transcriptEl.scrollTo({ top: transcriptEl.scrollHeight, behavior: 'instant' as ScrollBehavior });
   pinnedToBottom = true;
@@ -155,7 +154,7 @@ export function forceScrollToBottom() {
  *  through the smooth path naturally because each call re-establishes the
  *  burst window from the same call site. */
 let _autoScrollBurstUntil = 0;
-export function autoScroll() {
+export function autoScroll(): void {
   if (!transcriptEl) return;
   if (pinnedToBottom) {
     const now = performance.now();
@@ -175,13 +174,13 @@ export function autoScroll() {
 /** Returns true if a transcript snapshot was restored. Caller may still
  *  run backfill — dedup on text handles overlap. Async because IDB reads
  *  can't be synchronous; the cold-boot flash is sub-frame on modern devices. */
-export async function init(el) {
+export async function init(el: HTMLElement | null): Promise<boolean> {
   transcriptEl = el;
 
   // Jump-to-bottom button wiring. The button lives outside the transcript
   // scroller (as a sibling inside .chat-column) so it stays fixed while
   // the transcript scrolls.
-  scrollToBottomBtn = /** @type {HTMLElement|null} */ (document.getElementById('scroll-to-bottom'));
+  scrollToBottomBtn = document.getElementById('scroll-to-bottom');
   if (scrollToBottomBtn) {
     scrollToBottomBtn.addEventListener('click', () => forceScrollToBottom());
   }
@@ -211,10 +210,10 @@ export async function init(el) {
       // Re-wire copy buttons on restored elements. Same source-of-truth as
       // the live-create path: prefer dataset.text (raw markdown) over
       // rendered textContent so round-trip copy is lossless.
-      transcriptEl.querySelectorAll('.copy-btn').forEach(btn => {
+      transcriptEl.querySelectorAll<HTMLElement>('.copy-btn').forEach(btn => {
         btn.onclick = (e) => {
           e.stopPropagation();
-          const line = /** @type {HTMLElement} */ (btn.closest('.line'));
+          const line = btn.closest<HTMLElement>('.line');
           const text = line?.dataset.text
             || line?.querySelector('.text')?.textContent
             || '';
@@ -225,14 +224,13 @@ export async function init(el) {
       // in-memory and don't survive reload; serialized bar widths + state
       // classes would give a false "already loaded / already played" look.
       // User clicks play → re-synthesis happens fresh.
-      const seenIds = new Set();
-      transcriptEl.querySelectorAll('.line.agent').forEach(el => {
-        const line = /** @type {HTMLElement} */ (el);
+      const seenIds = new Set<string>();
+      transcriptEl.querySelectorAll<HTMLElement>('.line.agent').forEach(line => {
         line.classList.remove('tts-active', 'tts-streaming', 'tts-playing', 'tts-paused', 'tts-played');
-        const loaded = line.querySelector('.play-bar-loaded');
-        const played = line.querySelector('.play-bar-played');
-        if (loaded) /** @type {HTMLElement} */ (loaded).style.width = '0%';
-        if (played) /** @type {HTMLElement} */ (played).style.width = '0%';
+        const loaded = line.querySelector<HTMLElement>('.play-bar-loaded');
+        const played = line.querySelector<HTMLElement>('.play-bar-played');
+        if (loaded) loaded.style.width = '0%';
+        if (played) played.style.width = '0%';
         // Invariant: each agent bubble must have a unique data-reply-id.
         // If a snapshot contains duplicates (from a version that let
         // streamingTtsReplyId leak across replies), re-mint on the
@@ -252,42 +250,44 @@ export async function init(el) {
 /** Fire-and-forget snapshot write to IndexedDB. Backfill from the gateway
  *  still plugs any gap on next connect (see always-run-backfill branch in
  *  main.ts) in case the IDB write fails mid-flight. */
-function persist() {
+function persist(): void {
   if (!transcriptEl) return;
   const html = transcriptEl.innerHTML;
   saveSnapshot(html).catch((e) => diag(`chat.persist failed: ${e?.message || 'idb error'}`));
 }
 
-export function speakerLabel(id) {
+export function speakerLabel(id: string | number | null | undefined): string {
   if (id == null) return 'Speaker';
   if (!speakerNames[id]) speakerNames[id] = `Speaker ${++speakerCount}`;
   return speakerNames[id];
 }
 
 /** Format a timestamp as HH:MM (24h) for top-right display on each line. */
-function formatTime(ts) {
+function formatTime(ts: number | Date | string): string {
   const d = ts instanceof Date ? ts : new Date(ts);
   return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
 }
 
-/**
- * @param {string} speaker
- * @param {string} text
- * @param {string} [cls]
- * @param {Object} [opts]
- * @param {boolean} [opts.markdown] Render text as markdown (for agent replies).
- * @param {'voice'|'text'|'sent'|undefined} [opts.source] Input source indicator.
- * @param {number|Date|string} [opts.timestamp] Message timestamp; defaults to now.
- * @param {Array<{dataUrl: string, mimeType: string, fileName?: string}>} [opts.attachments] Image thumbnails rendered under the line.
- * @param {string} [opts.replyId] TTS reply id for agent lines — links bubble to playback events (loading/playback bar + play icon wiring).
- * @param {string} [opts.messageId] Adapter-side message id (e.g. SSE `message_id`). Stored as `data-message-id` so handlers can dedup an envelope arriving for a message a parallel render path (history fetch) has already surfaced.
- */
+/** Append (or prepend) a line to the transcript. Returns the rendered
+ *  `<div>` so callers can attach pending/failed state. Returns `null`
+ *  if the transcript element hasn't been wired via `init()` yet. */
 export function addLine(speaker: string, text: string, cls = '', opts: {
+  /** Input source indicator — voice or typed (drives the small icon
+   *  next to the speaker label). */
   source?: 'voice' | 'text' | 'sent';
+  /** Render `text` as markdown (used for agent replies). */
   markdown?: boolean;
+  /** Message timestamp; defaults to now. */
   timestamp?: number | Date | string;
+  /** Image / video thumbnails rendered under the line. */
   attachments?: Array<{ dataUrl: string; mimeType: string; fileName?: string }>;
+  /** TTS reply id for agent lines — links bubble to playback events
+   *  (loading bar + play-icon wiring). */
   replyId?: string;
+  /** Adapter-side message id (e.g. SSE `message_id`). Stored as
+   *  `data-message-id` so handlers can dedup an envelope arriving for a
+   *  message a parallel render path (history fetch) has already
+   *  surfaced. */
   messageId?: string;
   /** Insert at the top of the transcript instead of appending. Used by
    *  lazy-loaded history. */
@@ -299,7 +299,7 @@ export function addLine(speaker: string, text: string, cls = '', opts: {
    *  Caller is responsible for calling `markBubbleFinalized` / `markBubbleFailed`
    *  via the returned div. Used by the atomic-send path (Q1). */
   pending?: boolean;
-} = {}) {
+} = {}): HTMLElement | null {
   if (!transcriptEl) return null;
   const div = document.createElement('div');
   div.className = `line ${cls}${opts.pending ? ' pending' : ''}`;
@@ -466,7 +466,7 @@ async function maybeLoadEarlier() {
 }
 
 /** Open a full-screen overlay showing the given image. Tap anywhere to dismiss. */
-function openLightbox(src) {
+function openLightbox(src: string): void {
   document.getElementById('lightbox')?.remove();
   const overlay = document.createElement('div');
   overlay.id = 'lightbox';
@@ -480,7 +480,7 @@ function openLightbox(src) {
 /** Render a muted, italic, centered "system" line — for session events
  *  like model changes or new-chat resets. Distinct visually from regular
  *  agent/user messages. */
-export function addSystemLine(text) {
+export function addSystemLine(text: string): HTMLElement | null {
   if (!transcriptEl) return null;
   const div = document.createElement('div');
   div.className = 'line system';
@@ -492,7 +492,7 @@ export function addSystemLine(text) {
 }
 
 /** Clear transcript and persisted state (used by refresh). */
-export function clear() {
+export function clear(): void {
   if (transcriptEl) transcriptEl.innerHTML = '';
   viewedSessionIdRef = null;
   restoredViewedSessionId = null;
