@@ -391,6 +391,13 @@ export async function installMockBackend(page) {
       if (chat) chat.title = title;
       broadcast({ type: 'session_changed', chat_id: chatId, session_id: sessionId, title });
     },
+    /** Generic escape hatch — broadcast an arbitrary envelope onto the
+     *  SSE channel. Smokes that need to exercise envelope shapes the
+     *  built-in helpers don't cover (tool_call, tool_result, custom
+     *  notification kinds) call this directly. The envelope must
+     *  include a `type` field; `chat_id` is also required by the PWA's
+     *  router. */
+    pushEnvelope(env) { broadcast(env); },
     /** Configure the /v1/settings/schema response. Pass null to
      *  declare the agent doesn't implement the extension (route
      *  returns 404). The handler also recognizes POST /settings/{id}
