@@ -51,12 +51,11 @@ Generic / backend-agnostic tests live in `test/`:
 - `commit-word.test.ts`, `voice-interim-promote.test.ts` (voice state machines)
 - `tts-clean.test.ts`, `fallback.test.ts`, `sessionFilter.test.ts`
 
-Backend-specific tests are co-located with the backend under
-`proxy/backends/<name>/__tests__/`. Today this is just hermes-gateway
-(`proxy/backends/hermes-gateway/__tests__/proxy.test.ts` + harness),
-but the convention scales: a fork swapping hermes for another backend
-deletes `proxy/backends/hermes-gateway/` + `backends/hermes/plugin/` and
-loses no tests elsewhere.
+Backend-specific tests are co-located with the proxy module under
+`proxy/sidekick/__tests__/` (`proxy.test.ts` + harness, `settings.test.ts`).
+A fork swapping hermes for another backend deletes
+`proxy/sidekick/` + `backends/hermes/plugin/` and loses no tests
+elsewhere.
 
 UX tests (browser-DOM scenarios) belong in `test/` because they test the
 PWA shell, not a backend. See `docs/UX_TEST_PLAN.md` for the proposed
@@ -71,9 +70,8 @@ Tier 1/2/3 test plan and which seams are worth pinning.
   delete) so any future regression has a name.
 - **Hermetic by default.** Tests for the proxy or any backend
   abstraction MUST run without a live hermes / network / LLM. The
-  `proxy/backends/hermes-gateway/__tests__/proxy-harness.ts`
-  pattern (FakePlugin WS + scratch state.db) is the template — copy
-  it for new backends.
+  `proxy/sidekick/__tests__/proxy-harness.ts` pattern (mock upstream
+  + scratch state) is the template — copy it for new backends.
 - **UX tests should never depend on a specific backend.** If a UX test
   fails one way against hermes-gateway and another way against
   another backend, the test is wrong. Use the mock backend
@@ -82,13 +80,15 @@ Tier 1/2/3 test plan and which seams are worth pinning.
 
 ### When extending the proxy contract
 
-The proxy contract is documented at
-`proxy/backends/hermes-gateway/CONTRACT.md`. If you change any of
-the `/api/sidekick/*` HTTP+SSE surface or the WS envelope schema:
-1. Update CONTRACT.md.
-2. Add a contract test under `__tests__/proxy.test.ts` that pins the
-   new behavior.
-3. Run the suite (`npm test -- proxy/backends/hermes-gateway/__tests__/proxy.test.ts`)
+The agent-side wire format lives in `docs/ABSTRACT_AGENT_PROTOCOL.md`
+(the `/v1/*` surface that the proxy speaks to upstream agents). If you
+change any of the `/api/sidekick/*` HTTP+SSE surface or the upstream
+agent contract:
+1. Update `docs/ABSTRACT_AGENT_PROTOCOL.md` if the upstream contract
+   shifted.
+2. Add a contract test under `proxy/sidekick/__tests__/proxy.test.ts`
+   that pins the new behavior.
+3. Run the suite (`npm test -- proxy/sidekick/__tests__/proxy.test.ts`)
    before committing.
 
 ### Diagnostic recipes (when a UX bug repros)
@@ -113,7 +113,7 @@ curl -X POST http://127.0.0.1:3001/api/sidekick/messages \
   -d '{"chat_id":"test-cli","text":"hi"}'
 
 # Run the proxy contract suite
-npm test -- proxy/backends/hermes-gateway/__tests__/proxy.test.ts
+npm test -- proxy/sidekick/__tests__/proxy.test.ts
 ```
 
 ### Smoke tests (Playwright)

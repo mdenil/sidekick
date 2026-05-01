@@ -37,7 +37,7 @@ squash-commit when tests + manual verification pass.
 ┌────────────▼────────────┐
 │  Sidekick proxy (Node)  │
 │  server.ts              │
-│  proxy/agents/     │
+│  proxy/sidekick/        │
 │  ──────────────────     │
 │  Owns:                  │
 │   - protocol translation│
@@ -78,7 +78,7 @@ implementable as an openclaw plugin via `definePluginEntry` +
 `api.registerHttpRoute(...)` (NOT the channel-plugin idiom — see
 [`OPENCLAW_COMPATIBILITY.md`](OPENCLAW_COMPATIBILITY.md) for the data-
 flow mismatch). When that work gets prioritized, the proxy doesn't
-change at all — only the `UPSTREAM_URL` flips. `proxy/agents/`
+change at all — only the `UPSTREAM_URL` flips. `proxy/sidekick/`
 stays single-impl; per-agent code lives in each agent's plugin
 codebase. Three open questions on openclaw internals (streaming-SSE
 support, in-process session enumeration API, plugin auth) are tracked
@@ -255,9 +255,9 @@ in upstream hermes.
 
 ## 4. Proxy migration
 
-`proxy/backends/hermes-gateway/` becomes `proxy/agents/` and
-gains a single `UpstreamAgent` interface with one impl that talks
-HTTP+SSE.
+`proxy/sidekick/` (the post-refactor home; pre-refactor name was
+`proxy/backends/hermes-gateway/`) gains a single `UpstreamAgent`
+interface with one impl that talks HTTP+SSE.
 
 ### `UpstreamAgent` interface (TypeScript, Node)
 
@@ -290,13 +290,13 @@ bearer token mechanism (`SIDEKICK_PLATFORM_TOKEN`).
 
 ### Files reorganized
 
-- `proxy/backends/hermes-gateway/` → `proxy/agents/`
-- `proxy/agents/{messages,sessions,history,stream,session-index,client}.ts`
-  collapse into `proxy/agents/upstream.ts` (the
-  `HTTPAgentUpstream` class) + `proxy/agents/sse-multiplexer.ts`
-  (the persistent `/api/sidekick/stream` channel logic).
-- `proxy/agents/CONTRACT.md` updated to reflect the new layering.
-- `proxy/agents/__tests__/` retained, tests rewritten to drive
+- `proxy/backends/hermes-gateway/` → `proxy/sidekick/`
+- `proxy/sidekick/{messages,sessions,history,stream,session-index,client}.ts`
+  collapse into `proxy/sidekick/upstream.ts` (the
+  `HTTPAgentUpstream` class) + the per-route modules
+  (`messages.ts`, `stream.ts`, `sessions.ts`, `history.ts`,
+  `settings.ts`, `frontend-config.ts`).
+- `proxy/sidekick/__tests__/` retained, tests rewritten to drive
   `HTTPAgentUpstream` with a mock HTTP server.
 
 The `/api/sidekick/*` HTTP route definitions (`server.ts`'s
@@ -307,9 +307,9 @@ The `/api/sidekick/*` HTTP route definitions (`server.ts`'s
 
 These go away:
 
-- `proxy/backends/hermes-gateway/sessions.ts:107-119` (state.db
+- `proxy/sidekick/sessions.ts:107-119` (state.db
   query)
-- `proxy/backends/hermes-gateway/history.ts` (state.db CTE walk
+- `proxy/sidekick/history.ts` (state.db CTE walk
   for compression-fork chains)
 - All `sqlQuery(HERMES_STATE_DB, ...)` call sites
 - All `~/.hermes/sessions/sessions.json` reads from the proxy
@@ -399,8 +399,8 @@ mid-refactor smoke run is meaningful:
    remains. Delete `sqlQuery(HERMES_STATE_DB, ...)` everywhere. ~1h.
 7. **PWA: collapse `src/` → `src/proxy-client.ts`. Delete
    Mode B adapters. Update config + tests.** ~45min.
-8. **Rename `proxy/backends/` → `proxy/agents/`. Update
-   imports.** ~15min.
+8. **Rename `proxy/backends/hermes-gateway/` → `proxy/sidekick/`.
+   Update imports.** ~15min.
 9. **Stub agent: add `/v1/conversations*` endpoints. Wire into
    smoke runner as an alt upstream.** ~1h.
 
@@ -439,7 +439,7 @@ with a non-hermes upstream.
 
 ### Unit tests
 
-`proxy/agents/__tests__/` rewritten to drive `HTTPAgentUpstream`
+`proxy/sidekick/__tests__/` rewritten to drive `HTTPAgentUpstream`
 against a mock HTTP server (the existing test harness pattern at
 `proxy-harness.ts` extends to this).
 

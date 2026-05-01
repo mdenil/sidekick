@@ -9,10 +9,10 @@ saves a multi-hour thrash later.
 1. **`CONTRIBUTING.md`** — dev setup, test commands, code style, and
    the test-layout convention. Read the "Tests" section in full; the
    diagnostic recipes alone will save you hours.
-2. **`proxy/backends/hermes-gateway/CONTRACT.md`** — if your
-   change touches the proxy or PWA backend client. Documents the
-   WebSocket envelope schema, session lifecycle, HTTP+SSE surface,
-   and what state lives where (`state.db` vs `sessions.json`).
+2. **`docs/ABSTRACT_AGENT_PROTOCOL.md`** — if your change touches the
+   proxy or PWA backend client. Documents the `/v1/*` HTTP+SSE
+   surface (`/v1/responses`, `/v1/conversations*`) the proxy speaks
+   to upstream agents.
 3. **`docs/UX_TEST_PLAN.md`** — proposed UX-layer tests, tiered. If
    you're touching composer / drawer / chat / dictation, check
    whether your area is in Tier 1; consider writing the test before
@@ -26,16 +26,16 @@ saves a multi-hour thrash later.
 - **Map the contract before writing integration code.** If you're
   bridging two systems, the canonical wire / API contract beats your
   guesses. Spend 5 minutes reading the spec; don't reverse-engineer
-  it from one or two endpoints. (CONTRACT.md exists for this reason.)
+  it from one or two endpoints. (`docs/ABSTRACT_AGENT_PROTOCOL.md`
+  exists for this reason.)
 
 - **Read API docs before writing API code.** Every recurring problem
   on this codebase has traced back to misunderstanding or misusing
   someone else's API. If you're calling a library or external
   service, find its docs FIRST — `~/.hermes/hermes-agent/gateway/`
   for hermes, the official docs for npm packages, the project's
-  own CONTRACT.md / docs/ for in-tree contracts. "I'll figure it
-  out from the type signatures" is the path to the multi-hour
-  thrash.
+  own `docs/` for in-tree contracts. "I'll figure it out from the
+  type signatures" is the path to the multi-hour thrash.
 
 - **For bugs at integration boundaries, write a failing test first.**
   The test pins the misbehavior at the lowest layer where it's
@@ -46,8 +46,7 @@ saves a multi-hour thrash later.
 - **Hermetic test harness is load-bearing, not premature.** If you're
   adding a feature that touches shared state (state.db, sessions.json,
   IDB), build the mock / scratch path before the feature. The proxy
-  test suite at `proxy/backends/hermes-gateway/__tests__/` is
-  the template.
+  test suite at `proxy/sidekick/__tests__/` is the template.
 
 - **Use the Plan agent for tasks > 30 minutes.** Five minutes of
   planning saves hours of thrash. Pattern: dispatch the Plan agent
@@ -68,9 +67,9 @@ npm test           # ~1.4s, 120+ tests
 npm run typecheck  # ~3s
 ```
 
-If your change touches `proxy/backends/hermes-gateway/*`, also:
+If your change touches `proxy/sidekick/*`, also:
 ```
-npm test -- proxy/backends/hermes-gateway/__tests__/proxy.test.ts
+npm test -- proxy/sidekick/__tests__/proxy.test.ts
 ```
 to surface failures with proxy-test-only output. The full suite hides
 the per-test detail.
@@ -87,13 +86,13 @@ when you're validating that mock matches reality.
 
 The repo is meant to be modular. Hermes is the default backend but
 not the only one — `src/proxyClientTypes.ts` defines the abstraction
-and `src/{hermes-gateway,openai-compat,openclaw}.ts` are the
-implementations.
+and `src/proxyClient.ts` is the single client implementation that
+talks to whatever upstream the proxy is configured against.
 
 If you're changing **only** hermes-specific code: edit under
-`proxy/backends/hermes-gateway/` (server side) or
-`src/hermes-gateway.ts` (client side). Tests go under
-`proxy/backends/hermes-gateway/__tests__/`.
+`proxy/sidekick/` (server side) or `backends/hermes/plugin/` (the
+in-process hermes plugin). Tests go under
+`proxy/sidekick/__tests__/`.
 
 If you're changing **shared / generic** behavior (composer, drawer,
 chat, voice): edit under `src/`, with tests in `test/`. These must
