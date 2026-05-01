@@ -18,7 +18,6 @@ import * as cmdkPalette from './cmdkPalette.ts';
 import * as sidebarResize from './sidebarResize.ts';
 import * as multiSelect from './multiSelect.ts';
 import * as agentSettingsMod from './agentSettings.ts';
-import { MODEL_MODALITIES } from './data/modelModalities.ts';
 import { primeAudio, getSharedAudioCtx } from './audio/platform.ts';
 import { playReplyTts, cancelReplyTts } from './audio/text-tts.ts';
 import * as audioSession from './audio/session.ts';
@@ -1253,24 +1252,40 @@ async function boot() {
   }
 
   // Image-upload UI is gated on the selected model's vision capability.
-  // Heuristic match against known multimodal model name patterns —
-  // structurally the right place for this is per-model metadata in the
-  // agent settings schema (so a forked deploy can declare its own
-  // model→vision mapping), but the heuristic covers every multimodal
-  // model in common use today and keeps the UI honest until that
-  // schema extension lands. Buttons start disabled in HTML; this
-  // function flips them on/off as the agent's model setting changes.
+  // The proxy serves an OpenRouter-derived modality map at
+  // /api/sidekick/model-modalities (cached server-side, refreshed
+  // daily). The PWA fetches it once on boot and reads it from module
+  // memory thereafter. Local-only models (gemma served by llama.cpp
+  // on hermes etc.) aren't in OpenRouter's catalog and fall through
+  // to the regex below.
+  let modelModalities: Record<string, readonly string[]> = {};
+  let modalitiesReady: Promise<void> | null = null;
+  function ensureModalitiesFetched(): Promise<void> {
+    if (modalitiesReady) return modalitiesReady;
+    modalitiesReady = (async () => {
+      try {
+        const res = await fetch('/api/sidekick/model-modalities');
+        if (!res.ok) return;
+        const body = await res.json() as { modalities?: Record<string, string[]> };
+        if (body && typeof body.modalities === 'object') {
+          modelModalities = body.modalities;
+          // Re-evaluate the gate now that we have data — the initial
+          // synchronous pass ran with an empty map.
+          updateAttachButtonsState();
+        }
+      } catch {
+        // Network blip or proxy unreachable. The regex fallback below
+        // is enough to keep the gate working for the common cases.
+      }
+    })();
+    return modalitiesReady;
+  }
   function isVisionCapableModel(modelId: string): boolean {
     if (!modelId) return false;
-    // Source of truth: src/data/modelModalities.ts (OpenRouter
-    // catalog snapshot, refresh via scripts/fetch-openrouter-capabilities.mjs).
-    // The catalog covers everything routed through OpenRouter, which is
-    // the vast majority of options[] in practice. Local-only models
-    // (gemma served by llama.cpp on hermes etc.) won't be in the
-    // catalog — fall back to the regex below for those.
-    const cap = MODEL_MODALITIES[modelId];
+    const cap = modelModalities[modelId];
     if (cap) return cap.includes('image');
-    // Fallback regex for local-only models. Liberal-leaning: false
+    // Fallback regex for local-only models (and the boot window
+    // before the modality map lands). Liberal-leaning: false
     // positives just mean the model gets an image it ignores; false
     // negatives lock the user out of attaching at all.
     const id = modelId.split('/').pop() || modelId;
@@ -1303,6 +1318,9 @@ async function boot() {
   // time main.ts wiring completes (race between async settings load
   // and this synchronous setup). No-op if schema hasn't loaded yet.
   updateAttachButtonsState();
+  // Kick the modality-map fetch so the gate becomes data-driven
+  // (rather than regex-only) as soon as the proxy responds.
+  ensureModalitiesFetched();
 
   // Surface a system line in the live chat when the model changes via
   // the settings panel — same pattern as the cli's `/model` confirmation.
@@ -1313,7 +1331,7 @@ async function boot() {
     if (detail.id !== 'model') return;
     const modelId = String(detail.value || '');
     if (!modelId) return;
-    const mods = MODEL_MODALITIES[modelId];
+    const mods = modelModalities[modelId];
     const inputs = mods && mods.length
       ? mods.join(', ')
       : (isVisionCapableModel(modelId) ? 'text, image (heuristic)' : 'text');
