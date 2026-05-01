@@ -1959,6 +1959,13 @@ async function boot() {
         if (btnMic) btnMic.classList.remove('listening-armed', 'listening');
         status.setStatus('');
       },
+      onBarge: () => {
+        // User spoke during TTS — cancel playback and re-arm Listen so
+        // the next utterance gets recorded as a fresh turn. The barge
+        // bleed itself isn't shipped (no commit); the NEXT clean turn is.
+        try { cancelReplyTts(); } catch { /* noop */ }
+        try { listen.notifyReplyPlayback(false); } catch { /* noop */ }
+      },
       onState: (s) => {
         if (btnMic) {
           btnMic.classList.toggle('listening-armed', s === 'armed' || s === 'committing');

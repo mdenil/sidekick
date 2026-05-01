@@ -42,8 +42,18 @@ export type ListenOpts = {
   /** `reason` lets the caller know whether this turn ended via the
    *  silence timeout or because the sendword fired. Only the latter
    *  needs the trailing sendword stripped from the transcript before
-   *  rendering. Defaults to 'silence' for callers that don't care. */
-  onCommit: (blob: Blob, reason?: 'silence' | 'sendword') => Promise<void> | void;
+   *  rendering. Defaults to 'silence' for callers that don't care.
+   *  'barge' = user spoke during TTS playback to interrupt; the
+   *  caller should cancel any in-flight TTS before invoking
+   *  notifyReplyPlayback(false) so Listen re-arms cleanly. */
+  onCommit: (blob: Blob, reason?: 'silence' | 'sendword' | 'barge') => Promise<void> | void;
+  /** Optional: fired when barge detection triggers during TTS playback.
+   *  Caller should cancel its TTS playback (text-tts.cancelReplyTts) and
+   *  immediately call notifyReplyPlayback(false) so Listen drops the
+   *  current "playing" state and re-arms. The very next user utterance
+   *  starts a fresh recording with no committed blob (the barge IS the
+   *  signal — we don't ship the bleed-into-mic audio as a turn). */
+  onBarge?: () => void;
   /** Called when the trash button is tapped or stop() is invoked while
    *  armed without a commit. UI should clear the listening indicator. */
   onCancel?: () => void;
@@ -55,6 +65,17 @@ export type ListenOpts = {
 const REARM_GRACE_MS = 500;
 const SILENCE_WARMUP_MS = 500;
 const SILENCE_FRAME_MS = 50;
+// Barge detection (active during 'playing' state) — sliding window of
+// the last BARGE_WINDOW_FRAMES peak readings, fires when ≥ BARGE_REQUIRED
+// of them are above settings.bargeThreshold. Ignores the first BARGE_WARMUP_MS
+// of TTS playback (worst speakerphone bleed window). Same algorithm as
+// the classic pipeline's bargeIn.ts (08f50ac:src/pipelines/classic/bargeIn.ts:35-100):
+// rejects single-burst noise (wind gust, tap on phone) but catches
+// sustained speech with mid-syllable amplitude dips.
+const BARGE_WARMUP_MS = 500;
+const BARGE_FRAME_MS = 50;
+const BARGE_WINDOW_FRAMES = 5;
+const BARGE_REQUIRED_HOT = 4;
 
 let state: ListenState = 'idle';
 let opts: ListenOpts | null = null;
@@ -63,6 +84,9 @@ let mediaRecorder: MediaRecorder | null = null;
 let audioChunks: Blob[] = [];
 let analyser: AnalyserNode | null = null;
 let silenceLoop: ReturnType<typeof setInterval> | null = null;
+let bargeLoop: ReturnType<typeof setInterval> | null = null;
+let bargeWindow: number[] = [];
+let bargeMuteUntil = 0;
 let armedAt = 0;
 let lastVoiceAt = 0;
 let mockFrames: { type: 'silence' | 'speech'; remainingMs: number } | null = null;
@@ -82,9 +106,19 @@ export function notifyReplyPlayback(playing: boolean): void {
       // Pause the sendword detector during TTS — the user's mic would
       // otherwise pick up the agent's voice and trip a false match.
       try { sendwordDetector.stop(); } catch { /* noop */ }
+      // Start barge detection. The mic stream stays open through TTS
+      // (per design); we now actively listen for sustained user voice
+      // above the threshold during playback. Fire → caller cancels TTS
+      // and re-arms (via the onBarge callback). Browser AEC + the
+      // 500ms warmup mute handle most speakerphone bleed; classic ran
+      // this same algorithm reliably on a Pi for months.
+      startBargeLoop();
     }
     return;
   }
+  // Stopping playback path — clear the barge loop regardless of how
+  // we got here (natural reply end, barge fire, user cancel).
+  stopBargeLoop();
   if (state === 'playing') {
     // Grace window before re-arming so the audio tail and any trailing
     // events (audio.onended → next event-loop tick) settle.
@@ -211,6 +245,53 @@ function startSilenceLoop(): void {
 
 function stopSilenceLoop(): void {
   if (silenceLoop) { clearInterval(silenceLoop); silenceLoop = null; }
+}
+
+function startBargeLoop(): void {
+  if (bargeLoop) clearInterval(bargeLoop);
+  bargeWindow = [];
+  bargeMuteUntil = Date.now() + BARGE_WARMUP_MS;
+  bargeLoop = setInterval(tickBarge, BARGE_FRAME_MS);
+}
+
+function stopBargeLoop(): void {
+  if (bargeLoop) { clearInterval(bargeLoop); bargeLoop = null; }
+  bargeWindow = [];
+  bargeMuteUntil = 0;
+}
+
+/** One frame of barge detection. Mirrors the classic bargeIn evaluator
+ *  (08f50ac:src/pipelines/classic/bargeIn.ts:62-100): sliding window of
+ *  the last BARGE_WINDOW_FRAMES peak readings, fire when ≥ BARGE_REQUIRED
+ *  are above settings.bargeThreshold. The 500ms warmup mute skips the
+ *  worst speakerphone bleed window before the AEC adapter locks on. */
+function tickBarge(): void {
+  if (state !== 'playing') return;
+  if (!analyser) return;
+  if (Date.now() < bargeMuteUntil) return;
+
+  const s = settings.get();
+  // PWA-side bargeIn setting acts as a kill switch for Listen too —
+  // user toggling barge off in the menu disables here, same wire as
+  // the WebRTC path (which sends barge_enabled in the offer).
+  if (!(s as any).bargeIn) return;
+
+  const peak = readPeak(analyser);
+  const threshold = ((s.bargeThreshold as number) || 0.20);
+  const hot = peak > threshold ? 1 : 0;
+  bargeWindow.push(hot);
+  if (bargeWindow.length > BARGE_WINDOW_FRAMES) bargeWindow.shift();
+
+  if (bargeWindow.length < BARGE_WINDOW_FRAMES) return;
+  let sum = 0;
+  for (const v of bargeWindow) sum += v;
+  if (sum >= BARGE_REQUIRED_HOT) {
+    log(`listen: barge fire peak=${peak.toFixed(3)} hot=${sum}/${BARGE_WINDOW_FRAMES}`);
+    stopBargeLoop();
+    try { opts?.onBarge?.(); } catch (e: any) {
+      diag('listen: onBarge threw', e?.message);
+    }
+  }
 }
 
 /** One frame of silence detection. Reads peak from the analyser (or the
