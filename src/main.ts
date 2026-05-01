@@ -1983,7 +1983,13 @@ async function boot() {
     if (!listenActive) return;
     listenActive = false;
     listen.stop();
-    if (btnMic) btnMic.classList.remove('listening-armed', 'listening');
+    // Clear ALL voice-state classes — .active is added synchronously
+    // on pointerdown (line ~2235) for immediate red-circle feedback,
+    // but Listen's path doesn't go through the call/dictate cleanup
+    // that normally removes it. Without explicit removal here, the
+    // mic button stays red after Listen disarms even though the
+    // micState is correctly 'idle'.
+    if (btnMic) btnMic.classList.remove('listening-armed', 'listening', 'active');
   }
 
   /** Whether some voice path is currently active. Used by the click
