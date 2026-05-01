@@ -5,14 +5,16 @@
  *  - Truly offline-capable: no network needed to record.
  *  - Same code path for online and offline sends (always POST the blob).
  *  - No race conditions on stop (no WS state to wait for).
+ *
+ * The visual row (trash button, dot, timer, waveform, optional send
+ * button) lives in `recorderBar.ts` so Listen mode can reuse it.
  */
 
 import { log } from '../util/log.ts';
-import * as audioSession from './session.ts';
 import * as audioPlatform from './platform.ts';
 import { playFeedback } from './feedback.ts';
+import * as recorderBar from './recorderBar.ts';
 
-let analyser = null;
 let mediaStream = null;
 // AudioContext is the SHARED one from the platform shim. Streaming + TTS
 // use the same context; iOS permits ~4 live contexts and we were
@@ -23,8 +25,7 @@ let mediaStream = null;
 let audioCtx = null;
 let mediaRecorder = null;
 let audioChunks = [];
-let animFrame = null;
-let timerInterval = null;
+let bar: recorderBar.RecorderBar | null = null;
 let startTime = 0;
 let stopping = false;
 
@@ -59,16 +60,16 @@ export async function start(opts) {
   const resumePromise = audioCtx.state !== 'running' ? audioCtx.resume() : null;
 
   // Render UI IMMEDIATELY — don't wait for the mic permission chime or
-  // audio pipeline setup. drawWaveform safely no-ops when analyser is null,
-  // so starting rAF early means bars animate the moment analyser connects.
-  renderBar(opts.container, opts.onCancel, opts.insertBefore, opts.sendBtn);
+  // audio pipeline setup. The recorder bar's rAF loop safely no-ops when
+  // no analyser is attached, so starting it early means bars animate the
+  // moment the analyser connects.
   startTime = Date.now();
-  timerInterval = setInterval(updateTimer, 100);
-  // Reset waveform state for a fresh recording
-  wavePos = 0;
-  frameCount = 0;
-  waveHistory.fill(0);
-  drawWaveform();
+  bar = recorderBar.mount({
+    container: opts.container,
+    insertBefore: opts.insertBefore,
+    sendBtn: opts.sendBtn,
+    onCancel: () => { cleanup(); if (opts.onCancel) opts.onCancel(); },
+  });
 
   try {
     // Centralized capture via platform shim — handles iOS AVAudioSession
@@ -90,10 +91,11 @@ export async function start(opts) {
   // single source of truth for "wire an analyser to a mic stream."
   // MediaRecorder consumes the MediaStream directly below; the analyser
   // is purely for the visual waveform.
-  analyser = audioPlatform.getMicAnalyser(mediaStream, 256);
+  const analyser = audioPlatform.getMicAnalyser(mediaStream, 256);
   if (!analyser) {
     log('memo: getMicAnalyser returned null — visual waveform disabled');
   }
+  bar?.attachAnalyser(analyser);
 
   // MediaRecorder captures audio as a blob — the only thing that matters for send
   audioChunks = [];
@@ -174,129 +176,6 @@ function cleanup() {
   // Just drop our reference. The analyser/source nodes we created will be
   // garbage-collected once no references remain.
   audioCtx = null;
-  if (animFrame) { cancelAnimationFrame(animFrame); animFrame = null; }
-  if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
-  analyser = null;
-  if (barEl) { barEl.remove(); barEl = null; }
-  timerEl = null;
-  canvasEl = null;
-}
-
-// ── UI ──────────────────────────────────────────────────────────────────────
-
-let barEl = null;
-let timerEl = null;
-let canvasEl = null;
-
-function renderBar(container, onCancel, insertBefore, sendBtn) {
-  barEl = document.createElement('div');
-  barEl.className = 'memo-bar';
-
-  const btnTrash = document.createElement('button');
-  btnTrash.className = 'memo-btn memo-trash';
-  btnTrash.title = 'Discard';
-  btnTrash.innerHTML = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 4h10M6 4V2.5h4V4M4.5 4l.5 9.5h6l.5-9.5"/></svg>`;
-  btnTrash.onclick = () => { cleanup(); if (onCancel) onCancel(); };
-
-  const dot = document.createElement('span');
-  dot.className = 'memo-dot';
-
-  timerEl = document.createElement('span');
-  timerEl.className = 'memo-timer';
-  timerEl.textContent = '0:00';
-
-  canvasEl = document.createElement('canvas');
-  canvasEl.className = 'memo-wave';
-  canvasEl.height = 32;
-  // Prevent the HTML default width=300 from being the initial drawing
-  // surface — on iOS Safari, that 300px was leaking through flex-shrink
-  // and overflowing the bar past the composer's right edge. Start tiny;
-  // drawWaveform's resize-on-frame loop expands it to the real CSS
-  // width once layout settles.
-  canvasEl.width = 1;
-
-  barEl.appendChild(btnTrash);
-  barEl.appendChild(dot);
-  barEl.appendChild(timerEl);
-  barEl.appendChild(canvasEl);
-  // Relocate the existing send button into the bar (WhatsApp-style). The
-  // node is *moved*, not cloned, so its onclick stays wired. CSS still
-  // applies because `.composer .send-btn` matches inside `.memo-bar`.
-  // Caller restores it to its original parent in exitMemoMode.
-  if (sendBtn) barEl.appendChild(sendBtn);
-
-  if (insertBefore) {
-    container.insertBefore(barEl, insertBefore);
-  } else {
-    container.appendChild(barEl);
-  }
-}
-
-function updateTimer() {
-  if (!timerEl) return;
-  const elapsed = Math.floor((Date.now() - startTime) / 1000);
-  const min = Math.floor(elapsed / 60);
-  const sec = elapsed % 60;
-  timerEl.textContent = `${min}:${sec.toString().padStart(2, '0')}`;
-}
-
-// ── Waveform ────────────────────────────────────────────────────────────────
-
-const WAVE_DOTS = 40;
-/** Sample a new bar every N rAFs (slows scroll speed without dropping redraw fps). */
-const FRAMES_PER_SAMPLE = 8;
-const waveHistory = new Float32Array(WAVE_DOTS);
-let wavePos = 0;
-let frameCount = 0;
-
-function drawWaveform() {
-  // Keep the rAF loop alive as long as the canvas is mounted; analyser may
-  // connect after the loop starts (UI renders before mic permission resolves).
-  if (!canvasEl) return;
-
-  frameCount++;
-
-  // Only push a new sample every N frames → slower scroll
-  if (analyser && frameCount % FRAMES_PER_SAMPLE === 0) {
-    const data = new Uint8Array(analyser.frequencyBinCount);
-    analyser.getByteTimeDomainData(data);
-
-    let sum = 0;
-    for (let i = 0; i < data.length; i++) {
-      const v = (data[i] - 128) / 128;
-      sum += v * v;
-    }
-    const rms = Math.sqrt(sum / data.length);
-    waveHistory[wavePos % WAVE_DOTS] = rms;
-    wavePos++;
-  }
-
-  const rect = canvasEl.getBoundingClientRect();
-  if (rect.width > 0 && canvasEl.width !== Math.round(rect.width)) {
-    canvasEl.width = Math.round(rect.width);
-  }
-
-  const ctx = canvasEl.getContext('2d');
-  const w = canvasEl.width;
-  const h = canvasEl.height;
-  ctx.clearRect(0, 0, w, h);
-
-  const dotSpacing = w / WAVE_DOTS;
-  const style = getComputedStyle(document.documentElement);
-  const color = style.getPropertyValue('--primary').trim() || '#6b8f5e';
-
-  for (let i = 0; i < WAVE_DOTS; i++) {
-    const idx = (wavePos + i) % WAVE_DOTS;
-    const amp = waveHistory[idx];
-    const barH = Math.max(2, amp * h * 4);
-    const x = i * dotSpacing + dotSpacing / 2;
-    const y = (h - barH) / 2;
-
-    ctx.fillStyle = color;
-    ctx.beginPath();
-    ctx.roundRect(x - 1.5, y, 3, barH, 1.5);
-    ctx.fill();
-  }
-
-  animFrame = requestAnimationFrame(drawWaveform);
+  startTime = 0;
+  if (bar) { bar.destroy(); bar = null; }
 }
