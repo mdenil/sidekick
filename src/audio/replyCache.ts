@@ -33,6 +33,12 @@ function makeKey(text: string, voice: string): string {
   return `${voice}::${text}`;
 }
 
+/** Probe membership without affecting LRU order. Cheap; safe to call
+ *  on every render to flip a "tts-cached" badge on agent bubbles. */
+export function has(text: string, voice: string): boolean {
+  return cache.has(makeKey(text, voice));
+}
+
 /** Read a cached blob if present. Promotes to most-recent on hit. */
 export function get(text: string, voice: string): Blob | null {
   const key = makeKey(text, voice);

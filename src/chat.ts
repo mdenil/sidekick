@@ -358,26 +358,32 @@ export function addLine(speaker: string, text: string, cls = '', opts: {
   };
   div.appendChild(copyBtn);
 
-  // Per-bubble replay icon for AGENT lines. Click → plays the bubble's
-  // text via the cache-backed text-tts path. Same engine as BT skip-
-  // forward / skip-back (src/audio/replyNavigator.ts) so a click and
-  // a headphone press drive the same playback. Visible in both Realtime
-  // and turn-based modes — replay always uses HTTP /tts regardless of
-  // how the original audio was emitted (cache hit on already-played
-  // text avoids the round-trip; cache miss does a fresh /tts call).
+  // Per-bubble play/pause chip + playback bar for AGENT lines. Engine
+  // is src/audio/replyNavigator.ts (shared with BT skip-fwd/back).
+  // Both play + pause SVGs are emitted; CSS swaps visibility based on
+  // .tts-playing state. Color encodes cache state via .tts-cached.
+  // Bar layers (.play-bar-loaded under .play-bar-played) are present
+  // in the DOM but invisible until styled by .tts-active states —
+  // see styles/app.css for the visual spec.
   if (cls.includes('agent')) {
-    const playSvg = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 3.5l7 4.5-7 4.5z" stroke-linejoin="round"/></svg>`;
+    const playGlyph = `<svg class="glyph-play" viewBox="0 0 16 16" fill="none"><polygon points="5 3 13 8 5 13 5 3" fill="currentColor"/></svg>`;
+    const pauseGlyph = `<svg class="glyph-pause" viewBox="0 0 16 16" fill="none"><rect x="4" y="3" width="3" height="10" fill="currentColor"/><rect x="9" y="3" width="3" height="10" fill="currentColor"/></svg>`;
     const playBtn = document.createElement('button');
-    playBtn.className = 'replay-btn';
-    playBtn.title = 'Replay this reply';
-    playBtn.innerHTML = playSvg;
+    playBtn.className = 'play-btn';
+    playBtn.title = 'Play / pause this reply';
+    playBtn.innerHTML = playGlyph + pauseGlyph;
     playBtn.onclick = (e) => {
       e.stopPropagation();
       // Lazy-import to avoid pulling text-tts into chat.ts's static
       // import graph (chat.ts is loaded earlier in the boot path).
-      import('./audio/replyNavigator.ts').then((m) => m.playSpecific(div)).catch(() => {});
+      import('./audio/replyNavigator.ts').then((m) => m.togglePlayback(div)).catch(() => {});
     };
     div.appendChild(playBtn);
+
+    const bar = document.createElement('div');
+    bar.className = 'play-bar';
+    bar.innerHTML = `<div class="play-bar-loaded"></div><div class="play-bar-played"></div>`;
+    div.appendChild(bar);
   }
 
   // All links in rendered markdown open in new tab

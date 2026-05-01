@@ -1,42 +1,54 @@
 /**
- * @fileoverview Per-reply navigation engine.
+ * @fileoverview Per-reply navigation engine + bubble playback state machine.
  *
- * Single source of truth for "play reply N" / "play next reply" / "play
- * previous reply" actions. Two surfaces consume it:
- *   1. MediaSession action handlers (BT skip-forward / skip-back). Wired
- *      in src/audio/session.ts. Lets headphone controls navigate the
- *      conversation hands-free.
- *   2. Per-bubble play-icon click in agent message bubbles. Wired in
- *      src/chat.ts via a small click handler on the appended chip.
+ * Two surfaces consume this:
+ *   1. MediaSession action handlers (BT skip-fwd / skip-back) — wired
+ *      in src/main.ts onNextTrack / onPrevTrack via session.ts.
+ *   2. Per-bubble play/pause chip on each agent message bubble —
+ *      wired in src/chat.ts:addLine via a click handler that calls
+ *      `togglePlayback(bubble)`.
  *
- * Both surfaces ultimately call into `src/audio/text-tts.ts:playReplyTts`,
- * which is already cache-backed (LRU MP3 Blob) — repeated playback of
- * the same `(text, voice)` pair is instant and free of extra Deepgram
- * cost. Realtime mode users get the same engine: a click fires HTTP /tts
- * even though the original audio came over the WebRTC peer track.
+ * Playback transport is `src/audio/text-tts.ts` (cache-backed `/tts`
+ * blob playback through the shared `#player` audio element).
  *
- * Pointer model: an implicit "currently selected" agent bubble. By
- * default it's the most-recent one in the visible transcript. Calling
- * `playPrev()` walks backward; `playNext()` walks forward. The pointer
- * resets to "most recent" on chat switch (the transcript is rebuilt
- * by main.ts:replaySessionMessages so all DOM refs invalidate).
+ * Bubble state machine (driven by listening to player events on
+ * `#player` and tracking the active bubble):
  *
- * Visual feedback: while a reply is playing, the corresponding bubble
- * gets a `.replaying` class. Caller's CSS owns the highlight (subtle
- * border or chip animation — pick what fits the rest of the chat).
+ *   idle      → no playback. Click → start (loading → playing).
+ *   loading   → fetch in flight or audio buffering. Click → cancel.
+ *   playing   → audio playing through speakers. Click → pause.
+ *   paused    → audio paused mid-stream. Click → resume.
+ *   played    → audio finished naturally. Click → restart from 0.
+ *
+ * State is reflected on the bubble via CSS classes:
+ *   `.tts-cached` — cache hit available (faster start). Set by
+ *                   syncCachedBadges() against replyCache.
+ *   `.tts-active` — this bubble is the player's current focus.
+ *   `.tts-playing` — audio currently sounding (CSS swaps play→pause glyph).
+ *   `.tts-paused` — audio loaded but paused (mid-stream).
+ *   `.tts-played` — audio finished naturally (icon back to play).
+ *   `.tts-streaming` — fetch in progress (loading-bar shimmer).
+ *
+ * Pointer model: `currentBubble` tracks "what BT skip-back/skip-forward
+ * acts relative to." Defaults to most-recent agent bubble. Updated
+ * whenever playback starts on a specific bubble. Reset on chat switch
+ * via `reset()`.
  */
 
 import { log, diag } from '../util/log.ts';
-import { playReplyTts, cancelReplyTts } from './text-tts.ts';
+import {
+  playReplyTts,
+  pauseReplyTts,
+  resumeReplyTts,
+  cancelReplyTts,
+  isPaused,
+  getActiveReplyId,
+} from './text-tts.ts';
+import * as replyCache from './replyCache.ts';
 
-// Module-private pointer to the currently-selected/playing agent bubble.
-// `null` = no selection yet (defaults to most-recent on next call).
 let currentBubble: HTMLElement | null = null;
+let playerListenersAttached = false;
 
-/** Lazy resolver for the voice to feed into playReplyTts. We import
- *  settings inside the function (not at module top) so a circular
- *  import doesn't bite — settings.ts is heavy and we only need one
- *  field. */
 async function resolveVoice(): Promise<string> {
   try {
     const settingsMod = await import('../settings.ts');
@@ -47,119 +59,214 @@ async function resolveVoice(): Promise<string> {
   }
 }
 
-/** All `.line.agent` bubbles in document order. Transient — query each
- *  call so DOM mutations between calls (new agent reply, history load)
- *  are picked up automatically. */
 function listAgentBubbles(): HTMLElement[] {
   const transcript = document.getElementById('transcript');
   if (!transcript) return [];
   return Array.from(transcript.querySelectorAll<HTMLElement>('.line.agent'));
 }
 
-/** Bubble the navigator should "currently" be playing. Falls back to
- *  the most-recent agent bubble when the pointer is unset / stale. */
-function resolveCurrentBubble(): HTMLElement | null {
-  if (currentBubble && document.body.contains(currentBubble)) {
-    return currentBubble;
-  }
-  const all = listAgentBubbles();
-  return all[all.length - 1] || null;
-}
-
-/** Visually mark the bubble as "now playing" — adds .replaying to it
- *  and removes from any previously-marked sibling. CSS owns the look. */
-function markPlaying(bubble: HTMLElement | null): void {
+function findBubbleByReplyId(replyId: string | null): HTMLElement | null {
+  if (!replyId) return null;
   const transcript = document.getElementById('transcript');
-  if (transcript) {
-    transcript.querySelectorAll('.line.agent.replaying').forEach((el) => {
-      if (el !== bubble) el.classList.remove('replaying');
-    });
-  }
-  if (bubble) bubble.classList.add('replaying');
+  if (!transcript) return null;
+  return transcript.querySelector<HTMLElement>(
+    `.line.agent[data-reply-id="${CSS.escape(replyId)}"]`,
+  );
 }
 
-/** Internal: play a specific bubble's text. Sets the pointer, marks
- *  the bubble visually, hands off to text-tts (cache-backed). */
-async function playBubble(bubble: HTMLElement | null): Promise<void> {
-  if (!bubble) {
-    diag('[reply-nav] no agent bubble to play');
-    return;
-  }
-  const text = (bubble.dataset.text || bubble.textContent || '').trim();
-  if (!text) {
-    diag('[reply-nav] agent bubble has no text — skipping');
-    return;
-  }
-  currentBubble = bubble;
-  markPlaying(bubble);
-  const voice = await resolveVoice();
-  // Best-effort. text-tts handles its own cancel-and-replace on a
-  // second call; failures (network / no /tts) log but don't throw past
-  // the caller (BT action handler / chip click). Listener clears the
-  // visual mark on `ended`/`error` via the player element, set up here.
+function clearAllStateClasses(except?: HTMLElement | null): void {
+  const transcript = document.getElementById('transcript');
+  if (!transcript) return;
+  transcript.querySelectorAll('.line.agent').forEach((el) => {
+    if (el === except) return;
+    el.classList.remove('tts-active', 'tts-playing', 'tts-paused', 'tts-streaming');
+  });
+}
+
+/** Apply the right CSS class set to a bubble based on the named state.
+ *  All other transient classes are cleared first so transitions are
+ *  atomic — no half-rendered "playing AND paused" combos. */
+function setBubbleState(
+  bubble: HTMLElement,
+  state: 'idle' | 'loading' | 'playing' | 'paused' | 'played',
+): void {
+  bubble.classList.remove('tts-active', 'tts-playing', 'tts-paused', 'tts-streaming', 'tts-played');
+  if (state === 'loading') bubble.classList.add('tts-active', 'tts-streaming');
+  else if (state === 'playing') bubble.classList.add('tts-active', 'tts-playing');
+  else if (state === 'paused') bubble.classList.add('tts-active', 'tts-paused');
+  else if (state === 'played') bubble.classList.add('tts-played');
+}
+
+/** Hook player events ONCE so any number of plays/pauses get reflected
+ *  back into the active bubble's CSS classes. Idempotent. */
+function ensurePlayerListenersAttached(): void {
+  if (playerListenersAttached) return;
   const player = document.getElementById('player') as HTMLAudioElement | null;
-  const cleanup = () => {
-    bubble.classList.remove('replaying');
-    player?.removeEventListener('ended', cleanup);
-    player?.removeEventListener('error', cleanup);
-  };
-  player?.addEventListener('ended', cleanup);
-  player?.addEventListener('error', cleanup);
-  try {
-    await playReplyTts(text, voice);
-    log(`[reply-nav] play ${text.length} chars`);
-  } catch (e: any) {
-    diag(`[reply-nav] failed: ${e?.message || e}`);
-    cleanup();
+  if (!player) return;
+  playerListenersAttached = true;
+
+  const findActive = () => findBubbleByReplyId(getActiveReplyId());
+
+  player.addEventListener('play', () => {
+    const b = findActive();
+    if (b) {
+      currentBubble = b;
+      setBubbleState(b, 'playing');
+      clearAllStateClasses(b);
+    }
+  });
+  player.addEventListener('pause', () => {
+    const b = findActive();
+    if (!b) return;
+    // Distinguish real pause from end-of-stream pause. `ended` event
+    // fires AFTER pause for natural completion; treat that as 'played'.
+    if (player.ended) setBubbleState(b, 'played');
+    else if (player.currentTime > 0) setBubbleState(b, 'paused');
+  });
+  player.addEventListener('ended', () => {
+    const b = findActive();
+    if (b) setBubbleState(b, 'played');
+  });
+  player.addEventListener('loadstart', () => {
+    const b = findActive();
+    if (b) setBubbleState(b, 'loading');
+  });
+  player.addEventListener('error', () => {
+    const b = findActive();
+    if (b) setBubbleState(b, 'idle');
+  });
+  // Advance the played-ratio bar in lockstep with playback. Cheap —
+  // <audio> fires timeupdate ~4×/sec by default, well below CSS
+  // transition cost. Skip work when no active bubble.
+  player.addEventListener('timeupdate', () => {
+    const b = findActive();
+    if (!b) return;
+    const dur = player.duration;
+    const pos = player.currentTime;
+    if (!Number.isFinite(dur) || dur <= 0) return;
+    setPlayedRatio(b, pos / dur);
+  });
+  // Once metadata loads we know the duration → mark loaded bar full
+  // (we have the whole blob locally; "loaded" reflects buffering
+  // progress which is N/A for blob URLs — they're 100% loaded).
+  player.addEventListener('loadedmetadata', () => {
+    const b = findActive();
+    if (b) setLoadedRatio(b, 1);
+  });
+}
+
+function setLoadedRatio(bubble: HTMLElement, ratio: number): void {
+  const el = bubble.querySelector('.play-bar-loaded') as HTMLElement | null;
+  if (el) el.style.width = `${Math.min(100, Math.max(0, ratio * 100))}%`;
+}
+
+function setPlayedRatio(bubble: HTMLElement, ratio: number): void {
+  const el = bubble.querySelector('.play-bar-played') as HTMLElement | null;
+  if (el) el.style.width = `${Math.min(100, Math.max(0, ratio * 100))}%`;
+}
+
+/** Mark cached-vs-uncached state on every visible agent bubble. Called
+ *  by chat.ts after rendering (or after a cache update event). */
+export function syncCachedBadges(): void {
+  // Cache lookup needs the (text, voice) pair; voice is global, text
+  // is on each bubble's data-text. We can't preflight without voice,
+  // so just check by text alone and assume the current voice. Cheap.
+  resolveVoice().then((voice) => {
+    listAgentBubbles().forEach((b) => {
+      const text = (b.dataset.text || b.textContent || '').trim();
+      // Cache key uses cleanForTts; mirror that minimally — for badge
+      // accuracy we only need a "very likely cached" signal, not exact.
+      // First-pass: just consult cache.has on the raw text. Misses
+      // are visible regressions only on edge-case text mutations.
+      if (text && replyCache.has(text, voice)) {
+        b.classList.add('tts-cached');
+      } else {
+        b.classList.remove('tts-cached');
+      }
+    });
+  });
+}
+
+/** Click handler for a per-bubble play/pause chip. Resolves the right
+ *  action based on this bubble's current state vs. the active player. */
+export async function togglePlayback(bubble: HTMLElement): Promise<void> {
+  if (!bubble) return;
+  ensurePlayerListenersAttached();
+  const replyId = bubble.dataset.replyId || '';
+  const text = (bubble.dataset.text || '').trim();
+  if (!text) {
+    diag('[reply-nav] bubble has no text — skipping');
+    return;
   }
+  const activeId = getActiveReplyId();
+
+  // Case 1: this bubble IS the active one — toggle pause/resume.
+  if (activeId && activeId === replyId) {
+    if (isPaused()) {
+      log('[reply-nav] resume');
+      await resumeReplyTts();
+      // The 'play' event handler will set 'tts-playing' class.
+    } else {
+      log('[reply-nav] pause');
+      pauseReplyTts();
+      // The 'pause' event handler will set 'tts-paused' class.
+    }
+    return;
+  }
+
+  // Case 2: a DIFFERENT bubble is active — cancel + start this one.
+  // Or no active bubble — just start.
+  currentBubble = bubble;
+  const voice = await resolveVoice();
+  // playReplyTts internally cancels any prior session before starting
+  // — no need to call cancelReplyTts here.
+  await playReplyTts(text, voice, replyId || undefined);
 }
 
-/** Public: replay the bubble we last navigated to (or the most recent
- *  if the pointer isn't set yet). Called by the per-bubble play chip
- *  with a specific bubble, OR by the BT play action with none. */
+/** Public: replay specific bubble — kept for backward-compat with the
+ *  earlier API. Now just an alias for togglePlayback. */
 export async function playSpecific(bubble: HTMLElement): Promise<void> {
-  return playBubble(bubble);
+  return togglePlayback(bubble);
 }
 
-/** Public: play the agent bubble BEFORE the current pointer. If the
- *  pointer is at the first bubble, no-op. */
+/** Public: play the agent bubble BEFORE the current pointer. */
 export async function playPrev(): Promise<void> {
   const all = listAgentBubbles();
   if (!all.length) return;
-  const cur = resolveCurrentBubble();
-  const idx = cur ? all.indexOf(cur) : all.length - 1;
+  const cur = currentBubble && document.body.contains(currentBubble)
+    ? currentBubble : all[all.length - 1];
+  const idx = all.indexOf(cur);
   const target = idx > 0 ? all[idx - 1] : null;
   if (!target) {
     log('[reply-nav] already at first reply');
     return;
   }
-  return playBubble(target);
+  return togglePlayback(target);
 }
 
-/** Public: play the agent bubble AFTER the current pointer. If the
- *  pointer is at the last bubble, no-op. */
+/** Public: play the agent bubble AFTER the current pointer. */
 export async function playNext(): Promise<void> {
   const all = listAgentBubbles();
   if (!all.length) return;
-  const cur = resolveCurrentBubble();
-  const idx = cur ? all.indexOf(cur) : all.length - 1;
+  const cur = currentBubble && document.body.contains(currentBubble)
+    ? currentBubble : all[all.length - 1];
+  const idx = all.indexOf(cur);
   const target = idx >= 0 && idx < all.length - 1 ? all[idx + 1] : null;
   if (!target) {
     log('[reply-nav] already at most-recent reply');
     return;
   }
-  return playBubble(target);
+  return togglePlayback(target);
 }
 
-/** Public: cancel any in-flight replay and clear visual marks. Called
- *  on session switch / hard reset to avoid a stale .replaying highlight
- *  on the wrong transcript. */
+/** Public: stop playback + clear all visual marks. Called on chat
+ *  switch / hard reset. */
 export function reset(): void {
   cancelReplyTts();
   const transcript = document.getElementById('transcript');
   if (transcript) {
-    transcript.querySelectorAll('.line.agent.replaying').forEach((el) => {
-      el.classList.remove('replaying');
+    transcript.querySelectorAll('.line.agent').forEach((el) => {
+      el.classList.remove('tts-active', 'tts-playing', 'tts-paused', 'tts-streaming', 'tts-played');
     });
   }
   currentBubble = null;

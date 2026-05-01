@@ -25,6 +25,36 @@
 import { log, diag } from '../util/log.ts';
 import * as replyCache from './replyCache.ts';
 
+/** Identifier of the reply currently being driven by playReplyTts.
+ *  External consumers (replyNavigator) read this to map player events
+ *  back to the correct bubble. Set when playback starts; cleared in
+ *  the finally block. */
+export function getActiveReplyId(): string | null { return activeReplyId; }
+let activeReplyId: string | null = null;
+
+/** Pause the in-flight playback without tearing down the blob URL.
+ *  Resume keeps the position. Used by the per-bubble play/pause toggle —
+ *  click on a playing bubble pauses; second click resumes. Distinct
+ *  from cancelReplyTts which also drops the audio source so the next
+ *  playReplyTts starts clean. */
+export function pauseReplyTts(): void {
+  if (!active) return;
+  try { active.audio.pause(); } catch { /* noop */ }
+}
+
+/** Resume previously-paused playback. No-op when nothing's loaded. */
+export async function resumeReplyTts(): Promise<void> {
+  if (!active) return;
+  try { await active.audio.play(); } catch { /* noop */ }
+}
+
+/** Whether the active player is currently paused (vs idle vs playing).
+ *  Caller distinguishes "paused" from "no active session" by checking
+ *  getActiveReplyId() first. */
+export function isPaused(): boolean {
+  return !!(active && active.audio.paused);
+}
+
 /** Tracks the active fetch + playback so a follow-up reply can cancel
  *  it. Module-level singleton — only one text-mode TTS plays at a time
  *  per page (call-mode TTS is owned separately by the WebRTC peer
@@ -70,6 +100,7 @@ export function cancelReplyTts(): void {
     }
   } catch { /* noop */ }
   active = null;
+  activeReplyId = null;
 }
 
 /** Synthesize + play `text` through the page's `#player` element.
@@ -83,6 +114,7 @@ export function cancelReplyTts(): void {
 export async function playReplyTts(
   rawText: string,
   voice: string,
+  replyId?: string,
 ): Promise<void> {
   const text = cleanForTts(rawText || '');
   if (!text) return;
@@ -97,6 +129,7 @@ export async function playReplyTts(
 
   const abort = new AbortController();
   active = { audio: player, abort };
+  activeReplyId = replyId || null;
 
   let blobUrl: string | null = null;
   try {
@@ -124,12 +157,24 @@ export async function playReplyTts(
     // Avoid pausing in the click-to-pause case from the WebRTC peer
     // track's previous srcObject binding.
     player.srcObject = null;
+    // Auto-clear active state when audio finishes naturally so the
+    // next click on the same bubble starts a fresh playback (instead
+    // of trying to resume a paused-because-already-finished player).
+    const onEnded = () => {
+      player.removeEventListener('ended', onEnded);
+      if (active && active.audio === player && active.abort === abort) {
+        active = null;
+        activeReplyId = null;
+      }
+    };
+    player.addEventListener('ended', onEnded);
     await player.play();
     log(`[text-tts] playing ${text.length} chars`);
   } catch (e: any) {
     if (e?.name === 'AbortError') return;
     diag(`[text-tts] failed: ${e?.message || e}`);
-  } finally {
-    if (active && active.abort === abort) active = null;
   }
+  // NOTE: do NOT clear `active` in a finally block. play() resolves
+  // when audio STARTS, not when it ends. Clearing here would race
+  // pause/resume calls coming in mid-playback.
 }

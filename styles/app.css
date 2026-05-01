@@ -1287,24 +1287,76 @@
   }
   .line .copy-btn svg { width: 18px; height: 18px; }
   .line .copy-btn:hover { opacity: 0.8; color: var(--primary); }
-  /* Per-bubble replay button on agent lines. Sits next to the copy
-   * button. Same opacity/hover treatment for visual consistency. */
-  .line.agent .replay-btn {
-    position: absolute; top: 4px; right: 30px;
+
+  /* ── Per-bubble TTS playback controls (agent lines) ──
+   * Ported from the classic pipeline (08f50ac:styles/app.css ~900-985).
+   * Two-layer playhead bar at the top edge of the bubble:
+   *   .play-bar-loaded — synthesis/buffer progress (light primary)
+   *   .play-bar-played — playback position (bright primary, on top)
+   * Play/pause button top-right next to the copy icon. Color encodes
+   * cache state: muted grey = uncached, primary = cached / active. */
+  .line.agent .play-bar {
+    position: absolute;
+    top: -10px; left: 0; right: 0;
+    height: 24px;
+    cursor: pointer;
+    background: rgba(0,0,0,0.01);
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: rgba(0,0,0,0);
+  }
+  .line.agent .play-bar-loaded,
+  .line.agent .play-bar-played {
+    position: absolute;
+    left: 0; top: 11px;
+    height: 2px;
+    width: 0;
+    transition: width 0.12s linear;
+    pointer-events: none;
+  }
+  .line.agent .play-bar-loaded { background: color-mix(in srgb, var(--primary) 25%, transparent); }
+  .line.agent .play-bar-played { background: var(--primary); opacity: 0.9; }
+  /* Streaming: subtle shimmer on the loaded bar while fetch is in
+   * flight (.tts-streaming class set during loading state). */
+  .line.agent.tts-streaming .play-bar-loaded {
+    background: linear-gradient(90deg,
+      color-mix(in srgb, var(--primary) 25%, transparent) 0%,
+      color-mix(in srgb, var(--primary) 60%, transparent) 50%,
+      color-mix(in srgb, var(--primary) 25%, transparent) 100%);
+    background-size: 200% 100%;
+    animation: play-bar-shimmer 1.4s ease-in-out infinite;
+    /* While loading we don't know the final width yet — fill the bar
+     * fully so the shimmer covers the whole row, then shrink to the
+     * actual ratio when loadedmetadata fires. */
+    width: 100%;
+  }
+  @keyframes play-bar-shimmer {
+    0%   { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+  }
+
+  /* Play/pause/replay button — top-right corner next to the copy icon.
+   * Glyph swap: play by default; .tts-playing flips to pause via CSS. */
+  .line.agent .play-btn {
+    position: absolute; top: 4px; right: 34px;
     background: none; border: none; color: var(--muted);
-    cursor: pointer; opacity: 0.3; padding: 4px;
+    cursor: pointer; opacity: 0.4; padding: 4px;
     transition: opacity 0.15s ease, color 0.15s ease;
     display: flex; align-items: center; justify-content: center;
+    /* Sit above the play-bar so clicks land on the button rather than
+     * the (full-width) scrub target. */
     z-index: 2;
   }
-  .line.agent .replay-btn svg { width: 18px; height: 18px; }
-  .line.agent .replay-btn:hover { opacity: 0.85; color: var(--primary); }
-  /* Visual highlight on the bubble currently being replayed. Subtle
-   * accent border on the left edge — distinct from .pending / .failed
-   * (which have stronger color cues). Cleared by replyNavigator on
-   * audio.ended / .error / chat-switch. */
-  .line.agent.replaying { box-shadow: -3px 0 0 0 var(--primary); }
-  .line.agent.replaying .replay-btn { opacity: 0.9; color: var(--primary); }
+  .line.agent .play-btn svg { width: 16px; height: 16px; }
+  .line.agent .play-btn:hover { opacity: 0.9; color: var(--primary); }
+  .line.agent.tts-cached .play-btn { opacity: 0.75; color: var(--primary); }
+  .line.agent.tts-active .play-btn,
+  .line.agent.tts-playing .play-btn,
+  .line.agent.tts-paused .play-btn { opacity: 1; color: var(--primary); }
+  /* Glyph swap via CSS (both SVGs in DOM). Default = play visible,
+   * pause hidden. .tts-playing flips it. */
+  .line.agent .play-btn .glyph-pause { display: none; }
+  .line.agent.tts-playing .play-btn .glyph-play { display: none; }
+  .line.agent.tts-playing .play-btn .glyph-pause { display: inline-block; }
   .line .line-ts {
     position: absolute; top: 6px; right: 34px;
     font-family: var(--font-mono); font-size: 10.5px;
