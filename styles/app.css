@@ -1598,6 +1598,19 @@
     0%, 100% { box-shadow: 0 0 0 0 rgba(192, 80, 74, 0.55); }
     50%      { box-shadow: 0 0 0 6px rgba(192, 80, 74, 0); }
   }
+  /* Listen mode — distinct slow pulse in the primary accent color so
+     the user can tell at a glance "I'm in Listen, not in Memo or Call".
+     Slower than mic-listening-pulse (which is the recording indicator)
+     so it reads as ambient/idle rather than active capture. */
+  .composer #btn-mic.listening-armed {
+    color: var(--primary);
+    animation: mic-listen-armed-pulse 2.2s ease-in-out infinite;
+    border-radius: 50%;
+  }
+  @keyframes mic-listen-armed-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(107, 143, 94, 0.45); }
+    50%      { box-shadow: 0 0 0 5px rgba(107, 143, 94, 0); }
+  }
 
   /* Mic-mode dropdown — chevron sits flush right of the mic button to
      swap between Memo (default) and Dictate (streaming STT to composer).

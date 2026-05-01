@@ -2000,6 +2000,13 @@ async function boot() {
    *  care where the caret was. */
   async function startVoice(initialCursor: number | null = null): Promise<void> {
     const s = settings.get();
+    // Listen mode pre-empts the other dispatch paths. When the toggle is
+    // on, a mic-button tap arms Listen — never opens a call. When the
+    // user wants Memo or Call again they flip Listen mode off.
+    if ((s as any).listenMode) {
+      await startListen();
+      return;
+    }
     if (s.micCall) {
       if (s.micAutoSend) await startCallStream();
       else await startDictate(initialCursor);
@@ -2354,7 +2361,7 @@ async function boot() {
     const s = settings.get();
     if (micModeMenu) {
       micModeMenu.querySelectorAll<HTMLButtonElement>('button.mic-toggle-row').forEach(b => {
-        const key = b.dataset.toggle as 'micCall' | 'micAutoSend' | 'tts' | undefined;
+        const key = b.dataset.toggle as 'micCall' | 'micAutoSend' | 'tts' | 'listenMode' | undefined;
         if (!key) return;
         const on = !!(s as any)[key];
         b.setAttribute('aria-checked', on ? 'true' : 'false');
@@ -2366,7 +2373,9 @@ async function boot() {
           ? s.hotkeyCallMode
           : key === 'micAutoSend'
             ? s.hotkeyAutoSend
-            : 'Alt+T';
+            : key === 'listenMode'
+              ? ''
+              : 'Alt+T';
         const isMac = /(Mac|iPhone|iPad)/i.test(navigator.platform);
         const prettyHk = isMac
           ? hk.replace(/Cmd/gi, '⌘').replace(/Shift/gi, '⇧').replace(/Alt/gi, '⌥').replace(/Ctrl/gi, '⌃').replace(/\+/g, '')
@@ -2375,8 +2384,10 @@ async function boot() {
           ? 'Call mode — full-duplex WebRTC voice (vs. push-to-record memo)'
           : key === 'micAutoSend'
             ? 'Auto-send — dispatch on end-of-utterance (vs. drafting into composer)'
-            : 'Speak replies — TTS audio output during a call (talk mode vs. stream mode)';
-        b.title = `${desc} · ${prettyHk}`;
+            : key === 'listenMode'
+              ? 'Listen mode — turn-based handsfree (commits on silence or sendword)'
+              : 'Speak replies — TTS audio output during a call (talk mode vs. stream mode)';
+        b.title = prettyHk ? `${desc} · ${prettyHk}` : desc;
       });
     }
     // Mic button tooltip + a data-mode attribute on the wrap so CSS can
@@ -2405,12 +2416,15 @@ async function boot() {
   // Reading the post-flip value via settings.get() after set() removes
   // the anticorrelation entirely. Side-effects (end-call-on-call-off)
   // also live here so menu + hotkey behave identically.
-  function flipMicSetting(key: 'micCall' | 'micAutoSend' | 'tts'): void {
+  function flipMicSetting(key: 'micCall' | 'micAutoSend' | 'tts' | 'listenMode'): void {
     const cur = !!(settings.get() as any)[key];
     const next = !cur;
     settings.set(key, next);
     applyMicModeUi();
-    const label = key === 'micCall' ? 'Call mode' : key === 'micAutoSend' ? 'Auto-send' : 'Speak replies';
+    const label = key === 'micCall' ? 'Call mode'
+      : key === 'micAutoSend' ? 'Auto-send'
+      : key === 'listenMode' ? 'Listen mode'
+      : 'Speak replies';
     // Read POST-flip value off settings, not the captured snapshot —
     // keeps the pill text honest if anything else mutated state in
     // between (or if a future caller passes its own pre-flip value).
@@ -2421,6 +2435,12 @@ async function boot() {
     // click the mic to actually stop. Same intent for menu + hotkey.
     if (key === 'micCall' && !next && voiceActive()) {
       void stopVoice();
+    }
+    // Same for Listen mode — flipping the toggle off while armed
+    // should disarm. The user's intent ("not in Listen mode anymore")
+    // outweighs leaving them with an open mic.
+    if (key === 'listenMode' && !next && listenActive) {
+      stopListen();
     }
     // Toggling speak-replies OFF stops any in-flight text-mode TTS so
     // the user gets immediate silence (otherwise an active mp3 keeps
@@ -2465,7 +2485,7 @@ async function boot() {
     micModeMenu.querySelectorAll<HTMLButtonElement>('button.mic-toggle-row').forEach(b => {
       b.onclick = (e) => {
         e.stopPropagation();
-        const key = b.dataset.toggle as 'micCall' | 'micAutoSend' | 'tts' | undefined;
+        const key = b.dataset.toggle as 'micCall' | 'micAutoSend' | 'tts' | 'listenMode' | undefined;
         if (!key) return;
         // Single canonical path — same as the hotkey. flipMicSetting
         // updates the setting, refreshes menu visuals, sets the status
