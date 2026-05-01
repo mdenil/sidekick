@@ -1482,19 +1482,38 @@ class SidekickAdapter(BasePlatformAdapter):
     def _build_settings_schema(self) -> List[Dict[str, Any]]:
         """Build the SettingDef[] list. Reads hermes config.yaml for
         the current model + the preferred-models glob filter (under
-        `sidekick.preferred_models:`), and openrouter for the catalog."""
+        `sidekick.preferred_models:`). Picker options merge OpenRouter
+        (filtered by user's preferred-globs) with EVERY other
+        authenticated provider's curated model list (e.g. openai-codex
+        OAuth, copilot, anthropic). Provider is encoded into the option
+        value: OpenRouter entries stay bare (vendor/model), every other
+        provider prefixes with `<slug>:` (e.g. `openai-codex:gpt-5.5`).
+        _apply_model_setting parses the prefix back to route the switch
+        to the right provider."""
         import fnmatch
         cfg = self._read_hermes_config()
 
-        # Current model — hermes stores it as scalar
-        # (`model: google/gemma-4-26b-a4b-it`) or dict
-        # (`model: {default: ..., provider: ...}`); handle both.
+        # Current model + provider — hermes stores model as scalar
+        # (`model: google/gemma-4-26b-a4b-it`) or dict (`model:
+        # {default: ..., provider: ...}`); handle both. Default
+        # provider when unset is "openrouter" (matches hermes default).
         current_model = ""
+        current_provider = "openrouter"
         model_cfg = cfg.get("model")
         if isinstance(model_cfg, dict):
             current_model = (model_cfg.get("default") or "").strip()
+            current_provider = (model_cfg.get("provider") or "openrouter").strip()
         elif isinstance(model_cfg, str):
             current_model = model_cfg.strip()
+        # Encoded form of the current selection — what the picker will
+        # show as the active option. OpenRouter stays bare; others
+        # carry the slug prefix so they can be uniquely identified
+        # (e.g. `gpt-5.5` is ambiguous between openai-codex and copilot,
+        # `openai-codex:gpt-5.5` is not).
+        if current_provider == "openrouter" or not current_model:
+            current_value = current_model
+        else:
+            current_value = f"{current_provider}:{current_model}"
 
         # Preferred-models filter (string-list — also exposed as its
         # own SettingDef below so the chip UI can edit it).
@@ -1572,11 +1591,48 @@ class SidekickAdapter(BasePlatformAdapter):
                     "[sidekick] settings: live openrouter supplement failed: %s", e,
                 )
 
+        # Pull EVERY OTHER authenticated provider's curated model list
+        # (Codex OAuth, Copilot OAuth, Anthropic API key, etc.). Each
+        # gets a `<slug>:<model>` value prefix so the dropdown can
+        # uniquely identify it and _apply_model_setting can route the
+        # switch to the right provider. Glob filtering is NOT applied
+        # here — the per-provider curated lists are small (7-14 entries)
+        # and forcing the user to add globs for each new provider
+        # would be tax. OpenRouter (the giant catalog) keeps the
+        # globs above; other providers ship as-is.
+        try:
+            from hermes_cli.model_switch import list_authenticated_providers
+            for prov in list_authenticated_providers(
+                current_provider=current_provider,
+                current_base_url=str((model_cfg or {}).get("base_url", "") if isinstance(model_cfg, dict) else ""),
+                user_providers=cfg.get("providers"),
+                custom_providers=cfg.get("custom_providers"),
+            ) or []:
+                slug = (prov.get("slug") or "").strip()
+                name = (prov.get("name") or slug).strip()
+                if not slug or slug == "openrouter":
+                    # Skip OpenRouter — it's already in `catalog` above
+                    # with full filter logic + live supplement.
+                    continue
+                for mid in (prov.get("models") or []):
+                    mid_s = str(mid).strip()
+                    if not mid_s:
+                        continue
+                    catalog.append({
+                        "value": f"{slug}:{mid_s}",
+                        "label": f"{mid_s} ({name})",
+                    })
+        except Exception as e:
+            logger.warning(
+                "[sidekick] settings: list_authenticated_providers failed: %s", e,
+            )
+
         # Always include the current model in the options[] list so the
         # picker can show "what's set now" even if the catalog filter
-        # excluded it.
-        if current_model and not any(e["value"] == current_model for e in catalog):
-            catalog.insert(0, {"value": current_model, "label": current_model})
+        # excluded it. Use the encoded value (with provider prefix for
+        # non-openrouter) so the picker matches what's stored.
+        if current_value and not any(e["value"] == current_value for e in catalog):
+            catalog.insert(0, {"value": current_value, "label": current_value})
 
         # Stable sort by label for the dropdown.
         catalog.sort(key=lambda e: (e["label"] or "").lower())
@@ -1588,7 +1644,7 @@ class SidekickAdapter(BasePlatformAdapter):
                 "description": "LLM used for replies",
                 "category": "Agent",
                 "type": "enum",
-                "value": current_model,
+                "value": current_value,
                 "options": catalog,
             },
             {
@@ -1770,10 +1826,17 @@ class SidekickAdapter(BasePlatformAdapter):
         what `/model <name> --global` does in chat. Cached agents on
         existing sessions keep their model until evicted (typical
         case: next conversation start). New conversations pick up
-        the new default immediately on next /v1/responses dispatch."""
+        the new default immediately on next /v1/responses dispatch.
+
+        The PWA may submit either `<vendor>/<model>` (OpenRouter, no
+        prefix) or `<provider-slug>:<model>` (e.g. `openai-codex:gpt-5.5`,
+        `copilot:gpt-5.4`). The colon prefix is the cue to route the
+        switch via switch_model's `explicit_provider` arg so we don't
+        have to detect-by-name. Provider names with colons in them
+        would break this — none today."""
         if not isinstance(value, str) or not value.strip():
             raise _SettingsValidationError("model value must be a non-empty string")
-        new_model = value.strip()
+        raw_value = value.strip()
 
         # Validate against the declared options[] (sidekick filter +
         # current). Same logic as _build_settings_schema; we re-derive
@@ -1783,10 +1846,24 @@ class SidekickAdapter(BasePlatformAdapter):
         if model_def is None:
             raise _SettingsNotFoundError("model setting not declared")
         valid_values = {o["value"] for o in (model_def.get("options") or [])}
-        if new_model not in valid_values:
+        if raw_value not in valid_values:
             raise _SettingsValidationError(
-                f"value not in options[]: {new_model!r}"
+                f"value not in options[]: {raw_value!r}"
             )
+
+        # Decode `<slug>:<model>` if present. Bare values (no colon)
+        # are treated as openrouter-routed. Note OpenRouter IDs CAN
+        # contain colons in the suffix (e.g. `google/gemma-4-26b:free`,
+        # `:nitro`) — but those values always have a `/` BEFORE the
+        # colon. Provider-slug prefixes never contain `/`. So: strip
+        # the prefix only when the part before `:` has no slash.
+        if ":" in raw_value and "/" not in raw_value.split(":", 1)[0]:
+            slug, _, mid = raw_value.partition(":")
+            explicit_provider = slug.strip()
+            new_model = mid.strip()
+        else:
+            explicit_provider = ""
+            new_model = raw_value
 
         # Read current state to feed switch_model.
         try:
@@ -1832,7 +1909,7 @@ class SidekickAdapter(BasePlatformAdapter):
                 current_base_url=current_base_url,
                 current_api_key="",
                 is_global=True,
-                explicit_provider="",
+                explicit_provider=explicit_provider,
                 user_providers=user_provs,
                 custom_providers=custom_provs,
             )
