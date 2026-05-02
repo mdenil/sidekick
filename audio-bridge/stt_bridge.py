@@ -82,13 +82,17 @@ MAX_PCM_QUEUE = 100
 # ── Server-side VAD / barge detection thresholds ──────────────────────
 #
 # Frame energy (RMS over the 20 ms s16 PCM frame). int16 samples range
-# ±32767; ambient room noise on a Pi-attached USB mic tends to sit at
-# RMS 80-300, normal speech peaks 2000-8000, shouting 10k+.
+# ±32767. Mic gain varies hugely across capture paths:
+#   - Pi USB mic: ambient 80-300, speech 2000-8000, shouting 10k+
+#   - iPhone Safari w/ AEC: ambient 50-150, speech 200-800
+#   - Desktop Chrome built-in mic: ambient 100-400, speech 800-2000
 #
-# Default 300 — some desktop mic captures land well below the
-# back-of-the-envelope range and won't fire barge at normal speaking
-# volume. Tunable via SIDEKICK_VAD_RMS_THRESHOLD env var.
-VAD_RMS_THRESHOLD = int(os.environ.get("SIDEKICK_VAD_RMS_THRESHOLD", "300"))
+# Default 100 — the floor at sensitivity 100% (slider all the way up).
+# Lower than original (300) so iPhone/desktop captures, which sit much
+# quieter than the Pi reference rig the threshold was originally tuned
+# against, can barge at normal speaking volume. Tunable via
+# SIDEKICK_VAD_RMS_THRESHOLD env var.
+VAD_RMS_THRESHOLD = int(os.environ.get("SIDEKICK_VAD_RMS_THRESHOLD", "100"))
 
 # Consecutive 20 ms frames over threshold required to fire a barge.
 # 8 * 20 ms = 160 ms — long enough to filter cough/keypress transients,
@@ -323,13 +327,20 @@ async def _run_stt(
         # false-positive halt-then-reset_turn cycle re-arms the gate
         # within the next mic frame (see BargeGate docstring).
         # Threshold: peer can override via offer's barge_threshold
-        # (PWA's bargeThreshold setting, 0..1). Mapping to integer RMS
-        # gives 300 at sensitivity 100% (= threshold 0.0) and ~3300 at
-        # 0% (= threshold 0.5). Headphones can keep low; desktop with
-        # speakers benefits from higher to ride out TTS→mic echo bleed.
+        # (PWA's bargeThreshold setting, 0..0.5; PWA UI exposes the
+        # inverse as a sensitivity %). Mapping with VAD_RMS_THRESHOLD=100
+        # base + 2000 multiplier gives:
+        #   sens 100% (thr_01=0)    → 100 RMS  — fires on quiet speech
+        #   sens 60%  (thr_01=0.20) → 500 RMS  — normal-volume speech
+        #   sens 50%  (thr_01=0.25) → 600 RMS
+        #   sens 0%   (thr_01=0.5)  → 1100 RMS — only loud / shouted
+        # Lower multiplier (was 6000) keeps the slider's full range
+        # within the actual mic-RMS band (200-2000 covers iPhone +
+        # desktop). Headphone users w/ no speaker echo can drop sens
+        # higher with no false-fire risk.
         thr_01 = peer.extra.get("barge_threshold_01")
         if thr_01 is not None:
-            peer_threshold = int(VAD_RMS_THRESHOLD + float(thr_01) * 6000)
+            peer_threshold = int(VAD_RMS_THRESHOLD + float(thr_01) * 2000)
         else:
             peer_threshold = VAD_RMS_THRESHOLD
         gate = BargeGate(

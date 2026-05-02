@@ -177,7 +177,7 @@ const DEFAULTS = {
   navNext: 'next chat',
   navPause: 'pause chat',
   autoAdvanceOnNew: false,
-  bargeThreshold: 0.20,
+  bargeThreshold: 0.10,
   contentSize: 15,
   audioFeedbackVolume: 0.5,
   theme: 'dark',

@@ -38,7 +38,7 @@ export const FRONTEND_SETTINGS = {
   navPause:               { category: 'streaming',       default: 'pause chat' },
   // Interaction (mic-meter + barge + wake lock + audio feedback)
   bargeIn:                { category: 'interaction',     default: true },
-  bargeThreshold:         { category: 'interaction',     default: 0.20 },
+  bargeThreshold:         { category: 'interaction',     default: 0.10 },
   wakeLock:               { category: 'interaction',     default: true },
   audioFeedbackVolume:    { category: 'interaction',     default: 0.5 },
   // Hotkeys (modifier+key strings)
