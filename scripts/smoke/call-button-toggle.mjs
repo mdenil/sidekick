@@ -21,7 +21,7 @@
 //   6. Flip realtime ON while Listen is armed → Listen disarms (the
 //      user's intent — switch transport — wins).
 
-import { tapMic /* unused, but anchors lib import shape */ } from './lib.mjs';
+import { resetServerSettings } from './lib.mjs';
 
 export const NAME = 'call-button-toggle';
 export const DESCRIPTION = 'btn-call tap-to-toggle: realtime=false arms Listen, =true opens WebRTC, tap-again ends';
@@ -41,6 +41,9 @@ async function tapCall(page, { afterPrevTapMs = 0 } = {}) {
 }
 
 export default async function run({ page, log, fail, url }) {
+  // Reset server-side settings to defaults — proxy yaml is shared
+  // across smoke runs and a prior scenario could have left realtime=true.
+  await resetServerSettings(page);
   // Real getUserMedia comes via Chromium's --use-fake-device-for-media-stream
   // launch flag. `?listen_mock_mic=1` arms the synthetic-frames hook so
   // turn-based Listen's silence/sendword detection has predictable input.

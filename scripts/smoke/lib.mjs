@@ -100,7 +100,10 @@ export async function waitForReady(page, url = DEFAULT_URL, { debug = true, time
  *  Add to the map if a new test depends on a specific starting value. */
 export async function resetServerSettings(page, overrides = {}) {
   const defaults = {
-    micCall: false,
+    // micCall was retired in 2026-05 (two-button-split refactor); the
+    // call button replaces the toggle. `streaming` is the new mic-mode
+    // selector (false=memo, true=cursor-aware dictation).
+    streaming: false,
     micAutoSend: false,
     realtime: false,
     tts: false,
