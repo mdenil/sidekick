@@ -1958,10 +1958,27 @@ async function boot() {
     // uses, identical hide/restore semantics for the composer-actions
     // row. Reuses recorderBar.mount under the hood for visual parity.
     const mount = enterComposerBarMount();
-    const restoreComposerActions = () => mount?.restore();
+    // Move btn-mic into the bar's right-end slot so the user has a
+    // visible "end call" affordance (mirrors how memo embeds the send
+    // button). The btn-mic's existing pointer handlers in main.ts
+    // already do the right thing on click while listenActive: route
+    // through stopVoice → stopListen. The .listening / .active CSS
+    // classes give it the red end-call appearance.
+    const btnMicOriginalParent = btnMic?.parentElement || null;
+    const btnMicOriginalNextSibling = btnMic?.nextElementSibling || null;
+    const restoreComposerActions = () => {
+      // Restore btn-mic to its original DOM home BEFORE un-hiding the
+      // composer-actions row so it's back in its slot when visible.
+      if (btnMic && btnMicOriginalParent && btnMic.parentElement !== btnMicOriginalParent) {
+        try { btnMicOriginalParent.insertBefore(btnMic, btnMicOriginalNextSibling); }
+        catch { btnMicOriginalParent.appendChild(btnMic); }
+      }
+      mount?.restore();
+    };
     const ok = await turnbased.start({
       barContainer: mount?.container || null,
       barInsertBefore: mount?.insertBefore || null,
+      barRightBtn: btnMic || null,
       onCommit: async (blob, reason) => {
         // Post the blob to /transcribe (mirrors the memo path) and route
         // the resulting transcript through composer.appendText +
@@ -2610,14 +2627,27 @@ async function boot() {
     if (dictateActive) void stopDictate();
   }, true);
 
-  // Esc closes dictate (matches the memo Esc-cancel UX). Doesn't
-  // interfere with the existing memoActive Esc handler — that only
-  // fires when memo is recording.
+  // Esc ends any active voice mode — dictate / Listen / WebRTC call.
+  // Matches the memo Esc-cancel UX (memo has its own handler that
+  // fires only when recording). Priority order matches the natural
+  // "innermost active mode" the user is most likely trying to exit.
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
-    if (!dictateActive) return;
-    e.preventDefault();
-    void stopDictate();
+    if (dictateActive) {
+      e.preventDefault();
+      void stopDictate();
+      return;
+    }
+    if (listenActive) {
+      e.preventDefault();
+      stopListen();
+      return;
+    }
+    if (webrtcControls.isOpen()) {
+      e.preventDefault();
+      void webrtcControls.closeIfOpen();
+      return;
+    }
   });
 
   // ── Global hotkeys (user-configurable in settings) ──────────────────

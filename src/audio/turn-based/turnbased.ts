@@ -71,6 +71,13 @@ export type ListenOpts = {
    *  semantics as memo.start (drops the bar in front of the composer
    *  actions row). */
   barInsertBefore?: HTMLElement | null;
+  /** Optional element to relocate INTO the bar's right-end slot.
+   *  Memo uses this to embed the send button; Listen uses it to embed
+   *  the mic button (so the user has a visible "end call" affordance
+   *  in the same physical spot). Caller is responsible for restoring
+   *  the element to its original parent on teardown — the bar's
+   *  destroy() doesn't track where it came from. */
+  barRightBtn?: HTMLElement | null;
 };
 
 const REARM_GRACE_MS = 500;
@@ -193,7 +200,10 @@ export async function start(o: ListenOpts): Promise<boolean> {
     bar = recorderBar.mount({
       container: o.barContainer,
       insertBefore: o.barInsertBefore || null,
-      sendBtn: null,  // listen doesn't have a send button — sendword/silence auto-commit
+      // Right-slot button — caller passes the mic button (Listen) so
+      // the user has a visible "end call" affordance at the bar's
+      // right end. Memo passes its send button; same DOM slot.
+      sendBtn: o.barRightBtn || null,
       onCancel: () => {
         // Trash button = disarm. cancel() runs teardown which destroys
         // the bar, so the click handler doesn't need to do that itself.
