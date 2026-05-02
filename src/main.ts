@@ -2597,6 +2597,20 @@ async function boot() {
 
   type CallToggleKey = 'realtime' | 'tts';
 
+  // Hover-capable, fine-pointer devices (desktop, laptop, iPad+trackpad)
+  // get .title tooltips on hover; touch-only devices (iPhone, iPad bare)
+  // don't, because iOS treats title as a long-press tooltip preview that
+  // fights with PTT gestures (see ae8eb88). aria-label is set
+  // unconditionally for screen readers.
+  const isHoverDevice = typeof window !== 'undefined'
+    && window.matchMedia?.('(hover: hover) and (pointer: fine)').matches === true;
+
+  function setTooltip(el: Element | null, text: string): void {
+    if (!el) return;
+    el.setAttribute('aria-label', text);
+    if (isHoverDevice) el.setAttribute('title', text);
+  }
+
   function tooltipForCallToggle(key: CallToggleKey): string {
     return key === 'realtime'
       ? 'Realtime: ON = WebRTC duplex audio (low latency, lossy on flaky networks). OFF (default) = turn-based recording (full fidelity, sent on end-of-utterance).'
@@ -2611,26 +2625,37 @@ async function boot() {
       const on = !!s[key];
       b.setAttribute('aria-checked', on ? 'true' : 'false');
       b.classList.toggle('on', on);
-      // aria-label instead of title — iOS treats title as a long-press
-      // tooltip preview that pops up on every menu-row tap.
-      b.setAttribute('aria-label', tooltipForCallToggle(key));
+      setTooltip(b, tooltipForCallToggle(key));
     });
   }
 
   function applyMicModeUi(): void {
     const s = settings.get() as any;
     applyMenuRows(callModeMenu, s);
-    // No dynamic .title= on btn-mic / btn-call — iOS treats title as a
-    // long-press tooltip preview that fights with our PTT gestures and
-    // pops up on every tap. aria-label (set in index.html) covers the
-    // screen-reader case. Visual icon + onboarding cover discoverability.
-    // data-mode on the wrap drives any CSS that wants to react to the
-    // current call transport (e.g. accent the chevron in realtime).
     if (callModeWrap) {
       callModeWrap.dataset.mode = s.realtime ? 'realtime' : 'turn-based';
     }
+    // Dynamic call-button tooltip — only meaningful on hover devices
+    // (setTooltip skips title= on touch).
+    const btnCallEl = document.getElementById('btn-call');
+    if (btnCallEl) {
+      const what = s.realtime
+        ? (s.tts ? 'WebRTC call (talk mode)' : 'WebRTC call (stream mode)')
+        : 'turn-based call (Listen)';
+      setTooltip(btnCallEl, `Tap to start — ${what}`);
+    }
   }
   applyMicModeUi();
+
+  // Mirror static composer aria-label → title for hover devices. iOS
+  // touch path keeps title-less buttons (no long-press tooltip popup).
+  if (isHoverDevice) {
+    for (const id of ['btn-mic', 'btn-call-mode']) {
+      const el = document.getElementById(id);
+      const label = el?.getAttribute('aria-label');
+      if (el && label) el.setAttribute('title', label);
+    }
+  }
 
   // Single source of truth for "flip a mic / call menu toggle" — used by
   // BOTH the menu-click handlers AND the global hotkey handler. Reads

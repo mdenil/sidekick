@@ -772,6 +772,24 @@ export const proxyClientAdapter = {
     // rows could be older OR newer than the server's tail.
     merged.sort((a, b) => (b.lastMessageAt || 0) - (a.lastMessageAt || 0));
 
+    // Duplicate-id detector — investigating the 2026-05-02 sidebar
+    // dual-select bug (two LIs with same data-chat-id ended up sharing
+    // .active state). Logs a one-shot dump when collisions appear so we
+    // can tell whether the dupe came from the server response, the
+    // local-only append, or both. Always-on log() so it surfaces in
+    // the in-app debug panel without needing the diag flag.
+    const idCounts = new Map<string, number>();
+    for (const m of merged) idCounts.set(m.id, (idCounts.get(m.id) || 0) + 1);
+    const dupes = [...idCounts.entries()].filter(([, n]) => n > 1);
+    if (dupes.length > 0) {
+      const enrichSummary = enrich.map(e => ({ id: e.chat_id, source: e.source || 'sidekick', msgs: e.message_count || 0 }));
+      const localOnlyAppended = local.filter(c => !new Set(enrich.map(e => e.chat_id)).has(c.chat_id)).map(c => ({ id: c.chat_id, source: 'sidekick (local-only)' }));
+      const dupeSummary = dupes.map(([id, n]) => `${id}×${n}`).join(', ');
+      log(`[listSessions] DUPLICATE IDs: ${dupeSummary}`);
+      log(`[listSessions] enrich=${JSON.stringify(enrichSummary)}`);
+      log(`[listSessions] local-only appended=${JSON.stringify(localOnlyAppended)}`);
+    }
+
     // Surface the unconfigured state via a synthetic top row so the
     // drawer renders a clear hint without needing a new chrome path.
     if (unconfigured && merged.length === 0) {
