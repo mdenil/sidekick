@@ -301,7 +301,7 @@ Cross-platform drawer list. Same OAI row shape as
   "object": "list",
   "data": [
     {
-      "id": "<chat_id>",
+      "id": "telegram:1000000001",
       "object": "conversation",
       "created_at": 1777290174,
       "metadata": {
@@ -310,7 +310,8 @@ Cross-platform drawer list. Same OAI row shape as
         "last_active_at": 1777290174,
         "first_user_message": "let's plan the trip...",
         "source": "telegram",
-        "chat_type": "dm"
+        "chat_type": "dm",
+        "native_chat_id": "1000000001"
       }
     }
   ]
@@ -329,6 +330,43 @@ ordering required.
 composer goes read-only when `source !== 'sidekick'`. Agents that
 want bidirectional cross-platform messaging would extend further
 (future: `POST /v1/gateway/responses?source=...`).
+
+#### Multi-identity rule for `id` (CRITICAL for plugin authors)
+
+`ConversationSummary.id` is **globally unique** — that's the contract
+sidekick consumes. The drawer keys per-row state on it, click
+handling assumes one LI per `id`, and resume/delete URLs route by it.
+
+When a backend natively keys sessions on a compound `(source,
+native_chat_id)` (multi-channel gateways: hermes, openclaw, anything
+that aggregates Slack + Telegram + WhatsApp + … under one agent),
+**plugins MUST encode the compound into the contract's `id`**.
+Convention:
+
+```
+id = "${source}:${native_chat_id}"
+```
+
+Surface the platform-native identifier separately as
+`metadata.native_chat_id` so clients that need to display or
+correlate it (badges, debug overlays) still have access. Per-chat
+URL handlers (`/v1/conversations/{id}/items`, DELETE, send dispatch)
+decode the prefix server-side to disambiguate source.
+
+**Why this matters:** when the same `native_chat_id` appears under
+two sources (e.g. a sidekick test session whose chat_id happens to
+collide with a WhatsApp `@lid`), exposing `id := native_chat_id`
+silently violates uniqueness. The drawer renders two LIs sharing
+`data-chat-id`, click activates both, and history fetch — having
+nothing else to disambiguate by — picks one source arbitrarily and
+returns the wrong session's content. Single-platform backends
+(stub, openai-compat third-parties) where source is constant get
+the same encoding for free; the prefix is a no-op disambiguator.
+
+The reference plugin (`backends/hermes/plugin/__init__.py`,
+`_format_gateway_id` / `_parse_gateway_id`) shows the pattern.
+Frontend treats `id` as opaque, so plugins can change the encoding
+later (e.g. introduce a separator escape) without a frontend change.
 
 ---
 

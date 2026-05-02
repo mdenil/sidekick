@@ -212,6 +212,67 @@ for the round-trip (file issue, contribute, wait for release).
 
 ---
 
+## Required: prefix-encode the gateway `id` field
+
+**This is a contract requirement, not openclaw-specific.** The agent
+protocol's `ConversationSummary.id` is globally unique
+(`ABSTRACT_AGENT_PROTOCOL.md` "Multi-identity rule for `id`"). For a
+multi-channel gateway like openclaw — where the same `native_chat_id`
+can recur under different sources — the plugin MUST emit:
+
+```
+id = "${source}:${native_chat_id}"
+```
+
+…and surface the platform-native chat_id as `metadata.native_chat_id`.
+
+**Why we know this is a real problem (2026-05-02 hermes precedent):**
+hermes' first cut of the gateway endpoint emitted `id := chat_id` (i.e.
+the platform `user_id`). When Jonathan's WhatsApp `@lid`
+(`199999999999999@lid`) ended up shared with a sidekick test session,
+the gateway returned two rows with identical `id`. Sidekick rendered
+two LIs with the same `data-chat-id`; clicking either activated both;
+history fetch went through `_resolve_source_for_chat_id` which picks
+one arbitrarily and returned the wrong session content. Fix lived
+entirely in the plugin: `_format_gateway_id(source, chat_id)` at the
+gateway-list emit point + `_parse_gateway_id` at the per-chat URL
+handlers. See `backends/hermes/plugin/__init__.py` (search for
+`_GATEWAY_ID_SEP`).
+
+**Openclaw plugin specifics:**
+
+- The drawer-list handler (`/v1/gateway/conversations`) emits
+  `id = f"{source}:{native_id}"` for every row. `metadata.source` and
+  `metadata.native_chat_id` carry the components separately for client
+  display.
+- The per-chat handlers (`/v1/conversations/{id}/items`, DELETE,
+  `/v1/responses` dispatch) split the prefix off the URL `id` to
+  resolve source-aware queries against openclaw's session store. If
+  openclaw exposes `accountId / sessionKey / sessionId` natively (per
+  the channel-plugin docs hint at line 182 of this doc), the
+  decoded `(source, native_id)` pair maps directly onto the
+  appropriate openclaw key — likely `(source = channel name,
+  native_id = sessionKey)` or similar; resolve in Q2.
+- `/v1/responses` rejects non-sidekick prefixes (composer is
+  read-only upstream for those) and strips the sidekick prefix
+  before dispatch — same shape as the hermes plugin's
+  `_handle_responses` source-gate.
+- Single-channel mode (openclaw configured with one channel):
+  source is constant, prefix is a no-op disambiguator. No special
+  case needed — uniform encoding.
+
+**Why this saves work in the openclaw refactor:** the encoding
+helpers (`_format_gateway_id` / `_parse_gateway_id`) are pure
+functions with no openclaw or hermes dependencies. Copy them
+verbatim into the openclaw plugin, swap the data source from
+`_summaries_by_user_id` to whatever openclaw runtime API enumerates
+sessions, and the contract conformance falls out for free. Tests in
+`backends/hermes/plugin/tests/test_user_id_queries.py` (search
+"Gateway id encoding") show the expected behavior at the unit level
+and translate directly.
+
+---
+
 ## What NOT to do
 
 - **Don't fork channel-plugin code.** The data-flow mismatch is
