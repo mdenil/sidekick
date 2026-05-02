@@ -125,17 +125,33 @@ export default async function run({ page, log, fail }) {
     // SQL escaping: session_id is a hermes-generated timestamp+hex string,
     // safe to interpolate. We're shelling out to sqlite3 with execFile so
     // there's no shell-injection surface either way.
-    const rows = await sqlQuery(
-      STATE_DB,
-      `SELECT id, role, tool_name, tool_calls FROM messages
-         WHERE session_id = '${sessionId}'
-           AND (
-             tool_name = 'web_search'
-             OR (role = 'assistant' AND tool_calls LIKE '%"name": "web_search"%')
-           )
-         ORDER BY id ASC`,
-    );
-    log(`state.db rows matching web_search: ${rows.length}`);
+    //
+    // Hermes commits tool_calls to state.db asynchronously after the
+    // response generator yields the final envelope — there can be a
+    // 100ms-1s gap between reply_final landing in the PWA and the row
+    // hitting disk. Poll up to 10s with backoff so the test isn't
+    // racing the write.
+    const sql = `SELECT id, role, tool_name, tool_calls FROM messages
+       WHERE session_id = '${sessionId}'
+         AND (
+           tool_name = 'web_search'
+           OR (role = 'assistant' AND tool_calls LIKE '%"name": "web_search"%')
+         )
+       ORDER BY id ASC`;
+    let rows = [];
+    const pollStart = Date.now();
+    while (Date.now() - pollStart < 10_000) {
+      rows = await sqlQuery(STATE_DB, sql);
+      if (rows.length > 0) break;
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    log(`state.db rows matching web_search: ${rows.length} (after ${Date.now() - pollStart}ms poll)`);
+    if (rows.length === 0) {
+      // Diagnostic: dump ALL rows for this session so we can see what
+      // hermes actually wrote, instead of just "got 0".
+      const allRows = await sqlQuery(STATE_DB, `SELECT id, role, tool_name, substr(content, 1, 80) AS content_excerpt, substr(tool_calls, 1, 200) AS tool_calls_excerpt FROM messages WHERE session_id = '${sessionId}' ORDER BY id ASC`);
+      log(`all rows for session ${sessionId}: ${JSON.stringify(allRows, null, 2)}`);
+    }
     assert(rows.length >= 1, `expected ≥1 web_search row in state.db for session ${sessionId}, got 0`);
   } finally {
     if (chatId) await deleteChat(page, chatId);
