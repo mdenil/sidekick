@@ -32,13 +32,21 @@ export default {
     const div = document.createElement('div');
     div.className = 'card-links';
 
+    // tryIframe (for the link-preview decorate path) is single-link-only
+    // because link-iframe-wrap is meant to be the dominant visual; doing
+    // it 10 times for a 10-link card would be visually overwhelming. The
+    // maps embed below is per-link though — every maps URL gets its own
+    // interactive map because the iframe is the entire useful payload
+    // (the equivalent of the "preview screenshot + meta" otherwise).
     const tryIframe = p.links.length === 1;
 
     for (const link of p.links) {
       const host = safeHost(link.url);
 
-      // Google Maps → use Embed API (interactive map, not a static preview)
-      const mapsEmbed = tryIframe && buildMapsEmbed(link.url);
+      // Google Maps → use Embed API (interactive map, not a static
+      // preview). Per-link, not gated on tryIframe — multi-link cards
+      // with multiple maps URLs get one embed per URL.
+      const mapsEmbed = buildMapsEmbed(link.url);
       if (mapsEmbed) {
         const frame = document.createElement('div');
         frame.className = 'link-iframe-wrap maps';
@@ -52,8 +60,7 @@ export default {
         a.className = 'open-ext';
         a.textContent = 'open in google maps ↗';
         div.appendChild(a);
-        container.appendChild(div);
-        return;
+        continue;
       }
 
       const a = document.createElement('a');
