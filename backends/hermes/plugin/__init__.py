@@ -231,6 +231,53 @@ GATEWAY_DRAWER_SOURCES: Tuple[str, ...] = (
 SIDEKICK_SOURCE: str = "sidekick"
 
 
+# ── Gateway id encoding ─────────────────────────────────────────────
+# The agent contract guarantees `ConversationSummary.id` is globally
+# unique. Hermes natively keys sessions by `(source, user_id)` —
+# `user_id` IS the platform chat_id, and the same chat_id can recur
+# across sources (e.g. a sidekick test session that happens to use a
+# WhatsApp `@lid` as its chat_id, or a telegram numeric id that
+# coincides with a sidekick UUID). Exposing user_id alone as `id`
+# violates uniqueness; the drawer then renders two LIs with the same
+# `data-chat-id`, click activates both, and history fetches go
+# through `_resolve_source_for_chat_id` which picks one source
+# arbitrarily — wrong session content appears in the right row.
+#
+# Encode `(source, chat_id)` into a single contract-unique id:
+#   `${source}:${chat_id}`  e.g. `whatsapp:199999999999999@lid`
+#
+# Sources are internal constants (no colons); chat_ids in the wild
+# don't contain colons in any platform we support. We split on FIRST
+# `:` — chat_ids containing colons would still round-trip correctly.
+# Frontend treats `id` as opaque. Per-chat URLs (`/v1/conversations/
+# {id}/items`, DELETE) decode the prefix server-side to disambiguate.
+#
+# Backward compat: if an `id` arrives at the per-chat handler WITHOUT
+# a prefix, fall through to `_resolve_source_for_chat_id` so legacy
+# callers (channel-only `/v1/conversations` consumers, ad-hoc curls)
+# keep working. New callers should always use prefixed ids.
+_GATEWAY_ID_SEP = ":"
+
+
+def _format_gateway_id(source: str, chat_id: str) -> str:
+    """Encode (source, chat_id) into a contract-unique identifier."""
+    return f"{source}{_GATEWAY_ID_SEP}{chat_id}"
+
+
+def _parse_gateway_id(id_str: str) -> Tuple[Optional[str], str]:
+    """Split a gateway id back into (source, chat_id). Returns
+    `(None, id_str)` for legacy un-prefixed ids — callers fall back to
+    source-resolution-by-chat_id in that case."""
+    if _GATEWAY_ID_SEP not in id_str:
+        return (None, id_str)
+    src, _, chat = id_str.partition(_GATEWAY_ID_SEP)
+    if src not in GATEWAY_DRAWER_SOURCES:
+        # Unrecognized prefix — treat as a chat_id that happens to
+        # contain a colon. Defensive against future chat_id formats.
+        return (None, id_str)
+    return (src, chat)
+
+
 class _SettingsValidationError(ValueError):
     """Raised by _apply_setting when the value is invalid for the
     declared type. Maps to HTTP 400 in _handle_settings_update."""
@@ -948,7 +995,7 @@ class SidekickAdapter(BasePlatformAdapter):
         reproducible)."""
         if not self._check_http_auth(request):
             return web.Response(status=401, text="invalid token")
-        chat_id = request.match_info["id"]
+        raw_id = request.match_info["id"]
         try:
             limit = max(1, min(int(request.query.get("limit", "200")), 500))
         except ValueError:
@@ -963,9 +1010,16 @@ class SidekickAdapter(BasePlatformAdapter):
             except ValueError:
                 return web.Response(status=400, text="invalid before cursor")
 
-        source = await asyncio.to_thread(self._resolve_source_for_chat_id, chat_id)
-        if source is None:
-            return web.Response(status=404, text="conversation not found")
+        # Prefer the source carried in the prefixed id — that's what
+        # disambiguates `(source, chat_id)` collisions. Fall back to
+        # state.db source resolution for legacy un-prefixed callers.
+        parsed_source, chat_id = _parse_gateway_id(raw_id)
+        if parsed_source is not None:
+            source = parsed_source
+        else:
+            source = await asyncio.to_thread(self._resolve_source_for_chat_id, chat_id)
+            if source is None:
+                return web.Response(status=404, text="conversation not found")
 
         result = await asyncio.to_thread(
             self._items_by_user_id, chat_id, source, limit, before_id,
@@ -1015,7 +1069,10 @@ class SidekickAdapter(BasePlatformAdapter):
         )
         data = [
             {
-                "id": chat_id,
+                # Prefixed `${source}:${chat_id}` — see _format_gateway_id
+                # rationale at module top. Clients treat as opaque; per-
+                # chat handlers decode source-side via _parse_gateway_id.
+                "id": _format_gateway_id(source, chat_id),
                 "object": "conversation",
                 "created_at": int(created_at),
                 "metadata": {
@@ -1025,6 +1082,10 @@ class SidekickAdapter(BasePlatformAdapter):
                     "first_user_message": first_user_message,
                     "source": source,
                     "chat_type": chat_type,
+                    # Native chat_id (pre-prefix) preserved for clients
+                    # that need to display or correlate the platform-
+                    # native identifier (e.g. WhatsApp @lid badge, debug).
+                    "native_chat_id": chat_id,
                 },
             }
             for (chat_id, source, chat_type, title, message_count,
@@ -1049,8 +1110,15 @@ class SidekickAdapter(BasePlatformAdapter):
         drawer)."""
         if not self._check_http_auth(request):
             return web.Response(status=401, text="invalid token")
-        chat_id = request.match_info["id"]
-        result = await asyncio.to_thread(self._delete_conversation_sync, chat_id)
+        raw_id = request.match_info["id"]
+        # Source-aware delete — without the prefix we'd default to
+        # SIDEKICK_SOURCE and silently scrub the wrong session when
+        # chat_ids collide across platforms.
+        parsed_source, chat_id = _parse_gateway_id(raw_id)
+        source = parsed_source if parsed_source is not None else SIDEKICK_SOURCE
+        result = await asyncio.to_thread(
+            self._delete_conversation_sync, chat_id, source,
+        )
         if result == "not_found":
             return web.Response(status=404, text="conversation not found")
         if result == "error":
@@ -1291,15 +1359,18 @@ class SidekickAdapter(BasePlatformAdapter):
             has_more = False
         return (items, first_id, has_more)
 
-    def _delete_conversation_sync(self, chat_id: str) -> str:
+    def _delete_conversation_sync(
+        self, chat_id: str, source: str = SIDEKICK_SOURCE,
+    ) -> str:
         """Synchronous cascade delete. Returns 'ok', 'not_found', or
         'error'. Worker-thread safe.
 
         Resolves the set of session_ids to scrub via
-        ``WHERE user_id = chat_id AND source = 'sidekick'`` — picks up
-        every session that ever belonged to this chat (compression
-        forks AND auto-reset rotations), no recursive parent-chain
-        walk needed."""
+        ``WHERE user_id = chat_id AND source = ?`` — picks up every
+        session that ever belonged to this `(source, chat_id)` pair
+        (compression forks AND auto-reset rotations), no recursive
+        parent-chain walk needed. ``source`` defaults to ``sidekick``
+        for backward compat with un-prefixed delete callers."""
         if self._state_db_path is None or not self._state_db_path.exists():
             return "error"
         try:
@@ -1309,7 +1380,7 @@ class SidekickAdapter(BasePlatformAdapter):
                     rows = conn.execute(
                         "SELECT id FROM sessions "
                         "WHERE user_id = ? AND source = ?",
-                        (chat_id, SIDEKICK_SOURCE),
+                        (chat_id, source),
                     ).fetchall()
                     fork_sids = [r[0] for r in rows]
                     if not fork_sids:
@@ -1326,26 +1397,27 @@ class SidekickAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.warning("[sidekick] state.db delete failed for chat_id=%s: %s", chat_id, exc)
             return "error"
-        # sessions.json: scrub the sidekick key. This is the only
-        # remaining sessions.json read site in the plugin — the read
-        # side (drawer + history + chat_id resolution + poller) all
-        # query state.db now. The cascade still touches sessions.json
-        # because hermes-agent's session machinery owns that file and
-        # would resurrect the key if we left a stale entry.
-        sessions_index = self._state_db_path.parent / "sessions" / "sessions.json"
-        try:
-            if sessions_index.exists():
-                with open(sessions_index, encoding="utf-8") as f:
-                    idx = json.load(f)
-                key = f"{SESSION_KEY_PREFIX}{chat_id}"
-                if isinstance(idx, dict) and key in idx:
-                    del idx[key]
-                    tmp = sessions_index.with_suffix(f".tmp.{os.getpid()}")
-                    with open(tmp, "w", encoding="utf-8") as f:
-                        json.dump(idx, f, indent=2)
-                    os.replace(tmp, sessions_index)
-        except Exception as exc:
-            logger.warning("[sidekick] sessions.json scrub failed: %s", exc)
+        # sessions.json: scrub the sidekick key. SESSION_KEY_PREFIX is
+        # the sidekick-namespaced prefix; for non-sidekick deletes the
+        # sessions.json entry (if any) belongs to a different platform
+        # adapter and isn't ours to scrub here. Skip when source isn't
+        # sidekick — hermes-agent's other adapters own their own keys.
+        # jsonl + hindsight cascades below still run for any source.
+        if source == SIDEKICK_SOURCE:
+            sessions_index = self._state_db_path.parent / "sessions" / "sessions.json"
+            try:
+                if sessions_index.exists():
+                    with open(sessions_index, encoding="utf-8") as f:
+                        idx = json.load(f)
+                    key = f"{SESSION_KEY_PREFIX}{chat_id}"
+                    if isinstance(idx, dict) and key in idx:
+                        del idx[key]
+                        tmp = sessions_index.with_suffix(f".tmp.{os.getpid()}")
+                        with open(tmp, "w", encoding="utf-8") as f:
+                            json.dump(idx, f, indent=2)
+                        os.replace(tmp, sessions_index)
+            except Exception as exc:
+                logger.warning("[sidekick] sessions.json scrub failed: %s", exc)
         # jsonl transcripts.
         for sid in fork_sids:
             jsonl = self._state_db_path.parent / "sessions" / f"{sid}.jsonl"
@@ -2007,7 +2079,22 @@ class SidekickAdapter(BasePlatformAdapter):
                 status=400,
             )
 
-        chat_id = conversation
+        # Decode the gateway-prefixed conversation id. The drawer hands
+        # back ids of the form `${source}:${chat_id}` (see
+        # _format_gateway_id rationale). Sidekick's /v1/responses path
+        # only dispatches for sidekick-source chats — the composer is
+        # read-only for any other source upstream — so reject prefixes
+        # that aren't ours rather than silently routing to a wrong-chat
+        # adapter. Bare ids (no prefix) are accepted for backward compat
+        # with un-prefixed callers.
+        parsed_source, chat_id = _parse_gateway_id(conversation)
+        if parsed_source is not None and parsed_source != SIDEKICK_SOURCE:
+            return web.json_response(
+                {"error": {"type": "invalid_request_error",
+                           "message": (f"`conversation` source `{parsed_source}` "
+                                       "is read-only via sidekick plugin")}},
+                status=400,
+            )
         response_id = f"resp_{secrets.token_hex(12)}"
         message_id = f"msg_{secrets.token_hex(10)}"
         created_at = int(time.time())

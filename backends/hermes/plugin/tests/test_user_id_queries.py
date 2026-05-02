@@ -391,3 +391,88 @@ def test_drawer_excludes_null_user_id_sessions(plugin, state_db):
     adapter = _make_adapter(plugin, state_db)
     rows = adapter._summaries_by_user_id(("sidekick",), 50)
     assert [r[0] for r in rows] == ["u"]
+
+
+# ── Gateway id encoding (contract uniqueness across sources) ─────────
+
+
+def test_format_gateway_id_round_trip(plugin):
+    """Encode/decode round-trip preserves source and chat_id, including
+    chat_ids with `@` and other platform-shaped characters."""
+    cases = [
+        ("sidekick", "709fdd42-7d8c-4105-a1ce-977f3b56e77e"),
+        ("whatsapp", "199999999999999@lid"),
+        ("whatsapp", "15551234567@s.whatsapp.net"),
+        ("telegram", "1000000001"),
+    ]
+    for source, chat_id in cases:
+        encoded = plugin._format_gateway_id(source, chat_id)
+        parsed_source, parsed_chat = plugin._parse_gateway_id(encoded)
+        assert parsed_source == source
+        assert parsed_chat == chat_id
+
+
+def test_parse_gateway_id_rejects_unknown_prefix(plugin):
+    """A bare chat_id (no prefix) returns (None, id_str). A string with
+    a colon whose prefix is NOT a known source is also treated as bare —
+    defensive against future chat_id formats containing colons."""
+    assert plugin._parse_gateway_id("199999999999999@lid") == (None, "199999999999999@lid")
+    assert plugin._parse_gateway_id("notasource:something") == (None, "notasource:something")
+
+
+def test_gateway_id_unique_for_cross_source_chat_id_collision(plugin, state_db):
+    """The smoking-gun regression: two sessions sharing user_id but
+    differing in source must produce DISTINCT gateway ids when the
+    drawer aggregate is encoded for the on-the-wire response. Before
+    this fix, both rows emitted `id = chat_id` and the frontend
+    rendered two LIs with the same `data-chat-id` (click activated
+    both, history fetched the wrong one)."""
+    same_id = "199999999999999@lid"
+    _insert_session(state_db, "wa", "whatsapp", same_id, 1000.0, title="WhatsApp thread")
+    _insert_message(state_db, "wa", "user", "voice memo", 1001.0)
+    _insert_session(state_db, "sk", "sidekick", same_id, 2000.0, title="Barge in test")
+    _insert_message(state_db, "sk", "user", "cookies?", 2001.0)
+
+    adapter = _make_adapter(plugin, state_db)
+    rows = adapter._summaries_by_user_id(("sidekick", "whatsapp"), 50)
+    assert len(rows) == 2
+    encoded_ids = [plugin._format_gateway_id(src, cid) for cid, src, *_ in rows]
+    assert len(set(encoded_ids)) == 2
+    assert "sidekick:199999999999999@lid" in encoded_ids
+    assert "whatsapp:199999999999999@lid" in encoded_ids
+
+
+def test_delete_conversation_sync_source_aware(plugin, state_db):
+    """Deleting `(whatsapp, chat_id)` must scrub the whatsapp session
+    rows ONLY — not the sidekick rows that share the same user_id.
+    Previously _delete_conversation_sync hardcoded source=sidekick
+    and would silently delete the wrong rows for cross-source
+    collisions."""
+    same_id = "199999999999999@lid"
+    _insert_session(state_db, "wa", "whatsapp", same_id, 1000.0, title="WA")
+    _insert_message(state_db, "wa", "user", "wa-msg", 1001.0)
+    _insert_session(state_db, "sk", "sidekick", same_id, 2000.0, title="SK")
+    _insert_message(state_db, "sk", "user", "sk-msg", 2001.0)
+
+    adapter = _make_adapter(plugin, state_db)
+    result = adapter._delete_conversation_sync(same_id, "whatsapp")
+    assert result == "ok"
+
+    # Whatsapp session gone, sidekick session intact.
+    conn = sqlite3.connect(state_db)
+    rows = conn.execute(
+        "SELECT id, source FROM sessions WHERE user_id = ?", (same_id,),
+    ).fetchall()
+    conn.close()
+    assert sorted(rows) == [("sk", "sidekick")]
+
+
+def test_delete_conversation_sync_default_source_back_compat(plugin, state_db):
+    """Calling _delete_conversation_sync without a source still defaults
+    to SIDEKICK_SOURCE — preserves behavior for any legacy un-prefixed
+    delete callers."""
+    _insert_session(state_db, "sk", "sidekick", "u", 1000.0, title="SK")
+    _insert_message(state_db, "sk", "user", "hi", 1001.0)
+    adapter = _make_adapter(plugin, state_db)
+    result = adapter._delete_conversation_sync("u")
+    assert result == "ok"
