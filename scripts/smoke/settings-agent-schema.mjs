@@ -82,20 +82,20 @@ export default async function run({ page, log, mock }) {
   // POSTs to /api/sidekick/settings/model.
   await sel.selectOption('google/gemini-3-flash-preview');
 
-  // Wait briefly for the POST to fire + return.
-  await page.waitForFunction(
-    () => {
-      const s = document.querySelector(
-        '#settings-group-agent [data-agent-setting="model"] select',
-      );
-      return s && s.value === 'google/gemini-3-flash-preview';
-    },
-    null,
-    { timeout: 2_000 },
-  );
-  log('dropdown reflects new value after POST round-trip');
+  // Poll the mock for the POST itself (not the DOM value — selectOption
+  // sets the DOM synchronously, so a DOM-value wait is a no-op and the
+  // POST hasn't necessarily landed yet). When the suite is loaded the
+  // post handler can take 100-300ms longer than in isolation; poll up
+  // to 3s with backoff.
+  let last = null;
+  const pollStart = Date.now();
+  while (Date.now() - pollStart < 3_000) {
+    last = mock.getLastSettingsPost();
+    if (last && last.id === 'model') break;
+    await page.waitForTimeout(50);
+  }
+  log(`dropdown changed; POST capture after ${Date.now() - pollStart}ms`);
 
-  const last = mock.getLastSettingsPost();
   assert(last && last.id === 'model',
     `POST should have hit /settings/model; got ${JSON.stringify(last)}`);
   assert(last.body && last.body.value === 'google/gemini-3-flash-preview',
