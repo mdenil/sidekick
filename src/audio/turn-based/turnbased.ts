@@ -128,7 +128,13 @@ export function notifyReplyPlayback(playing: boolean): void {
       // Re-arm by rebuilding the recorder. The mic stream is still
       // alive; we just need a fresh blob accumulator. armRecorder()
       // also restarts the sendword detector.
-      armRecorder().catch((e) => {
+      armRecorder().then(() => {
+        // Listening chime on re-arm too, not just on initial start.
+        // Without this the user has no audible cue that "your turn
+        // again, mic is hot." Critical when running handsfree (eyes
+        // off the screen — the original ask was "I'm flying blind").
+        try { playFeedback('listening'); } catch { /* noop */ }
+      }).catch((e) => {
         diag('listen: re-arm failed', e?.message);
         // Fall back to idle; caller can re-tap to retry.
         teardown();
@@ -208,6 +214,16 @@ async function armRecorder(): Promise<void> {
     teardown();
     return;
   }
+  // Explicitly null the previous MediaRecorder reference so the garbage
+  // collector can release its hold on the MediaStream's audio source
+  // before we wire a new one up. Without this, Chromium can leak state
+  // across instances → the next webm container starts mid-segment and
+  // Deepgram rejects it as "corrupt or unsupported data" on POST.
+  if (mediaRecorder) {
+    try { mediaRecorder.ondataavailable = null; } catch { /* noop */ }
+    try { mediaRecorder.onstop = null; } catch { /* noop */ }
+    mediaRecorder = null;
+  }
   audioChunks = [];
   try {
     mediaRecorder = new MediaRecorder(mediaStream, { mimeType: 'audio/webm;codecs=opus' });
@@ -215,7 +231,13 @@ async function armRecorder(): Promise<void> {
     mediaRecorder = new MediaRecorder(mediaStream);
   }
   mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunks.push(e.data); };
-  mediaRecorder.start(1000);
+  // No timeslice — `start()` writes the complete webm container
+  // (EBML header + segment + cluster + duration) to a single blob
+  // on stop(). With timeslice, Chromium fragments the file into
+  // segments that concatenate cleanly only on the FIRST recorder
+  // instance per MediaStream lifetime; the second recorder's
+  // segments produce a malformed container that Deepgram rejects.
+  mediaRecorder.start();
   armedAt = Date.now();
   // Initialise the silence window from current handsfree config.
   // tickSilence reads expired() each frame; setThreshold lets a live
