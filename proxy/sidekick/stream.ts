@@ -258,7 +258,11 @@ export function handleSidekickStream(req, res): void {
       if (entry.id <= replayFrom) continue;
       if (chatId && entry.env.chat_id !== chatId) continue;
       const evtName = typeof entry.env.type === 'string' ? entry.env.type : 'message';
-      res.write(`id: ${entry.id}\nevent: ${evtName}\ndata: ${JSON.stringify(entry.env)}\n\n`);
+      // Tag replayed envelopes so PWA-side handlers can suppress side
+      // effects that should only fire on a fresh turn (TTS playback,
+      // receive chime). Bubble rendering still rides the replay.
+      const replayEnv = { ...entry.env, _replay: true };
+      res.write(`id: ${entry.id}\nevent: ${evtName}\ndata: ${JSON.stringify(replayEnv)}\n\n`);
     }
   }
   const ka = setInterval(() => {

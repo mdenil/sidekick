@@ -3395,7 +3395,7 @@ function handleReplyDelta({ replyId, cumulativeText, conversation, messageId }: 
 
 /** Complete reply. `content` (if present) is the raw block array used to
  *  pull out image attachments. */
-function handleReplyFinal({ replyId, text, content = [], conversation, messageId }: any) {
+function handleReplyFinal({ replyId, text, content = [], conversation, messageId, isReplay = false }: any) {
   // A completed turn means hermes has persisted this response to
   // response_store.db (+ state.db/sessions gets the derived entry). If
   // this was the first turn of a brand-new session, the drawer's
@@ -3471,7 +3471,7 @@ function handleReplyFinal({ replyId, text, content = [], conversation, messageId
       // earlier (e.g. delta arrived without one, final has it).
       bubble.dataset.messageId = messageId;
     }
-    playFeedback('receive');
+    if (!isReplay) playFeedback('receive');
 
     // Speak-replies: when the toggle is on AND we're not in a WebRTC
     // call (call mode owns audio via its own peer-track TTS), synth
@@ -3482,8 +3482,12 @@ function handleReplyFinal({ replyId, text, content = [], conversation, messageId
     // hears the answer handsfree, regardless of the user-facing toggle.
     // We notify listen.notifyReplyPlayback around the call so it
     // suspends silence detection and re-arms after audio.ended.
+    //
+    // isReplay gates the whole block: SSE ring replay on page-load /
+    // reconnect re-emits old reply_finals; without this guard speak-
+    // replies would read the chat aloud from the top every refresh.
     const inListen = listen.getState() !== 'idle';
-    if ((settings.get().tts || inListen) && !webrtcControls.isOpen()) {
+    if (!isReplay && (settings.get().tts || inListen) && !webrtcControls.isOpen()) {
       const player = document.getElementById('player') as HTMLAudioElement | null;
       if (inListen) listen.notifyReplyPlayback(true);
       const onEnded = () => {

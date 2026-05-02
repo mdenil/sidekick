@@ -384,14 +384,15 @@ function handleEnvelope(type: string, env: any, chatId: string): void {
       const replyId = replyIdFor(env, chatId);
       const finalText = typeof env.text === 'string' ? env.text : '';
       const msgId = typeof env?.message_id === 'string' && env.message_id ? env.message_id : null;
-      log(`[bubble-diag] reply_final chat=${chatId} msgId=${msgId ?? '∅'} replyId=${replyId} text-len=${finalText.length}`);
+      const isReplay = env?._replay === true;
+      log(`[bubble-diag] reply_final chat=${chatId} msgId=${msgId ?? '∅'} replyId=${replyId} text-len=${finalText.length}${isReplay ? ' (replay)' : ''}`);
       // Note: working=false here means "this bubble is done." If the
       // adapter sends a follow-up bubble (bootstrap nudge → reply, or
       // tool-result-as-text), the next reply_delta will flip activity
       // back on. The shell's two-state thinking indicator can flicker
       // briefly between bubbles — acceptable.
       subs?.onActivity?.({ working: false, conversation: chatId });
-      subs?.onFinal?.({ replyId, text: finalText, conversation: chatId, messageId: msgId });
+      subs?.onFinal?.({ replyId, text: finalText, conversation: chatId, messageId: msgId, isReplay });
       // Bump last_message_at so the drawer sort surfaces this row even
       // before /api/sidekick/sessions enrichment refreshes.
       conversations.updateLastMessageAt(chatId, Date.now()).catch(() => {});
