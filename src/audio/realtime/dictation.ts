@@ -26,8 +26,8 @@
  */
 
 import * as conn from './realtime.ts';
-import * as settings from '../../settings.ts';
 import { playFeedback } from '../shared/feedback.ts';
+import { matchSendword, getHandsfreeConfig } from '../shared/handsfree.ts';
 import { log, diag } from '../../util/log.ts';
 
 let buffer: string[] = [];
@@ -60,24 +60,6 @@ export function reset(): void {
   if (onReset) {
     try { onReset(); } catch { /* swallow — out-of-tree listener */ }
   }
-}
-
-/** Build the commit-phrase matcher for the current settings. Empty
- *  phrase disables commit-phrase dispatch. */
-function makeCommitRegex(): RegExp | null {
-  const phrase = (settings.get().commitPhrase || '').trim().toLowerCase();
-  if (!phrase) return null;
-  // Escape regex metacharacters in the phrase.
-  const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return new RegExp(`^(.*)\\s*\\b${escaped}\\b[\\s.,!?]*$`, 'i');
-}
-
-function checkCommitPhrase(text: string): string | null {
-  const re = makeCommitRegex();
-  if (!re) return null;
-  const m = text.match(re);
-  if (!m) return null;
-  return (m[1] || '').trim();
 }
 
 function dispatchNow(): void {
@@ -113,12 +95,12 @@ function armSilenceTimer(): void {
     clearTimeout(silenceTimer);
     silenceTimer = null;
   }
-  const sec = Number(settings.get().silenceSec) || 0;
-  if (sec <= 0) return;  // 0 = disabled (commit-phrase only).
+  const { silenceSec } = getHandsfreeConfig();
+  if (silenceSec <= 0) return;  // 0 = disabled (sendword-only mode).
   silenceTimer = setTimeout(() => {
     silenceTimer = null;
     dispatchNow();
-  }, sec * 1000);
+  }, silenceSec * 1000);
 }
 
 /**
@@ -136,14 +118,15 @@ export function handleUserFinal(text: string): void {
   const trimmed = (text || '').trim();
   if (!trimmed) return;
   const joined = (buffer.join(' ') + ' ' + trimmed).trim();
-  const cleaned = checkCommitPhrase(joined);
-  if (cleaned !== null) {
+  const { sendwordPhrase } = getHandsfreeConfig();
+  const m = matchSendword(joined, sendwordPhrase);
+  if (m.matched) {
     // Match: replace whatever's buffered with the cleaned prefix and
     // dispatch immediately. The 'commit' chime fires the moment the
     // send-word lands so the user gets feedback BEFORE the dispatch
     // round-trips — pairs with the 'send' chime in dispatchNow().
     try { playFeedback('commit'); } catch { /* feedback is best-effort */ }
-    buffer = cleaned ? [cleaned] : [];
+    buffer = m.cleaned ? [m.cleaned] : [];
     dispatchNow();
     return;
   }
