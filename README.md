@@ -181,30 +181,34 @@ the agent directly. The bridge only ever talks to the proxy.
                     │   - chat surface, drawer, composer       │
                     │   - chat_id minted in IDB                │
                     │   - one persistent SSE channel inbound   │
+                    │   - Listen mode + per-bubble TTS replay  │
                     └────────────┬────────────────────┬────────┘
                                  │                    │
-                          HTTP+SSE                  WebRTC
-                          /api/sidekick/*           (audio bytes only)
+                         HTTP+SSE                  WebRTC
+                         /api/sidekick/*           (realtime mode only,
+                         /transcribe, /tts          audio bytes only)
                                  │                    │
                                  ▼                    ▼
-              ┌──────────────────────────┐    ┌────────────────────────┐
-              │ Sidekick proxy           │    │ Audio bridge            │
-              │   (Node, server.ts)      │◀───│   (Python, aiortc)      │
-              │                          │    │                         │
-              │ - serves static assets   │    │ - terminates WebRTC     │
-              │ - serves /api/sidekick/* │    │   from PWA              │
-              │ - translates             │    │ - STT: Deepgram (etc.)  │
-              │   /api/sidekick/* ↔      │    │ - TTS: Deepgram Aura    │
-              │   /v1/*                  │    │   (etc.)                │
-              │ - SSE multiplexer (mem)  │    │                         │
-              │ - utility endpoints      │    │ Posts recognized text   │
-              │   (/gen-image, /weather, │    │ to proxy at             │
-              │   /link-preview)         │    │ /api/sidekick/messages, │
-              │ - injects auth tokens    │    │ subscribes to           │
-              │   for upstream calls     │    │ /api/sidekick/stream,   │
-              │                          │    │ converts reply_delta to │
-              │ Owns no durable state.   │    │ TTS audio over WebRTC.  │
-              └────────────┬─────────────┘    └────────────────────────┘
+              ┌──────────────────────────┐    ┌────────────────────────────┐
+              │ Sidekick proxy           │    │ Audio bridge                │
+              │   (Node, server.ts)      │◀───│   (Python, aiortc)          │
+              │                          │    │                             │
+              │ - serves static assets   │    │ Realtime mode:              │
+              │ - serves /api/sidekick/* │    │ - terminates WebRTC peer    │
+              │ - /tts → Deepgram Aura   │    │ - live STT during speech    │
+              │ - /transcribe → bridge   │    │ - posts text to proxy at    │
+              │   /v1/transcribe         │    │   /api/sidekick/messages,   │
+              │ - translates             │    │   subscribes to             │
+              │   /api/sidekick/* ↔      │    │   /api/sidekick/stream,     │
+              │   /v1/*                  │    │   streams TTS over WebRTC   │
+              │ - SSE multiplexer (mem)  │    │                             │
+              │ - utility endpoints      │    │ Turn-based mode:            │
+              │   (/gen-image, /weather, │    │ - serves /v1/transcribe     │
+              │   /link-preview)         │    │   (HTTP, one-shot STT)      │
+              │ - injects auth tokens    │    │ - no WebRTC peer at all     │
+              │   for upstream calls     │    │                             │
+              │ Owns no durable state.   │    └─────────────────────────────┘
+              └────────────┬─────────────┘
                            │
                     HTTP+SSE
                     /v1/responses
@@ -231,11 +235,21 @@ the agent directly. The bridge only ever talks to the proxy.
               └───────────────────────────┘
 ```
 
-**Two transport lanes from the PWA**, both terminating in the user's
-browser: text via SSE on `/api/sidekick/stream`, audio via WebRTC.
-Different transport for different content type. Both originate from
-the proxy — text directly, audio after the bridge's TTS pipeline
-transforms `reply_delta` envelopes into Aura chunks.
+**Two voice modes**, picked by the user via the **Realtime** toggle in
+the mic menu (default off):
+
+- **Realtime (WebRTC)** — full-duplex peer connection to the bridge.
+  Live STT during speech, TTS streamed back over WebRTC. Lower
+  latency, more moving parts. Use when the user wants conversation.
+- **Turn-based (HTTP)** — PWA records one blob with MediaRecorder,
+  POSTs it to the proxy for one-shot STT, runs the reply text through
+  the proxy's `/tts` endpoint, plays the resulting mp3 locally in an
+  `<audio>` element. No WebRTC, no long-lived bridge connection. Used
+  by Listen mode (handsfree memo-style turns) and the per-bubble
+  replay chips. Reuses the same proxy endpoints as the typed path.
+
+Realtime mode adds the WebRTC lane to the PWA → bridge channel; turn-
+based mode keeps everything on plain HTTP+SSE through the proxy.
 
 **Wire contracts**:
 - `/api/sidekick/*` — the PWA-and-bridge-facing surface served by the
@@ -256,7 +270,7 @@ transforms `reply_delta` envelopes into Aura chunks.
 5. PWA renders the streaming reply bubble.
 6. Upstream emits `response.completed`; proxy emits `reply_final`.
 
-**Information flow for a voice turn:**
+**Information flow for a realtime voice turn (WebRTC):**
 
 1. PWA opens a WebRTC peer connection to the audio bridge.
 2. Bridge streams mic audio to STT, gets transcripts.
@@ -266,6 +280,30 @@ transforms `reply_delta` envelopes into Aura chunks.
    `chat_id`) for the agent's reply.
 5. As `reply_delta` envelopes arrive, bridge synthesizes TTS audio
    chunks and streams them back over the WebRTC connection.
+
+**Information flow for a turn-based voice turn (Listen mode):**
+
+1. PWA captures one utterance with `MediaRecorder`. End-of-turn fires
+   on local silence detection or sendword (e.g. "over").
+2. PWA `POST /transcribe` with the audio blob. Proxy forwards to the
+   bridge's `POST /v1/transcribe` (one HTTP round-trip — no WebRTC),
+   which runs the configured STT provider and returns `{transcript}`.
+3. PWA submits the transcript through the same canonical send path a
+   typed message uses: `POST /api/sidekick/messages`, then watch the
+   shared `/api/sidekick/stream` for `reply_final`.
+4. On `reply_final`, PWA `POST /tts` with the reply text. Proxy
+   forwards to Deepgram Aura (`POST /v1/speak`) and returns mp3.
+5. PWA caches the mp3 (`replyCache.ts` LRU) and plays it in the
+   shared `<audio id="player">` element. Per-bubble replay chips and
+   BT skip-fwd/back navigate this same cache.
+
+Turn-based mode adds **zero new wire endpoints** — `/transcribe`,
+`/tts`, `/api/sidekick/messages`, and `/api/sidekick/stream` already
+existed for typed turns and voice memos. The Listen state machine,
+sendword detector, barge-in, per-bubble playback chips, and reply
+LRU live entirely in the PWA (`src/audio/listen.ts`,
+`src/audio/text-tts.ts`, `src/audio/replyNavigator.ts`,
+`src/audio/replyCache.ts`).
 
 **Drawer state**:
 
