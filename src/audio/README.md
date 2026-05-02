@@ -25,19 +25,20 @@ For the wire-protocol view (which proxy + agent endpoints each mode hits), see t
 
 ## Handsfree mechanisms (shared)
 
-Both modes need to answer the same question: "is this user utterance done?" Two triggers, **same semantics in both modes, currently duplicated codepaths** (consolidating these is part of the refactor):
+Both modes answer the same question — "is this user utterance done?" — using the same two triggers:
 
-- **Silence timeout** — N seconds of silence after the last detected speech ends the utterance and dispatches it. Configured by `settings.silenceSec` (planned to subsume the current `listenSilenceSec` after the merge).
-- **Sendword** — user says a configured phrase ("over" by default) and the utterance dispatches immediately, with the phrase stripped from the transcript. Configured by `settings.commitPhrase` (subsumes `listenSendword`).
+- **Silence timeout** — N seconds of silence after the last detected speech ends the utterance and dispatches it. Configured by `settings.silenceSec` (0 = sendword-only).
+- **Sendword** — user says a configured phrase ("over" by default) and the utterance dispatches immediately, with the phrase stripped from the transcript. Configured by `settings.commitPhrase`.
 
-Today these live in two parallel files:
+Both triggers live in `shared/handsfree.ts`:
 
-- Turn-based: `listen.ts` runs an analyser-frame silence loop + a `sendwordDetector.ts` (Web Speech API) for keyword detection.
-- Realtime: `dictation.ts` runs a setTimeout silence loop + a regex on each `is_final` transcript from the bridge.
+- `matchSendword(text, phrase)` — the captured-prefix regex (anchored, word-boundary, case-insensitive). Used by both turn-based (`turnbased.ts` + `sendwordDetector.ts`) and realtime (`dictation.ts`).
+- `SilenceWindow` class — `lastVoiceAt` + threshold tracker. Modes drive it differently (turn-based polls expired() in its 50ms analyser loop; realtime arms a setTimeout on each `is_final` from the bridge) but share the policy.
+- `getHandsfreeConfig()` — single resolver for the two settings keys.
 
-Different mechanics, same intent. Plan: extract `shared/handsfree.ts` exposing `evaluateUtterance({ text, silenceSinceMs }) → 'continue' | 'commit-silence' | 'commit-sendword'` so both modes call the same evaluator. The mechanics that differ (where the speech signal comes from) stay mode-specific; the policy is shared.
+The **mechanism** for detecting speech stays per-mode (turn-based reads analyser peaks; realtime gets discrete `is_final` events from the bridge). Different inputs, same policy.
 
-A second, related shared piece: **barge-in** — sustained user speech during TTS playback should cancel the playback. Both modes already use the same algorithm (sliding window of peak readings) but in two implementations: turn-based runs it in `listen.ts:tickBarge`, realtime in the bridge. Worth pulling into `shared/handsfree.ts` (or a sibling `shared/barge.ts`) for the same reason.
+**Barge-in** has the same shape: same algorithm in both modes (sliding N-of-K hot frames above a peak threshold), different runtimes. The PWA-side detector lives in `shared/barge.ts` (`BargeWindow` class, used by `turnbased.ts:tickBarge`); the bridge runs the Python equivalent. No code share is possible across language, but the algorithm is identical.
 
 ## The `AudioMode` interface
 

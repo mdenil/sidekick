@@ -97,21 +97,16 @@ export class SilenceWindow {
 
 /** Resolve canonical handsfree config from the settings module. Single
  *  point of truth — both modes call this rather than reading the keys
- *  directly, so the legacy listenSilenceSec / listenSendword keys can
- *  fall back consistently until the settings-key consolidation lands. */
+ *  directly. The legacy listenSilenceSec / listenSendword keys are
+ *  migrated into silenceSec / commitPhrase by settings.load(); this
+ *  helper just reads the canonical keys. */
 export function getHandsfreeConfig(): {
   silenceSec: number;
   sendwordPhrase: string;
 } {
-  const s = settings.get() as any;
-  // listenSilenceSec is the legacy turn-based-only key; prefer it
-  // when present so existing users don't lose their tuning during
-  // the transition. After the settings migration commit lands, this
-  // helper just reads silenceSec.
-  const silenceRaw = (typeof s.listenSilenceSec === 'number' && s.listenSilenceSec > 0)
-    ? s.listenSilenceSec
-    : s.silenceSec;
-  const silenceSec = Number(silenceRaw) || 0;
-  const sendwordPhrase = String(s.listenSendword || s.commitPhrase || '').trim();
-  return { silenceSec, sendwordPhrase };
+  const s = settings.get();
+  return {
+    silenceSec: Number((s as any).silenceSec) || 0,
+    sendwordPhrase: String(s.commitPhrase || '').trim(),
+  };
 }

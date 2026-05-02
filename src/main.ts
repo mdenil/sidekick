@@ -33,6 +33,7 @@ import * as ambient from './ambient.ts';
 import { playFeedback } from './audio/shared/feedback.ts';
 import * as memo from './audio/shared/memo.ts';
 import * as turnbased from './audio/turn-based/turnbased.ts';
+import * as handsfree from './audio/shared/handsfree.ts';
 import * as queue from './queue.ts';
 import * as voiceMemos from './voiceMemos.ts';
 import * as memoCard from './memoCard.ts';
@@ -1938,11 +1939,11 @@ async function boot() {
           // sendword takes effect on next turn. Allows trailing
           // punctuation; case-insensitive.
           if (text && reason === 'sendword') {
-            const phrase = (settings.get().listenSendword || settings.get().commitPhrase || 'over').trim();
-            if (phrase) {
-              const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-              text = text.replace(new RegExp(`\\s+${escaped}\\s*[.!?,]?\\s*$`, 'i'), '').trim();
-            }
+            // Same matchSendword regex used by both audio modes — keep
+            // the strip in lockstep with the detector.
+            const { sendwordPhrase } = handsfree.getHandsfreeConfig();
+            const m = handsfree.matchSendword(text, sendwordPhrase);
+            if (m.matched) text = m.cleaned;
           }
           if (!text) {
             log('listen: empty transcript, skipping send');
@@ -2801,7 +2802,7 @@ async function boot() {
     const qs = new URLSearchParams(location.search);
     if (qs.get('listen') === '1') {
       const sec = Number(qs.get('silence_sec'));
-      if (Number.isFinite(sec) && sec > 0) settings.set('listenSilenceSec', sec);
+      if (Number.isFinite(sec) && sec > 0) settings.set('silenceSec', sec);
       // Defer briefly so settings.load() + audio prime can settle.
       setTimeout(() => { void startListen(); }, 50);
     }

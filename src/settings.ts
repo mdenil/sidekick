@@ -194,12 +194,13 @@ const DEFAULTS = {
   // mode (full local audio buffer, sent to the server only when the
   // user finishes speaking — optimized for fidelity + reliability over
   // mobile networks, matches what classic 3-phase pipelines did but
-  // with the modern audio shim). listenSendword falls back to
-  // commitPhrase when blank. listenSttEngine is reserved for v2 —
-  // only 'local' + 'silence-only' are wired in v1.
+  // with the modern audio shim).
+  //
+  // Handsfree triggers (commitPhrase + silenceSec) are shared across
+  // both modes — see src/audio/shared/handsfree.ts. Legacy
+  // listenSendword + listenSilenceSec keys migrate into commitPhrase /
+  // silenceSec on first load (see migrateLegacyHandsfreeKeys below).
   realtime: false,
-  listenSendword: '',
-  listenSilenceSec: 8,
   listenSttEngine: 'local' as 'local' | 'server' | 'silence-only',
 };
 
@@ -229,6 +230,29 @@ function thresholdToSensitivity(thr) {
 
 function audioFeedbackLabel(vol) {
   return vol <= 0 ? 'Off' : `${Math.round(vol * 100)}%`;
+}
+
+/** Migrate the legacy listenSilenceSec / listenSendword keys into the
+ *  canonical silenceSec / commitPhrase keys. Runs once per load() —
+ *  if a user customised the legacy keys (and didn't separately customise
+ *  the canonical ones), this carries their tuning forward. After the
+ *  copy, the legacy values are unread; the proxy still ships them in
+ *  /api/sidekick/config until the server-side cleanup lands. */
+function migrateLegacyHandsfreeKeys(snapshot: Record<string, any>): void {
+  const lSilence = snapshot.listenSilenceSec;
+  const lSendword = snapshot.listenSendword;
+  // Only migrate if the legacy value is non-default AND the canonical
+  // is at default (avoid overwriting an explicit canonical setting).
+  if (typeof lSilence === 'number' && lSilence > 0 && lSilence !== 8
+      && (current.silenceSec === DEFAULTS.silenceSec)) {
+    (current as any).silenceSec = lSilence;
+    void set('silenceSec' as any, lSilence);
+  }
+  if (typeof lSendword === 'string' && lSendword.trim() !== ''
+      && (current.commitPhrase === DEFAULTS.commitPhrase)) {
+    (current as any).commitPhrase = lSendword.trim().toLowerCase();
+    void set('commitPhrase' as any, (current as any).commitPhrase);
+  }
 }
 
 /** Pull the current snapshot from the server (yaml-backed values)
@@ -261,6 +285,7 @@ export async function load() {
           if (PER_DEVICE_KEYS.has(k)) continue;
           (current as any)[k] = v;
         }
+        migrateLegacyHandsfreeKeys(j.settings);
       }
     }
   } catch {
@@ -374,9 +399,6 @@ export function hydrate(handlers: {
   const setNavPrev = $inp('set-nav-prev');
   const setNavNext = $inp('set-nav-next');
   const setNavPause = $inp('set-nav-pause');
-  const setListenSendword = $inp('set-listen-sendword');
-  const setListenSilence = $inp('set-listen-silence');
-  const setListenSilenceVal = $any('set-listen-silence-val');
   const setListenStt = $sel('set-listen-stt');
   const setBarge = $inp('set-barge');
   const setBargeSens = $inp('set-barge-sens');
@@ -409,9 +431,6 @@ export function hydrate(handlers: {
     if (setNavPrev) setNavPrev.value = current.navPrev;
     if (setNavNext) setNavNext.value = current.navNext;
     if (setNavPause) setNavPause.value = current.navPause;
-    if (setListenSendword) setListenSendword.value = (current as any).listenSendword || '';
-    if (setListenSilence) setListenSilence.value = String((current as any).listenSilenceSec ?? 8);
-    if (setListenSilenceVal) setListenSilenceVal.textContent = `${(current as any).listenSilenceSec ?? 8}s`;
     if (setListenStt) setListenStt.value = (current as any).listenSttEngine || 'local';
     if (setBarge) setBarge.checked = current.bargeIn;
     // Sensitivity slider is the INVERSE of threshold. Map threshold 0..0.5 onto
@@ -589,17 +608,10 @@ export function hydrate(handlers: {
   if (setNavPrev) setNavPrev.onchange = () => { set('navPrev', setNavPrev.value.trim().toLowerCase()); };
   if (setNavNext) setNavNext.onchange = () => { set('navNext', setNavNext.value.trim().toLowerCase()); };
   if (setNavPause) setNavPause.onchange = () => { set('navPause', setNavPause.value.trim().toLowerCase()); };
-  // Listen-mode settings — sendword falls back to commitPhrase when blank
-  // (handled inside listen.ts), silence cutoff in seconds, STT engine
-  // local|silence-only (server reserved for v1).
-  if (setListenSendword) setListenSendword.onchange = () => {
-    set('listenSendword' as any, setListenSendword.value.trim().toLowerCase());
-  };
-  if (setListenSilence) setListenSilence.oninput = () => {
-    const v = parseInt(setListenSilence.value, 10);
-    set('listenSilenceSec' as any, v);
-    if (setListenSilenceVal) setListenSilenceVal.textContent = `${v}s`;
-  };
+  // Listen-mode setting — STT engine local|silence-only (server reserved
+  // for v1). Sendword + silence-cutoff for both modes live in the
+  // Streaming group above (commitPhrase, silenceSec); they used to be
+  // duplicated here but are now shared via shared/handsfree.ts.
   if (setListenStt) setListenStt.onchange = () => {
     set('listenSttEngine' as any, setListenStt.value);
   };

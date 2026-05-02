@@ -54,14 +54,13 @@ export const FRONTEND_SETTINGS = {
   micCall:                { category: 'composer',        default: false },
   micAutoSend:            { category: 'composer',        default: false },
   autoAdvanceOnNew:       { category: 'composer',        default: false },
-  // Voice transport selector + Listen-mode tunables. `realtime` is the
-  // mic-menu toggle: ON = WebRTC realtime call, OFF (default) = turn-
-  // based Listen mode. listenSttEngine stays in localStorage (per-
-  // device) because Web Speech API support varies by browser; the
-  // proxy doesn't carry it.
+  // Voice transport selector. `realtime` is the mic-menu toggle: ON =
+  // WebRTC realtime call, OFF (default) = turn-based Listen mode.
+  // Handsfree triggers (commitPhrase + silenceSec, both above) are
+  // shared across both modes via src/audio/shared/handsfree.ts.
+  // listenSttEngine stays in localStorage (per-device) — Web Speech
+  // API support varies by browser; proxy doesn't carry it.
   realtime:               { category: 'composer',        default: false },
-  listenSendword:         { category: 'streaming',       default: '' },
-  listenSilenceSec:       { category: 'streaming',       default: 8 },
 } as const;
 
 export type FrontendSettingKey = keyof typeof FRONTEND_SETTINGS;

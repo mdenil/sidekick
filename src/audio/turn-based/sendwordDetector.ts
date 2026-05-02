@@ -13,19 +13,18 @@
  * silently no-ops. Listen falls back to silence-only via its own
  * timer; this module never throws past start().
  *
- * Phrase matching: defaults to settings.commitPhrase if listenSendword
- * is empty (per-spec fallback). Match on word boundary, case-insensitive,
- * end-of-segment OR plain substring (the existing commit-word regex
- * lives in test/commit-word.test.ts as the canonical reference; this
- * module reuses the same shape).
+ * Phrase matching: caller resolves the phrase via getHandsfreeConfig().
+ * Match on word boundary, case-insensitive, end-of-segment. The canonical
+ * matcher lives in src/audio/shared/handsfree.ts (matchSendword) — this
+ * module just plumbs the audio source.
  */
 
 import { log, diag } from '../../util/log.ts';
 
 export type SendwordOpts = {
-  /** Phrase to match on. Empty string disables matching. Caller is
-   *  responsible for resolving the listenSendword/commitPhrase fallback;
-   *  this module just looks for whatever string it's given. */
+  /** Phrase to match on. Empty string disables matching. Caller resolves
+   *  the canonical phrase via getHandsfreeConfig(); this module just
+   *  looks for whatever string it's given. */
   phrase: string;
   /** Fired when the phrase is detected in an interim or final result.
    *  Caller (listen.ts) should commit the buffered audio blob. */
@@ -155,7 +154,7 @@ export function stop(): void {
 }
 
 /** Update the phrase on the fly without restarting the SR session.
- *  Used when the user changes listenSendword in settings mid-session. */
+ *  Used when the user changes commitPhrase in settings mid-session. */
 export function setPhrase(phrase: string): void {
   if (opts) opts.phrase = phrase;
 }

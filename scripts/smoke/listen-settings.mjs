@@ -1,15 +1,14 @@
-// Scenario: Listen-mode settings panel rows persist values + take
-// effect on the next arming. Verifies the three keys round-trip
-// through localStorage / proxy and that the wiring in settings.ts
-// actually reads the DOM controls.
+// Scenario: Listen-mode settings panel persists the per-device STT
+// engine. Used to also pin the Sendword + Silence-cutoff rows; those
+// were retired when listenSendword/listenSilenceSec collapsed into the
+// canonical commitPhrase + silenceSec keys (shared between both audio
+// modes via src/audio/shared/handsfree.ts) — STT engine is the only
+// genuinely Listen-only setting now.
 //
 // Asserts:
-//   1. The three rows exist (#set-listen-sendword, #set-listen-silence,
-//      #set-listen-stt).
-//   2. Setting listenSendword="send" persists in settings.get().
-//   3. Setting listenSilenceSec=3 persists.
-//   4. Setting listenSttEngine="silence-only" persists (per-device
-//      key — survives a full page reload).
+//   1. The #set-listen-stt row exists.
+//   2. Setting listenSttEngine="silence-only" persists in settings.get()
+//      (per-device key — survives a full page reload).
 
 export const NAME = 'listen-settings';
 export const DESCRIPTION = 'Listen settings panel rows round-trip values';
@@ -26,24 +25,11 @@ export default async function run({ page, log, fail, url }) {
     btn?.click();
   });
 
-  // Wait for our rows to be present.
-  for (const sel of ['#set-listen-sendword', '#set-listen-silence', '#set-listen-stt']) {
-    const found = await page.locator(sel).count();
-    if (found === 0) fail(`expected ${sel} in settings panel`);
-  }
-  log('all three Listen-mode settings rows present');
+  // The remaining Listen-only row is the STT engine selector.
+  const found = await page.locator('#set-listen-stt').count();
+  if (found === 0) fail('expected #set-listen-stt in settings panel');
+  log('Listen STT engine row present');
 
-  // Set + dispatch change for sendword.
-  await page.evaluate(() => {
-    const el = document.getElementById('set-listen-sendword');
-    el.value = 'send';
-    el.dispatchEvent(new Event('change', { bubbles: true }));
-  });
-  await page.evaluate(() => {
-    const el = document.getElementById('set-listen-silence');
-    el.value = '3';
-    el.dispatchEvent(new Event('input', { bubbles: true }));
-  });
   await page.evaluate(() => {
     const el = document.getElementById('set-listen-stt');
     el.value = 'silence-only';
@@ -55,14 +41,8 @@ export default async function run({ page, log, fail, url }) {
     const s = await import('/build/settings.mjs');
     return s.get();
   });
-  if ((snapshot).listenSendword !== 'send') {
-    fail(`expected listenSendword="send", got ${(snapshot).listenSendword}`);
-  }
-  if ((snapshot).listenSilenceSec !== 3) {
-    fail(`expected listenSilenceSec=3, got ${(snapshot).listenSilenceSec}`);
-  }
   if ((snapshot).listenSttEngine !== 'silence-only') {
     fail(`expected listenSttEngine="silence-only", got ${(snapshot).listenSttEngine}`);
   }
-  log('listen settings round-tripped through settings.get()');
+  log('listenSttEngine round-tripped through settings.get()');
 }
