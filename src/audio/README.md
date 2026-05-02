@@ -156,13 +156,9 @@ src/audio/
 
 `src/main.ts` reads `settings.realtime` and picks. The mic-button click handler dispatches to whichever mode is active; the toggle handler (in `flipMicSetting`) tears down the inactive mode if the user flips while one is running.
 
-```ts
-// pseudocode
-const audioMode: AudioMode = settings.get().realtime ? realtimeMode : turnBasedMode;
-btnMic.onclick = () => audioMode.isActive() ? audioMode.stop() : audioMode.start({ onState });
-```
+Today this is duplicated branching: turn-based delivers a `Blob` to `main.ts:onCommit` (which then POSTs to `/transcribe`), while realtime delivers transcribed text via the bridge. The `AudioMode` contract papers over this by saying "`onCommit` carries the post-transcription text" — but adopting it requires moving the `/transcribe` POST inside turn-based mode (so both modes deliver text). That migration is queued; it'll likely land alongside the handsfree consolidation when both modes are getting touched anyway.
 
-Today this is duplicated branching; after the refactor it collapses to one path with `audioMode` swapped on toggle.
+Until then, `mode.ts` is the documented contract and `main.ts` runs parallel paths. The interface is honest about today's shape; the file just isn't `import`ed anywhere yet.
 
 ## What's NOT in this directory
 
