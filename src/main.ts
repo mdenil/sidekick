@@ -2109,6 +2109,39 @@ async function boot() {
     }
   }
 
+  /** Mic-button dispatch. Streaming ON → live STT into the composer
+   *  cursor (cursor-aware dictation). Streaming OFF (the default) → memo:
+   *  blob recorded locally, transcribed on stop, dropped into the
+   *  composer (or auto-sent if `micAutoSend` is on).
+   *
+   *  `initialCursor` (composer textarea selectionStart, captured at the
+   *  gesture site BEFORE focus shifted) is plumbed only to the dictate
+   *  path — it's the only mode that splices into the textarea at the
+   *  user's caret. */
+  async function startMicMode(initialCursor: number | null = null): Promise<void> {
+    const s = settings.get();
+    if ((s as any).streaming) {
+      await startDictate(initialCursor);
+    } else {
+      await startMemo(!!s.micAutoSend);
+    }
+  }
+
+  /** Call-button dispatch. Realtime ON → WebRTC duplex (talk if
+   *  speak-replies is on, else stream). Realtime OFF (the default) →
+   *  turn-based Listen: full local audio buffer, sent to the server
+   *  only when the user finishes speaking. Optimized for fidelity over
+   *  latency; ideal when reply latency is dominated by the LLM
+   *  round-trip. */
+  async function startCallMode(): Promise<void> {
+    const s = settings.get();
+    if ((s as any).realtime) {
+      await startCallStream();
+    } else {
+      await startListen();
+    }
+  }
+
   /** Start whichever voice path matches the current toggles.
    *
    *  `initialCursor` (composer textarea selectionStart, captured at the
