@@ -30,6 +30,7 @@ import * as settings from '../../settings.ts';
 import { playFeedback } from '../shared/feedback.ts';
 import * as sendwordDetector from './sendwordDetector.ts';
 import { SilenceWindow, getHandsfreeConfig } from '../shared/handsfree.ts';
+import { BargeWindow } from '../shared/barge.ts';
 
 export type ListenState = 'idle' | 'armed' | 'committing' | 'playing' | 'cooldown';
 
@@ -66,17 +67,13 @@ export type ListenOpts = {
 const REARM_GRACE_MS = 500;
 const SILENCE_WARMUP_MS = 500;
 const SILENCE_FRAME_MS = 50;
-// Barge detection (active during 'playing' state) — sliding window of
-// the last BARGE_WINDOW_FRAMES peak readings, fires when ≥ BARGE_REQUIRED
-// of them are above settings.bargeThreshold. Ignores the first BARGE_WARMUP_MS
-// of TTS playback (worst speakerphone bleed window). Same algorithm as
-// the classic pipeline's bargeIn.ts (08f50ac:src/pipelines/classic/bargeIn.ts:35-100):
-// rejects single-burst noise (wind gust, tap on phone) but catches
-// sustained speech with mid-syllable amplitude dips.
+// Barge detection (active during 'playing' state). Algorithm lives
+// in shared/barge.ts (sliding N-of-K hot frames, used by both modes).
+// We just own the warmup mute + frame cadence here — same 500ms
+// warmup as the classic pipeline (worst speakerphone bleed window
+// before the AEC adapter locks on).
 const BARGE_WARMUP_MS = 500;
 const BARGE_FRAME_MS = 50;
-const BARGE_WINDOW_FRAMES = 5;
-const BARGE_REQUIRED_HOT = 4;
 
 let state: ListenState = 'idle';
 let opts: ListenOpts | null = null;
@@ -86,7 +83,7 @@ let audioChunks: Blob[] = [];
 let analyser: AnalyserNode | null = null;
 let silenceLoop: ReturnType<typeof setInterval> | null = null;
 let bargeLoop: ReturnType<typeof setInterval> | null = null;
-let bargeWindow: number[] = [];
+let bargeWindow: BargeWindow | null = null;
 let bargeMuteUntil = 0;
 let armedAt = 0;
 let silenceWindow: SilenceWindow | null = null;
@@ -250,25 +247,23 @@ function stopSilenceLoop(): void {
 
 function startBargeLoop(): void {
   if (bargeLoop) clearInterval(bargeLoop);
-  bargeWindow = [];
+  bargeWindow = new BargeWindow();  // defaults: 5 frames, 4 hot
   bargeMuteUntil = Date.now() + BARGE_WARMUP_MS;
   bargeLoop = setInterval(tickBarge, BARGE_FRAME_MS);
 }
 
 function stopBargeLoop(): void {
   if (bargeLoop) { clearInterval(bargeLoop); bargeLoop = null; }
-  bargeWindow = [];
+  bargeWindow = null;
   bargeMuteUntil = 0;
 }
 
-/** One frame of barge detection. Mirrors the classic bargeIn evaluator
- *  (08f50ac:src/pipelines/classic/bargeIn.ts:62-100): sliding window of
- *  the last BARGE_WINDOW_FRAMES peak readings, fire when ≥ BARGE_REQUIRED
- *  are above settings.bargeThreshold. The 500ms warmup mute skips the
- *  worst speakerphone bleed window before the AEC adapter locks on. */
+/** One frame of barge detection. Algorithm in shared/barge.ts; this
+ *  just provides the per-frame plumbing (warmup mute, settings kill
+ *  switch, peak read from analyser, fire onBarge on a positive). */
 function tickBarge(): void {
   if (state !== 'playing') return;
-  if (!analyser) return;
+  if (!analyser || !bargeWindow) return;
   if (Date.now() < bargeMuteUntil) return;
 
   const s = settings.get();
@@ -279,15 +274,8 @@ function tickBarge(): void {
 
   const peak = readPeak(analyser);
   const threshold = ((s.bargeThreshold as number) || 0.20);
-  const hot = peak > threshold ? 1 : 0;
-  bargeWindow.push(hot);
-  if (bargeWindow.length > BARGE_WINDOW_FRAMES) bargeWindow.shift();
-
-  if (bargeWindow.length < BARGE_WINDOW_FRAMES) return;
-  let sum = 0;
-  for (const v of bargeWindow) sum += v;
-  if (sum >= BARGE_REQUIRED_HOT) {
-    log(`listen: barge fire peak=${peak.toFixed(3)} hot=${sum}/${BARGE_WINDOW_FRAMES}`);
+  if (bargeWindow.push(peak, threshold)) {
+    log(`listen: barge fire peak=${peak.toFixed(3)}`);
     stopBargeLoop();
     try { opts?.onBarge?.(); } catch (e: any) {
       diag('listen: onBarge threw', e?.message);
