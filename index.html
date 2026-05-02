@@ -131,8 +131,12 @@
         <span><strong>Camera / Attach</strong> — attach image(s) up to 5 MB. Disabled if the active model doesn't support images.</span>
       </li>
       <li>
+        <svg class="info-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11v-1a8 8 0 0 1 16 0v1"/><rect x="2" y="11" width="5" height="8" rx="1.5"/><rect x="17" y="11" width="5" height="8" rx="1.5"/></svg>
+        <span><strong>Call</strong> — tap the headset (left of composer) to start a duplex call with the agent. Chevron exposes <em>Realtime</em> (WebRTC vs. turn-based recording) and <em>Speak replies</em> (TTS audio out during the call).</span>
+      </li>
+      <li>
         <svg class="info-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
-        <span><strong>Voice input</strong> — tap the mic to record; tap chevron for options. Toggle <em>Push to talk</em> for press-and-hold, <em>Call mode</em> for live streaming, and <em>Auto-send</em> to ship the transcript without a review step.</span>
+        <span><strong>Voice input</strong> — tap the mic to record a voice memo (or hold for press-to-talk). Chevron exposes <em>Auto-send</em> (skip the composer review) and <em>Streaming</em> (live STT into the composer cursor).</span>
       </li>
       <li>
         <svg class="info-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
@@ -425,7 +429,29 @@
       <input type="file" id="attach-input" accept="image/*,video/*,application/pdf" multiple hidden>
       <div class="composer-actions">
         <div class="composer-actions-left">
-          <!-- New-chat button lives in the sidebar now (#sb-new-chat). -->
+          <!-- Call button: opens a duplex voice channel with the agent.
+               Realtime=ON → WebRTC; OFF (default) → turn-based Listen.
+               Lives on the LEFT of the composer, alongside its own
+               chevron + menu (Realtime + Speak-replies). The mic
+               button on the right handles memo + dictation. -->
+          <div class="call-mode-wrap">
+            <button id="btn-call" class="icon-btn-plain" title="Start call">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11v-1a8 8 0 0 1 16 0v1"/><rect x="2" y="11" width="5" height="8" rx="1.5"/><rect x="17" y="11" width="5" height="8" rx="1.5"/></svg>
+            </button>
+            <button id="btn-call-mode" class="mic-mode-chevron" title="Call options" aria-haspopup="true" aria-expanded="false">
+              <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 5 6 8 9 5"/></svg>
+            </button>
+            <div id="call-mode-menu" class="mic-mode-menu call-mode-menu" role="menu" aria-hidden="true" hidden>
+              <button type="button" class="mic-toggle-row" role="menuitemcheckbox" data-toggle="realtime" aria-checked="false">
+                <span class="mic-toggle-label">Realtime</span>
+                <span class="mic-toggle-switch" aria-hidden="true"><span class="mic-toggle-thumb"></span></span>
+              </button>
+              <button type="button" class="mic-toggle-row" role="menuitemcheckbox" data-toggle="tts" aria-checked="false">
+                <span class="mic-toggle-label">Speak replies</span>
+                <span class="mic-toggle-switch" aria-hidden="true"><span class="mic-toggle-thumb"></span></span>
+              </button>
+            </div>
+          </div>
         </div>
         <div class="composer-actions-right">
           <!-- Starts disabled; main.ts:updateAttachButtonsState flips
@@ -446,20 +472,12 @@
               <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 5 6 8 9 5"/></svg>
             </button>
             <div id="mic-mode-menu" class="mic-mode-menu" role="menu" aria-hidden="true" hidden>
-              <button type="button" class="mic-toggle-row" role="menuitemcheckbox" data-toggle="micCall" aria-checked="false">
-                <span class="mic-toggle-label">Call mode</span>
-                <span class="mic-toggle-switch" aria-hidden="true"><span class="mic-toggle-thumb"></span></span>
-              </button>
               <button type="button" class="mic-toggle-row" role="menuitemcheckbox" data-toggle="micAutoSend" aria-checked="false">
                 <span class="mic-toggle-label">Auto-send</span>
                 <span class="mic-toggle-switch" aria-hidden="true"><span class="mic-toggle-thumb"></span></span>
               </button>
-              <button type="button" class="mic-toggle-row" role="menuitemcheckbox" data-toggle="tts" aria-checked="false">
-                <span class="mic-toggle-label">Speak replies</span>
-                <span class="mic-toggle-switch" aria-hidden="true"><span class="mic-toggle-thumb"></span></span>
-              </button>
-              <button type="button" class="mic-toggle-row" role="menuitemcheckbox" data-toggle="realtime" aria-checked="false">
-                <span class="mic-toggle-label">Realtime</span>
+              <button type="button" class="mic-toggle-row" role="menuitemcheckbox" data-toggle="streaming" aria-checked="false">
+                <span class="mic-toggle-label">Streaming</span>
                 <span class="mic-toggle-switch" aria-hidden="true"><span class="mic-toggle-thumb"></span></span>
               </button>
             </div>

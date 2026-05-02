@@ -1686,11 +1686,37 @@
      swap between Memo (default) and Dictate (streaming STT to composer).
      Wrap is `position: relative` so the menu can absolute-anchor under
      the chevron without depending on the wider composer layout.  */
-  .composer .mic-mode-wrap {
+  .composer .mic-mode-wrap,
+  .composer .call-mode-wrap {
     position: relative;
     display: flex;
     align-items: center;
     gap: 0;
+  }
+  /* Call button mirrors mic button — same plain icon shape, same active
+     state styling. Lives on the left side of the composer; the chevron
+     pop-out anchors LEFT instead of RIGHT (see .call-mode-menu below). */
+  .composer #btn-call {
+    background: none; border: none; cursor: pointer;
+    padding: 6px;
+    color: var(--muted);
+    display: flex; align-items: center; justify-content: center;
+    width: 36px; height: 36px;
+    border-radius: 50%;
+    transition: color .15s, background .15s;
+  }
+  .composer #btn-call:hover { color: var(--fg); }
+  .composer #btn-call svg { width: 22px; height: 22px; }
+  .composer #btn-call.active {
+    color: var(--danger);
+    background: rgba(255, 68, 68, 0.12);
+  }
+  /* Call-menu anchors LEFT (button is on the left side of composer), so
+     the dropdown opens flush with the button instead of overflowing
+     into the textarea. Same visual style as .mic-mode-menu otherwise. */
+  .call-mode-menu {
+    right: auto;
+    left: 0;
   }
   .composer .mic-mode-chevron {
     background: none; border: none; cursor: pointer;
