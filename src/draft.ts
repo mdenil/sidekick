@@ -19,7 +19,7 @@
  */
 
 import { diag } from './util/log.ts';
-import { getSharedAudioCtx } from './audio/platform.ts';
+import { getSharedAudioCtx } from './audio/shared/platform.ts';
 
 // autoScroll is wired via init(opts.onScroll) so draft doesn't depend
 // on the chat module directly. Keeping the boundary clean lets tests

@@ -27,7 +27,7 @@
 
 import * as conn from './connection.ts';
 import * as settings from '../../settings.ts';
-import { playFeedback } from '../../audio/feedback.ts';
+import { playFeedback } from '../../audio/shared/feedback.ts';
 import { log, diag } from '../../util/log.ts';
 
 let buffer: string[] = [];

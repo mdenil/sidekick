@@ -34,7 +34,7 @@
  * is enforced by the grep step in Phase 2.7.
  */
 
-import { unlock as unlockImpl, getAudioCtx as getCtxImpl, isUnlocked as isUnlockedImpl, onRouteChange as onRouteChangeImpl, reset as resetCtxImpl } from '../ios/audio-unlock.ts';
+import { unlock as unlockImpl, getAudioCtx as getCtxImpl, isUnlocked as isUnlockedImpl, onRouteChange as onRouteChangeImpl, reset as resetCtxImpl } from '../../ios/audio-unlock.ts';
 import * as captureImpl from './capture.ts';
 import { playFeedback as playFeedbackImpl } from './feedback.ts';
 

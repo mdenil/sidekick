@@ -33,7 +33,7 @@ async function collectSources(dir, acc = []) {
 /** Mirror non-TS assets (worklets, etc.) into build/ so the browser can
  *  still fetch them at their expected paths. */
 async function copyAssets() {
-  const keep = ['audio/audio-processor.js'];
+  const keep = ['audio/shared/audio-processor.js'];
   for (const rel of keep) {
     const from = join(SRC, rel);
     const to = join(OUT, rel);

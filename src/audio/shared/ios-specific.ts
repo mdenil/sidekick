@@ -23,7 +23,7 @@
  * media query) gates everything — no UA sniffing.
  */
 
-import { log, diag } from '../util/log.ts';
+import { log, diag } from '../../util/log.ts';
 import { setPlaybackState } from './session.ts';
 
 let keepaliveEl: HTMLAudioElement | null = null;

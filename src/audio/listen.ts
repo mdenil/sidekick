@@ -25,9 +25,9 @@
  */
 
 import { log, diag } from '../util/log.ts';
-import * as audioPlatform from './platform.ts';
+import * as audioPlatform from './shared/platform.ts';
 import * as settings from '../settings.ts';
-import { playFeedback } from './feedback.ts';
+import { playFeedback } from './shared/feedback.ts';
 import * as sendwordDetector from './sendwordDetector.ts';
 
 export type ListenState = 'idle' | 'armed' | 'committing' | 'playing' | 'cooldown';

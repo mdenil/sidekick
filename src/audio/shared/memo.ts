@@ -10,7 +10,7 @@
  * button) lives in `recorderBar.ts` so Listen mode can reuse it.
  */
 
-import { log } from '../util/log.ts';
+import { log } from '../../util/log.ts';
 import * as audioPlatform from './platform.ts';
 import { playFeedback } from './feedback.ts';
 import * as recorderBar from './recorderBar.ts';

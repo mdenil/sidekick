@@ -30,7 +30,7 @@ const APP_SHELL = [
   '/assets/icon-chevron.svg',
   // Audio worklet — loaded out-of-band by the AudioContext, not via
   // import; pre-cache so the talk-mode pipeline boots offline.
-  '/build/audio/audio-processor.js',
+  '/build/audio/shared/audio-processor.js',
 ];
 
 self.addEventListener('install', (e) => {

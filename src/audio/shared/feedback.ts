@@ -15,7 +15,7 @@
  * the gesture requirement so the fallback works.
  */
 
-import * as settings from '../settings.ts';
+import * as settings from '../../settings.ts';
 // Imports the AudioContext SOURCE directly (the implementation file
 // audio-unlock.ts) instead of the platform shim — feedback.ts is a
 // "leaf" of the audio dependency graph and must not import from
@@ -27,7 +27,7 @@ import * as settings from '../settings.ts';
 // 2026-05-01 Phase 2.6. The platform shim is the single point for
 // CONSUMERS; feedback.ts itself is one of the implementations the
 // shim delegates to.
-import { getAudioCtx } from '../ios/audio-unlock.ts';
+import { getAudioCtx } from '../../ios/audio-unlock.ts';
 
 let fallbackCtx = null;
 

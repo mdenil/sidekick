@@ -26,7 +26,7 @@
  *    platform DOM events; the iOS-keepalive reconciliation is delegated.
  */
 
-import { log, diag } from '../util/log.ts';
+import { log, diag } from '../../util/log.ts';
 import * as iosSpecific from './ios-specific.ts';
 
 // Re-export iOS hooks so existing call-sites (capture.ts, main.ts) keep
@@ -81,7 +81,7 @@ async function initMediaSession() {
   try {
     // Pulled from /config so the community build + personal rebrands
     // (R2 "Sidekick", etc.) each get their own lockscreen/BT label.
-    const { getAgentLabel, getAppName } = await import('../config.ts');
+    const { getAgentLabel, getAppName } = await import('../../config.ts');
     /** @type {any} */ (navigator).mediaSession.metadata = new MediaMetadata({
       title: getAgentLabel(),
       artist: getAppName(),

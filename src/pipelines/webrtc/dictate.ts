@@ -134,7 +134,7 @@
 
 import * as conn from './connection.ts';
 import { log, diag } from '../../util/log.ts';
-import type { STTProvider, TranscriptEvent, Unsubscribe } from '../../audio/stt-provider.ts';
+import type { STTProvider, TranscriptEvent, Unsubscribe } from '../../audio/shared/stt-provider.ts';
 
 // ── Diagnostic flag ────────────────────────────────────────────────────
 

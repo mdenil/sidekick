@@ -28,9 +28,9 @@
  * losing iOS gesture state).
  */
 
-import { log, diag } from '../util/log.ts';
+import { log, diag } from '../../util/log.ts';
 import * as audioSession from './session.ts';
-import * as wakeLock from '../wakeLock.ts';
+import * as wakeLock from '../../wakeLock.ts';
 
 let activeStream: MediaStream | null = null;
 let activeOwner: string | null = null;

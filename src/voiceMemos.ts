@@ -4,7 +4,7 @@
  * can play back their memos in the chat history.
  */
 
-import { decodeAudioBlob } from './audio/platform.ts';
+import { decodeAudioBlob } from './audio/shared/platform.ts';
 
 const DB_NAME = 'sidekick-voice-memos';
 const STORE = 'memos';
