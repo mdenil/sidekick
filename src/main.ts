@@ -589,6 +589,17 @@ async function boot() {
       resolveVoice: () => settings.get().voice,
     });
   }
+
+  // Bridge tts state → Listen state via the typed events, in ONE place.
+  // Replaces ad-hoc notifyReplyPlayback() calls scattered across
+  // handleReplyFinal + onBarge. SSOT: the audio's state machine is
+  // authoritative; Listen observes it. Resume after barge now Just
+  // Works because pause+resume go through the same play/pause events.
+  ttsModule.on('play-start', () => { try { turnbased.notifyReplyPlayback(true);  } catch {} });
+  ttsModule.on('resumed',    () => { try { turnbased.notifyReplyPlayback(true);  } catch {} });
+  ttsModule.on('paused',     () => { try { turnbased.notifyReplyPlayback(false); } catch {} });
+  ttsModule.on('ended',      () => { try { turnbased.notifyReplyPlayback(false); } catch {} });
+  ttsModule.on('stopped',    () => { try { turnbased.notifyReplyPlayback(false); } catch {} });
   draft.init({
     transcriptEl,
     onChange: updateSendButtonState,
@@ -2032,11 +2043,13 @@ async function boot() {
         status.setStatus('');
       },
       onBarge: () => {
-        // User spoke during TTS — cancel playback and re-arm Listen so
-        // the next utterance gets recorded as a fresh turn. The barge
-        // bleed itself isn't shipped (no commit); the NEXT clean turn is.
-        try { cancelReplyTts(); } catch { /* noop */ }
-        try { turnbased.notifyReplyPlayback(false); } catch { /* noop */ }
+        // User spoke during TTS — PAUSE (not cancel) so the audio
+        // position survives. User can then resume by clicking the
+        // bubble's play button, OR talk to commit a new turn (Listen
+        // re-arms via the 'paused' tts event subscribed at boot).
+        // The barge bleed itself isn't shipped — the NEXT clean turn
+        // is what gets committed if the user keeps talking.
+        try { ttsModule.pauseReplyTts(); } catch { /* noop */ }
       },
       onState: (s) => {
         if (btnMic) {
@@ -3679,32 +3692,12 @@ function handleReplyFinal({ replyId, text, content = [], conversation, messageId
     // PWA would read the chat aloud from the top every refresh.
     const inListen = turnbased.getState() !== 'idle';
     if (!isReplay && inListen && !webrtcControls.isOpen()) {
-      const player = document.getElementById('player') as HTMLAudioElement | null;
-      if (inListen) turnbased.notifyReplyPlayback(true);
-      const onEnded = () => {
-        if (inListen) turnbased.notifyReplyPlayback(false);
-        player?.removeEventListener('ended', onEnded);
-        player?.removeEventListener('error', onEnded);
-      };
-      player?.addEventListener('ended', onEnded);
-      player?.addEventListener('error', onEnded);
       // Pass replyId so the per-bubble UX (loading bar, played-ratio
-      // bar, play↔pause glyph) wires up — replyNavigator.ensurePlayer
-      // ListenersAttached needs activeReplyId set to map player events
-      // back to a bubble. Without this, audio plays but the bubble
-      // shows no visual feedback.
-      void playReplyTts(finalText, settings.get().voice, replyId).then(() => {
-        // playReplyTts returns when fetch+play started, not when audio
-        // finishes. The audio.ended listener above drives re-arm. If the
-        // promise rejects (network error, no text), drop the listener
-        // and re-arm directly.
-      }).catch(() => {
-        if (inListen) {
-          turnbased.notifyReplyPlayback(false);
-          player?.removeEventListener('ended', onEnded);
-          player?.removeEventListener('error', onEnded);
-        }
-      });
+      // bar, play↔pause glyph) wires up. Listen-state notifications
+      // happen via the centralized tts event subscribers above
+      // (play-start / paused / ended / stopped) — no need for
+      // per-call addEventListener('ended', ...) plumbing here.
+      void playReplyTts(finalText, settings.get().voice, replyId);
     } else if (inListen) {
       // No TTS in flight (rare — settings.tts off AND not in Listen
       // would have skipped). Still notify so re-arm fires.
