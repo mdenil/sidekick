@@ -1,23 +1,60 @@
-// Scenario: navigator.mediaSession.setActionHandler is wired for
-// nexttrack and previoustrack — invoking those handlers (BT headset
-// double-tap on iOS / track-skip on a car infotainment) navigates
-// the drawer to the next/prev chat.
+// Scenario: BT headset + lock-screen MediaSession actions navigate
+// per-reply playback within the active chat (the "I missed what the
+// agent said, lemme go back" UX).
+//
+// Wiring (src/main.ts audioSession.init):
+//   - nexttrack → replyNavigator.playNext (skip-fwd to next agent reply)
+//   - previoustrack → replyNavigator.playPrev (skip-back to previous)
+//   - pause → pauseReplyTts when a reply is playing (truck driving by)
+//   - play → resumeReplyTts when a reply is paused (mid-stream resume)
 //
 // Asserts:
-//   - audio/session.ts registered handlers for 'nexttrack',
-//     'previoustrack', and 'seekto' (test reads via window-bridge).
-//   - The 'nexttrack' handler invokes sessionDrawer.navigateSibling(1)
-//     and 'previoustrack' invokes navigateSibling(-1).
+//   1. previoustrack moves the activeReplyId backwards through agent
+//      bubbles (last → second → first).
+//   2. nexttrack moves it forward.
+//   3. pause flips player.paused = true (via the real pauseReplyTts
+//      → player.pause() chain).
+//   4. play resumes via resumeReplyTts → player.play().
+//
+// Test asserts on activeReplyId + player.paused — the source of truth
+// for the navigation contract — rather than on bubble CSS classes
+// (those are presentation details driven by audio events that get
+// fragile to stub in headless Chromium).
 
 export const NAME = 'mediasession-skip';
-export const DESCRIPTION = 'MediaSession nexttrack/previoustrack route to chat navigation';
+export const DESCRIPTION = 'MediaSession nexttrack/previoustrack/pause/play drive per-reply TTS playback';
 export const STATUS = 'implemented';
 export const BACKEND = 'mocked';
 
 export default async function run({ page, log, fail, url, mock }) {
-  // Pre-seed two chats so navigation has somewhere to go.
-  mock.addChat('chat-a', { title: 'Chat A', messages: [{ role: 'user', content: 'a' }] });
-  mock.addChat('chat-b', { title: 'Chat B', messages: [{ role: 'user', content: 'b' }] });
+  // Pre-seed a chat with three agent replies so playNext / playPrev
+  // have something to navigate over. The mock backend's history
+  // endpoint serves these on session resume; main.ts:renderHistoryMessage
+  // sets data-reply-id = message_id so replyNavigator can find each.
+  mock.addChat('chat-with-replies', {
+    title: 'Three replies',
+    messages: [
+      { role: 'user', content: 'first question' },
+      { role: 'assistant', content: 'first reply', message_id: 'm-r1' },
+      { role: 'user', content: 'second question' },
+      { role: 'assistant', content: 'second reply', message_id: 'm-r2' },
+      { role: 'user', content: 'third question' },
+      { role: 'assistant', content: 'third reply', message_id: 'm-r3' },
+    ],
+  });
+
+  // Intercept POST /tts so the test doesn't hit Deepgram. Returns a
+  // tiny audio blob each call so playReplyTts' fetch+blob path
+  // succeeds and reaches audio.play().
+  await page.route('**/tts', async (route) => {
+    if (new URL(route.request().url()).pathname !== '/tts') return route.fallback();
+    if (route.request().method() !== 'POST') return route.fallback();
+    await route.fulfill({
+      status: 200,
+      contentType: 'audio/mpeg',
+      body: Buffer.from([0xFF, 0xFB, 0x90, 0x00]),
+    });
+  });
 
   await page.goto(`${url}/`, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('#composer-input', { timeout: 15_000 });
@@ -25,64 +62,97 @@ export default async function run({ page, log, fail, url, mock }) {
     timeout: 15_000, polling: 250,
   });
 
-  // Wait for both rows to render.
-  await page.waitForSelector('#sessions-list li[data-chat-id="chat-a"]', { timeout: 5_000 });
-  await page.waitForSelector('#sessions-list li[data-chat-id="chat-b"]', { timeout: 5_000 });
+  const { openSidebar } = await import('./lib.mjs');
+  await openSidebar(page);
+  await page.waitForSelector('#sessions-list li[data-chat-id="chat-with-replies"]', { timeout: 5_000 });
+  await page.click('#sessions-list li[data-chat-id="chat-with-replies"] .sess-body');
+  // Wait for all three agent bubbles + their replyId stamps to land.
+  await page.waitForFunction(() => {
+    const bubbles = document.querySelectorAll('#transcript .line.agent[data-reply-id]');
+    return bubbles.length >= 3;
+  }, null, { timeout: 5_000, polling: 100 });
+  log('three agent bubbles rendered with data-reply-id');
 
-  // Capture which navigation calls fire by spying on navigateSibling.
+  // Stub player.play / pause so the audio element doesn't try to
+  // decode our 4-byte fake mp3. Track .paused via a closure flag
+  // since the native paused getter is read-only and won't reflect
+  // our state otherwise.
   await page.evaluate(() => {
-    window.__navHits = [];
-    const orig = window.__sessionDrawer?.navigateSibling;
-    // The session drawer exposes its module via a global only when wired
-    // by test hooks; in production it doesn't. Just count the active row
-    // changes instead — mediaSession handlers call navigateSibling which
-    // mutates DOM .active class; observing that is enough.
+    const player = document.getElementById('player');
+    if (!player) return;
+    let paused = true;
+    Object.defineProperty(player, 'paused', { get: () => paused, configurable: true });
+    player.play = function() {
+      paused = false;
+      this.dispatchEvent(new Event('play'));
+      return Promise.resolve();
+    };
+    player.pause = function() {
+      paused = true;
+      this.dispatchEvent(new Event('pause'));
+    };
   });
 
-  // Click the first row to anchor the drawer state.
-  await page.click('#sessions-list li[data-chat-id="chat-a"] .sess-body');
-  await page.waitForFunction(() => {
-    const a = document.querySelector('#sessions-list li[data-chat-id="chat-a"]');
-    return a?.classList.contains('active');
-  }, null, { timeout: 5_000, polling: 100 });
-  log('chat-a is active');
+  // Verify the test hook is exposed.
+  const hookOk = await page.evaluate(() =>
+    typeof (window).__audioSessionTest?.fireAction === 'function');
+  if (!hookOk) fail('test hook __audioSessionTest.fireAction missing');
 
-  // Verify mediaSession action handlers registered.
-  const registered = await page.evaluate(() => {
-    // We can't read setActionHandler back, but we can inspect via the
-    // playbackState + a synthesized invocation. Instead, fire the action
-    // directly by re-registering and calling — the production handler
-    // is already there, so a re-register would replace it. Better: just
-    // assert the navigateSibling-driven DOM change happens via the
-    // production callback when we synthesize a click on the second
-    // chat row through the same code path (not a perfect coverage but
-    // exercises the navigation primitive).
-    return typeof navigator.mediaSession?.setActionHandler === 'function';
-  });
-  if (!registered) fail('mediaSession.setActionHandler unavailable in the page');
+  // Helper: read activeReplyId from the live tts module.
+  async function getActiveReplyId() {
+    return page.evaluate(async () => {
+      const tts = await import('/build/audio/turn-based/tts.mjs');
+      return tts.getActiveReplyId();
+    });
+  }
 
-  // Drive the synthetic call into the registered handler. Since
-  // setActionHandler isn't readable, the page exposes a debug hook
-  // (audioSession.testFireAction) for the test runner.
-  const fired = await page.evaluate(() => {
-    const fn = (window).__audioSessionTest?.fireAction;
-    if (typeof fn !== 'function') return false;
-    fn('nexttrack');
-    return true;
-  });
-  if (!fired) fail('test hook __audioSessionTest.fireAction missing');
-
-  await page.waitForFunction(() => {
-    const b = document.querySelector('#sessions-list li[data-chat-id="chat-b"]');
-    return b?.classList.contains('active');
-  }, null, { timeout: 5_000, polling: 100 });
-  log('nexttrack → chat-b is active');
-
-  // previoustrack should bring us back.
+  // ── 1. previoustrack moves activeReplyId backwards ──────────────
+  // The pointer starts at the most-recent bubble (m-r3) per
+  // replyNavigator's currentBubble default. previoustrack walks BACK
+  // to m-r2.
   await page.evaluate(() => (window).__audioSessionTest.fireAction('previoustrack'));
-  await page.waitForFunction(() => {
-    const a = document.querySelector('#sessions-list li[data-chat-id="chat-a"]');
-    return a?.classList.contains('active');
+  await page.waitForFunction(async () => {
+    const tts = await import('/build/audio/turn-based/tts.mjs');
+    return tts.getActiveReplyId() === 'm-r2';
   }, null, { timeout: 5_000, polling: 100 });
-  log('previoustrack → chat-a is active');
+  log('previoustrack → activeReplyId = m-r2');
+
+  // ── 2. previoustrack again → m-r1 ───────────────────────────────
+  await page.evaluate(() => (window).__audioSessionTest.fireAction('previoustrack'));
+  await page.waitForFunction(async () => {
+    const tts = await import('/build/audio/turn-based/tts.mjs');
+    return tts.getActiveReplyId() === 'm-r1';
+  }, null, { timeout: 5_000, polling: 100 });
+  log('previoustrack again → activeReplyId = m-r1');
+
+  // ── 3. nexttrack → m-r2 (forward) ───────────────────────────────
+  await page.evaluate(() => (window).__audioSessionTest.fireAction('nexttrack'));
+  await page.waitForFunction(async () => {
+    const tts = await import('/build/audio/turn-based/tts.mjs');
+    return tts.getActiveReplyId() === 'm-r2';
+  }, null, { timeout: 5_000, polling: 100 });
+  log('nexttrack → activeReplyId = m-r2');
+
+  // ── 4. pause flips player.paused = true ─────────────────────────
+  await page.evaluate(() => (window).__audioSessionTest.fireAction('pause'));
+  await page.waitForFunction(() => {
+    const player = document.getElementById('player');
+    return player && player.paused === true;
+  }, null, { timeout: 3_000, polling: 100 });
+  log('pause → player.paused = true');
+
+  // Confirm tts.isPaused() agrees (covers the resume() path's check).
+  const isPausedNow = await page.evaluate(async () => {
+    const tts = await import('/build/audio/turn-based/tts.mjs');
+    return tts.isPaused();
+  });
+  if (!isPausedNow) fail(`expected tts.isPaused() === true after pause action, got ${isPausedNow}`);
+
+  // ── 5. play resumes via resumeReplyTts → player.play() ──────────
+  await page.evaluate(() => (window).__audioSessionTest.fireAction('play'));
+  await page.waitForFunction(() => {
+    const player = document.getElementById('player');
+    return player && player.paused === false;
+  }, null, { timeout: 3_000, polling: 100 });
+  log('play → player.paused = false (resumed)');
 }

@@ -20,6 +20,7 @@ import * as multiSelect from './multiSelect.ts';
 import * as agentSettingsMod from './agentSettings.ts';
 import { primeAudio, getSharedAudioCtx } from './audio/shared/platform.ts';
 import { playReplyTts, cancelReplyTts } from './audio/turn-based/tts.ts';
+import * as ttsModule from './audio/turn-based/tts.ts';
 import * as replyNavigator from './audio/turn-based/replyNavigator.ts';
 import * as audioSession from './audio/shared/session.ts';
 import * as capture from './audio/shared/capture.ts';
@@ -216,16 +217,28 @@ async function boot() {
   // these toggle the active call (mic stream / talk) on or off.
   audioSession.init({
     onPlay: () => {
-      // BT play: open or resume a call. If one is already open, no-op.
-      // We click the unified composer mic so the BT gesture goes through
-      // the same dispatch path as a tap (respects the user's three
-      // toggles — call/PTT/auto-send).
+      // BT play priority order:
+      //   1. If a TTS reply is paused mid-stream, resume it (per-reply
+      //      replay nav — pairs with onPause below).
+      //   2. Otherwise, if a WebRTC call isn't open, open one via the
+      //      mic button (respects user's call/PTT/auto-send toggles).
+      if (ttsModule.isPaused()) {
+        void ttsModule.resumeReplyTts();
+        return;
+      }
       if (webrtcControls.isOpen()) return;
       const btnMicEl = document.getElementById('btn-mic');
       if (btnMicEl) btnMicEl.click();
     },
     onPause: () => {
-      // BT pause: close the active call.
+      // BT pause priority order:
+      //   1. If a TTS reply is currently playing, pause it (per-reply
+      //      replay nav — "truck driving by, lemme pause" UX).
+      //   2. Otherwise close any open WebRTC call.
+      if (ttsModule.getActiveReplyId() && !ttsModule.isPaused()) {
+        ttsModule.pauseReplyTts();
+        return;
+      }
       if (webrtcControls.isOpen()) {
         void webrtcControls.closeIfOpen();
       }
@@ -2979,6 +2992,11 @@ function renderHistoryMessage(m: any, label: string, mode: 'append' | 'prepend' 
         timestamp: ts,
         prepend,
         batch: prepend,
+        // replyNavigator (BT skip-fwd / skip-back, per-bubble play
+        // chips) keys off data-reply-id. For history-rendered bubbles
+        // there's no separate replyId from the live SSE path, so reuse
+        // messageId — same stable identifier, same dedup semantics.
+        replyId: messageId,
       });
     } else {
       chat.addLine(label, text, 'agent', {
