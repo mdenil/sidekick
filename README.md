@@ -235,21 +235,12 @@ the agent directly. The bridge only ever talks to the proxy.
               └───────────────────────────┘
 ```
 
-**Two voice modes**, picked by the user via the **Realtime** toggle in
-the mic menu (default off):
+**Two voice modes**, both handsfree, picked by the user via the **Realtime** toggle in the mic menu (default off):
 
-- **Realtime (WebRTC)** — full-duplex peer connection to the bridge.
-  Live STT during speech, TTS streamed back over WebRTC. Lower
-  latency, more moving parts. Use when the user wants conversation.
-- **Turn-based (HTTP)** — PWA records one blob with MediaRecorder,
-  POSTs it to the proxy for one-shot STT, runs the reply text through
-  the proxy's `/tts` endpoint, plays the resulting mp3 locally in an
-  `<audio>` element. No WebRTC, no long-lived bridge connection. Used
-  by Listen mode (handsfree memo-style turns) and the per-bubble
-  replay chips. Reuses the same proxy endpoints as the typed path.
+- **Realtime** — full-duplex WebRTC peer to the bridge. Optimises for **latency**: live STT as the user speaks, TTS streamed back over the same peer. The bridge POSTs recognised text to `/api/sidekick/messages` and subscribes to `/api/sidekick/stream` on the user's behalf.
+- **Turn-based** — `MediaRecorder` writes one blob locally per utterance. Optimises for **fidelity**: the full audio uploads to `/transcribe`, the agent's reply text round-trips through `/tts` for an mp3, played in `<audio>`. No WebRTC peer; everything rides plain HTTP+SSE through the proxy. The PWA also caches the mp3 (LRU) so per-bubble replay chips and BT skip-fwd/back are instant.
 
-Realtime mode adds the WebRTC lane to the PWA → bridge channel; turn-
-based mode keeps everything on plain HTTP+SSE through the proxy.
+Both modes use the same handsfree commit triggers — silence timeout and a sendword (default "over"). Both ride the same agent contract (`POST /api/sidekick/messages`, `GET /api/sidekick/stream`); only audio in/out differ. See [`src/audio/README.md`](src/audio/README.md) for the PWA-side architecture (file layout, the `AudioMode` interface, and what gets shared between the two modes).
 
 **Wire contracts**:
 - `/api/sidekick/*` — the PWA-and-bridge-facing surface served by the
@@ -297,13 +288,7 @@ based mode keeps everything on plain HTTP+SSE through the proxy.
    shared `<audio id="player">` element. Per-bubble replay chips and
    BT skip-fwd/back navigate this same cache.
 
-Turn-based mode adds **zero new wire endpoints** — `/transcribe`,
-`/tts`, `/api/sidekick/messages`, and `/api/sidekick/stream` already
-existed for typed turns and voice memos. The Listen state machine,
-sendword detector, barge-in, per-bubble playback chips, and reply
-LRU live entirely in the PWA (`src/audio/listen.ts`,
-`src/audio/text-tts.ts`, `src/audio/replyNavigator.ts`,
-`src/audio/replyCache.ts`).
+Turn-based mode adds **zero new wire endpoints** — `/transcribe`, `/tts`, `/api/sidekick/messages`, and `/api/sidekick/stream` already existed for typed turns and voice memos. The state machine, sendword detector, barge-in, per-bubble playback chips, and reply LRU live entirely in the PWA under `src/audio/turn-based/`. The realtime-mode peer-side state lives in `src/audio/realtime/` plus the Python `audio-bridge/`.
 
 **Drawer state**:
 
@@ -427,20 +412,23 @@ src/
 ├── ios/
 │   ├── fakeLock.ts          pocket-lock overlay (swipe-to-unlock, mic meter)
 │   └── audio-unlock.ts      AudioContext + gesture-unlock for iOS
-├── audio/
-│   ├── capture.ts           shared MediaStream owner (memo + streaming)
-│   ├── session.ts           Media Session + audioSession.type + silent keepalive
-│   ├── memo.ts              MediaRecorder-based dictation bar
-│   ├── micMeter.ts          per-frame peak meter for barge-in + UI
-│   └── feedback.ts          UI feedback blips (send / receive)
-├── pipelines/
-│   └── classic/             Deepgram + Aura voice pipeline
-│       ├── voice.ts             Deepgram result handler
-│       ├── deepgram.ts          streaming STT (WS + local webkitSpeechRecognition)
-│       ├── tts.ts               sentence-chunked TTS (Aura + SpeechSynthesis)
-│       ├── bargeIn.ts           mic-peak evaluator + AudioWorklet setup
-│       ├── sttBackfill.ts       recover from mid-utterance STT drops
-│       └── replyPlayer.ts       playback queue, skipTo, playback icons
+├── audio/                  voice I/O — see src/audio/README.md for the full picture
+│   ├── README.md               two-modes architecture + AudioMode contract
+│   ├── mode.ts                 AudioMode interface (turn-based + realtime implement it)
+│   ├── shared/                 mode-agnostic primitives (capture, session, memo,
+│   │                              micMeter, feedback, recorderBar, ios-specific, ...)
+│   ├── turn-based/             HTTP /transcribe + /tts mode (handsfree, fidelity)
+│   │   ├── turnbased.ts            state machine + barge detection
+│   │   ├── tts.ts                  /tts blob fetch + playback
+│   │   ├── replyNavigator.ts       per-bubble play/pause + BT skip-fwd/back
+│   │   ├── replyCache.ts           LRU for /tts blobs
+│   │   └── sendwordDetector.ts     Web Speech API "over" detector
+│   └── realtime/               WebRTC peer-to-bridge mode (handsfree, latency)
+│       ├── realtime.ts             peer setup + offer/ICE
+│       ├── controls.ts             openCall / closeIfOpen / mode swap
+│       ├── dictate.ts              live dictation variant
+│       ├── dictation.ts            per-call utterance state machine
+│       └── suppress.ts             user-transcript suppression during reply
 └── cards/                   inline cards — validates structured envelopes
     │                         from the agent (link previews, YouTube/Spotify
     │                         embeds, image grids, markdown tables, loading
