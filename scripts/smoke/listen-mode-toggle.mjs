@@ -16,24 +16,24 @@ export const DESCRIPTION = 'Mic-menu Realtime toggle: OFF (default) routes mic t
 export const STATUS = 'implemented';
 export const BACKEND = 'mocked';
 
+import { tapMic } from './lib.mjs';
+
 export default async function run({ page, log, fail, url }) {
-  // Bypass real getUserMedia — listen still uses ?listen_mock_mic for the
-  // synthetic-frames hook. We stub navigator.mediaDevices.getUserMedia
-  // before boot so the listen path's audioPlatform.getMicStream resolves.
-  await page.addInitScript(() => {
-    const fakeStream = {
-      getAudioTracks: () => [{
-        stop: () => {}, kind: 'audio', enabled: true, label: 'fake', readyState: 'live',
-      }],
-      getTracks: () => [{ stop: () => {} }],
-      getVideoTracks: () => [],
-    };
-    if (!navigator.mediaDevices) (navigator).mediaDevices = {};
-    (navigator).mediaDevices.getUserMedia = async () => fakeStream;
-  });
+  // Real getUserMedia comes via Chromium's --use-fake-device-for-media-stream
+  // launch flag (see scripts/smoke/lib.mjs:launchSharedBrowser), so the
+  // listen path's MediaRecorder gets a genuine MediaStream. The
+  // ?listen_mock_mic=1 flag still arms the synthetic-frames hook for
+  // silence/sendword detection.
 
   await page.goto(`${url}/?listen_mock_mic=1`, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('#composer-input', { timeout: 15_000 });
+  // Wait for "Connected" — main.ts wires the chevron + mic button
+  // handlers late in boot; clicking before then is a silent no-op.
+  await page.waitForFunction(
+    () => /Connected/.test(document.body.innerText),
+    null,
+    { timeout: 15_000, polling: 250 },
+  );
 
   // Listen needs Call mode to be ON (it routes mic-taps; Memo bypasses
   // the realtime branch entirely). Default micCall is false; flip it
@@ -59,7 +59,7 @@ export default async function run({ page, log, fail, url }) {
   log('Realtime toggle present + OFF by default');
 
   // With Call mode ON and Realtime OFF, mic-tap should arm Listen.
-  await page.evaluate(() => document.getElementById('btn-mic')?.click());
+  await tapMic(page);
   await page.waitForFunction(
     () => (window).__listen && (window).__listen.state === 'armed',
     null,
@@ -67,8 +67,9 @@ export default async function run({ page, log, fail, url }) {
   );
   log('mic-button → Listen armed (Call ON + Realtime OFF default)');
 
-  // Tap mic again → disarm.
-  await page.evaluate(() => document.getElementById('btn-mic')?.click());
+  // Tap mic again → disarm. Wait past the 500ms double-tap guard so
+  // the second pointerdown isn't swallowed.
+  await tapMic(page, { afterPrevTapMs: 600 });
   await page.waitForFunction(
     () => !(window).__listen || (window).__listen.state === 'idle',
     null,
@@ -78,7 +79,7 @@ export default async function run({ page, log, fail, url }) {
 
   // Flip Realtime ON. Re-arm Listen, then flip Realtime ON should
   // disarm — the user's intent ("switch to WebRTC") wins.
-  await page.evaluate(() => document.getElementById('btn-mic')?.click());
+  await tapMic(page, { afterPrevTapMs: 600 });
   await page.waitForFunction(
     () => (window).__listen && (window).__listen.state === 'armed',
     null,

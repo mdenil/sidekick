@@ -25,7 +25,17 @@ export async function launchSharedBrowser({ headed = false } = {}) {
   const browser = await chromium.launch({
     executablePath: CHROMIUM,
     headless: !headed,
-    args: ['--no-sandbox'],
+    args: [
+      '--no-sandbox',
+      // Chromium-built-in fake mic — generates a silent stream by default
+      // and skips the permission prompt. Required for any smoke that
+      // exercises getUserMedia + MediaRecorder (the listen-* tests):
+      // their old hand-rolled MediaStream stubs fail with "parameter 1
+      // is not of type 'MediaStream'" because MediaRecorder validates
+      // its input is a real native MediaStream.
+      '--use-fake-ui-for-media-stream',
+      '--use-fake-device-for-media-stream',
+    ],
   });
   const closeShared = async () => {
     try { await browser.close(); } catch {}
@@ -76,6 +86,27 @@ export async function waitForReady(page, url = DEFAULT_URL, { debug = true, time
     null,
     { timeout, polling: 250 },
   );
+}
+
+/** Synthesize a mic-button tap. The mic button uses pointerdown/pointerup
+ *  (not click) for press-and-hold + tap-toggle support, so element.click()
+ *  is a silent no-op. This dispatches the pointer events directly so
+ *  tests don't need viewport math + page.mouse coordinates.
+ *
+ *  Mic button has a 500ms double-tap guard (TOGGLE_STOP_GUARD_MS in
+ *  main.ts) that swallows pointerdowns within 500ms of a toggle-start —
+ *  prevents stray double-clicks from killing a recording instantly.
+ *  Tests doing tap-then-tap to toggle on/off must space the taps, so
+ *  the helper takes an optional pre-delay. */
+export async function tapMic(page, { afterPrevTapMs = 0 } = {}) {
+  if (afterPrevTapMs > 0) await page.waitForTimeout(afterPrevTapMs);
+  await page.evaluate(() => {
+    const btn = document.getElementById('btn-mic');
+    if (!btn) throw new Error('tapMic: #btn-mic not found');
+    const opts = { bubbles: true, cancelable: true, isPrimary: true, pointerId: 1 };
+    btn.dispatchEvent(new PointerEvent('pointerdown', opts));
+    btn.dispatchEvent(new PointerEvent('pointerup', opts));
+  });
 }
 
 /** Ensure the sidebar drawer is expanded (so drawer rows are clickable).

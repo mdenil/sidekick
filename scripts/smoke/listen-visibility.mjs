@@ -32,13 +32,11 @@ export default async function run({ page, log, fail, url }) {
     (window).SpeechRecognition = StubSR;
     (window).webkitSpeechRecognition = StubSR;
     (window).__srStartCalls = 0;
-    // Stub getUserMedia so listen.start() resolves.
-    const fakeStream = {
-      getAudioTracks: () => [{ stop: () => {}, kind: 'audio' }],
-      getTracks: () => [{ stop: () => {} }],
-    };
-    if (!navigator.mediaDevices) (navigator).mediaDevices = {};
-    (navigator).mediaDevices.getUserMedia = async () => fakeStream;
+    // Real getUserMedia comes via Chromium's --use-fake-device-for-media-stream
+    // launch flag (scripts/smoke/lib.mjs:launchSharedBrowser). The
+    // hand-rolled fake-stream stub here used to be required because
+    // MediaRecorder rejects non-MediaStream inputs; the launch flag
+    // gives us a real (silent) MediaStream so MediaRecorder is happy.
   });
 
   await page.goto(`${url}/?listen=1&listen_mock_mic=1&silence_sec=60`, {
