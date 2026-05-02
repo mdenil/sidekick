@@ -50,13 +50,16 @@ export function init(o: ControlsOpts) {
 
   conn.setStateListener((state, mode) => {
     log('[webrtc-controls] state=', state, 'mode=', mode);
-    // Reflect call-open state on the unified composer mic so the user
-    // sees a visual cue that voice is live. Memo + dictate paths flip
-    // the same class via their own listeners — only one of the three
-    // is ever active at a time.
+    // Pre-button-split this code flipped btn-mic.active when a call
+    // opened (back when btn-mic WAS the call button). After the split
+    // (2026-05) calls live on btn-call; btn-mic.active should reflect
+    // mic modes only (memo / dictate). main.ts:syncCallButtonVisual
+    // owns btn-call.active. The 'connecting' class still belongs to
+    // the mic button visually — it's the one that animates the spin
+    // during initial setup; harmless when call mode owns the actual
+    // visual state through btn-call.
     const mic = btnEl('btn-mic');
     if (mic) {
-      mic.classList.toggle('active', conn.isOpen());
       mic.classList.toggle(
         'connecting',
         state === 'requesting-mic' || state === 'connecting',
