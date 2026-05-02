@@ -2611,26 +2611,23 @@ async function boot() {
       const on = !!s[key];
       b.setAttribute('aria-checked', on ? 'true' : 'false');
       b.classList.toggle('on', on);
-      b.title = tooltipForCallToggle(key);
+      // aria-label instead of title — iOS treats title as a long-press
+      // tooltip preview that pops up on every menu-row tap.
+      b.setAttribute('aria-label', tooltipForCallToggle(key));
     });
   }
 
   function applyMicModeUi(): void {
     const s = settings.get() as any;
     applyMenuRows(callModeMenu, s);
-    if (btnMic) {
-      btnMic.title = 'Tap to dictate, hold to record';
-    }
-    // Call button: data-mode reflects Realtime; tooltip reflects current mode.
+    // No dynamic .title= on btn-mic / btn-call — iOS treats title as a
+    // long-press tooltip preview that fights with our PTT gestures and
+    // pops up on every tap. aria-label (set in index.html) covers the
+    // screen-reader case. Visual icon + onboarding cover discoverability.
+    // data-mode on the wrap drives any CSS that wants to react to the
+    // current call transport (e.g. accent the chevron in realtime).
     if (callModeWrap) {
       callModeWrap.dataset.mode = s.realtime ? 'realtime' : 'turn-based';
-    }
-    const btnCall = document.getElementById('btn-call');
-    if (btnCall) {
-      const what = s.realtime
-        ? (s.tts ? 'WebRTC call (talk mode)' : 'WebRTC call (stream mode)')
-        : 'turn-based call (Listen)';
-      btnCall.title = `Tap to start — ${what}`;
     }
   }
   applyMicModeUi();
