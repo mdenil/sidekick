@@ -88,6 +88,48 @@ export async function waitForReady(page, url = DEFAULT_URL, { debug = true, time
   );
 }
 
+/** Reset proxy-side yaml-backed settings to known values BEFORE the
+ *  page boots. Smokes share the server's sidekick.config.yaml across
+ *  scenarios — per-scenario BrowserContext gives clean localStorage +
+ *  IDB, but the proxy's settings table is global. Tests that flip
+ *  settings (mic-mode toggles, agent schema POSTs, etc.) leak state
+ *  to subsequent scenarios. Call this in scenario setup to opt into
+ *  a clean baseline.
+ *
+ *  Defaults match src/settings.ts DEFAULTS for keys these tests touch.
+ *  Add to the map if a new test depends on a specific starting value. */
+export async function resetServerSettings(page, overrides = {}) {
+  const defaults = {
+    micCall: false,
+    micAutoSend: false,
+    realtime: false,
+    tts: false,
+    silenceSec: 15,
+    commitPhrase: 'over',
+    bargeIn: true,
+    bargeThreshold: 0.10,
+    autoSend: true,
+  };
+  const target = { ...defaults, ...overrides };
+  // Use a Promise.all of fetches; the proxy handles each independently.
+  // Errors are non-fatal (some keys may not exist on every backend).
+  const results = await Promise.all(
+    Object.entries(target).map(async ([key, value]) => {
+      try {
+        const r = await fetch(`http://127.0.0.1:3001/api/sidekick/config/${key}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ value }),
+        });
+        return { key, ok: r.ok };
+      } catch (e) {
+        return { key, ok: false, err: e.message };
+      }
+    }),
+  );
+  return results;
+}
+
 /** Synthesize a mic-button tap. The mic button uses pointerdown/pointerup
  *  (not click) for press-and-hold + tap-toggle support, so element.click()
  *  is a silent no-op. This dispatches the pointer events directly so
