@@ -1934,8 +1934,10 @@ async function boot() {
     audioSession.prepareForCapture();
     // Mount the recorder bar inside the composer (same spot memo uses)
     // so the user has a visual cue + trash button. Hide the composer-
-    // actions row so the bar takes over the same physical space.
-    const composerEl = document.getElementById('composer') as HTMLElement | null;
+    // actions row so the bar takes over the same physical space. The
+    // composer is `<div class="composer">` (no id), reached via
+    // composerInput.parentElement — same trick memo.start does.
+    const composerEl = composerInput.parentElement as HTMLElement | null;
     const composerActionsEl = composerEl?.querySelector('.composer-actions') as HTMLElement | null;
     if (composerActionsEl) composerActionsEl.style.display = 'none';
     const restoreComposerActions = () => {
