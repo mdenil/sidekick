@@ -3661,21 +3661,25 @@ function handleReplyFinal({ replyId, text, content = [], conversation, messageId
     }
     if (!isReplay) playFeedback('receive');
 
-    // Speak-replies: when the toggle is on AND we're not in a WebRTC
-    // call (call mode owns audio via its own peer-track TTS), synth
-    // the reply through Deepgram Aura via /tts. Best-effort —
-    // failures log + drop, never blocking bubble rendering.
+    // Speak-replies (CALL-ONLY since 2026-05): TTS auto-fires only
+    // inside an active call. In a turn-based call (Listen), we synth
+    // the reply through /tts so the user hears the answer handsfree.
+    // In a WebRTC call (talk mode), the peer track owns audio — we
+    // don't double-up. Outside a call (text-only chat, memo dictation),
+    // the user reads replies on screen; the per-bubble play button
+    // handles on-demand replay. The `settings.tts` setting still
+    // matters INSIDE a call (talk vs. stream WebRTC mode); it just
+    // doesn't trigger TTS outside one.
     //
-    // Listen mode is forced into the speak-replies path so the user
-    // hears the answer handsfree, regardless of the user-facing toggle.
-    // We notify listen.notifyReplyPlayback around the call so it
-    // suspends silence detection and re-arms after audio.ended.
+    // Note that `inListen` covers turnbased = armed/recording/sending/
+    // playing/cooldown — i.e. any state where Listen owns the mic.
+    // Idle-state turnbased means the call ended, so no TTS.
     //
     // isReplay gates the whole block: SSE ring replay on page-load /
-    // reconnect re-emits old reply_finals; without this guard speak-
-    // replies would read the chat aloud from the top every refresh.
+    // reconnect re-emits old reply_finals; without this guard the
+    // PWA would read the chat aloud from the top every refresh.
     const inListen = turnbased.getState() !== 'idle';
-    if (!isReplay && (settings.get().tts || inListen) && !webrtcControls.isOpen()) {
+    if (!isReplay && inListen && !webrtcControls.isOpen()) {
       const player = document.getElementById('player') as HTMLAudioElement | null;
       if (inListen) turnbased.notifyReplyPlayback(true);
       const onEnded = () => {

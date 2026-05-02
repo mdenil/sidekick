@@ -1,41 +1,33 @@
-// Pin the b00646b feature: when settings.tts ("Speak replies") is ON
-// AND no WebRTC call is open, the PWA POSTs the freshly-finalized
-// agent reply text to /tts so it gets spoken aloud through the
-// shared #player <audio> element.
+// Pin the call-only speak-replies rule (2026-05): when settings.tts
+// ("Speak replies") is ON BUT no call is active, the PWA does NOT
+// auto-fire /tts. Outside a call the user reads replies on screen;
+// the per-bubble play button handles on-demand replay.
 //
-// Pre-feature the toggle was call-mode-only; typed-reply playback
-// silently no-op'd. Post-feature handleReplyFinal fires playReplyTts,
-// which fetches /tts → blob → player.play().
+// Pre-2026-05 the toggle ALSO triggered TTS for typed replies. The
+// two-button-split refactor narrowed it to call-only — the typed-mode
+// TTS is now the per-bubble play button only.
 //
 // Test plan (mocked):
-//   1. Intercept POST /tts; capture the body and return a tiny fake
-//      audio blob so the play() call can resolve cleanly.
-//   2. Stub player.play to a resolved promise (jsdom audio paths are
-//      flaky in playwright).
-//   3. Enable settings.tts via the bundled settings module.
+//   1. Intercept POST /tts; record any calls.
+//   2. Stub player.play to a resolved promise.
+//   3. Enable settings.tts.
 //   4. Send a message via mock backend → mock auto-replies via SSE.
 //   5. Wait for the agent bubble to finalize.
-//   6. Assert /tts was called and the body contains the reply text.
+//   6. Assert /tts was NOT auto-called (call-only gate held).
+//   7. Assert the per-bubble play affordance IS present (so the user
+//      can replay on demand if they want).
 
 import { waitForReady, send, assert } from './lib.mjs';
 
 export const NAME = 'speak-typed-replies';
-export const DESCRIPTION = 'settings.tts on → finalized agent reply POSTs to /tts';
+export const DESCRIPTION = 'settings.tts on outside a call → /tts NOT auto-fired (call-only gate)';
 export const STATUS = 'implemented';
 export const BACKEND = 'mocked';
 
 const USER_TEXT = 'good morning';
-// The mock backend echoes "[mock] echo: <text>" — the cleanForTts
-// regex set in text-tts.ts strips the leading "[mock]" prefix
-// (matches /^\[[A-Za-z0-9_\- ]+\]\s*/), so the /tts body should be
-// "echo: good morning".
-const EXPECTED_TTS_TEXT = 'echo: good morning';
 
 export default async function run({ page, log }) {
-  // Intercept POST /tts, capture body, return a 1-byte fake blob.
-  // Match by exact pathname '/tts' so we don't accidentally catch
-  // /api/sidekick/settings/tts (the agent-settings POST for the
-  // "tts" key — same suffix, different surface).
+  // Intercept POST /tts and record any calls (we expect zero).
   const ttsCalls = [];
   await page.route('**/tts', async (route) => {
     if (new URL(route.request().url()).pathname !== '/tts') return route.fallback();
@@ -44,7 +36,6 @@ export default async function run({ page, log }) {
     try { body = JSON.parse(route.request().postData() || '{}'); }
     catch {}
     ttsCalls.push(body);
-    // Return a tiny mp3-ish blob so the response.blob() succeeds.
     await route.fulfill({
       status: 200,
       contentType: 'audio/mpeg',
@@ -54,8 +45,7 @@ export default async function run({ page, log }) {
 
   await waitForReady(page);
 
-  // Stub player.play so audio playback errors don't fail the test.
-  // play() resolves; the route handler controls /tts response.
+  // Stub player.play so any background audio attempts don't fail the test.
   await page.evaluate(() => {
     const player = document.getElementById('player');
     if (player) {
@@ -63,16 +53,20 @@ export default async function run({ page, log }) {
     }
   });
 
-  // Enable settings.tts via the live settings module.
+  // Enable settings.tts via the live settings module. With the
+  // call-only gate this should NOT trigger TTS for the typed reply
+  // — `settings.tts` is now meaningful only INSIDE a call (talk vs.
+  // stream WebRTC mode).
   await page.evaluate(async () => {
     const s = await import('/build/settings.mjs');
     s.set('tts', true);
   });
 
-  // Send a typed message; mock auto-replies via SSE → handleReplyFinal
-  // → playReplyTts.
+  // Send a typed message; mock auto-replies via SSE → handleReplyFinal.
+  // No call is open, so the new gate (`inListen && !webrtcOpen`) should
+  // skip the playReplyTts call entirely.
   await send(page, USER_TEXT);
-  log(`sent "${USER_TEXT}" — waiting for finalized agent reply + /tts POST`);
+  log(`sent "${USER_TEXT}" — waiting for finalized agent reply (no /tts auto-fire expected)`);
 
   // Wait for the agent bubble to finalize.
   await page.waitForFunction(
@@ -81,28 +75,33 @@ export default async function run({ page, log }) {
     { timeout: 5_000, polling: 50 },
   );
 
-  // Wait for the /tts POST to land (handleReplyFinal fires it after
-  // a brief delay for the receive chime sequencing).
-  const start = Date.now();
-  while (ttsCalls.length === 0 && Date.now() - start < 4_000) {
-    await page.waitForTimeout(50);
-  }
+  // Wait a beat — handleReplyFinal fires playReplyTts after a brief
+  // delay in the old code path, so we need to wait long enough that
+  // a regression would have triggered by now.
+  await page.waitForTimeout(800);
 
-  log(`/tts calls: ${ttsCalls.length}, bodies: ${JSON.stringify(ttsCalls).slice(0, 300)}`);
+  log(`/tts calls observed: ${ttsCalls.length} (expected 0)`);
 
   assert(
-    ttsCalls.length >= 1,
-    `expected ≥1 POST /tts after reply_final with settings.tts=true; saw ${ttsCalls.length}`,
+    ttsCalls.length === 0,
+    `call-only gate failed: expected 0 POST /tts after reply_final outside a call, saw ${ttsCalls.length}`,
   );
+  log(`/tts NOT auto-fired outside a call ✓`);
 
-  const firstBody = ttsCalls[0];
-  assert(
-    firstBody && typeof firstBody.text === 'string',
-    `/tts body should have a 'text' field; got ${JSON.stringify(firstBody)}`,
-  );
-  assert(
-    firstBody.text.includes(EXPECTED_TTS_TEXT),
-    `/tts body.text expected to contain "${EXPECTED_TTS_TEXT}", got ${JSON.stringify(firstBody.text)}`,
-  );
-  log(`/tts called with the reply text ✓`);
+  // Per-bubble play button — should be present on the agent bubble so
+  // the user can manually replay if desired. replyPlayer.ts wires
+  // `.reply-play` (or similar) onto agent bubbles. Just check the
+  // bubble has a clickable play affordance.
+  const hasPlayAffordance = await page.evaluate(() => {
+    const bubble = document.querySelector('.line.agent:not(.streaming):not(.pending)');
+    if (!bubble) return false;
+    // replyPlayer.ts uses a play button; check for any descendant button
+    // whose role is play / aria-label contains "play".
+    const btn = bubble.querySelector('button[aria-label*="play" i], .reply-play, .bubble-play');
+    return !!btn;
+  });
+  // Soft-assert: the per-bubble UX is the responsibility of the
+  // replyplayer-bubble-ux smoke. Here we just note its presence/absence
+  // so a regression in the bubble UX shows up adjacent to the gate test.
+  log(`per-bubble play affordance present: ${hasPlayAffordance}`);
 }
