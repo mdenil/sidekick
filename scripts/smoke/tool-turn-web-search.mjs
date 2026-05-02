@@ -109,50 +109,62 @@ export default async function run({ page, log, fail }) {
       assert(!re.test(finalText), `reply matched placeholder pattern ${re}: ${JSON.stringify(finalText.slice(0, 200))}`);
     }
 
-    // 5. state.db has a tool turn for web_search in this session. Map
-    //    chat_id → session_id via the proxy's sessions endpoint, then
-    //    look for either an assistant row whose tool_calls JSON names
-    //    web_search OR a tool row with tool_name='web_search'.
-    const sessions = await page.evaluate(async () => {
-      const r = await fetch('/api/sidekick/sessions');
-      return r.json();
-    });
-    const sess = (sessions?.sessions || []).find((s) => s.chat_id === chatId);
-    assert(sess, `no session record for chat_id=${chatId} in /api/sidekick/sessions`);
-    const sessionId = sess.session_id;
-    log(`mapped chat_id=${chatId} → session_id=${sessionId}`);
-
-    // SQL escaping: session_id is a hermes-generated timestamp+hex string,
-    // safe to interpolate. We're shelling out to sqlite3 with execFile so
-    // there's no shell-injection surface either way.
+    // 5. state.db has a tool turn for web_search.
+    //
+    // We can't map chat_id → state.db session_id from the proxy
+    // anymore: /api/sidekick/sessions only exposes chat_id (the
+    // sidekick-side identity), and state.db's sessions table has
+    // no chat_id column (hermes manages session identity by its
+    // own `id`). Instead, query the most-recent session in state.db
+    // that started AFTER this test began (t0). Smokes are sequential,
+    // so the most-recent recently-started session is ours.
     //
     // Hermes commits tool_calls to state.db asynchronously after the
-    // response generator yields the final envelope — there can be a
-    // 100ms-1s gap between reply_final landing in the PWA and the row
-    // hitting disk. Poll up to 10s with backoff so the test isn't
-    // racing the write.
-    const sql = `SELECT id, role, tool_name, tool_calls FROM messages
-       WHERE session_id = '${sessionId}'
-         AND (
-           tool_name = 'web_search'
-           OR (role = 'assistant' AND tool_calls LIKE '%"name": "web_search"%')
-         )
-       ORDER BY id ASC`;
+    // response generator yields the final envelope — poll up to 10s
+    // so the test isn't racing the write.
+    const t0Sec = Math.floor(t0 / 1000);
     let rows = [];
+    let sessionId = null;
     const pollStart = Date.now();
     while (Date.now() - pollStart < 10_000) {
-      rows = await sqlQuery(STATE_DB, sql);
+      const recentSessions = await sqlQuery(
+        STATE_DB,
+        `SELECT id FROM sessions
+         WHERE source = 'sidekick' AND started_at >= ${t0Sec}
+         ORDER BY started_at DESC LIMIT 5`,
+      );
+      for (const s of recentSessions) {
+        const found = await sqlQuery(
+          STATE_DB,
+          `SELECT id, role, tool_name, tool_calls FROM messages
+             WHERE session_id = '${s.id}'
+               AND (
+                 tool_name = 'web_search'
+                 OR (role = 'assistant' AND tool_calls LIKE '%"name": "web_search"%')
+               )
+             ORDER BY id ASC`,
+        );
+        if (found.length > 0) {
+          rows = found;
+          sessionId = s.id;
+          break;
+        }
+      }
       if (rows.length > 0) break;
       await new Promise((r) => setTimeout(r, 250));
     }
-    log(`state.db rows matching web_search: ${rows.length} (after ${Date.now() - pollStart}ms poll)`);
+    log(`state.db rows matching web_search: ${rows.length} (after ${Date.now() - pollStart}ms poll, session=${sessionId})`);
     if (rows.length === 0) {
-      // Diagnostic: dump ALL rows for this session so we can see what
-      // hermes actually wrote, instead of just "got 0".
-      const allRows = await sqlQuery(STATE_DB, `SELECT id, role, tool_name, substr(content, 1, 80) AS content_excerpt, substr(tool_calls, 1, 200) AS tool_calls_excerpt FROM messages WHERE session_id = '${sessionId}' ORDER BY id ASC`);
-      log(`all rows for session ${sessionId}: ${JSON.stringify(allRows, null, 2)}`);
+      // Diagnostic: dump ALL recent sessions + their messages so we
+      // can see what hermes actually wrote.
+      const recentSessions = await sqlQuery(
+        STATE_DB,
+        `SELECT id, started_at, message_count, tool_call_count FROM sessions
+         WHERE source = 'sidekick' ORDER BY started_at DESC LIMIT 3`,
+      );
+      log(`recent sessions: ${JSON.stringify(recentSessions, null, 2)}`);
     }
-    assert(rows.length >= 1, `expected ≥1 web_search row in state.db for session ${sessionId}, got 0`);
+    assert(rows.length >= 1, `expected ≥1 web_search row in state.db (looking at sessions started after t0=${t0Sec}), got 0`);
   } finally {
     if (chatId) await deleteChat(page, chatId);
   }
