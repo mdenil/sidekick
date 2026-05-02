@@ -29,6 +29,7 @@ import * as audioPlatform from '../shared/platform.ts';
 import * as settings from '../../settings.ts';
 import { playFeedback } from '../shared/feedback.ts';
 import * as sendwordDetector from './sendwordDetector.ts';
+import { SilenceWindow, getHandsfreeConfig } from '../shared/handsfree.ts';
 
 export type ListenState = 'idle' | 'armed' | 'committing' | 'playing' | 'cooldown';
 
@@ -88,7 +89,7 @@ let bargeLoop: ReturnType<typeof setInterval> | null = null;
 let bargeWindow: number[] = [];
 let bargeMuteUntil = 0;
 let armedAt = 0;
-let lastVoiceAt = 0;
+let silenceWindow: SilenceWindow | null = null;
 let mockFrames: { type: 'silence' | 'speech'; remainingMs: number } | null = null;
 let cooldownTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -192,12 +193,11 @@ function ensureVisibilityHandler(): void {
     } else {
       // Re-arm sendword on resume if we're still in armed state.
       if (state === 'armed') {
-        const s = settings.get();
-        const engine = (s as any).listenSttEngine || 'local';
-        const phrase = (((s as any).listenSendword as string) || s.commitPhrase || '').trim();
-        if (phrase && engine !== 'silence-only') {
+        const engine = (settings.get() as any).listenSttEngine || 'local';
+        const { sendwordPhrase } = getHandsfreeConfig();
+        if (sendwordPhrase && engine !== 'silence-only') {
           sendwordDetector.start({
-            phrase,
+            phrase: sendwordPhrase,
             onMatch: () => commitFromSendword(),
           });
         }
@@ -220,18 +220,19 @@ async function armRecorder(): Promise<void> {
   mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunks.push(e.data); };
   mediaRecorder.start(1000);
   armedAt = Date.now();
-  lastVoiceAt = armedAt;
+  // Initialise the silence window from current handsfree config.
+  // tickSilence reads expired() each frame; setThreshold lets a live
+  // settings flip propagate without us having to subscribe.
+  const cfg = getHandsfreeConfig();
+  silenceWindow = new SilenceWindow(cfg.silenceSec, armedAt);
   startSilenceLoop();
-  // Sendword detector: empty listenSendword falls back to commitPhrase
-  // (per-spec). Fail-soft — if SR is unsupported, listen continues with
-  // silence-only commits. listenSttEngine='silence-only' forces the
-  // user-side opt-out path even when SR IS available.
-  const s = settings.get();
-  const engine = (s as any).listenSttEngine || 'local';
-  const phrase = (((s as any).listenSendword as string) || s.commitPhrase || '').trim();
-  if (phrase && engine !== 'silence-only') {
+  // Sendword detector: fail-soft — if SR is unsupported, listen
+  // continues with silence-only commits. listenSttEngine='silence-only'
+  // forces the user-side opt-out path even when SR IS available.
+  const engine = (settings.get() as any).listenSttEngine || 'local';
+  if (cfg.sendwordPhrase && engine !== 'silence-only') {
     sendwordDetector.start({
-      phrase,
+      phrase: cfg.sendwordPhrase,
       onMatch: () => commitFromSendword(),
     });
   }
@@ -295,11 +296,13 @@ function tickBarge(): void {
 }
 
 /** One frame of silence detection. Reads peak from the analyser (or the
- *  injected mock-frame queue when a smoke test is driving us). When the
- *  gap since the last speech frame exceeds settings.listenSilenceSec,
- *  fires commit. */
+ *  injected mock-frame queue when a smoke test is driving us). The
+ *  silenceWindow holds lastVoiceAt + threshold; when expired, fire
+ *  commit. Threshold updates live via setThreshold so user changes
+ *  propagate mid-session. */
 function tickSilence(): void {
   if (state !== 'armed') return;
+  if (!silenceWindow) return;
   const now = Date.now();
   if (now - armedAt < SILENCE_WARMUP_MS) {
     // Skip the warmup window so the "listening" chime + late mic
@@ -307,10 +310,11 @@ function tickSilence(): void {
     return;
   }
 
-  const s = settings.get();
-  // settings.listenSilenceSec lives in DEFAULTS as of Phase 1; default 8s.
-  const silenceMs = (((s as any).listenSilenceSec as number) || 8) * 1000;
+  // Re-read the threshold each frame so a settings flip takes effect
+  // without us subscribing to the settings module.
+  silenceWindow.setThreshold(getHandsfreeConfig().silenceSec);
 
+  const s = settings.get();
   let isSpeech = false;
   if (mockFrames && mockFrames.remainingMs > 0) {
     isSpeech = mockFrames.type === 'speech';
@@ -321,10 +325,10 @@ function tickSilence(): void {
   }
 
   if (isSpeech) {
-    lastVoiceAt = now;
+    silenceWindow.noteVoice(now);
     return;
   }
-  if (now - lastVoiceAt >= silenceMs) {
+  if (silenceWindow.expired(now)) {
     void commitNow('silence');
   }
 }
@@ -461,13 +465,13 @@ function installTestHooksIfRequested(): void {
     get state() { return state; },
     injectSilence(durationMs: number) {
       mockFrames = { type: 'silence', remainingMs: durationMs };
-      // Also pretend we never heard speech — set lastVoiceAt back so
-      // the configured silence window can elapse.
-      lastVoiceAt = Date.now() - durationMs;
+      // Pretend we never heard speech — wind lastVoiceAt back so the
+      // configured silence window can elapse during the mock frame.
+      silenceWindow?.noteVoice(Date.now() - durationMs);
     },
     injectSpeech(durationMs: number) {
       mockFrames = { type: 'speech', remainingMs: durationMs };
-      lastVoiceAt = Date.now();
+      silenceWindow?.noteVoice();
     },
     commit() { void commitNow('sendword'); },
   };
