@@ -95,9 +95,14 @@ MAX_PCM_QUEUE = 100
 VAD_RMS_THRESHOLD = int(os.environ.get("SIDEKICK_VAD_RMS_THRESHOLD", "100"))
 
 # Consecutive 20 ms frames over threshold required to fire a barge.
-# 8 * 20 ms = 160 ms — long enough to filter cough/keypress transients,
-# short enough that a deliberate "stop" interrupts within ~one syllable.
-VAD_HOLD_FRAMES = int(os.environ.get("SIDEKICK_VAD_HOLD_FRAMES", "8"))
+# 4 * 20 ms = 80 ms — long enough to filter cough/keypress transients
+# (which usually clear in 1-2 frames), short enough that natural voice
+# fluctuation between phonemes still produces enough consecutive
+# above-threshold frames to fire reliably. Original 8 was too strict:
+# bridge logs from desktop-speaker barge tests showed 9-15 hot frames
+# per 50 (~20-30% duty cycle) but rarely 8 consecutive — voice has
+# brief valleys between syllables that broke the run repeatedly.
+VAD_HOLD_FRAMES = int(os.environ.get("SIDEKICK_VAD_HOLD_FRAMES", "4"))
 
 # Periodic RMS observability while TTS is active. Every N frames during
 # a TTS-active window, log the running max RMS + count of over-threshold
@@ -329,18 +334,20 @@ async def _run_stt(
         # Threshold: peer can override via offer's barge_threshold
         # (PWA's bargeThreshold setting, 0..0.5; PWA UI exposes the
         # inverse as a sensitivity %). Mapping with VAD_RMS_THRESHOLD=100
-        # base + 2000 multiplier gives:
-        #   sens 100% (thr_01=0)    → 100 RMS  — fires on quiet speech
-        #   sens 60%  (thr_01=0.20) → 500 RMS  — normal-volume speech
-        #   sens 50%  (thr_01=0.25) → 600 RMS
-        #   sens 0%   (thr_01=0.5)  → 1100 RMS — only loud / shouted
-        # Lower multiplier (was 6000) keeps the slider's full range
-        # within the actual mic-RMS band (200-2000 covers iPhone +
-        # desktop). Headphone users w/ no speaker echo can drop sens
-        # higher with no false-fire risk.
+        # base + 1000 multiplier gives:
+        #   sens 100% (thr_01=0)    → 100 RMS  — fires on whispers
+        #   sens 80%  (thr_01=0.10) → 200 RMS  — quiet speech (default)
+        #   sens 55%  (thr_01=0.225)→ 325 RMS  — normal indoor voice
+        #   sens 0%   (thr_01=0.5)  → 600 RMS  — loud-only / shouted
+        # Multiplier dropped from 2000 → 1000: bridge logs from real
+        # desktop-speaker tests showed voice peaks of 1024-1760 only
+        # produced 9-15 hot frames per 50 at threshold 550 — duty
+        # cycle below what hold_frames could chain. Lowering the
+        # threshold ceiling means each frame is more likely to be hot,
+        # so the hold-frames test passes without requiring shouting.
         thr_01 = peer.extra.get("barge_threshold_01")
         if thr_01 is not None:
-            peer_threshold = int(VAD_RMS_THRESHOLD + float(thr_01) * 2000)
+            peer_threshold = int(VAD_RMS_THRESHOLD + float(thr_01) * 1000)
         else:
             peer_threshold = VAD_RMS_THRESHOLD
         gate = BargeGate(

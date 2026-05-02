@@ -3583,7 +3583,12 @@ function handleReplyFinal({ replyId, text, content = [], conversation, messageId
       };
       player?.addEventListener('ended', onEnded);
       player?.addEventListener('error', onEnded);
-      void playReplyTts(finalText, settings.get().voice).then(() => {
+      // Pass replyId so the per-bubble UX (loading bar, played-ratio
+      // bar, play↔pause glyph) wires up — replyNavigator.ensurePlayer
+      // ListenersAttached needs activeReplyId set to map player events
+      // back to a bubble. Without this, audio plays but the bubble
+      // shows no visual feedback.
+      void playReplyTts(finalText, settings.get().voice, replyId).then(() => {
         // playReplyTts returns when fetch+play started, not when audio
         // finishes. The audio.ended listener above drives re-arm. If the
         // promise rejects (network error, no text), drop the listener

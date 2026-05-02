@@ -104,11 +104,14 @@ function ensurePlayerListenersAttached(): void {
   const player = document.getElementById('player') as HTMLAudioElement | null;
   if (!player) return;
   playerListenersAttached = true;
+  diag('[reply-nav] player listeners attached');
 
   const findActive = () => findBubbleByReplyId(getActiveReplyId());
 
   player.addEventListener('play', () => {
+    const id = getActiveReplyId();
     const b = findActive();
+    diag(`[reply-nav] play event activeReplyId=${id} bubbleFound=${!!b}`);
     if (b) {
       currentBubble = b;
       setBubbleState(b, 'playing');
@@ -218,6 +221,7 @@ export async function togglePlayback(bubble: HTMLElement): Promise<void> {
   // Or no active bubble — just start.
   currentBubble = bubble;
   const voice = await resolveVoice();
+  diag(`[reply-nav] togglePlayback start replyId=${replyId} text-len=${text.length}`);
   // playReplyTts internally cancels any prior session before starting
   // — no need to call cancelReplyTts here.
   await playReplyTts(text, voice, replyId || undefined);
