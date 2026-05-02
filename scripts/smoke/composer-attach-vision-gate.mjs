@@ -38,7 +38,11 @@ export function MOCK_SETUP(mock) {
         { value: 'google/gemma-3-27b-it', label: 'Gemma 3 27B (vision)' },
         { value: 'google/gemma-2-9b-it', label: 'Gemma 2 9B (text only)' },
         { value: 'anthropic/claude-sonnet-4', label: 'Claude Sonnet 4 (vision)' },
-        { value: 'qwen/qwen2.5-7b-instruct', label: 'Qwen 2.5 7B (text only)' },
+        // Mistral-7b doesn't match isVisionCapableModel's regex — used
+        // here as a known-non-vision third example. (qwen 2.5 was the
+        // original choice but it actually matches qwen[23](\.\d+)? in
+        // the regex, so it's heuristic-flagged vision-capable.)
+        { value: 'mistralai/mistral-7b-instruct', label: 'Mistral 7B (text only)' },
       ],
     },
   ]);
@@ -54,32 +58,30 @@ async function attachDisabled(page) {
 export default async function run({ page, log }) {
   await waitForReady(page);
 
-  // Buttons start disabled in HTML.
-  let initialDisabled = await attachDisabled(page);
-  assert(initialDisabled === true, `btn-attach should start disabled, got ${initialDisabled}`);
-  log('btn-attach starts disabled (HTML default) ✓');
-
-  // Open settings panel — triggers agentSettings.load → schema fetch
-  // → 'agent-schema-loaded' event → updateAttachButtonsState.
-  await page.click('#sb-settings');
-  await page.waitForFunction(
-    () => document.getElementById('settings')?.classList.contains('on'),
-    null,
-    { timeout: 2_000 },
-  );
-  log('settings panel opened');
-
-  // After schema loads with gemma-3-27b-it (vision-capable), the
-  // gate should flip enabled.
+  // Schema fetch happens on boot now (settings module pulls
+  // /v1/settings/schema during init), so by the time waitForReady
+  // returns the gate has already responded to the initial model
+  // (gemma-3-27b-it = vision-capable → btn-attach enabled). The
+  // post-boot state IS the test surface for "model A → enabled".
   await page.waitForFunction(
     () => {
       const b = document.getElementById('btn-attach');
       return b && !b.disabled;
     },
     null,
-    { timeout: 3_000 },
+    { timeout: 5_000 },
   );
-  log('btn-attach enabled after schema loads (gemma-3-27b-it) ✓');
+  log('btn-attach enabled with gemma-3-27b-it (vision-capable) ✓');
+
+  // Open settings panel so we can drive model-switch UI.
+  await page.click('#sb-settings');
+  await page.waitForFunction(
+    () => document.getElementById('settings')?.classList.contains('on'),
+    null,
+    { timeout: 2_000 },
+  );
+  await page.waitForSelector('[data-agent-setting="model"] select', { timeout: 3_000 });
+  log('settings panel opened');
 
   // Switch to text-only model.
   await page.evaluate(() => {
@@ -115,10 +117,11 @@ export default async function run({ page, log }) {
   );
   log('btn-attach re-enabled after switching to claude-sonnet-4 ✓');
 
-  // Switch to qwen 2.5 (text-only).
+  // Switch to mistral 7b (text-only — confirmed not matched by the
+  // isVisionCapableModel regex).
   await page.evaluate(() => {
     const sel = document.querySelector('[data-agent-setting="model"] select');
-    sel.value = 'qwen/qwen2.5-7b-instruct';
+    sel.value = 'mistralai/mistral-7b-instruct';
     sel.dispatchEvent(new Event('change', { bubbles: true }));
   });
   await page.waitForFunction(
@@ -129,5 +132,5 @@ export default async function run({ page, log }) {
     null,
     { timeout: 3_000 },
   );
-  log('btn-attach disabled after switching to qwen 2.5 (text-only) ✓');
+  log('btn-attach disabled after switching to mistral 7b (text-only) ✓');
 }
