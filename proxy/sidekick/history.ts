@@ -9,10 +9,14 @@ import { getUpstream } from './index.ts';
 import type { UpstreamAgent } from './upstream.ts';
 
 export async function handleSidekickSessionMessages(req, res, chatId: string) {
-  // Validate chat_id shape — IDB-minted UUIDs are URL-safe base16+dash,
-  // but be permissive on length to accommodate the fallback uuid()
-  // implementation in src/conversations.ts.
-  if (!chatId || !/^[A-Za-z0-9_-]{1,128}$/.test(chatId)) {
+  // Validate chat_id shape. Accepts:
+  //   - IDB-minted UUIDs (URL-safe base16+dash) for sidekick chats
+  //   - Cross-platform IDs (whatsapp `@lid` / `@s.whatsapp.net`,
+  //     telegram numeric, slack `[CD]<id>`, etc.) for sessions
+  //     surfaced through /v1/gateway/conversations
+  // Allowed: alphanumeric + the chars commonly seen in messaging
+  // platform identifiers: . _ - @ : . Length cap stays 128.
+  if (!chatId || !/^[A-Za-z0-9._@:-]{1,128}$/.test(chatId)) {
     res.writeHead(400, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ error: 'invalid chat_id' }));
     return;

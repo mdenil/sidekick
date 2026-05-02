@@ -86,7 +86,11 @@ export async function handleSidekickSessionDelete(req, res, chatId: string) {
     res.end(JSON.stringify({ error: 'sidekick_platform_unconfigured' }));
     return;
   }
-  if (!chatId || !/^[A-Za-z0-9_-]{1,128}$/.test(chatId)) {
+  // Same validator as history.ts — accepts cross-platform IDs
+  // (whatsapp @lid / @s.whatsapp.net, telegram numeric, etc.) so
+  // DELETE works on cross-platform sessions surfaced via the
+  // gateway-conversations extension.
+  if (!chatId || !/^[A-Za-z0-9._@:-]{1,128}$/.test(chatId)) {
     res.writeHead(400, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ error: 'invalid chat_id' }));
     return;

@@ -221,7 +221,9 @@ export function handleSidekickStream(req, res): void {
   const chatIdParam = url.searchParams.get('chat_id');
   let chatId: string | null = null;
   if (chatIdParam !== null) {
-    if (!/^[A-Za-z0-9_-]{1,128}$/.test(chatIdParam)) {
+    // Same validator as history.ts / sessions.ts — accepts
+    // cross-platform IDs (whatsapp @lid, telegram numeric, etc.).
+    if (!/^[A-Za-z0-9._@:-]{1,128}$/.test(chatIdParam)) {
       res.write(`event: error\ndata: ${JSON.stringify({ error: 'invalid chat_id' })}\n\n`);
       res.end();
       return;
