@@ -31,32 +31,35 @@ export default async function run({ page, log }) {
   await clickNewChat(page);
   const chatId = await chatIdP;
 
-  const t0 = await send(page, 'hi');
+  try {
+    const t0 = await send(page, 'hi');
 
-  // Wait for the first finalized agent bubble.
-  await page.waitForSelector(SEL.agentFinal, { timeout: 60_000 });
-  const t1 = Date.now();
+    // Wait for the first finalized agent bubble.
+    await page.waitForSelector(SEL.agentFinal, { timeout: 60_000 });
+    const t1 = Date.now();
 
-  // Give the stream a beat to flush any follow-up bubble (home-channel
-  // nudge etc.) so we assert against the steady-state DOM, not a
-  // mid-stream snapshot.
-  await page.waitForTimeout(500);
+    // Give the stream a beat to flush any follow-up bubble (home-channel
+    // nudge etc.) so we assert against the steady-state DOM, not a
+    // mid-stream snapshot.
+    await page.waitForTimeout(500);
 
-  const texts = await page.locator(`${SEL.agentFinal} .text`).allInnerTexts();
-  for (let i = 0; i < texts.length; i++) {
-    log(`bubble[${i}]: ${JSON.stringify(texts[i]?.slice(0, 80))}`);
+    const texts = await page.locator(`${SEL.agentFinal} .text`).allInnerTexts();
+    for (let i = 0; i < texts.length; i++) {
+      log(`bubble[${i}]: ${JSON.stringify(texts[i]?.slice(0, 80))}`);
+    }
+    assert(texts.length >= 1, `expected ≥1 finalized agent bubble, got 0`);
+    for (let i = 0; i < texts.length; i++) {
+      assert(texts[i].trim().length > 0, `bubble[${i}] empty`);
+      assert(
+        !/^(thinking|using \w+|pending)…?$/i.test(texts[i].trim()),
+        `bubble[${i}] looks like a placeholder: ${JSON.stringify(texts[i])}`,
+      );
+    }
+
+    log(`timing: send → first bubble = ${t1 - t0} ms`);
+  } finally {
+    // Cleanup so smoke runs don't pollute the real user's drawer —
+    // runs whether the test passed or threw.
+    if (chatId) await deleteChat(page, chatId);
   }
-  assert(texts.length >= 1, `expected ≥1 finalized agent bubble, got 0`);
-  for (let i = 0; i < texts.length; i++) {
-    assert(texts[i].trim().length > 0, `bubble[${i}] empty`);
-    assert(
-      !/^(thinking|using \w+|pending)…?$/i.test(texts[i].trim()),
-      `bubble[${i}] looks like a placeholder: ${JSON.stringify(texts[i])}`,
-    );
-  }
-
-  log(`timing: send → first bubble = ${t1 - t0} ms`);
-
-  // Cleanup so smoke runs don't pollute the real user's drawer.
-  await deleteChat(page, chatId);
 }

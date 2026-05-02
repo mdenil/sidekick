@@ -64,78 +64,80 @@ export default async function run({ page, log, fail }) {
   await clickNewChat(page);
   const chatId = await chatIdP;
 
-  const t0 = await send(page, TOOL_PROMPT);
+  try {
+    const t0 = await send(page, TOOL_PROMPT);
 
-  // 1. Activity row appears as soon as the first tool_call envelope
-  //    arrives. (Same gate as tool-turn.mjs.)
-  await page.waitForSelector(SEL.activityRow, { timeout: 30_000 });
-  const tActivity = Date.now();
-  log(`activity row appeared in ${tActivity - t0} ms`);
+    // 1. Activity row appears as soon as the first tool_call envelope
+    //    arrives. (Same gate as tool-turn.mjs.)
+    await page.waitForSelector(SEL.activityRow, { timeout: 30_000 });
+    const tActivity = Date.now();
+    log(`activity row appeared in ${tActivity - t0} ms`);
 
-  // 2. A tool row carrying tool name 'web_search' renders. The DOM
-  //    structure is .tool-row > .tool-row-summary > .tool-name (see
-  //    src/activityRow.ts).
-  await page.waitForFunction(
-    () => {
-      const rows = document.querySelectorAll('.tool-row .tool-name');
-      return Array.from(rows).some((el) => (el.textContent || '').trim() === 'web_search');
-    },
-    null,
-    { timeout: 60_000, polling: 250 },
-  );
-  log(`web_search tool row rendered`);
+    // 2. A tool row carrying tool name 'web_search' renders. The DOM
+    //    structure is .tool-row > .tool-row-summary > .tool-name (see
+    //    src/activityRow.ts).
+    await page.waitForFunction(
+      () => {
+        const rows = document.querySelectorAll('.tool-row .tool-name');
+        return Array.from(rows).some((el) => (el.textContent || '').trim() === 'web_search');
+      },
+      null,
+      { timeout: 60_000, polling: 250 },
+    );
+    log(`web_search tool row rendered`);
 
-  // 3. Reply finalizes — count baseline first because the home-channel
-  //    nudge from earlier chats may already have one finalized bubble.
-  const baselineCount = await page.locator(SEL.agentFinal).count();
-  await page.waitForFunction(
-    ({ sel, baseline }) => document.querySelectorAll(sel).length > baseline,
-    { sel: SEL.agentFinal, baseline: baselineCount },
-    { timeout: 90_000, polling: 250 },
-  );
-  const tReply = Date.now();
-  log(`reply finalized in ${tReply - t0} ms`);
+    // 3. Reply finalizes — count baseline first because the home-channel
+    //    nudge from earlier chats may already have one finalized bubble.
+    const baselineCount = await page.locator(SEL.agentFinal).count();
+    await page.waitForFunction(
+      ({ sel, baseline }) => document.querySelectorAll(sel).length > baseline,
+      { sel: SEL.agentFinal, baseline: baselineCount },
+      { timeout: 90_000, polling: 250 },
+    );
+    const tReply = Date.now();
+    log(`reply finalized in ${tReply - t0} ms`);
 
-  // 4. Reply text is a real fact, not a placeholder / refusal string.
-  const finalText = await page.evaluate((sel) => {
-    const nodes = document.querySelectorAll(sel);
-    const last = nodes[nodes.length - 1];
-    return (last?.textContent || '').trim();
-  }, SEL.agentFinal);
-  log(`reply text (${finalText.length} chars): ${finalText.slice(0, 160)}`);
-  assert(finalText.length > 20, `reply too short to contain a real fact: ${JSON.stringify(finalText)}`);
-  for (const re of PLACEHOLDER_PATTERNS) {
-    assert(!re.test(finalText), `reply matched placeholder pattern ${re}: ${JSON.stringify(finalText.slice(0, 200))}`);
+    // 4. Reply text is a real fact, not a placeholder / refusal string.
+    const finalText = await page.evaluate((sel) => {
+      const nodes = document.querySelectorAll(sel);
+      const last = nodes[nodes.length - 1];
+      return (last?.textContent || '').trim();
+    }, SEL.agentFinal);
+    log(`reply text (${finalText.length} chars): ${finalText.slice(0, 160)}`);
+    assert(finalText.length > 20, `reply too short to contain a real fact: ${JSON.stringify(finalText)}`);
+    for (const re of PLACEHOLDER_PATTERNS) {
+      assert(!re.test(finalText), `reply matched placeholder pattern ${re}: ${JSON.stringify(finalText.slice(0, 200))}`);
+    }
+
+    // 5. state.db has a tool turn for web_search in this session. Map
+    //    chat_id → session_id via the proxy's sessions endpoint, then
+    //    look for either an assistant row whose tool_calls JSON names
+    //    web_search OR a tool row with tool_name='web_search'.
+    const sessions = await page.evaluate(async () => {
+      const r = await fetch('/api/sidekick/sessions');
+      return r.json();
+    });
+    const sess = (sessions?.sessions || []).find((s) => s.chat_id === chatId);
+    assert(sess, `no session record for chat_id=${chatId} in /api/sidekick/sessions`);
+    const sessionId = sess.session_id;
+    log(`mapped chat_id=${chatId} → session_id=${sessionId}`);
+
+    // SQL escaping: session_id is a hermes-generated timestamp+hex string,
+    // safe to interpolate. We're shelling out to sqlite3 with execFile so
+    // there's no shell-injection surface either way.
+    const rows = await sqlQuery(
+      STATE_DB,
+      `SELECT id, role, tool_name, tool_calls FROM messages
+         WHERE session_id = '${sessionId}'
+           AND (
+             tool_name = 'web_search'
+             OR (role = 'assistant' AND tool_calls LIKE '%"name": "web_search"%')
+           )
+         ORDER BY id ASC`,
+    );
+    log(`state.db rows matching web_search: ${rows.length}`);
+    assert(rows.length >= 1, `expected ≥1 web_search row in state.db for session ${sessionId}, got 0`);
+  } finally {
+    if (chatId) await deleteChat(page, chatId);
   }
-
-  // 5. state.db has a tool turn for web_search in this session. Map
-  //    chat_id → session_id via the proxy's sessions endpoint, then
-  //    look for either an assistant row whose tool_calls JSON names
-  //    web_search OR a tool row with tool_name='web_search'.
-  const sessions = await page.evaluate(async () => {
-    const r = await fetch('/api/sidekick/sessions');
-    return r.json();
-  });
-  const sess = (sessions?.sessions || []).find((s) => s.chat_id === chatId);
-  assert(sess, `no session record for chat_id=${chatId} in /api/sidekick/sessions`);
-  const sessionId = sess.session_id;
-  log(`mapped chat_id=${chatId} → session_id=${sessionId}`);
-
-  // SQL escaping: session_id is a hermes-generated timestamp+hex string,
-  // safe to interpolate. We're shelling out to sqlite3 with execFile so
-  // there's no shell-injection surface either way.
-  const rows = await sqlQuery(
-    STATE_DB,
-    `SELECT id, role, tool_name, tool_calls FROM messages
-       WHERE session_id = '${sessionId}'
-         AND (
-           tool_name = 'web_search'
-           OR (role = 'assistant' AND tool_calls LIKE '%"name": "web_search"%')
-         )
-       ORDER BY id ASC`,
-  );
-  log(`state.db rows matching web_search: ${rows.length}`);
-  assert(rows.length >= 1, `expected ≥1 web_search row in state.db for session ${sessionId}, got 0`);
-
-  await deleteChat(page, chatId);
 }

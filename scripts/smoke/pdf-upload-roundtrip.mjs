@@ -27,7 +27,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { waitForReady, openSidebar, clickNewChat, send, assert } from './lib.mjs';
+import { waitForReady, openSidebar, clickNewChat, send, deleteChat, captureNextChatId, assert } from './lib.mjs';
 
 export const NAME = 'pdf-upload-roundtrip';
 export const DESCRIPTION = 'PDF upload → hermes plugin rasterizes → vision-LLM reads marker text';
@@ -52,13 +52,21 @@ export default async function run({ page, log, fail }) {
   // and the test would assert against THAT reply (false negative
   // on the marker). Fresh chat = empty transcript = unambiguous
   // match on the post-send reply.
+  //
+  // Capture chat_id off the new-session console line so we can
+  // clean up the chat in the finally block — otherwise every PDF
+  // smoke run leaves a "PDF Document Test Marker" row in the
+  // user's drawer.
+  const chatIdP = captureNextChatId(page).catch(() => null);
   await clickNewChat(page);
+  const chatId = await chatIdP;
   await page.waitForFunction(
     () => document.querySelectorAll('#transcript .line.agent').length === 0,
     null, { timeout: 3_000 },
   );
-  log('fresh chat — no prior agent bubbles');
+  log(`fresh chat (chat_id=${chatId || 'unknown'}) — no prior agent bubbles`);
 
+  try {
   // Step 1: open settings, pick a vision-capable model. We pick from
   // the live schema's options[] to stay in sync with whatever the
   // user has configured; prefer claude-sonnet/opus since they handle
@@ -215,4 +223,9 @@ export default async function run({ page, log, fail }) {
     `marker not in any model-driven surface — rasterization or vision-LLM path failed. Snippet: ${JSON.stringify(surfaces.transcriptSnippet)}`,
   );
   log(`PDF rasterization → vision-LLM path verified end-to-end ✓`);
+  } finally {
+    // Cleanup so smoke runs don't pollute the real user's drawer —
+    // runs whether the test passed or threw.
+    if (chatId) await deleteChat(page, chatId);
+  }
 }
