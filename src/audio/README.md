@@ -1,12 +1,23 @@
 # Audio subsystem
 
-PWA-side voice I/O. Two modes ride this directory; both are wired from
-`src/main.ts` and chosen by the user via the **Realtime** toggle in
-the mic menu.
+PWA-side voice I/O. Two **transports** (turn-based vs. realtime / WebRTC) are surfaced through two **buttons** on the composer (mic vs. call); each button routes to a transport based on a single setting in its menu.
 
-## The two modes
+## The composer surface (two buttons, four modes)
 
-Both modes are **handsfree call-mode** — mic open, no tap-to-talk, the agent answers automatically. They differ in what they optimise for:
+Since the 2026-05 two-button-split refactor, the composer has a dedicated **mic** button on the right and a dedicated **call** button on the left. Each button has its own chevron menu:
+
+| Button | Default action | Menu toggle | Toggle ON behavior |
+|---|---|---|---|
+| **Mic** (right) | Voice memo (record blob → /transcribe → composer) | `streaming` | Live STT into composer cursor (cursor-aware dictation) |
+| **Mic** | (independent) | `micAutoSend` | Skip composer review on end-of-utterance |
+| **Call** (left) | Turn-based Listen (record + commit on silence/sendword) | `realtime` | WebRTC duplex (low-latency talk/stream) |
+| **Call** | (independent) | `tts` | Speak replies (talk-mode WebRTC; turn-based plays /tts blob) |
+
+`speak-replies` (`tts`) is **call-only** — outside a call the user reads replies on screen and the per-bubble play button (`turn-based/replyPlayer.ts`) handles on-demand replay. Inside a call the toggle picks talk vs. stream WebRTC mode.
+
+## The two transports
+
+Both transports are **handsfree call-mode** — mic open, no tap-to-talk, the agent answers automatically. They differ in what they optimise for:
 
 | | **Realtime** | **Turn-based** |
 |---|---|---|
@@ -17,7 +28,7 @@ Both modes are **handsfree call-mode** — mic open, no tap-to-talk, the agent a
 | STT | Live, streaming, on the bridge | One-shot per utterance, served by the bridge over HTTP |
 | Resilience | Sensitive to flaky networks (peer rebuilds) | Survives drops; retries the HTTP call |
 
-The user picks one with `settings.realtime` (mic-menu chevron → "Realtime"). Default OFF (turn-based).
+The user picks the call's transport with `settings.realtime` (call-menu chevron → "Realtime"). Default OFF (turn-based). The mic button has its own picker (`settings.streaming`) for memo vs. dictation but doesn't open a call — that's the call button's job.
 
 **Both modes ride the same agent contract**: `POST /api/sidekick/messages` for the user turn, `GET /api/sidekick/stream` for the agent's reply. Realtime mode just has the bridge make those calls instead of the PWA. The text/agent path is identical; only audio in/out differ. (See "What changes for a duplex model" below — this stops being true the day a duplex-native backend lands.)
 
@@ -155,7 +166,12 @@ src/audio/
 
 ## Choosing a mode
 
-`src/main.ts` reads `settings.realtime` and picks. The mic-button click handler dispatches to whichever mode is active; the toggle handler (in `flipMicSetting`) tears down the inactive mode if the user flips while one is running.
+`src/main.ts` exposes two dispatch helpers — one per composer button:
+
+- `startMicMode(initialCursor)` — reads `settings.streaming` and picks: `startDictate` (cursor-aware) or `startMemo` (memo bar).
+- `startCallMode()` — reads `settings.realtime` and picks: `startCallStream` (WebRTC) or `startListen` (turn-based).
+
+The mic-button gesture state machine (HOLD-vs-TAP, drag-to-discard, double-tap guard) wraps `startMicMode`. The call button is simpler — explicit tap-to-toggle, no gesture machinery — and just calls `startCallMode` / `stopVoice`. Each helper tears down a competing mode if the user starts a new one mid-mode.
 
 Today this is duplicated branching: turn-based delivers a `Blob` to `main.ts:onCommit` (which then POSTs to `/transcribe`), while realtime delivers transcribed text via the bridge. The `AudioMode` contract papers over this by saying "`onCommit` carries the post-transcription text" — but adopting it requires moving the `/transcribe` POST inside turn-based mode (so both modes deliver text). That migration is queued; it'll likely land alongside the handsfree consolidation when both modes are getting touched anyway.
 
