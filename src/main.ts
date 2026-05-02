@@ -1068,6 +1068,30 @@ async function boot() {
   const composerInput = document.getElementById('composer-input') as HTMLTextAreaElement;
   const composerSend = document.getElementById('composer-send') as HTMLButtonElement;
 
+  /** Shared mount-site for the recorder bar (memo + turn-based both
+   *  hide the composer-actions row and drop a recorder bar into the
+   *  same physical spot). Returns the args every recorderBar.mount
+   *  caller needs, plus a `restore()` that the caller invokes from
+   *  every teardown path so the actions row reappears.
+   *
+   *  Returns null if the composer DOM isn't present (defensive — the
+   *  caller can fall back to no-bar mode). */
+  function enterComposerBarMount(): {
+    container: HTMLElement;
+    insertBefore: HTMLElement | null;
+    restore: () => void;
+  } | null {
+    const composerEl = composerInput?.parentElement as HTMLElement | null;
+    if (!composerEl) return null;
+    const actionsEl = composerEl.querySelector('.composer-actions') as HTMLElement | null;
+    if (actionsEl) actionsEl.style.display = 'none';
+    return {
+      container: composerEl,
+      insertBefore: actionsEl || composerSend,
+      restore: () => { if (actionsEl) actionsEl.style.display = ''; },
+    };
+  }
+
   function autoResize() {
     composerInput.style.height = 'auto';
     composerInput.style.height = Math.min(composerInput.scrollHeight, 160) + 'px';
@@ -1826,12 +1850,10 @@ async function boot() {
         composerSend.disabled = false;
       }
     };
-    const composerEl = composerInput.parentElement;
-    const composerActionsEl = composerEl?.querySelector('.composer-actions') as HTMLElement | null;
-    if (composerActionsEl) composerActionsEl.style.display = 'none';
+    const mount = enterComposerBarMount();
     const ok = await memo.start({
-      container: composerEl,
-      insertBefore: composerActionsEl || composerSend,
+      container: mount?.container,
+      insertBefore: mount?.insertBefore || composerSend,
       sendBtn: composerSend,
       onDone: (audioBlob) => {
         exitMemoMode();
@@ -1932,20 +1954,14 @@ async function boot() {
     if (webrtcControls.isOpen()) await webrtcControls.closeIfOpen();
     primeAudio(player);
     audioSession.prepareForCapture();
-    // Mount the recorder bar inside the composer (same spot memo uses)
-    // so the user has a visual cue + trash button. Hide the composer-
-    // actions row so the bar takes over the same physical space. The
-    // composer is `<div class="composer">` (no id), reached via
-    // composerInput.parentElement — same trick memo.start does.
-    const composerEl = composerInput.parentElement as HTMLElement | null;
-    const composerActionsEl = composerEl?.querySelector('.composer-actions') as HTMLElement | null;
-    if (composerActionsEl) composerActionsEl.style.display = 'none';
-    const restoreComposerActions = () => {
-      if (composerActionsEl) composerActionsEl.style.display = '';
-    };
+    // Mount the recorder bar via the shared helper — same place memo
+    // uses, identical hide/restore semantics for the composer-actions
+    // row. Reuses recorderBar.mount under the hood for visual parity.
+    const mount = enterComposerBarMount();
+    const restoreComposerActions = () => mount?.restore();
     const ok = await turnbased.start({
-      barContainer: composerEl,
-      barInsertBefore: composerActionsEl || composerSend,
+      barContainer: mount?.container || null,
+      barInsertBefore: mount?.insertBefore || null,
       onCommit: async (blob, reason) => {
         // Post the blob to /transcribe (mirrors the memo path) and route
         // the resulting transcript through composer.appendText +
