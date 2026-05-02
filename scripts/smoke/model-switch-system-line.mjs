@@ -53,7 +53,7 @@ export function MOCK_SETUP(mock) {
       options: [
         { value: 'mock/multi-everything', label: 'Multi-modal mock' },
         { value: 'mock/text-only', label: 'Text-only mock' },
-        { value: 'local/claude-fake-vision', label: 'Local heuristic-vision' },
+        { value: 'local/claude-sonnet-mock', label: 'Local heuristic-vision' },
       ],
     },
   ]);
@@ -123,10 +123,10 @@ export default async function run({ page, log }) {
 
   // Switch to the local-only id → heuristic fallback (regex matches
   // "claude" prefix → "text, image (heuristic)").
-  await setModelTo(page, 'local/claude-fake-vision');
+  await setModelTo(page, 'local/claude-sonnet-mock');
   await waitForSystemLine(
     page,
-    'Model: local/claude-fake-vision — accepts text, image \\(heuristic\\)',
+    'Model: local/claude-sonnet-mock — accepts text, image \\(heuristic\\)',
   );
   log('local model: system line shows heuristic-fallback ✓');
 

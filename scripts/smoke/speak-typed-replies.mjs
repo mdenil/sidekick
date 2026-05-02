@@ -33,8 +33,12 @@ const EXPECTED_TTS_TEXT = 'echo: good morning';
 
 export default async function run({ page, log }) {
   // Intercept POST /tts, capture body, return a 1-byte fake blob.
+  // Match by exact pathname '/tts' so we don't accidentally catch
+  // /api/sidekick/settings/tts (the agent-settings POST for the
+  // "tts" key — same suffix, different surface).
   const ttsCalls = [];
   await page.route('**/tts', async (route) => {
+    if (new URL(route.request().url()).pathname !== '/tts') return route.fallback();
     if (route.request().method() !== 'POST') return route.fallback();
     let body = null;
     try { body = JSON.parse(route.request().postData() || '{}'); }
