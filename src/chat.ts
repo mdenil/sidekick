@@ -358,8 +358,12 @@ export function addLine(speaker: string, text: string, cls = '', opts: {
   };
   div.appendChild(copyBtn);
 
-  // Per-bubble play/pause chip + playback bar for AGENT lines. Engine
-  // is src/audio/replyNavigator.ts (shared with BT skip-fwd/back).
+  // Per-bubble play/pause chip + playback bar for AGENT lines. The
+  // DOM is emitted here; ALL interaction (click, scrub, class-flip,
+  // bar widths) is owned by src/audio/turn-based/replyPlayer.ts via
+  // delegated handlers on the transcript element. No per-bubble
+  // listener attachment — new bubbles "just work."
+  //
   // Both play + pause SVGs are emitted; CSS swaps visibility based on
   // .tts-playing state. Color encodes cache state via .tts-cached.
   // Bar layers (.play-bar-loaded under .play-bar-played) are present
@@ -372,12 +376,6 @@ export function addLine(speaker: string, text: string, cls = '', opts: {
     playBtn.className = 'play-btn';
     playBtn.title = 'Play / pause this reply';
     playBtn.innerHTML = playGlyph + pauseGlyph;
-    playBtn.onclick = (e) => {
-      e.stopPropagation();
-      // Lazy-import to avoid pulling text-tts into chat.ts's static
-      // import graph (chat.ts is loaded earlier in the boot path).
-      import('./audio/turn-based/replyNavigator.ts').then((m) => m.togglePlayback(div)).catch(() => {});
-    };
     div.appendChild(playBtn);
 
     const bar = document.createElement('div');
