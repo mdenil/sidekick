@@ -2274,12 +2274,12 @@ async function boot() {
       return inV && inH;
     }
 
-    /** Resolve the memo bar element after startVoice's async setup
+    /** Resolve the memo bar element after startMicMode's async setup
      *  completes (mic permission, MediaRecorder spin-up). Polls briefly
      *  to cover iOS getUserMedia latency. Only relevant for memo mode
-     *  (call mode has no .memo-bar). */
+     *  (Streaming/dictate mode has no .memo-bar). */
     function pollForMemoBar(tries: number): void {
-      if (settings.get().micCall) return;  // call mode — no memo bar
+      if ((settings.get() as any).streaming) return;  // dictate mode — no memo bar
       const bar = document.querySelector('.memo-bar') as HTMLElement | null;
       if (bar) {
         bar.classList.add('memo-bar-ptt');
@@ -2366,8 +2366,8 @@ async function boot() {
       // 0 / value.length / null on iOS Safari, landing voice text at
       // the wrong location. See dictate.ts ensureAnchor for details.
       const initialCursor = captureComposerCursor();
-      log('[mic] pointerdown — startVoice fired (state=recording, t0=', pressStartedAt.toFixed(0), ', initialCursor=', initialCursor, ')');
-      void startVoice(initialCursor);
+      log('[mic] pointerdown — startMicMode fired (state=recording, t0=', pressStartedAt.toFixed(0), ', initialCursor=', initialCursor, ')');
+      void startMicMode(initialCursor);
       try {
         status.setStatus('Listening — release after a moment to send, or tap to keep recording', 'live');
       } catch {}
@@ -2487,7 +2487,7 @@ async function boot() {
         // desktops) we get the right value; on ones that don't, we
         // fall back to whatever ensureAnchor() can read at first
         // interim. Either way better than nothing.
-        void startVoice(captureComposerCursor());
+        void startMicMode(captureComposerCursor());
       }
     });
 
@@ -2507,96 +2507,168 @@ async function boot() {
     });
   }
 
-  // ── Mic-mode chevron menu (PTT / Call / Auto-send toggles) ─────────
-  // Three iOS-style toggle rows. State persists in settings; reads on
-  // every dispatch, writes on every flip. No teardown needed.
+  // ── Call button — tap-to-toggle (no PTT, no drag-to-discard) ───────
+  // Simpler than btn-mic: a call is always an explicit on/off action
+  // (no "tap and hold to keep recording" ambiguity, no discard zone).
+  // pointerdown is good enough; we don't need the gesture state machine.
+  const btnCall = document.getElementById('btn-call') as HTMLButtonElement | null;
+  if (btnCall) {
+    btnCall.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      // If a mic-mode (memo / dictate) is currently active, tear it
+      // down before opening the call so we don't have two voice paths
+      // fighting for the mic. capture.ts's single-owner mutex would
+      // catch this defensively but doing it here gives a cleaner
+      // teardown sequence.
+      const callOpen = webrtcControls.isOpen() || listenActive;
+      if (callOpen) {
+        // Tap on an active call → end it.
+        log('[call] pointerdown — ending active call');
+        void stopVoice();
+        return;
+      }
+      // If mic-mode is running, stop it first (memo finalizes via send).
+      if (voiceActive()) {
+        log('[call] pointerdown — pre-empting active mic mode before call');
+        void stopVoice();
+      }
+      log('[call] pointerdown — startCallMode');
+      void startCallMode();
+    });
+    // Keyboard activation (Enter/Space).
+    btnCall.addEventListener('keydown', (e: KeyboardEvent) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      e.preventDefault();
+      const callOpen = webrtcControls.isOpen() || listenActive;
+      if (callOpen) {
+        void stopVoice();
+      } else {
+        if (voiceActive()) void stopVoice();
+        void startCallMode();
+      }
+    });
+  }
+
+  /** Active-state visual on the call button: mirrors btn-mic.active.
+   *  Driven by polling-style class flip in the few spots where call
+   *  state changes — no global event bus today. */
+  function syncCallButtonVisual(): void {
+    if (!btnCall) return;
+    const active = webrtcControls.isOpen() || listenActive;
+    btnCall.classList.toggle('active', active);
+  }
+  // Sync on every settings flip + every voice-state transition we know
+  // about. Enough coverage: webrtcControls open/close fires through
+  // controls.ts; listenActive flips through startListen/stopListen.
+  // Hooking those would be cleaner but the polling here is cheap.
+  setInterval(syncCallButtonVisual, 250);
+  syncCallButtonVisual();
+
+  // ── Mic + Call mode chevron menus (per-button toggle rows) ─────────
+  // Two independent menus. State persists in settings; reads on every
+  // dispatch, writes on every flip. No teardown needed.
+  //
+  //   #mic-mode-menu  (right of composer): Auto-send + Streaming
+  //   #call-mode-menu (left of composer):  Realtime + Speak-replies
+  //
+  // Both menus share the .mic-toggle-row + .mic-mode-menu CSS rules; the
+  // anchoring (left vs. right) is the only visual difference, handled
+  // by the .call-mode-menu rule in app.css.
   const btnMicMode = document.getElementById('btn-mic-mode') as HTMLButtonElement | null;
   const micModeMenu = document.getElementById('mic-mode-menu') as HTMLElement | null;
   const micModeWrap = document.querySelector('.mic-mode-wrap') as HTMLElement | null;
+  const btnCallMode = document.getElementById('btn-call-mode') as HTMLButtonElement | null;
+  const callModeMenu = document.getElementById('call-mode-menu') as HTMLElement | null;
+  const callModeWrap = document.querySelector('.call-mode-wrap') as HTMLElement | null;
+
+  type MicToggleKey = 'micAutoSend' | 'streaming' | 'realtime' | 'tts';
+
+  function tooltipForToggle(key: MicToggleKey, s: any): string {
+    const hk = key === 'micAutoSend'
+      ? s.hotkeyAutoSend
+      : '';  // streaming / realtime / tts have no hotkey today
+    const isMac = /(Mac|iPhone|iPad)/i.test(navigator.platform);
+    const prettyHk = isMac
+      ? hk.replace(/Cmd/gi, '⌘').replace(/Shift/gi, '⇧').replace(/Alt/gi, '⌥').replace(/Ctrl/gi, '⌃').replace(/\+/g, '')
+      : hk;
+    const desc = key === 'micAutoSend'
+      ? 'Auto-send — dispatch on end-of-utterance (vs. drafting into composer)'
+      : key === 'streaming'
+        ? 'Streaming: ON = live STT into the composer cursor (cursor-aware dictation). OFF (default) = voice memo (record blob → transcribe → composer).'
+        : key === 'realtime'
+          ? 'Realtime: ON = WebRTC duplex audio (low latency, lossy on flaky networks). OFF (default) = turn-based recording (full fidelity, sent on end-of-utterance).'
+          : 'Speak replies — TTS audio output during a call (talk mode vs. stream mode)';
+    return prettyHk ? `${desc} · ${prettyHk}` : desc;
+  }
+
+  function applyMenuRows(menu: HTMLElement | null, s: any): void {
+    if (!menu) return;
+    menu.querySelectorAll<HTMLButtonElement>('button.mic-toggle-row').forEach(b => {
+      const key = b.dataset.toggle as MicToggleKey | undefined;
+      if (!key) return;
+      const on = !!s[key];
+      b.setAttribute('aria-checked', on ? 'true' : 'false');
+      b.classList.toggle('on', on);
+      b.title = tooltipForToggle(key, s);
+    });
+  }
 
   function applyMicModeUi(): void {
-    const s = settings.get();
-    if (micModeMenu) {
-      micModeMenu.querySelectorAll<HTMLButtonElement>('button.mic-toggle-row').forEach(b => {
-        const key = b.dataset.toggle as 'micCall' | 'micAutoSend' | 'tts' | 'realtime' | undefined;
-        if (!key) return;
-        const on = !!(s as any)[key];
-        b.setAttribute('aria-checked', on ? 'true' : 'false');
-        b.classList.toggle('on', on);
-        // Tooltip — pulls the hotkey live from settings so a rebind in
-        // the settings panel reflects here on next menu open. Mac/iOS
-        // get the ⌘ glyph for native feel; everywhere else the literal.
-        const hk = key === 'micCall'
-          ? s.hotkeyCallMode
-          : key === 'micAutoSend'
-            ? s.hotkeyAutoSend
-            : key === 'realtime'
-              ? ''
-              : 'Alt+T';
-        const isMac = /(Mac|iPhone|iPad)/i.test(navigator.platform);
-        const prettyHk = isMac
-          ? hk.replace(/Cmd/gi, '⌘').replace(/Shift/gi, '⇧').replace(/Alt/gi, '⌥').replace(/Ctrl/gi, '⌃').replace(/\+/g, '')
-          : hk;
-        const desc = key === 'micCall'
-          ? 'Call mode — handsfree voice (vs. push-to-record memo)'
-          : key === 'micAutoSend'
-            ? 'Auto-send — dispatch on end-of-utterance (vs. drafting into composer)'
-            : key === 'realtime'
-              ? 'Realtime: ON = WebRTC duplex audio (low latency, lossy on flaky networks). OFF (default) = turn-based recording (full fidelity, sent on end-of-utterance).'
-              : 'Speak replies — TTS audio output during a call (talk mode vs. stream mode)';
-        b.title = prettyHk ? `${desc} · ${prettyHk}` : desc;
-      });
-    }
-    // Mic button tooltip + a data-mode attribute on the wrap so CSS can
-    // hint at the current mode (e.g. accent the chevron when call is on).
+    const s = settings.get() as any;
+    applyMenuRows(micModeMenu, s);
+    applyMenuRows(callModeMenu, s);
+    // Mic button: data-mode + tooltip reflect Streaming + Auto-send.
     if (micModeWrap) {
-      const mode = s.micCall
-        ? (s.micAutoSend ? 'call-auto' : 'dictate')
-        : (s.micAutoSend ? 'memo-auto' : 'memo');
+      const mode = s.streaming ? 'dictate' : (s.micAutoSend ? 'memo-auto' : 'memo');
       micModeWrap.dataset.mode = mode;
     }
     if (btnMic) {
-      const what = s.micCall
-        ? (s.micAutoSend ? 'live chat' : 'live dictation')
-        : (s.micAutoSend ? 'memo (auto-send)' : 'voice memo');
+      const what = s.streaming
+        ? 'live dictation'
+        : (s.micAutoSend ? 'voice memo (auto-send)' : 'voice memo');
       btnMic.title = `Tap or hold — ${what}`;
+    }
+    // Call button: data-mode reflects Realtime; tooltip reflects current mode.
+    if (callModeWrap) {
+      callModeWrap.dataset.mode = s.realtime ? 'realtime' : 'turn-based';
+    }
+    const btnCall = document.getElementById('btn-call');
+    if (btnCall) {
+      const what = s.realtime
+        ? (s.tts ? 'WebRTC call (talk mode)' : 'WebRTC call (stream mode)')
+        : 'turn-based call (Listen)';
+      btnCall.title = `Tap to start — ${what}`;
     }
   }
   applyMicModeUi();
 
-  // Single source of truth for "flip a mic toggle" — used by BOTH the
-  // menu-click handler AND the global hotkey handler. Prior code had
-  // two independent paths reading `!s.X` snapshots taken BEFORE
-  // settings.set() flipped the value, which made the status pill text
-  // and the menu visuals drift out of sync (the visuals re-read live
-  // state via applyMicModeUi but the pill text used the stale snapshot).
-  // Reading the post-flip value via settings.get() after set() removes
-  // the anticorrelation entirely. Side-effects (end-call-on-call-off)
-  // also live here so menu + hotkey behave identically.
-  function flipMicSetting(key: 'micCall' | 'micAutoSend' | 'tts' | 'realtime'): void {
+  // Single source of truth for "flip a mic / call menu toggle" — used by
+  // BOTH the menu-click handlers AND the global hotkey handler. Reads
+  // the POST-flip value via settings.get() after set() so the status
+  // pill text doesn't drift from the menu visuals (visuals re-read
+  // live state via applyMicModeUi).
+  function flipMicSetting(key: MicToggleKey): void {
     const cur = !!(settings.get() as any)[key];
     const next = !cur;
     settings.set(key, next);
     applyMicModeUi();
-    const label = key === 'micCall' ? 'Call mode'
+    const label = key === 'streaming' ? 'Streaming'
       : key === 'micAutoSend' ? 'Auto-send'
       : key === 'realtime' ? 'Realtime'
       : 'Speak replies';
-    // Read POST-flip value off settings, not the captured snapshot —
-    // keeps the pill text honest if anything else mutated state in
-    // between (or if a future caller passes its own pre-flip value).
     const live = !!(settings.get() as any)[key];
     status.setStatus(`${label}: ${live ? 'on' : 'off'}`, null);
-    // Closing call-mode WHILE a call is open should end the call —
-    // otherwise the WebRTC peer keeps streaming and the user has to
-    // click the mic to actually stop. Same intent for menu + hotkey.
-    if (key === 'micCall' && !next && voiceActive()) {
+    // Flipping `streaming` while the mic is active mid-mode means the
+    // user changed their mind about which mic-mode they want. Tear
+    // down the running mode so the next mic tap picks up the new
+    // setting cleanly. Memo-active path goes through stopVoice (which
+    // sends-on-stop for memo); dictate-active goes through stopDictate.
+    if (key === 'streaming' && voiceActive() && !webrtcControls.isOpen() && !listenActive) {
       void stopVoice();
     }
     // Flipping `realtime` ON while a turn-based Listen session is
     // armed should disarm — the user's intent ("switch to realtime")
-    // outweighs leaving the local recorder running. Symmetric to the
-    // call-mode-off-while-call-open path above.
+    // outweighs leaving the local recorder running.
     if (key === 'realtime' && next && listenActive) {
       stopListen();
     }
@@ -2621,48 +2693,54 @@ async function boot() {
     }
   }
 
-  function setMicModeMenuOpen(open: boolean): void {
-    if (!micModeMenu || !btnMicMode) return;
+  function setMenuOpen(menu: HTMLElement | null, btn: HTMLButtonElement | null, open: boolean): void {
+    if (!menu || !btn) return;
     if (open) {
-      micModeMenu.removeAttribute('hidden');
-      micModeMenu.setAttribute('aria-hidden', 'false');
-      btnMicMode.setAttribute('aria-expanded', 'true');
+      menu.removeAttribute('hidden');
+      menu.setAttribute('aria-hidden', 'false');
+      btn.setAttribute('aria-expanded', 'true');
     } else {
-      micModeMenu.setAttribute('hidden', '');
-      micModeMenu.setAttribute('aria-hidden', 'true');
-      btnMicMode.setAttribute('aria-expanded', 'false');
+      menu.setAttribute('hidden', '');
+      menu.setAttribute('aria-hidden', 'true');
+      btn.setAttribute('aria-expanded', 'false');
     }
   }
 
-  if (btnMicMode && micModeMenu) {
-    btnMicMode.onclick = (e) => {
+  function wireMenu(
+    btn: HTMLButtonElement | null,
+    menu: HTMLElement | null,
+    wrap: HTMLElement | null,
+  ): void {
+    if (!btn || !menu) return;
+    btn.onclick = (e) => {
       e.stopPropagation();
-      const open = btnMicMode.getAttribute('aria-expanded') === 'true';
-      setMicModeMenuOpen(!open);
+      const open = btn.getAttribute('aria-expanded') === 'true';
+      setMenuOpen(menu, btn, !open);
     };
-    micModeMenu.querySelectorAll<HTMLButtonElement>('button.mic-toggle-row').forEach(b => {
+    menu.querySelectorAll<HTMLButtonElement>('button.mic-toggle-row').forEach(b => {
       b.onclick = (e) => {
         e.stopPropagation();
-        const key = b.dataset.toggle as 'micCall' | 'micAutoSend' | 'tts' | 'realtime' | undefined;
+        const key = b.dataset.toggle as MicToggleKey | undefined;
         if (!key) return;
         // Single canonical path — same as the hotkey. flipMicSetting
         // updates the setting, refreshes menu visuals, sets the status
-        // pill text from the post-flip value, and runs side effects
-        // (end-call-on-call-off). Menu stays open so the user can flip
-        // multiple toggles in one pass (iOS Control Center pattern);
-        // tap outside to close.
+        // pill text from the post-flip value, and runs side effects.
+        // Menu stays open so the user can flip multiple toggles in one
+        // pass (iOS Control Center pattern); tap outside to close.
         flipMicSetting(key);
       };
     });
     // Click outside closes the menu (capture so chat-bubble handlers
     // that stopPropagation can't strand us with a stuck-open menu).
     document.addEventListener('click', (e) => {
-      if (!micModeMenu || micModeMenu.hasAttribute('hidden')) return;
+      if (menu.hasAttribute('hidden')) return;
       const t = e.target as Node;
-      if (micModeWrap && micModeWrap.contains(t)) return;
-      setMicModeMenuOpen(false);
+      if (wrap && wrap.contains(t)) return;
+      setMenuOpen(menu, btn, false);
     }, true);
   }
+  wireMenu(btnMicMode, micModeMenu, micModeWrap);
+  wireMenu(btnCallMode, callModeMenu, callModeWrap);
 
   // Send-button intercept — when dictate is active, clicking Send (or
   // pressing Enter to fire it) should send whatever's in the composer
@@ -2769,7 +2847,17 @@ async function boot() {
     };
     if (matches(s.hotkeyCallMode)) {
       claim();
-      flipMicSetting('micCall');
+      // Hotkey toggles the CALL — start a call if none active, end any
+      // active call (mirrors btn-call's tap behavior). Pre-empts mic
+      // mode if running so the call gets a clean mic.
+      const callOpen = webrtcControls.isOpen() || listenActive;
+      log('[hotkey] toggleCall — callOpen=', callOpen);
+      if (callOpen) {
+        void stopVoice();
+      } else {
+        if (voiceActive()) void stopVoice();
+        void startCallMode();
+      }
       return;
     }
     if (matches(s.hotkeyAutoSend)) {
