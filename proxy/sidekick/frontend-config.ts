@@ -44,31 +44,30 @@ export const FRONTEND_SETTINGS = {
   // Hotkeys (modifier+key strings). hotkeyToggleCall replaced
   // hotkeyCallMode in 2026-05 with the two-button-split refactor — old
   // value silently migrates in src/settings.ts:migrateMicCallToButtonSplit.
+  // hotkeyAutoSend retired in the mic-gesture refactor (no autoSend
+  // setting to flip; PTT memo always sends, tap dictation never does).
   hotkeyToggleCall:       { category: 'hotkeys',         default: 'Cmd+Shift+C' },
-  hotkeyAutoSend:         { category: 'hotkeys',         default: 'Cmd+Shift+S' },
   hotkeyToggleMic:        { category: 'hotkeys',         default: 'Cmd+Shift+D' },
   // Agent-activity surfacing (tool-call + tool-result row rendering)
   agentActivity:          { category: 'agent_activity',  default: 'summary' },
   // Display
   contentSize:            { category: 'display',         default: 15 },
   theme:                  { category: 'display',         default: 'dark' },
-  // Composer mic-button + call-button flags. micCall was retired in
-  // 2026-05 with the two-button-split refactor (the call button
-  // itself replaced the toggle); the old value silently migrates in
-  // src/settings.ts:migrateMicCallToButtonSplit.
-  //   streaming  — mic-button mode: live STT into composer cursor
-  //                (true) vs. record-and-transcribe memo (false).
-  //   micAutoSend — skip composer review on memo / dictate end-of-utterance.
-  //   realtime   — call-button transport: WebRTC duplex (true) vs.
-  //                turn-based Listen (false).
+  // Call-button transport selector. micCall + streaming + micAutoSend
+  // were retired (two-button split + mic-gesture model); silent
+  // migration in src/settings.ts:migrateMicCallToButtonSplit.
+  //
+  // Mic button is now gesture-driven: tap = live dictation to composer
+  // cursor, hold = PTT memo (fire-and-forget). No settings to flip.
+  // Call button hosts the two real toggles:
+  //   realtime   — WebRTC duplex (true) vs. turn-based Listen (false).
+  //   tts        — speak agent replies during a call (in 'streaming' above).
   //
   // Handsfree triggers (commitPhrase + silenceSec, both in 'streaming'
   // category above) are shared across both modes via
   // src/audio/shared/handsfree.ts. listenSttEngine stays in
   // localStorage (per-device) — Web Speech API support varies by
   // browser; proxy doesn't carry it.
-  streaming:              { category: 'composer',        default: false },
-  micAutoSend:            { category: 'composer',        default: false },
   autoAdvanceOnNew:       { category: 'composer',        default: false },
   realtime:               { category: 'composer',        default: false },
 } as const;

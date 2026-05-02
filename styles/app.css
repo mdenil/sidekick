@@ -1707,9 +1707,14 @@
   }
   .composer #btn-call:hover { color: var(--fg); }
   .composer #btn-call svg { width: 22px; height: 22px; }
+  /* Call-active = green (telephony "pickup" convention), distinct from
+     mic-active = red ("recording"). Different colors on the two buttons
+     so the user can tell at a glance which is the live one — both red
+     was visually ambiguous. */
   .composer #btn-call.active {
-    color: var(--danger);
-    background: rgba(255, 68, 68, 0.12);
+    color: #fff;
+    background: var(--primary);
+    border-radius: 50%;
   }
   /* Call-menu anchors LEFT (button is on the left side of composer), so
      the dropdown opens flush with the button instead of overflowing

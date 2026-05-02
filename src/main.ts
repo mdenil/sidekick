@@ -1759,7 +1759,7 @@ async function boot() {
     // autoSend flag + which release path triggered this finish, so
     // future regressions are debuggable from the JS console without
     // having to instrument startMemo from scratch.
-    log(`memo finish: path=${path} autoSend=${autoSend} blob=${audioBlob ? Math.round(audioBlob.size/1024)+'KB' : 'null'} live-setting=${settings.get().micAutoSend}`);
+    log(`memo finish: path=${path} autoSend=${autoSend} blob=${audioBlob ? Math.round(audioBlob.size/1024)+'KB' : 'null'}`);
     if (!audioBlob) return;
     // Always render the placeholder card + enqueue the blob, regardless
     // of connectivity. Matches the "user gets immediate visual feedback"
@@ -2118,12 +2118,29 @@ async function boot() {
    *  gesture site BEFORE focus shifted) is plumbed only to the dictate
    *  path — it's the only mode that splices into the textarea at the
    *  user's caret. */
-  async function startMicMode(initialCursor: number | null = null): Promise<void> {
-    const s = settings.get();
-    if ((s as any).streaming) {
+  /** Mic-button dispatch — gesture-driven (no settings).
+   *
+   *   gesture='tap'  → live streaming dictation into the composer at
+   *                    the captured cursor. Ends on second tap, Esc,
+   *                    or Send. No auto-send (text stays in composer
+   *                    for review; user submits manually).
+   *   gesture='hold' → PTT memo recording. Drag-right or release-in-
+   *                    place sends the audio blob; drag-left discards.
+   *                    Always sends — autoSend is implicit in the PTT
+   *                    gesture itself.
+   *
+   * Replaces the previous settings.streaming + settings.micAutoSend
+   * menu toggles. The gesture IS the affordance now. */
+  async function startMicMode(
+    gesture: 'tap' | 'hold',
+    initialCursor: number | null = null,
+  ): Promise<void> {
+    if (gesture === 'tap') {
       await startDictate(initialCursor);
     } else {
-      await startMemo(!!s.micAutoSend);
+      // PTT memo always sends on release (autoSend=true). Discard via
+      // the drag-left gesture handler in the pointerup classifier.
+      await startMemo(true);
     }
   }
 
@@ -2260,6 +2277,11 @@ async function boot() {
     }
 
     let holdActivationTimer: ReturnType<typeof setTimeout> | null = null;
+    /** Composer cursor captured at pointerdown — consumed when the
+     *  classify resolves (TAP → dictate uses it; HOLD → memo discards
+     *  it). Stashed at module level so the pointerup handler can read
+     *  the value the pointerdown handler captured. */
+    let pendingInitialCursor: number | null = null;
 
     /** Press-down: starts recording immediately (regardless of eventual
      *  tap-vs-hold classification). The release-time duration check
@@ -2310,48 +2332,43 @@ async function boot() {
         void stopVoice();
         return;
       }
-      log('[mic-diag] BRANCH: idle → start recording');
+      log('[mic-diag] BRANCH: idle → press start (deferred classify)');
       pressStartedAt = performance.now();
       micState = 'recording';
       holdActive = false;
       holdDiscardArmed = false;
       holdMemoBar = null;
       capturedPointerId = e.pointerId;
-      // Capture pointer so move/up route here even if finger drifts
-      // onto the memo bar — needed for drag-to-discard during HOLD.
       try { btnMic.setPointerCapture(e.pointerId); } catch {}
-      // Immediate visual feedback. startVoice() has multiple awaits
-      // (closing prior call, MediaRecorder boot) so the .active class
-      // would otherwise flip 100-300ms later — user perceives the
-      // first click as a no-op. Set the class synchronously so the
-      // red filled state appears on the same frame as the press.
-      // The memo path's "actually-listening" pulse (.listening) still
-      // fires later when MediaRecorder genuinely starts recording —
-      // two-state visual remains correct.
+      // Immediate visual feedback (red dot) so the user sees their
+      // press registered even though the actual mode-start is deferred
+      // until classify (TAP vs HOLD).
       try { btnMic.classList.add('active'); } catch {}
       // Capture composer cursor BEFORE focus shifts to the mic button.
-      // pointerdown fires while the textarea (if it was focused) still
-      // has its selection state; reading later — after the implicit
-      // focus shift / the async startVoice handshake — risks getting
-      // 0 / value.length / null on iOS Safari, landing voice text at
-      // the wrong location. See dictate.ts ensureAnchor for details.
-      const initialCursor = captureComposerCursor();
-      log('[mic] pointerdown — startMicMode fired (state=recording, t0=', pressStartedAt.toFixed(0), ', initialCursor=', initialCursor, ')');
-      void startMicMode(initialCursor);
-      try {
-        status.setStatus('Listening — release after a moment to send, or tap to keep recording', 'live');
-      } catch {}
-      // Once the press has lasted long enough to qualify as HOLD, flip
-      // holdActive so pointermove enables the drag-to-discard surface
-      // and start polling for the memo bar. Recording itself started
-      // on press_down — this boundary is purely visual / drag-zone
-      // activation. Cleared on pointerup/cancel.
+      // Reading later — after the implicit focus shift / the async
+      // startVoice handshake — risks getting 0 / value.length / null
+      // on iOS Safari, landing voice text at the wrong location. See
+      // dictate.ts ensureAnchor for details. Stash for either branch
+      // (timer-fire → memo discards it; pointerup-tap → dictate uses it).
+      pendingInitialCursor = captureComposerCursor();
+      log('[mic] pointerdown — pressed (t0=', pressStartedAt.toFixed(0), ', initialCursor=', pendingInitialCursor, ')');
+      // Deferred-start gesture machine: don't pick a mode yet. After
+      // TAP_THRESHOLD_MS, if the finger is still down, classify HOLD →
+      // start memo (PTT) + activate drag-to-discard surface. If the
+      // finger lifts before the timer fires, classify TAP in the
+      // pointerup handler → start dictate instead. This gives us
+      // gesture-driven mode selection (tap=dictate, hold=PTT memo)
+      // without the cost of starting memo speculatively for every press.
       holdActivationTimer = setTimeout(() => {
         holdActivationTimer = null;
-        if (micState === 'recording') {
-          holdActive = true;
-          pollForMemoBar(10);
-        }
+        if (micState !== 'recording') return;
+        holdActive = true;
+        log('[mic] HOLD threshold elapsed → start PTT memo');
+        void startMicMode('hold');
+        try {
+          status.setStatus('Recording — release to send, drag left to discard', 'live');
+        } catch {}
+        pollForMemoBar(10);
       }, TAP_THRESHOLD_MS);
     });
 
@@ -2386,37 +2403,44 @@ async function boot() {
       try { btnMic.releasePointerCapture(e.pointerId); } catch {}
       capturedPointerId = null;
 
-      log('[mic] pointerup — dur=', dur.toFixed(0), 'ms, classify=', dur < TAP_THRESHOLD_MS ? 'TAP' : 'HOLD');
-      if (dur < TAP_THRESHOLD_MS && !isCancel) {
-        // TAP → keep recording in toggle mode. Next tap stops it
-        // (but see TOGGLE_STOP_GUARD_MS in pointerdown handler — too-
-        // fast follow-up taps get ignored as accidental double-taps).
+      const classify = dur < TAP_THRESHOLD_MS && !isCancel ? 'TAP' : 'HOLD';
+      log('[mic] pointerup — dur=', dur.toFixed(0), 'ms, classify=', classify);
+
+      if (classify === 'TAP') {
+        // Pre-classify TAP: holdActivationTimer hasn't fired yet, so
+        // memo never started. Cancel the timer + start dictate now.
+        // The dictate session ends on second tap (handled by the
+        // recording_toggle branch in pointerdown above), Esc, or Send.
+        if (holdActivationTimer) {
+          clearTimeout(holdActivationTimer);
+          holdActivationTimer = null;
+        }
         micState = 'recording_toggle';
         recordingToggleAt = performance.now();
+        const cursor = pendingInitialCursor;
+        pendingInitialCursor = null;
+        log('[mic] TAP → start dictate (cursor=', cursor, ')');
+        void startMicMode('tap', cursor);
         try {
-          status.setStatus('Recording — tap mic again to send', 'live');
+          status.setStatus('Dictating — tap mic again, Esc, or Send to finish', 'live');
         } catch {}
-        // Drag-to-discard surface goes away (release happened); user
-        // must use the trash button on the bar to discard manually.
-        if (holdMemoBar) {
-          holdMemoBar.classList.remove('discard-armed');
-        }
-        holdMemoBar = null;
-        holdDiscardArmed = false;
         return;
       }
 
-      // HOLD (or pointercancel mid-press) → finalize.
+      // HOLD → memo started in the timer-fire branch. Finalize:
+      //   drag-left over trash → discard
+      //   anywhere else (or just release) → send
       micState = 'idle';
       const wasDiscard = (holdActive && holdDiscardArmed) || isCancel;
       holdActive = false;
       holdDiscardArmed = false;
       const barRef = holdMemoBar;
       holdMemoBar = null;
+      pendingInitialCursor = null;
       e.preventDefault();
       e.stopPropagation();
-      // Defer a tick so async startVoice's MediaRecorder / WebRTC
-      // handshake settles before we ask the same primitive to stop.
+      // Defer a tick so async startVoice's MediaRecorder handshake
+      // settles before we ask the same primitive to stop.
       setTimeout(() => {
         if (wasDiscard && memoActive) {
           log('memo finish: path=hold-discard (gesture released over trash zone)');
@@ -2457,7 +2481,9 @@ async function boot() {
         // desktops) we get the right value; on ones that don't, we
         // fall back to whatever ensureAnchor() can read at first
         // interim. Either way better than nothing.
-        void startMicMode(captureComposerCursor());
+        // Keyboard activation = TAP semantics (no press-and-hold via
+        // Enter/Space) — start dictation.
+        void startMicMode('tap', captureComposerCursor());
       }
     });
 
@@ -2544,59 +2570,39 @@ async function boot() {
   // Both menus share the .mic-toggle-row + .mic-mode-menu CSS rules; the
   // anchoring (left vs. right) is the only visual difference, handled
   // by the .call-mode-menu rule in app.css.
-  const btnMicMode = document.getElementById('btn-mic-mode') as HTMLButtonElement | null;
-  const micModeMenu = document.getElementById('mic-mode-menu') as HTMLElement | null;
-  const micModeWrap = document.querySelector('.mic-mode-wrap') as HTMLElement | null;
+  // Mic button has no menu anymore — tap=dictate, hold=PTT-memo gesture
+  // replaces the streaming + autoSend toggles. The mic-mode-menu DOM was
+  // dropped in the same commit. Call button keeps its menu (Realtime +
+  // Speak-replies).
   const btnCallMode = document.getElementById('btn-call-mode') as HTMLButtonElement | null;
   const callModeMenu = document.getElementById('call-mode-menu') as HTMLElement | null;
   const callModeWrap = document.querySelector('.call-mode-wrap') as HTMLElement | null;
 
-  type MicToggleKey = 'micAutoSend' | 'streaming' | 'realtime' | 'tts';
+  type CallToggleKey = 'realtime' | 'tts';
 
-  function tooltipForToggle(key: MicToggleKey, s: any): string {
-    const hk = key === 'micAutoSend'
-      ? s.hotkeyAutoSend
-      : '';  // streaming / realtime / tts have no hotkey today
-    const isMac = /(Mac|iPhone|iPad)/i.test(navigator.platform);
-    const prettyHk = isMac
-      ? hk.replace(/Cmd/gi, '⌘').replace(/Shift/gi, '⇧').replace(/Alt/gi, '⌥').replace(/Ctrl/gi, '⌃').replace(/\+/g, '')
-      : hk;
-    const desc = key === 'micAutoSend'
-      ? 'Auto-send — dispatch on end-of-utterance (vs. drafting into composer)'
-      : key === 'streaming'
-        ? 'Streaming: ON = live STT into the composer cursor (cursor-aware dictation). OFF (default) = voice memo (record blob → transcribe → composer).'
-        : key === 'realtime'
-          ? 'Realtime: ON = WebRTC duplex audio (low latency, lossy on flaky networks). OFF (default) = turn-based recording (full fidelity, sent on end-of-utterance).'
-          : 'Speak replies — TTS audio output during a call (talk mode vs. stream mode)';
-    return prettyHk ? `${desc} · ${prettyHk}` : desc;
+  function tooltipForCallToggle(key: CallToggleKey): string {
+    return key === 'realtime'
+      ? 'Realtime: ON = WebRTC duplex audio (low latency, lossy on flaky networks). OFF (default) = turn-based recording (full fidelity, sent on end-of-utterance).'
+      : 'Speak replies — TTS audio output during a call (talk mode vs. stream mode)';
   }
 
   function applyMenuRows(menu: HTMLElement | null, s: any): void {
     if (!menu) return;
     menu.querySelectorAll<HTMLButtonElement>('button.mic-toggle-row').forEach(b => {
-      const key = b.dataset.toggle as MicToggleKey | undefined;
+      const key = b.dataset.toggle as CallToggleKey | undefined;
       if (!key) return;
       const on = !!s[key];
       b.setAttribute('aria-checked', on ? 'true' : 'false');
       b.classList.toggle('on', on);
-      b.title = tooltipForToggle(key, s);
+      b.title = tooltipForCallToggle(key);
     });
   }
 
   function applyMicModeUi(): void {
     const s = settings.get() as any;
-    applyMenuRows(micModeMenu, s);
     applyMenuRows(callModeMenu, s);
-    // Mic button: data-mode + tooltip reflect Streaming + Auto-send.
-    if (micModeWrap) {
-      const mode = s.streaming ? 'dictate' : (s.micAutoSend ? 'memo-auto' : 'memo');
-      micModeWrap.dataset.mode = mode;
-    }
     if (btnMic) {
-      const what = s.streaming
-        ? 'live dictation'
-        : (s.micAutoSend ? 'voice memo (auto-send)' : 'voice memo');
-      btnMic.title = `Tap or hold — ${what}`;
+      btnMic.title = 'Tap to dictate, hold to record';
     }
     // Call button: data-mode reflects Realtime; tooltip reflects current mode.
     if (callModeWrap) {
@@ -2617,25 +2623,14 @@ async function boot() {
   // the POST-flip value via settings.get() after set() so the status
   // pill text doesn't drift from the menu visuals (visuals re-read
   // live state via applyMicModeUi).
-  function flipMicSetting(key: MicToggleKey): void {
+  function flipMicSetting(key: CallToggleKey): void {
     const cur = !!(settings.get() as any)[key];
     const next = !cur;
     settings.set(key, next);
     applyMicModeUi();
-    const label = key === 'streaming' ? 'Streaming'
-      : key === 'micAutoSend' ? 'Auto-send'
-      : key === 'realtime' ? 'Realtime'
-      : 'Speak replies';
+    const label = key === 'realtime' ? 'Realtime' : 'Speak replies';
     const live = !!(settings.get() as any)[key];
     status.setStatus(`${label}: ${live ? 'on' : 'off'}`, null);
-    // Flipping `streaming` while the mic is active mid-mode means the
-    // user changed their mind about which mic-mode they want. Tear
-    // down the running mode so the next mic tap picks up the new
-    // setting cleanly. Memo-active path goes through stopVoice (which
-    // sends-on-stop for memo); dictate-active goes through stopDictate.
-    if (key === 'streaming' && voiceActive() && !webrtcControls.isOpen() && !listenActive) {
-      void stopVoice();
-    }
     // Flipping `realtime` ON while a turn-based Listen session is
     // armed should disarm — the user's intent ("switch to realtime")
     // outweighs leaving the local recorder running.
@@ -2690,7 +2685,7 @@ async function boot() {
     menu.querySelectorAll<HTMLButtonElement>('button.mic-toggle-row').forEach(b => {
       b.onclick = (e) => {
         e.stopPropagation();
-        const key = b.dataset.toggle as MicToggleKey | undefined;
+        const key = b.dataset.toggle as CallToggleKey | undefined;
         if (!key) return;
         // Single canonical path — same as the hotkey. flipMicSetting
         // updates the setting, refreshes menu visuals, sets the status
@@ -2709,7 +2704,6 @@ async function boot() {
       setMenuOpen(menu, btn, false);
     }, true);
   }
-  wireMenu(btnMicMode, micModeMenu, micModeWrap);
   wireMenu(btnCallMode, callModeMenu, callModeWrap);
 
   // Send-button intercept — when dictate is active, clicking Send (or
@@ -2783,7 +2777,7 @@ async function boot() {
       log('[hotkey] keydown',
         'meta=', e.metaKey, 'ctrl=', e.ctrlKey, 'shift=', e.shiftKey,
         'alt=', e.altKey, 'key=', JSON.stringify(e.key),
-        'bindings=', { call: (s as any).hotkeyToggleCall, auto: s.hotkeyAutoSend, mic: s.hotkeyToggleMic });
+        'bindings=', { call: (s as any).hotkeyToggleCall, mic: s.hotkeyToggleMic });
     }
     const matches = (combo: string): boolean => {
       if (!combo) return false;
@@ -2830,11 +2824,11 @@ async function boot() {
       }
       return;
     }
-    if (matches(s.hotkeyAutoSend)) {
-      claim();
-      flipMicSetting('micAutoSend');
-      return;
-    }
+    // hotkeyAutoSend retired — micAutoSend setting was eliminated when
+    // the mic-button gesture model replaced the streaming/autoSend
+    // toggles (PTT memo always sends; tap dictation never auto-sends).
+    // The setting key + hotkey are dropped silently; old user-bound
+    // values stay in localStorage but are no longer wired anywhere.
     if (matches(s.hotkeyToggleMic)) {
       claim();
       // Toggle MIC specifically — startMicMode (memo/dictate). Not
@@ -2855,7 +2849,8 @@ async function boot() {
         // If textarea was focused when the hotkey fired, this is the
         // user's caret; if focus was elsewhere, it's the last-known
         // selection state, which is still a reasonable insertion point.
-        void startMicMode(captureComposerCursor());
+        // Hotkey = TAP semantics (no press-and-hold variant).
+        void startMicMode('tap', captureComposerCursor());
       }
       return;
     }

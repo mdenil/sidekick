@@ -181,20 +181,16 @@ const DEFAULTS = {
   contentSize: 15,
   audioFeedbackVolume: 0.5,
   theme: 'dark',
-  // Mic-button mode: streaming=true means live STT into the composer
-  // cursor (cursor-aware dictation); streaming=false (default) means
-  // memo (record blob → /transcribe → composer). Auto-send applies in
-  // either case (skip the composer-review step). Replaces the old
-  // `micCall` toggle; calls are now a SEPARATE button (btn-call) and
-  // their `realtime` setting lives in the call menu.
-  streaming: false,
-  micAutoSend: false,
+  // Mic-button mode: gesture-driven (tap = live dictation to composer
+  // cursor; hold = PTT memo, fire-and-forget). The `streaming` and
+  // `micAutoSend` settings retired in 2026-05 (the gesture IS the
+  // affordance — see mic-button gesture-machine in main.ts). Old keys
+  // are silently dropped in load() below.
   // Hotkeys. `hotkeyToggleCall` (renamed from `hotkeyCallMode` in
   // 2026-05; silent migration in load() below) toggles btn-call's
-  // start/stop. `hotkeyToggleMic` toggles btn-mic. `hotkeyAutoSend`
-  // flips the auto-send menu toggle.
+  // start/stop. `hotkeyToggleMic` toggles btn-mic (TAP semantics =
+  // dictate). hotkeyAutoSend retired with the autoSend menu toggle.
   hotkeyToggleCall: 'Cmd+Shift+C',
-  hotkeyAutoSend: 'Cmd+Shift+S',
   hotkeyToggleMic: 'Cmd+Shift+D',
   agentActivity: 'summary' as 'off' | 'summary' | 'full',
   // Voice-call transport selector. The `realtime` flag is the mic-menu
@@ -297,6 +293,13 @@ function migrateMicCallToButtonSplit(snapshot: Record<string, any>): void {
   // the proxy yaml; the next set() round-trip won't write them.
   delete (current as any).micCall;
   delete (current as any).hotkeyCallMode;
+  // Mic-button gesture refactor (2026-05) retired streaming +
+  // micAutoSend (gesture replaces the toggles), and hotkeyAutoSend
+  // (no setting to flip). Drop from snapshot — proxy yaml may still
+  // ship them but the runtime ignores them.
+  delete (current as any).streaming;
+  delete (current as any).micAutoSend;
+  delete (current as any).hotkeyAutoSend;
 }
 
 /** Pull the current snapshot from the server (yaml-backed values)
@@ -431,7 +434,6 @@ export function hydrate(handlers: {
   const setSttKeyterms = document.getElementById('set-stt-keyterms') as HTMLInputElement | null;
   const keytermsChips = document.getElementById('keyterms-chips');
   const setHotkeyCall = $inp('set-hotkey-call');
-  const setHotkeyAutoSend = $inp('set-hotkey-autosend');
   const setHotkeyMic = $inp('set-hotkey-mic');
   const setTtsEngine = $sel('set-tts-engine');
   const setVoice = $sel('set-voice');
@@ -487,7 +489,6 @@ export function hydrate(handlers: {
     if (setTheme) setTheme.value = current.theme;
     if (setAgentActivity) setAgentActivity.value = current.agentActivity;
     if (setHotkeyCall) setHotkeyCall.value = (current as any).hotkeyToggleCall;
-    if (setHotkeyAutoSend) setHotkeyAutoSend.value = current.hotkeyAutoSend;
     if (setHotkeyMic) setHotkeyMic.value = current.hotkeyToggleMic;
   }
   applyToDOM();
@@ -680,7 +681,7 @@ export function hydrate(handlers: {
   // combination, and we format it as a string and save. Cmd is used as
   // the conventional Mac modifier name; the matcher accepts either Cmd
   // (metaKey) or Ctrl (ctrlKey) at runtime.
-  function attachHotkeyCapture(el: HTMLInputElement | null, settingsKey: 'hotkeyToggleCall' | 'hotkeyAutoSend' | 'hotkeyToggleMic') {
+  function attachHotkeyCapture(el: HTMLInputElement | null, settingsKey: 'hotkeyToggleCall' | 'hotkeyToggleMic') {
     if (!el) return;
     el.addEventListener('keydown', (e: KeyboardEvent) => {
       // Don't capture lone modifier keypresses; wait until a "real" key
@@ -716,7 +717,6 @@ export function hydrate(handlers: {
     });
   }
   attachHotkeyCapture(setHotkeyCall, 'hotkeyToggleCall');
-  attachHotkeyCapture(setHotkeyAutoSend, 'hotkeyAutoSend');
   attachHotkeyCapture(setHotkeyMic, 'hotkeyToggleMic');
 
   if (setTheme) setTheme.onchange = () => {
