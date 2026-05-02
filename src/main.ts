@@ -1932,7 +1932,18 @@ async function boot() {
     if (webrtcControls.isOpen()) await webrtcControls.closeIfOpen();
     primeAudio(player);
     audioSession.prepareForCapture();
+    // Mount the recorder bar inside the composer (same spot memo uses)
+    // so the user has a visual cue + trash button. Hide the composer-
+    // actions row so the bar takes over the same physical space.
+    const composerEl = document.getElementById('composer') as HTMLElement | null;
+    const composerActionsEl = composerEl?.querySelector('.composer-actions') as HTMLElement | null;
+    if (composerActionsEl) composerActionsEl.style.display = 'none';
+    const restoreComposerActions = () => {
+      if (composerActionsEl) composerActionsEl.style.display = '';
+    };
     const ok = await turnbased.start({
+      barContainer: composerEl,
+      barInsertBefore: composerActionsEl || composerSend,
       onCommit: async (blob, reason) => {
         // Post the blob to /transcribe (mirrors the memo path) and route
         // the resulting transcript through composer.appendText +
@@ -1989,11 +2000,19 @@ async function boot() {
         else if (s === 'committing') status.setStatus('Listen: sending…', null);
         else if (s === 'playing') status.setStatus('Listen: speaking…', null);
         else if (s === 'cooldown') status.setStatus('Listen: re-arming…', null);
-        else if (s === 'idle') status.setStatus('');
+        else if (s === 'idle') {
+          status.setStatus('');
+          // Restore the composer-actions row that startListen hid so
+          // the recorder bar could take its place. Tied to the 'idle'
+          // transition (single point) so it covers every teardown
+          // path: trash button, stopListen, mic-error fallback.
+          restoreComposerActions();
+        }
       },
     });
     if (!ok) {
       listenActive = false;
+      restoreComposerActions();
       status.setStatus('Mic not available', 'err');
       return;
     }

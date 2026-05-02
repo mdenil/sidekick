@@ -31,6 +31,7 @@ import { playFeedback } from '../shared/feedback.ts';
 import * as sendwordDetector from './sendwordDetector.ts';
 import { SilenceWindow, getHandsfreeConfig } from '../shared/handsfree.ts';
 import { BargeWindow } from '../shared/barge.ts';
+import * as recorderBar from '../shared/recorderBar.ts';
 
 export type ListenState = 'idle' | 'armed' | 'committing' | 'playing' | 'cooldown';
 
@@ -62,6 +63,14 @@ export type ListenOpts = {
   /** Optional hook fired on each state transition. Useful for the
    *  status-line indicator + button class wiring in main.ts. */
   onState?: (s: ListenState) => void;
+  /** Container element to mount the visual recorder bar (waveform +
+   *  trash button) into. Pass the composer element. When omitted, no
+   *  bar mounts (smoke tests, headless contexts). */
+  barContainer?: HTMLElement | null;
+  /** Optional sibling to insertBefore inside `barContainer` — same
+   *  semantics as memo.start (drops the bar in front of the composer
+   *  actions row). */
+  barInsertBefore?: HTMLElement | null;
 };
 
 const REARM_GRACE_MS = 500;
@@ -89,6 +98,12 @@ let armedAt = 0;
 let silenceWindow: SilenceWindow | null = null;
 let mockFrames: { type: 'silence' | 'speech'; remainingMs: number } | null = null;
 let cooldownTimer: ReturnType<typeof setTimeout> | null = null;
+// Visual recorder bar (waveform + trash button). Mounted on start(),
+// destroyed on teardown. Analyser is attached only while state==='armed'
+// — frozen waveform during commit/playing/cooldown so the user never
+// sees a live waveform that misrepresents whether audio is being
+// captured for transcription.
+let bar: recorderBar.RecorderBar | null = null;
 
 /** External read of the current state. */
 export function getState(): ListenState { return state; }
@@ -170,6 +185,22 @@ export async function start(o: ListenOpts): Promise<boolean> {
     log('listen: analyser unavailable — silence detection disabled');
   }
   ensureVisibilityHandler();
+  // Mount the visual recorder bar (waveform + trash). Same module memo
+  // uses; analyser gets attached/detached as state moves in/out of
+  // 'armed' so the waveform is honest about when audio is being captured
+  // for transcription. Skipped when no container — smoke tests, headless.
+  if (o.barContainer) {
+    bar = recorderBar.mount({
+      container: o.barContainer,
+      insertBefore: o.barInsertBefore || null,
+      sendBtn: null,  // listen doesn't have a send button — sendword/silence auto-commit
+      onCancel: () => {
+        // Trash button = disarm. cancel() runs teardown which destroys
+        // the bar, so the click handler doesn't need to do that itself.
+        cancel();
+      },
+    });
+  }
   await armRecorder();
   // "Listening" chime — same audible cue memo uses, so the user gets a
   // consistent "we're hearing you" signal across the two modes.
@@ -443,6 +474,13 @@ function teardown(): void {
   analyser = null;
   mockFrames = null;
   try { sendwordDetector.stop(); } catch { /* noop */ }
+  // Tear down the visual recorder bar BEFORE transition('idle') so
+  // the transition's analyser-detach logic (bar.attachAnalyser(null))
+  // doesn't run on a destroyed bar.
+  if (bar) {
+    try { bar.destroy(); } catch { /* noop */ }
+    bar = null;
+  }
   transition('idle');
 }
 
@@ -450,6 +488,14 @@ function transition(s: ListenState): void {
   if (state === s) return;
   state = s;
   try { opts?.onState?.(s); } catch { /* noop */ }
+  // Sync the recorder bar's analyser to whether we're actively
+  // capturing for transcription. Live waveform during 'armed' (mic
+  // → blob), frozen during commit/playing/cooldown so the user
+  // doesn't see motion that misrepresents capture state. The bar
+  // itself stays mounted across all non-idle states.
+  if (bar) {
+    bar.attachAnalyser(s === 'armed' ? analyser : null);
+  }
   // Refresh the test hook surface every transition so polling sees fresh state.
   installTestHooksIfRequested();
 }
