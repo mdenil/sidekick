@@ -23,7 +23,7 @@ import assert from 'node:assert/strict';
 
 // Stub the platform shim before listen.ts evaluates — we don't actually
 // invoke start(), so the imports just need to resolve.
-import * as listen from '../src/audio/listen.ts';
+import * as listen from '../src/audio/turn-based/turnbased.ts';
 
 describe('listen state machine', () => {
   it('starts in idle state', () => {

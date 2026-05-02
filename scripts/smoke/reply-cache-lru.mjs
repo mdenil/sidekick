@@ -34,7 +34,7 @@ export default async function run({ page, log, fail, url }) {
 
   // Drive playReplyTts via a small page-context bridge.
   await page.evaluate(async () => {
-    const mod = await import('/build/audio/text-tts.mjs');
+    const mod = await import('/build/audio/turn-based/tts.mjs');
     (window).__playTts = mod.playReplyTts;
   });
 

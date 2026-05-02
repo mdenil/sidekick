@@ -33,7 +33,7 @@ class StubSR {
   abort() { this.abortCalls++; }
 }
 
-import * as sendword from '../src/audio/sendwordDetector.ts';
+import * as sendword from '../src/audio/turn-based/sendwordDetector.ts';
 
 describe('sendword detector', () => {
   beforeEach(() => {

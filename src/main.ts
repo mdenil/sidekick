@@ -19,8 +19,8 @@ import * as sidebarResize from './sidebarResize.ts';
 import * as multiSelect from './multiSelect.ts';
 import * as agentSettingsMod from './agentSettings.ts';
 import { primeAudio, getSharedAudioCtx } from './audio/shared/platform.ts';
-import { playReplyTts, cancelReplyTts } from './audio/text-tts.ts';
-import * as replyNavigator from './audio/replyNavigator.ts';
+import { playReplyTts, cancelReplyTts } from './audio/turn-based/tts.ts';
+import * as replyNavigator from './audio/turn-based/replyNavigator.ts';
 import * as audioSession from './audio/shared/session.ts';
 import * as capture from './audio/shared/capture.ts';
 import * as fakeLock from './ios/fakeLock.ts';
@@ -32,7 +32,7 @@ import { miniMarkdown } from './util/markdown.ts';
 import * as ambient from './ambient.ts';
 import { playFeedback } from './audio/shared/feedback.ts';
 import * as memo from './audio/shared/memo.ts';
-import * as listen from './audio/listen.ts';
+import * as turnbased from './audio/turn-based/turnbased.ts';
 import * as queue from './queue.ts';
 import * as voiceMemos from './voiceMemos.ts';
 import * as memoCard from './memoCard.ts';
@@ -1918,7 +1918,7 @@ async function boot() {
     if (webrtcControls.isOpen()) await webrtcControls.closeIfOpen();
     primeAudio(player);
     audioSession.prepareForCapture();
-    const ok = await listen.start({
+    const ok = await turnbased.start({
       onCommit: async (blob, reason) => {
         // Post the blob to /transcribe (mirrors the memo path) and route
         // the resulting transcript through composer.appendText +
@@ -1964,7 +1964,7 @@ async function boot() {
         // the next utterance gets recorded as a fresh turn. The barge
         // bleed itself isn't shipped (no commit); the NEXT clean turn is.
         try { cancelReplyTts(); } catch { /* noop */ }
-        try { listen.notifyReplyPlayback(false); } catch { /* noop */ }
+        try { turnbased.notifyReplyPlayback(false); } catch { /* noop */ }
       },
       onState: (s) => {
         if (btnMic) {
@@ -1989,7 +1989,7 @@ async function boot() {
   function stopListen(): void {
     if (!listenActive) return;
     listenActive = false;
-    listen.stop();
+    turnbased.stop();
     // Clear ALL voice-state classes — .active is added synchronously
     // on pointerdown (line ~2235) for immediate red-circle feedback,
     // but Listen's path doesn't go through the call/dictate cleanup
@@ -3486,12 +3486,12 @@ function handleReplyFinal({ replyId, text, content = [], conversation, messageId
     // isReplay gates the whole block: SSE ring replay on page-load /
     // reconnect re-emits old reply_finals; without this guard speak-
     // replies would read the chat aloud from the top every refresh.
-    const inListen = listen.getState() !== 'idle';
+    const inListen = turnbased.getState() !== 'idle';
     if (!isReplay && (settings.get().tts || inListen) && !webrtcControls.isOpen()) {
       const player = document.getElementById('player') as HTMLAudioElement | null;
-      if (inListen) listen.notifyReplyPlayback(true);
+      if (inListen) turnbased.notifyReplyPlayback(true);
       const onEnded = () => {
-        if (inListen) listen.notifyReplyPlayback(false);
+        if (inListen) turnbased.notifyReplyPlayback(false);
         player?.removeEventListener('ended', onEnded);
         player?.removeEventListener('error', onEnded);
       };
@@ -3504,7 +3504,7 @@ function handleReplyFinal({ replyId, text, content = [], conversation, messageId
         // and re-arm directly.
       }).catch(() => {
         if (inListen) {
-          listen.notifyReplyPlayback(false);
+          turnbased.notifyReplyPlayback(false);
           player?.removeEventListener('ended', onEnded);
           player?.removeEventListener('error', onEnded);
         }
@@ -3512,8 +3512,8 @@ function handleReplyFinal({ replyId, text, content = [], conversation, messageId
     } else if (inListen) {
       // No TTS in flight (rare — settings.tts off AND not in Listen
       // would have skipped). Still notify so re-arm fires.
-      listen.notifyReplyPlayback(true);
-      listen.notifyReplyPlayback(false);
+      turnbased.notifyReplyPlayback(true);
+      turnbased.notifyReplyPlayback(false);
     }
 
     try {

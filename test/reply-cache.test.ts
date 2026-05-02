@@ -7,7 +7,7 @@
 import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 
-import * as cache from '../src/audio/replyCache.ts';
+import * as cache from '../src/audio/turn-based/replyCache.ts';
 
 function blobOfSize(bytes: number): Blob {
   // Minimal Blob shim — the cache only reads .size.

@@ -376,7 +376,7 @@ export function addLine(speaker: string, text: string, cls = '', opts: {
       e.stopPropagation();
       // Lazy-import to avoid pulling text-tts into chat.ts's static
       // import graph (chat.ts is loaded earlier in the boot path).
-      import('./audio/replyNavigator.ts').then((m) => m.togglePlayback(div)).catch(() => {});
+      import('./audio/turn-based/replyNavigator.ts').then((m) => m.togglePlayback(div)).catch(() => {});
     };
     div.appendChild(playBtn);
 

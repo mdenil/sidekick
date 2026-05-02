@@ -20,7 +20,7 @@
  * module reuses the same shape).
  */
 
-import { log, diag } from '../util/log.ts';
+import { log, diag } from '../../util/log.ts';
 
 export type SendwordOpts = {
   /** Phrase to match on. Empty string disables matching. Caller is

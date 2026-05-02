@@ -35,7 +35,7 @@
  * via `reset()`.
  */
 
-import { log, diag } from '../util/log.ts';
+import { log, diag } from '../../util/log.ts';
 import {
   playReplyTts,
   pauseReplyTts,
@@ -43,7 +43,7 @@ import {
   cancelReplyTts,
   isPaused,
   getActiveReplyId,
-} from './text-tts.ts';
+} from './tts.ts';
 import * as replyCache from './replyCache.ts';
 
 let currentBubble: HTMLElement | null = null;
@@ -51,7 +51,7 @@ let playerListenersAttached = false;
 
 async function resolveVoice(): Promise<string> {
   try {
-    const settingsMod = await import('../settings.ts');
+    const settingsMod = await import('../../settings.ts');
     const v = settingsMod.get?.()?.voice;
     return typeof v === 'string' && v ? v : 'aura-2-thalia-en';
   } catch {

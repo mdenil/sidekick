@@ -22,7 +22,7 @@
  * the test as the canonical reference). Keep these in sync.
  */
 
-import { log, diag } from '../util/log.ts';
+import { log, diag } from '../../util/log.ts';
 import * as replyCache from './replyCache.ts';
 
 /** Identifier of the reply currently being driven by playReplyTts.
