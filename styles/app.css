@@ -1862,8 +1862,11 @@
    * against the body. */
   .memo-bar.memo-bar-ptt::before {
     content: 'RELEASE TO SEND';
-    position: absolute; left: 0; right: 0; top: 50%;
-    transform: translateY(-50%);
+    /* Bottom-anchored so the waveform (vertically centered) doesn't
+     * cut through the text mid-glyph. The label gets covered when
+     * audio is sounding, but that's the cue the user is talking and
+     * the hint is no longer relevant. */
+    position: absolute; left: 0; right: 0; bottom: 4px;
     font-size: 11px; color: var(--primary); opacity: 0.95;
     letter-spacing: 0.04em;
     text-align: center;

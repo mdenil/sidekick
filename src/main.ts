@@ -2545,12 +2545,16 @@ async function boot() {
     });
   }
 
-  /** Active-state visual on the call button: mirrors btn-mic.active.
-   *  Driven by polling-style class flip in the few spots where call
-   *  state changes — no global event bus today. */
+  /** Active-state visual on the call button. Reflects "user is in a
+   *  CALL" — not just "WebRTC is connected." Dictation also opens
+   *  the WebRTC peer (live STT to composer) but is mic-initiated, so
+   *  webrtcControls.isOpen() being true during dictation would
+   *  wrongly flip btn-call.active. Gate on dictateActive=false to
+   *  exclude that case. */
   function syncCallButtonVisual(): void {
     if (!btnCall) return;
-    const active = webrtcControls.isOpen() || listenActive;
+    const active = listenActive
+      || (webrtcControls.isOpen() && !dictateActive);
     btnCall.classList.toggle('active', active);
   }
   // Sync on every settings flip + every voice-state transition we know
