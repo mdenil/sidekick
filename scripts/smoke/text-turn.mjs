@@ -15,7 +15,7 @@
 //     session-switch-and-back).
 //   - Stuck on "sending…" indefinitely.
 
-import { waitForReady, clickNewChat, send, deleteChat, SEL, assert } from './lib.mjs';
+import { waitForReady, clickNewChat, send, deleteChat, captureNextChatId, SEL, assert } from './lib.mjs';
 
 export const NAME = 'text-turn';
 export const DESCRIPTION = 'Fresh chat → "hi" → finalized agent bubble with non-placeholder text';
@@ -24,21 +24,6 @@ export const STATUS = 'implemented';
 // without simulating Phase 3's reply_delta/reply_final shape, which is
 // what we're testing.
 export const BACKEND = 'real';
-
-function captureNextChatId(page) {
-  return new Promise((resolve, reject) => {
-    const t = setTimeout(() => reject(new Error('new-session log not seen in 5s')), 5000);
-    const handler = (msg) => {
-      const m = /new session \(chat_id=([0-9a-f-]+)\)/.exec(msg.text());
-      if (m) {
-        clearTimeout(t);
-        page.off('console', handler);
-        resolve(m[1]);
-      }
-    };
-    page.on('console', handler);
-  });
-}
 
 export default async function run({ page, log }) {
   await waitForReady(page);

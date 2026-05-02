@@ -23,7 +23,7 @@
 //      marker. Strict: failure on the FIRST click that doesn't switch.
 //   3. Final state must match the last click target.
 
-import { waitForReady, openSidebar, clickNewChat, send, deleteChat, SEL, assert } from './lib.mjs';
+import { waitForReady, openSidebar, clickNewChat, send, deleteChat, captureNextChatId, SEL, assert } from './lib.mjs';
 
 export const NAME = 'drawer-switch';
 export const DESCRIPTION = 'Drawer click switches chat view on FIRST click — 5 chats, top→bottom→top';
@@ -55,23 +55,6 @@ const N = 5;
 async function clickRow(page, chatId) {
   const locator = page.locator(`#sessions-list li[data-chat-id="${chatId}"] .sess-body`);
   await locator.first().click();
-}
-
-/** Capture the chat_id minted by the PWA's new-chat flow by watching
- *  the dbg console line `hermes-gateway: new session (chat_id=…)`. */
-function captureNextChatId(page) {
-  return new Promise((resolve, reject) => {
-    const t = setTimeout(() => reject(new Error('new-session log not seen in 5s')), 5000);
-    const handler = (msg) => {
-      const m = /new session \(chat_id=([0-9a-f-]+)\)/.exec(msg.text());
-      if (m) {
-        clearTimeout(t);
-        page.off('console', handler);
-        resolve(m[1]);
-      }
-    };
-    page.on('console', handler);
-  });
 }
 
 async function transcriptText(page) {

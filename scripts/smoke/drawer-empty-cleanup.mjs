@@ -11,26 +11,11 @@
 //   4. Send a message in the latest new-chat.
 //   5. Assert there's still ≤ 1 "0 msgs" placeholder row.
 
-import { waitForReady, openSidebar, clickNewChat, send, deleteChat, SEL, assert } from './lib.mjs';
+import { waitForReady, openSidebar, clickNewChat, send, deleteChat, captureNextChatId, SEL, assert } from './lib.mjs';
 
 export const NAME = 'drawer-empty-cleanup';
 export const DESCRIPTION = 'Repeated new-chat without sending should not pollute drawer';
 export const STATUS = 'implemented';
-
-function captureNextChatId(page) {
-  return new Promise((resolve, reject) => {
-    const t = setTimeout(() => reject(new Error('new-session log not seen in 5s')), 5000);
-    const handler = (msg) => {
-      const m = /new session \(chat_id=([0-9a-f-]+)\)/.exec(msg.text());
-      if (m) {
-        clearTimeout(t);
-        page.off('console', handler);
-        resolve(m[1]);
-      }
-    };
-    page.on('console', handler);
-  });
-}
 
 /** Count drawer rows whose meta line shows "0 msgs". Those are the
  *  empty-new-chat artifacts the bug produces. The meta text runs

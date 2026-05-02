@@ -22,7 +22,7 @@
 //      - Drawer's highlighted row matches the original chat_id.
 //      - composer is empty (clean reload, not mid-typing).
 
-import { waitForReady, openSidebar, clickNewChat, send, SEL, assert } from './lib.mjs';
+import { waitForReady, openSidebar, clickNewChat, send, captureNextChatId, SEL, assert } from './lib.mjs';
 
 export const NAME = 'persistence-reload';
 export const DESCRIPTION = 'Reload after sending a message restores the chat in place';
@@ -31,23 +31,6 @@ export const BACKEND = 'mocked';
 
 export function MOCK_SETUP(_mock) {
   // No pre-populated chats — scenario creates one via the PWA flow.
-}
-
-/** Capture the chat_id minted by the PWA's new-chat flow by watching
- *  the dbg console line `hermes-gateway: new session (chat_id=…)`. */
-function captureNextChatId(page) {
-  return new Promise((resolve, reject) => {
-    const t = setTimeout(() => reject(new Error('new-session log not seen in 5s')), 5000);
-    const handler = (msg) => {
-      const m = /new session \(chat_id=([0-9a-f-]+)\)/.exec(msg.text());
-      if (m) {
-        clearTimeout(t);
-        page.off('console', handler);
-        resolve(m[1]);
-      }
-    };
-    page.on('console', handler);
-  });
 }
 
 const MARKER = `persistence-marker-${Math.random().toString(36).slice(2, 8)}`;

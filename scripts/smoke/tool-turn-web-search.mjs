@@ -22,7 +22,7 @@
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { waitForReady, clickNewChat, send, deleteChat, SEL, assert } from './lib.mjs';
+import { waitForReady, clickNewChat, send, deleteChat, captureNextChatId, SEL, assert } from './lib.mjs';
 
 export const NAME = 'tool-turn-web-search';
 export const DESCRIPTION = 'web_search tool runs via Tavily, renders, and lands in state.db';
@@ -44,21 +44,6 @@ async function sqlQuery(db, sql) {
   });
   if (!stdout.trim()) return [];
   return JSON.parse(stdout);
-}
-
-function captureNextChatId(page) {
-  return new Promise((resolve, reject) => {
-    const t = setTimeout(() => reject(new Error('new-session log not seen in 5s')), 5000);
-    const handler = (msg) => {
-      const m = /new session \(chat_id=([0-9a-f-]+)\)/.exec(msg.text());
-      if (m) {
-        clearTimeout(t);
-        page.off('console', handler);
-        resolve(m[1]);
-      }
-    };
-    page.on('console', handler);
-  });
 }
 
 // Strings that signal the model declined / failed to actually use

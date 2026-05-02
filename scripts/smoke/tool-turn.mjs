@@ -7,7 +7,7 @@
 //   - Tool round-trip but reply_final never finalizes (stuck mid-stream).
 //   - .activity-row exists but no tool rows inside.
 
-import { waitForReady, clickNewChat, send, deleteChat, SEL, assert } from './lib.mjs';
+import { waitForReady, clickNewChat, send, deleteChat, captureNextChatId, SEL, assert } from './lib.mjs';
 
 export const NAME = 'tool-turn';
 export const DESCRIPTION = 'Tool-using prompt → activity row + finalized reply';
@@ -18,21 +18,6 @@ export const STATUS = 'implemented';
 export const BACKEND = 'real';
 
 const TOOL_PROMPT = 'Search the web for today\'s weather in London and tell me the high temperature.';
-
-function captureNextChatId(page) {
-  return new Promise((resolve, reject) => {
-    const t = setTimeout(() => reject(new Error('new-session log not seen in 5s')), 5000);
-    const handler = (msg) => {
-      const m = /new session \(chat_id=([0-9a-f-]+)\)/.exec(msg.text());
-      if (m) {
-        clearTimeout(t);
-        page.off('console', handler);
-        resolve(m[1]);
-      }
-    };
-    page.on('console', handler);
-  });
-}
 
 export default async function run({ page, log }) {
   await waitForReady(page);

@@ -154,6 +154,28 @@ export function assert(cond, msg) {
   if (!cond) throw new Error(`assertion failed: ${msg}`);
 }
 
+/** Capture the chat_id minted by the PWA's new-chat flow by watching
+ *  the dbg console line `hermes-gateway: new session (chat_id=…)`.
+ *  Call BEFORE clicking new-chat — the returned promise resolves on
+ *  the next matching console line. Times out after 5s. */
+export function captureNextChatId(page, { timeoutMs = 5000 } = {}) {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(
+      () => reject(new Error(`new-session log not seen in ${timeoutMs}ms`)),
+      timeoutMs,
+    );
+    const handler = (msg) => {
+      const m = /new session \(chat_id=([0-9a-f-]+)\)/.exec(msg.text());
+      if (m) {
+        clearTimeout(t);
+        page.off('console', handler);
+        resolve(m[1]);
+      }
+    };
+    page.on('console', handler);
+  });
+}
+
 /** Best-effort: ask the server to forget a chat_id. Used by tests to
  *  clean up the sessions they created so smoke runs don't pollute the
  *  real user's drawer. Failures are swallowed — server might be in a
