@@ -1812,24 +1812,24 @@ async function boot() {
     updateSendButtonState();
   });
 
-  // ── Unified composer-mic state + dispatch ──────────────────────────
+  // ── Composer voice dispatch ─────────────────────────────────────────
   //
-  // Two orthogonal toggles drive the four modes (gesture is detected at
-  // press time — see the mic-button handler below for the tap-vs-hold
-  // state machine):
-  //   settings.micCall     false=memo (offline-first), true=live WebRTC
-  //   settings.micAutoSend false=land in composer, true=auto-dispatch
+  // Two-button split (2026-05): btn-mic owns memo + dictation, btn-call
+  // owns calls. Each button has its own settings:
   //
-  // Decision matrix:
-  //   call=false autoSend=false → memo → composer (current legacy)
-  //   call=false autoSend=true  → memo → fire-and-forget on stop (NEW)
-  //   call=true  autoSend=true  → live chat-bubble streaming (today's call)
-  //   call=true  autoSend=false → cursor-aware dictation (NEW)
+  //   btn-mic:  settings.streaming    false=memo,           true=dictation
+  //             settings.micAutoSend  false=land in composer, true=auto-send
   //
-  // Each primitive operation is idempotent: startVoice waits for the
-  // state to settle before flipping. The unified click handler reads
-  // toggles AT TAP TIME (not at boot) so flipping the menu mid-session
-  // takes effect on the next tap without requiring a teardown.
+  //   btn-call: settings.realtime     false=turn-based,     true=WebRTC
+  //             settings.tts          false=stream mode,    true=talk mode
+  //                                                         (call-only)
+  //
+  // The four primitives below (startMemo, startDictate, startListen,
+  // startCallStream) are mode-pure; the dispatch helpers (startMicMode,
+  // startCallMode) read the relevant settings AT TAP TIME so flipping
+  // the menu mid-session takes effect on the next tap without a
+  // teardown. Each primitive is idempotent: starting a mode while the
+  // mic is held by another mode tears that mode down first.
 
   /** Start memo mode (recording bar + MediaRecorder → blob).
    *  Returns false if mic acquisition fails. autoSend determines whether
@@ -2139,36 +2139,6 @@ async function boot() {
       await startCallStream();
     } else {
       await startListen();
-    }
-  }
-
-  /** Start whichever voice path matches the current toggles.
-   *
-   *  `initialCursor` (composer textarea selectionStart, captured at the
-   *  gesture site BEFORE focus shifted) is plumbed only to the dictate
-   *  path — it's the only mode that splices into the textarea at the
-   *  user's caret. The other modes (memo, call-stream auto-send) don't
-   *  care where the caret was. */
-  async function startVoice(initialCursor: number | null = null): Promise<void> {
-    const s = settings.get();
-    // Voice transport selector inside Call mode. `realtime: false` (the
-    // default) routes mic-taps to turn-based Listen — full local audio
-    // buffer, sent to the server only when the user finishes speaking.
-    // Optimized for fidelity over latency; ideal when reply latency is
-    // dominated by the LLM round-trip (e.g. tool-using agents). Flipping
-    // `realtime: true` upgrades to WebRTC (kept as the substrate for
-    // upcoming duplex-voice models). Memo (long-press) is independent
-    // of this toggle and lives in the else branch below.
-    if (s.micCall) {
-      if (!(s as any).realtime) {
-        await startListen();
-      } else if (s.micAutoSend) {
-        await startCallStream();
-      } else {
-        await startDictate(initialCursor);
-      }
-    } else {
-      await startMemo(!!s.micAutoSend);
     }
   }
 
@@ -2813,7 +2783,7 @@ async function boot() {
       log('[hotkey] keydown',
         'meta=', e.metaKey, 'ctrl=', e.ctrlKey, 'shift=', e.shiftKey,
         'alt=', e.altKey, 'key=', JSON.stringify(e.key),
-        'bindings=', { call: s.hotkeyCallMode, auto: s.hotkeyAutoSend, mic: s.hotkeyToggleMic });
+        'bindings=', { call: (s as any).hotkeyToggleCall, auto: s.hotkeyAutoSend, mic: s.hotkeyToggleMic });
     }
     const matches = (combo: string): boolean => {
       if (!combo) return false;
@@ -2845,7 +2815,7 @@ async function boot() {
       e.preventDefault();
       e.stopPropagation();
     };
-    if (matches(s.hotkeyCallMode)) {
+    if (matches((s as any).hotkeyToggleCall)) {
       claim();
       // Hotkey toggles the CALL — start a call if none active, end any
       // active call (mirrors btn-call's tap behavior). Pre-empts mic
@@ -2867,17 +2837,16 @@ async function boot() {
     }
     if (matches(s.hotkeyToggleMic)) {
       claim();
-      // Toggle voice via startVoice/stopVoice directly. NOT btn.click()
-      // (the new mic gesture machine listens to pointer events, not
-      // clicks — synthetic clicks are ignored) and NOT touching the
-      // gesture machine's internal `micState` (out-of-scope from this
-      // listener). The gesture machine's pointerdown handler has a
+      // Toggle MIC specifically — startMicMode (memo/dictate). Not
+      // btn.click() (the gesture machine listens to pointer events,
+      // not clicks). The gesture machine's pointerdown handler has a
       // `if (voiceActive()) { stopVoice(); return; }` defensive branch
-      // that auto-syncs state when the user next touches the mic — so
-      // hotkey-started voice gets stopped correctly by a subsequent
-      // tap, and vice versa.
-      log('[hotkey] toggleMic — voiceActive=', voiceActive());
-      if (voiceActive()) {
+      // that auto-syncs state when the user next touches the mic.
+      // Don't stop a call from this hotkey — calls have their own
+      // dedicated hotkey (hotkeyToggleCall above).
+      const micRunning = memoActive || dictateActive;
+      log('[hotkey] toggleMic — micRunning=', micRunning);
+      if (micRunning) {
         void stopVoice();
       } else {
         // Capture composer cursor BEFORE the rest of the hotkey path
@@ -2886,7 +2855,7 @@ async function boot() {
         // If textarea was focused when the hotkey fired, this is the
         // user's caret; if focus was elsewhere, it's the last-known
         // selection state, which is still a reasonable insertion point.
-        void startVoice(captureComposerCursor());
+        void startMicMode(captureComposerCursor());
       }
       return;
     }

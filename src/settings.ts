@@ -181,9 +181,19 @@ const DEFAULTS = {
   contentSize: 15,
   audioFeedbackVolume: 0.5,
   theme: 'dark',
-  micCall: false,
+  // Mic-button mode: streaming=true means live STT into the composer
+  // cursor (cursor-aware dictation); streaming=false (default) means
+  // memo (record blob → /transcribe → composer). Auto-send applies in
+  // either case (skip the composer-review step). Replaces the old
+  // `micCall` toggle; calls are now a SEPARATE button (btn-call) and
+  // their `realtime` setting lives in the call menu.
+  streaming: false,
   micAutoSend: false,
-  hotkeyCallMode: 'Cmd+Shift+C',
+  // Hotkeys. `hotkeyToggleCall` (renamed from `hotkeyCallMode` in
+  // 2026-05; silent migration in load() below) toggles btn-call's
+  // start/stop. `hotkeyToggleMic` toggles btn-mic. `hotkeyAutoSend`
+  // flips the auto-send menu toggle.
+  hotkeyToggleCall: 'Cmd+Shift+C',
   hotkeyAutoSend: 'Cmd+Shift+S',
   hotkeyToggleMic: 'Cmd+Shift+D',
   agentActivity: 'summary' as 'off' | 'summary' | 'full',
@@ -234,7 +244,7 @@ function audioFeedbackLabel(vol) {
 
 /** Migrate the legacy listenSilenceSec / listenSendword keys into the
  *  canonical silenceSec / commitPhrase keys. Runs once per load() —
- *  if a user customised the legacy keys (and didn't separately customise
+ *  if a user customised the legacy keys (and didn't separately customised
  *  the canonical ones), this carries their tuning forward. After the
  *  copy, the legacy values are unread; the proxy still ships them in
  *  /api/sidekick/config until the server-side cleanup lands. */
@@ -253,6 +263,40 @@ function migrateLegacyHandsfreeKeys(snapshot: Record<string, any>): void {
     (current as any).commitPhrase = lSendword.trim().toLowerCase();
     void set('commitPhrase' as any, (current as any).commitPhrase);
   }
+}
+
+/** Migrate `micCall` (the old single-mic-button toggle) and
+ *  `hotkeyCallMode` (the old hotkey name) into the two-button-split
+ *  shape:
+ *    - micCall=true was "user routes mic taps to a call mode" — the
+ *      call button now does that explicitly; their `realtime` value
+ *      already maps onto the new call menu's Realtime toggle, so
+ *      there's nothing to copy across. Just drop micCall from our
+ *      in-memory snapshot so the new code path doesn't see it.
+ *    - micCall=false was memo-only — also nothing to copy; the
+ *      streaming default (off) matches.
+ *    - `hotkeyCallMode` → `hotkeyToggleCall`: copy the user's binding
+ *      across if old key present and new absent. Drop the old key.
+ *
+ *  Idempotent — re-running on an already-migrated snapshot is a no-op.
+ *  The proxy yaml still carries the legacy keys until the server-side
+ *  cleanup lands; the in-memory snapshot is the source of truth for
+ *  the rest of the PWA. */
+function migrateMicCallToButtonSplit(snapshot: Record<string, any>): void {
+  // Old hotkey → new hotkey. Only copy if the new value is at default
+  // AND the old value differs (so we don't overwrite an explicit new
+  // binding the user might have set in a recent build).
+  const oldHotkey = snapshot.hotkeyCallMode;
+  if (typeof oldHotkey === 'string' && oldHotkey
+      && (current as any).hotkeyToggleCall === DEFAULTS.hotkeyToggleCall
+      && oldHotkey !== DEFAULTS.hotkeyToggleCall) {
+    (current as any).hotkeyToggleCall = oldHotkey;
+    void set('hotkeyToggleCall' as any, oldHotkey);
+  }
+  // Drop legacy keys from in-memory snapshot. They may still exist in
+  // the proxy yaml; the next set() round-trip won't write them.
+  delete (current as any).micCall;
+  delete (current as any).hotkeyCallMode;
 }
 
 /** Pull the current snapshot from the server (yaml-backed values)
@@ -286,6 +330,7 @@ export async function load() {
           (current as any)[k] = v;
         }
         migrateLegacyHandsfreeKeys(j.settings);
+        migrateMicCallToButtonSplit(j.settings);
       }
     }
   } catch {
@@ -441,7 +486,7 @@ export function hydrate(handlers: {
     if (setFontSizeVal) setFontSizeVal.textContent = `${current.contentSize}px`;
     if (setTheme) setTheme.value = current.theme;
     if (setAgentActivity) setAgentActivity.value = current.agentActivity;
-    if (setHotkeyCall) setHotkeyCall.value = current.hotkeyCallMode;
+    if (setHotkeyCall) setHotkeyCall.value = (current as any).hotkeyToggleCall;
     if (setHotkeyAutoSend) setHotkeyAutoSend.value = current.hotkeyAutoSend;
     if (setHotkeyMic) setHotkeyMic.value = current.hotkeyToggleMic;
   }
@@ -635,7 +680,7 @@ export function hydrate(handlers: {
   // combination, and we format it as a string and save. Cmd is used as
   // the conventional Mac modifier name; the matcher accepts either Cmd
   // (metaKey) or Ctrl (ctrlKey) at runtime.
-  function attachHotkeyCapture(el: HTMLInputElement | null, settingsKey: 'hotkeyCallMode' | 'hotkeyAutoSend' | 'hotkeyToggleMic') {
+  function attachHotkeyCapture(el: HTMLInputElement | null, settingsKey: 'hotkeyToggleCall' | 'hotkeyAutoSend' | 'hotkeyToggleMic') {
     if (!el) return;
     el.addEventListener('keydown', (e: KeyboardEvent) => {
       // Don't capture lone modifier keypresses; wait until a "real" key
@@ -670,7 +715,7 @@ export function hydrate(handlers: {
       el.blur();
     });
   }
-  attachHotkeyCapture(setHotkeyCall, 'hotkeyCallMode');
+  attachHotkeyCapture(setHotkeyCall, 'hotkeyToggleCall');
   attachHotkeyCapture(setHotkeyAutoSend, 'hotkeyAutoSend');
   attachHotkeyCapture(setHotkeyMic, 'hotkeyToggleMic');
 
