@@ -40,11 +40,11 @@ import * as attachments from './attachments.ts';
 import * as draft from './draft.ts';
 import * as composer from './composer.ts';
 import * as slashCommands from './slashCommands.ts';
-import * as webrtcControls from './pipelines/webrtc/controls.ts';
-import * as webrtcConnection from './pipelines/webrtc/connection.ts';
-import * as webrtcDictation from './pipelines/webrtc/dictation.ts';
-import * as webrtcDictate from './pipelines/webrtc/dictate.ts';
-import * as webrtcSuppress from './pipelines/webrtc/suppress.ts';
+import * as webrtcControls from './audio/realtime/controls.ts';
+import * as webrtcConnection from './audio/realtime/realtime.ts';
+import * as webrtcDictation from './audio/realtime/dictation.ts';
+import * as webrtcDictate from './audio/realtime/dictate.ts';
+import * as webrtcSuppress from './audio/realtime/suppress.ts';
 import * as bgTrace from './bgTrace.ts';
 import * as activityRow from './activityRow.ts';
 

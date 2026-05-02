@@ -15,7 +15,7 @@
  *   settings.tts AT THE TIME OF CALL OPEN.
  */
 
-import * as conn from './connection.ts';
+import * as conn from './realtime.ts';
 import * as dictation from './dictation.ts';
 import * as suppress from './suppress.ts';
 import * as settings from '../../settings.ts';

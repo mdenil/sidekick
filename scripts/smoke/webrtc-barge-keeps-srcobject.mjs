@@ -30,7 +30,7 @@ export default async function run({ page, log }) {
   await waitForReady(page);
 
   const result = await page.evaluate(async () => {
-    const conn = await import('/build/pipelines/webrtc/connection.mjs');
+    const conn = await import('/build/audio/realtime/realtime.mjs');
 
     // Build a fake remote-track <audio> element + sentinel stream,
     // mirroring the binding established inside connection.ts ontrack.

@@ -10,7 +10,7 @@
 
 import { log } from '../util/log.ts';
 import * as audioPlatform from '../audio/shared/platform.ts';
-import * as webrtc from '../pipelines/webrtc/connection.ts';
+import * as webrtc from '../audio/realtime/realtime.ts';
 // Classic pipeline gone: getActiveStream + tts imports removed. Pocket-lock
 // keeps the cover overlay + status text + idle meter; per-turn player UI
 // is hidden via display:none in CSS while the WebRTC call surface owns

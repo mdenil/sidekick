@@ -25,9 +25,9 @@
  * survive into the next call.
  */
 
-import * as conn from './connection.ts';
+import * as conn from './realtime.ts';
 import * as settings from '../../settings.ts';
-import { playFeedback } from '../../audio/shared/feedback.ts';
+import { playFeedback } from '../shared/feedback.ts';
 import { log, diag } from '../../util/log.ts';
 
 let buffer: string[] = [];

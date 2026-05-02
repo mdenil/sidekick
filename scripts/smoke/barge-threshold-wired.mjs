@@ -103,7 +103,7 @@ export default async function run({ page, log }) {
   // settings route to WebRTC. POST is short-circuited above so the
   // open() call rejects after building + sending the offer payload.
   await page.evaluate(async () => {
-    const controls = await import('/build/pipelines/webrtc/controls.mjs');
+    const controls = await import('/build/audio/realtime/controls.mjs');
     try { await controls.openCall('stream'); }
     catch { /* expected — POST 500'd by the route handler */ }
   });

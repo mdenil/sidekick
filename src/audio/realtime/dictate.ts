@@ -132,9 +132,9 @@
  * post-fix behavior.
  */
 
-import * as conn from './connection.ts';
+import * as conn from './realtime.ts';
 import { log, diag } from '../../util/log.ts';
-import type { STTProvider, TranscriptEvent, Unsubscribe } from '../../audio/shared/stt-provider.ts';
+import type { STTProvider, TranscriptEvent, Unsubscribe } from '../shared/stt-provider.ts';
 
 // ── Diagnostic flag ────────────────────────────────────────────────────
 

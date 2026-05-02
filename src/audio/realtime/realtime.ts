@@ -32,14 +32,14 @@
  */
 
 import { log, diag } from '../../util/log.ts';
-import { playFeedback } from '../../audio/shared/feedback.ts';
-import * as audioPlatform from '../../audio/shared/platform.ts';
+import { playFeedback } from '../shared/feedback.ts';
+import * as audioPlatform from '../shared/platform.ts';
 import * as settings from '../../settings.ts';
 import type {
   STTProvider,
   TranscriptEvent as STTTranscriptEvent,
   Unsubscribe,
-} from '../../audio/shared/stt-provider.ts';
+} from '../shared/stt-provider.ts';
 
 export type CallMode = 'stream' | 'talk';
 
