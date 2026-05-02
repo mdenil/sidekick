@@ -22,6 +22,7 @@ import { primeAudio, getSharedAudioCtx } from './audio/shared/platform.ts';
 import { playReplyTts, cancelReplyTts } from './audio/turn-based/tts.ts';
 import * as ttsModule from './audio/turn-based/tts.ts';
 import * as replyNavigator from './audio/turn-based/replyNavigator.ts';
+import * as replyPlayer from './audio/turn-based/replyPlayer.ts';
 import * as audioSession from './audio/shared/session.ts';
 import * as capture from './audio/shared/capture.ts';
 import * as fakeLock from './ios/fakeLock.ts';
@@ -577,6 +578,17 @@ async function boot() {
       return;
     }
   });
+  // Per-bubble TTS playback UX (loading bar, played-ratio bar,
+  // play/pause/replay button, scrub). Subscribes to tts.ts events
+  // and updates DOM by replyId. Delegated click + pointerdown live
+  // here too — chat.ts:addLine just emits the DOM, replyPlayer owns
+  // all interaction.
+  if (transcriptEl) {
+    replyPlayer.init({
+      transcriptEl,
+      resolveVoice: () => settings.get().voice,
+    });
+  }
   draft.init({
     transcriptEl,
     onChange: updateSendButtonState,
