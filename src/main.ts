@@ -2380,6 +2380,24 @@ async function boot() {
       );
     }
 
+    /** Trash-icon hit test. The trash icon is inside the memo bar
+     *  (so isInsideMemoBar returns true when the pointer is over it),
+     *  but it's a deliberate visual affordance — users naturally slide
+     *  toward the trash to discard. Discard arms on EITHER condition:
+     *  pointer outside the padded memo bar, OR pointer over the trash
+     *  icon. Additive per Jonathan's spec 2026-05-03. */
+    function isOverTrashZone(clientX: number, clientY: number): boolean {
+      const trash = holdMemoBar?.querySelector('.memo-trash') as HTMLElement | null;
+      if (!trash) return false;
+      const r = trash.getBoundingClientRect();
+      return (
+        clientX >= r.left &&
+        clientX <= r.right &&
+        clientY >= r.top &&
+        clientY <= r.bottom
+      );
+    }
+
     /** Resolve the memo bar element after startMicMode's async setup
      *  completes (mic permission, MediaRecorder spin-up). Polls briefly
      *  to cover iOS getUserMedia latency. Only relevant for memo mode
@@ -2501,9 +2519,15 @@ async function boot() {
         holdMemoBar = document.querySelector('.memo-bar') as HTMLElement | null;
         if (!holdMemoBar) return;
       }
-      // Discard-armed when the pointer leaves the padded memo-bar rect
-      // in any direction (up/down/left/right). Inverse of isInsideMemoBar.
-      const discardArmed = !isInsideMemoBar(e.clientX, e.clientY);
+      // Discard arms on EITHER:
+      //   (a) pointer leaves the padded memo-bar rect in any direction
+      //       (up/down/left/right) — natural "drag away" gesture, OR
+      //   (b) pointer is OVER the trash icon — deliberate visual target,
+      //       user instinct is to slide toward what they want.
+      // Both motifs converge on discard intent.
+      const discardArmed =
+        !isInsideMemoBar(e.clientX, e.clientY)
+        || isOverTrashZone(e.clientX, e.clientY);
       if (discardArmed !== holdDiscardArmed) {
         holdDiscardArmed = discardArmed;
         holdMemoBar.classList.toggle('discard-armed', discardArmed);
