@@ -303,8 +303,25 @@ async function onBarPointerDown(e: PointerEvent, bar: HTMLElement): Promise<void
   bar.addEventListener('pointercancel', onUp);
 }
 
+// Phantom-click guard. iPhone PWA reload can take seconds to settle;
+// during that window an iOS-queued synthetic click from the user's
+// pre-reload tap (e.g. on Refresh) can land on a play-btn that just
+// rendered in the same screen position. Ignoring play-btn clicks for
+// the first PHANTOM_CLICK_MUTE_MS after page load prevents auto-TTS
+// on reload that the user didn't actually intend. Set 2026-05-03
+// after Jonathan's "agent started talking on reload" report — log
+// showed [reply-player] click 8s after mediaSession init with no
+// other code path firing it.
+const PHANTOM_CLICK_MUTE_MS = 1500;
+const PAGE_LOAD_T0 = typeof performance !== 'undefined' ? performance.now() : 0;
+
 async function onPlayClick(e: Event, btn: HTMLElement): Promise<void> {
   e.stopPropagation();
+  const sincePageLoad = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - PAGE_LOAD_T0;
+  if (sincePageLoad < PHANTOM_CLICK_MUTE_MS) {
+    log(`[reply-player] click ignored (boot-window phantom guard, +${sincePageLoad.toFixed(0)}ms)`);
+    return;
+  }
   const bubble = btn.closest('.line.agent') as HTMLElement | null;
   if (!bubble) return;
   const replyId = bubble.dataset.replyId || '';
