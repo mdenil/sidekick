@@ -49,6 +49,14 @@ export const BACKEND = 'mocked';
 
 export default async function run({ page, log, mock }) {
   // ── Stub WebRTC + instrumentation hooks BEFORE the page boots ────────
+  // Watch console for the downstream-barge log line in main.ts (line ~1025).
+  // If the bridge ever revived its VAD path AND fired before our upstream
+  // fire, that line would appear and the negative assertion would fail.
+  let bridgeInitiatedSeen = false;
+  page.on('console', (msg) => {
+    const t = msg.text();
+    if (t.includes('server-side barge fired')) bridgeInitiatedSeen = true;
+  });
   await page.addInitScript(() => {
     // Spy buckets — populated from inside the page.
     /** @type {string[]} Every dataChannel.send() payload (upstream). */
@@ -144,6 +152,13 @@ export default async function run({ page, log, mock }) {
     await route.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' });
   });
 
+  // Ack the proxy settings sync so settings.set() doesn't log noisy 500s.
+  // The mock-backend doesn't route /api/sidekick/config/*, and we don't
+  // care about persistence — local in-memory settings are sufficient.
+  await page.route('**/api/sidekick/config/*', async (route) => {
+    await route.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' });
+  });
+
   await waitForReady(page);
 
   // bargeIn must be enabled (default true, but be explicit so a future
@@ -153,6 +168,19 @@ export default async function run({ page, log, mock }) {
     settings.set('bargeIn', true);
     settings.set('bargeThreshold', 0.10); // default; matches device-default
     settings.set('tts', true);            // talk-mode requires tts=true
+  });
+
+  // Prime audio — getMicAnalyser delegates through to
+  // platform.getSharedAudioCtx() which is null until primeAudio() runs
+  // inside a user-gesture context. In headless smoke we don't have a
+  // gesture, but desktop chromium doesn't enforce gesture-binding —
+  // simply calling primeAudio() with a fresh <audio> element creates
+  // the context and unblocks the analyser.
+  await page.evaluate(async () => {
+    const platform = await import('/build/audio/shared/platform.mjs');
+    const audio = document.createElement('audio');
+    document.body.appendChild(audio);
+    platform.primeAudio(audio);
   });
 
   // ── Open a talk-mode call ────────────────────────────────────────────
@@ -241,34 +269,25 @@ export default async function run({ page, log, mock }) {
     `got: ${JSON.stringify(after.feedback)}`,
   );
 
-  // (3) NEGATIVE: bridge mock did NOT push a downstream {type:'barge'}
-  // first. The mock-backend's broadcast() and pushEnvelope helpers are
-  // the ONLY way a downstream envelope reaches the page; we never call
-  // them in this smoke, so any hypothetical bridge-side fire would have
-  // to come from the bridge-VAD code path (which the architecture
-  // retires). Absence proven by inspecting the page's eventLog: every
-  // received envelope flows through main.ts's data-channel listener,
-  // which we intercept via a debug-only console line at line 1025
-  // ("[webrtc] server-side barge fired — cancelling TTS playback").
-  // If the bridge-side path were ever revived AND fired before our
-  // upstream fire, that line would appear in the console capture. We
-  // assert the console-tail check below.
-  //
-  // We also assert by construction: the mock-backend's pushEnvelope
-  // surface was never called (no helper invocation in this test).
-  // mock.chatCount is unchanged is a coarse but valid signal — the
-  // test never sent any messages. The strongest signal is the relative
-  // ordering: bargeSend appeared, and inspecting __TEST_DC_SENDS__'
-  // contents shows our send was the first barge envelope of any kind.
+  // (3) NEGATIVE: bridge did NOT initiate a downstream {type:'barge'}
+  // envelope. The PWA's data-channel listener (main.ts ~1025) logs
+  // "[webrtc] server-side barge fired" whenever it receives a downstream
+  // barge envelope. Pre-architecture-unification this is what fired —
+  // post-unification, the client is the source of truth and this log
+  // line should never appear in a clean smoke run. The bridgeInitiatedSeen
+  // flag is captured by the console listener attached at scenario start.
   assert(
-    !bargeSend.includes('downstream'),
-    'sanity: upstream send should not be tagged downstream',
+    !bridgeInitiatedSeen,
+    'bridge-side barge fired — the downstream {type:\'barge\'} path should ' +
+    'be retired post-unification. If this assertion regresses, the bridge ' +
+    'VAD path has been revived. Confirm the architecture intent in ' +
+    'src/audio/realtime/realtimeBarge.ts module docstring before making it pass.',
   );
 
-  // The mock never pushed any envelope at all in this run — assert by
-  // checking we have no chats in the mock and no non-rtc routes were
-  // exercised. This is a coarse check but matches the user's request
-  // "bridge mock did NOT send a downstream {type:'barge'} envelope first".
+  // Construction check: we never invoked mock.pushEnvelope or any chat
+  // helper, so the mock backend has no chats. A non-zero chatCount would
+  // indicate a stray /api/sidekick/messages POST somewhere in the stack
+  // that should be diagnosed before trusting this assertion.
   assert(
     mock.chatCount() === 0,
     `mock backend was unexpectedly populated (chatCount=${mock.chatCount()}) — ` +
