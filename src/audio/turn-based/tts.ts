@@ -28,6 +28,7 @@
 
 import { log, diag } from '../../util/log.ts';
 import * as replyCache from './replyCache.ts';
+import * as settings from '../../settings.ts';
 
 // ── Public state machine + event surface ─────────────────────────────
 
@@ -99,8 +100,17 @@ function setState(next: TtsState): void {
 /** Tracks the active fetch + playback so a follow-up reply can cancel
  *  it. Module-level singleton — only one text-mode TTS plays at a time
  *  per page (call-mode TTS is owned separately by the WebRTC peer
- *  track). */
-let active: { audio: HTMLAudioElement; abort: AbortController } | null = null;
+ *  track).
+ *
+ *  Two branches:
+ *    - HTTP /tts (server engine): `audio` is the shared #player element,
+ *      `abort` cancels the fetch.
+ *    - speechSynthesis (local engine): `utterance` is the live
+ *      SpeechSynthesisUtterance. `audio`/`abort` are absent. */
+let active:
+  | { kind: 'server'; audio: HTMLAudioElement; abort: AbortController }
+  | { kind: 'local'; utterance: SpeechSynthesisUtterance }
+  | null = null;
 
 /** Player-element listeners are attached ONCE for the lifetime of the
  *  page. Each event re-emits as a typed event with the active replyId
@@ -149,7 +159,7 @@ function ensurePlayerListenersAttached(player: HTMLAudioElement): void {
     const id = activeReplyId;
     // Auto-clear active session so the next click on the same bubble
     // starts a fresh playback (not a resume-already-finished no-op).
-    if (active && active.audio === player) {
+    if (active && active.kind === 'server' && active.audio === player) {
       active = null;
       activeReplyId = null;
     }
@@ -170,28 +180,55 @@ function ensurePlayerListenersAttached(player: HTMLAudioElement): void {
 /** Pause the in-flight playback without tearing down the blob URL. */
 export function pauseReplyTts(): void {
   if (!active) return;
-  try { active.audio.pause(); } catch { /* noop */ }
+  if (active.kind === 'server') {
+    try { active.audio.pause(); } catch { /* noop */ }
+    return;
+  }
+  // Local engine: speechSynthesis.pause(). iOS Safari support is
+  // patchy (some versions return immediately or treat pause as
+  // cancel) — best-effort, no error surfacing if it fails to honor.
+  try { speechSynthesis.pause(); } catch { /* noop */ }
+  // Manually fire `paused` since speechSynthesis doesn't have a
+  // separate "pause-fired" event we can lean on (utterance only
+  // fires start/end/error/boundary). State drives the UI here.
+  if (state === 'playing' && activeReplyId) {
+    setState('paused');
+    emit('paused', { replyId: activeReplyId });
+  }
 }
 
 /** Resume previously-paused playback. */
 export async function resumeReplyTts(): Promise<void> {
   if (!active) return;
-  try { await active.audio.play(); } catch { /* noop */ }
+  if (active.kind === 'server') {
+    try { await active.audio.play(); } catch { /* noop */ }
+    return;
+  }
+  try { speechSynthesis.resume(); } catch { /* noop */ }
+  if (state === 'paused' && activeReplyId) {
+    setState('playing');
+    emit('resumed', { replyId: activeReplyId });
+  }
 }
 
 /** Replay the current reply from the start. Returns false if there's
  *  no active session (caller falls back to a fresh playReplyTts). */
 export async function replay(): Promise<boolean> {
   if (!active) return false;
-  try {
-    active.audio.currentTime = 0;
-    setState('playing');
-    await active.audio.play();
-    if (activeReplyId) emit('play-start', { replyId: activeReplyId });
-    return true;
-  } catch {
-    return false;
+  if (active.kind === 'server') {
+    try {
+      active.audio.currentTime = 0;
+      setState('playing');
+      await active.audio.play();
+      if (activeReplyId) emit('play-start', { replyId: activeReplyId });
+      return true;
+    } catch {
+      return false;
+    }
   }
+  // Local engine has no rewind primitive — caller should re-invoke
+  // playReplyTts with the same text. Returning false signals that.
+  return false;
 }
 
 /** Seek to a fractional position [0, 1] within the current reply.
@@ -199,6 +236,8 @@ export async function replay(): Promise<boolean> {
  *  jumps in lockstep. */
 export function seekTo(ratio: number): void {
   if (!active) return;
+  // Local engine has no seek — speechSynthesis is monolithic. No-op.
+  if (active.kind !== 'server') return;
   const r = Math.max(0, Math.min(1, ratio));
   const dur = active.audio.duration;
   if (!Number.isFinite(dur) || dur <= 0) return;
@@ -234,15 +273,23 @@ function cleanForTts(text: string): string {
 export function cancelReplyTts(reason: string = 'cancel'): void {
   if (!active) return;
   const id = activeReplyId;
-  try { active.abort.abort(); } catch { /* noop */ }
-  try {
-    active.audio.pause();
-    if (active.audio.src) {
-      try { URL.revokeObjectURL(active.audio.src); } catch { /* noop */ }
-      active.audio.removeAttribute('src');
-      active.audio.load();
-    }
-  } catch { /* noop */ }
+  if (active.kind === 'server') {
+    try { active.abort.abort(); } catch { /* noop */ }
+    try {
+      active.audio.pause();
+      if (active.audio.src) {
+        try { URL.revokeObjectURL(active.audio.src); } catch { /* noop */ }
+        active.audio.removeAttribute('src');
+        active.audio.load();
+      }
+    } catch { /* noop */ }
+  } else {
+    // Local engine — speechSynthesis.cancel() flushes the queue and
+    // stops the current utterance. Triggers `onend` on the active
+    // utterance which we've already nulled out via our reason guard
+    // below; that's fine, the listener checks active === this entry.
+    try { speechSynthesis.cancel(); } catch { /* noop */ }
+  }
   active = null;
   activeReplyId = null;
   setState('idle');
@@ -261,6 +308,14 @@ export async function playReplyTts(
   const text = cleanForTts(rawText || '');
   if (!text) return;
 
+  // Engine selector. Local = speechSynthesis (on-device, no /tts hop).
+  // Server = HTTP /tts (Deepgram Aura, default). Both fan in to the
+  // same event surface so subscribers (replyPlayer.ts) don't care which
+  // engine is active.
+  if (settings.get().ttsEngine === 'local') {
+    return playLocalTts(text, replyId);
+  }
+
   cancelReplyTts('superseded');
 
   const player = document.getElementById('player') as HTMLAudioElement | null;
@@ -271,7 +326,7 @@ export async function playReplyTts(
   ensurePlayerListenersAttached(player);
 
   const abort = new AbortController();
-  active = { audio: player, abort };
+  active = { kind: 'server', audio: player, abort };
   activeReplyId = replyId || null;
   setState('loading');
 
@@ -310,4 +365,96 @@ export async function playReplyTts(
   // NOTE: do NOT clear `active` in a finally block. play() resolves
   // when audio STARTS, not when it ends. The 'ended' listener clears
   // active + activeReplyId on natural end.
+}
+
+/** Local TTS via speechSynthesis. Runs entirely in-browser — no /tts
+ *  HTTP hop, no Deepgram, no server. Useful when the bridge isn't
+ *  reachable (offline, dev without bridge running) but the agent text
+ *  reply is still arriving over HTTP.
+ *
+ *  iOS gotchas (documented inline so future readers don't relearn):
+ *    - speechSynthesis.pause() is unreliable on iOS Safari (some
+ *      versions ignore it; some treat it as cancel). UI offers the
+ *      pause button anyway because cancel-and-replay is a viable
+ *      fallback.
+ *    - speechSynthesis.cancel() is required as the FIRST line of
+ *      every fresh speak — iOS Safari's queue isn't auto-cleared on
+ *      a new utterance and old ones can stall the new one indefinitely.
+ *    - The voice list (speechSynthesis.getVoices) often arrives
+ *      asynchronously after `voiceschanged` fires. settings.ts already
+ *      handles this for the picker; here we accept whatever's loaded
+ *      at speak time and fall back to system default if the chosen
+ *      voice has been GC'd.
+ *    - Some iOS versions silently drop utterances ≥ ~32k chars; cleaned
+ *      text is already capped at 1800 chars by cleanForTts so we're
+ *      safe. */
+function playLocalTts(text: string, replyId?: string): Promise<void> {
+  if (typeof speechSynthesis === 'undefined' || typeof SpeechSynthesisUtterance === 'undefined') {
+    diag('[text-tts] local engine selected but speechSynthesis unavailable');
+    if (replyId) emit('stopped', { replyId, reason: 'tts-unsupported' });
+    return Promise.resolve();
+  }
+
+  cancelReplyTts('superseded');
+
+  const utt = new SpeechSynthesisUtterance(text);
+  // Voice picker (settings.ttsVoiceLocal) selects by `name`. Empty
+  // string = "system default" — leave utt.voice null so the engine
+  // picks. Filter the voice list at speak time so a freshly-loaded
+  // voice catalog after the picker rendered still works.
+  const wantedName = String((settings.get() as any).ttsVoiceLocal || '').trim();
+  if (wantedName) {
+    try {
+      const voices = speechSynthesis.getVoices() || [];
+      const match = voices.find(v => v.name === wantedName);
+      if (match) utt.voice = match;
+    } catch { /* getVoices can throw on cold-load in some browsers; default voice is fine */ }
+  }
+
+  active = { kind: 'local', utterance: utt };
+  activeReplyId = replyId || null;
+  setState('loading');
+  if (activeReplyId) emit('synth-start', { replyId: activeReplyId });
+
+  utt.onstart = () => {
+    if (!activeReplyId || active?.kind !== 'local' || active.utterance !== utt) return;
+    setState('playing');
+    emit('play-start', { replyId: activeReplyId });
+  };
+  utt.onend = () => {
+    // Guard: if this utterance was cancelled and superseded, the new
+    // session already cleared `active`. Don't double-fire `ended`.
+    if (active?.kind !== 'local' || active.utterance !== utt) return;
+    setState('ended');
+    const id = activeReplyId;
+    active = null;
+    activeReplyId = null;
+    if (id) emit('ended', { replyId: id });
+    setState('idle');
+  };
+  utt.onerror = (e: any) => {
+    if (active?.kind !== 'local' || active.utterance !== utt) return;
+    diag('[text-tts] local utterance error:', e?.error || e?.message);
+    const id = activeReplyId;
+    active = null;
+    activeReplyId = null;
+    setState('idle');
+    if (id) emit('stopped', { replyId: id, reason: 'tts-error' });
+  };
+
+  try {
+    // Belt-and-braces: cancel any orphaned utterances in the queue
+    // before queueing the new one. iOS Safari occasionally strands
+    // utterances on visibility flips; this clears the slate.
+    speechSynthesis.cancel();
+    speechSynthesis.speak(utt);
+    log(`[text-tts] local speak ${text.length} chars (voice=${utt.voice?.name || 'default'})`);
+  } catch (e: any) {
+    diag(`[text-tts] local speak threw: ${e?.message || e}`);
+    if (activeReplyId) emit('stopped', { replyId: activeReplyId, reason: 'tts-error' });
+    active = null;
+    activeReplyId = null;
+    setState('idle');
+  }
+  return Promise.resolve();
 }
