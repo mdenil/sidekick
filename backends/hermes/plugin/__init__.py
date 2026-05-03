@@ -1699,6 +1699,17 @@ class SidekickAdapter(BasePlatformAdapter):
         for p in (sk_cfg.get("exclude_providers") or []):
             if isinstance(p, str):
                 exclude_providers.add(p.strip().lower())
+        # Per-model exclusion list — globs matched against the encoded
+        # picker value `<slug>:<model>` (e.g. `openai-codex:gpt-5.1-codex-mini`).
+        # Use case: a provider is generally usable but specific models are
+        # auth-tier-locked (e.g. ChatGPT-account auth rejects gpt-5.1-codex-*
+        # with HTTP 400). Curated by the user as they discover unusable
+        # entries. Glob-friendly so e.g. `openai-codex:gpt-4*` blocks the
+        # whole gpt-4 family at once.
+        exclude_models_globs = []
+        for m in (sk_cfg.get("exclude_models") or []):
+            if isinstance(m, str) and m.strip():
+                exclude_models_globs.append(m.strip())
         try:
             from hermes_cli.model_switch import list_authenticated_providers
             for prov in list_authenticated_providers(
@@ -1719,8 +1730,13 @@ class SidekickAdapter(BasePlatformAdapter):
                     mid_s = str(mid).strip()
                     if not mid_s:
                         continue
+                    encoded = f"{slug}:{mid_s}"
+                    if exclude_models_globs and any(
+                        fnmatch.fnmatch(encoded, g) for g in exclude_models_globs
+                    ):
+                        continue
                     catalog.append({
-                        "value": f"{slug}:{mid_s}",
+                        "value": encoded,
                         "label": mid_s,
                         "group": name,
                     })
