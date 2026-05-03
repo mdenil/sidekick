@@ -238,12 +238,28 @@ export async function open(
     //     voice-agent setups look noisy from the browser's POV.
     //   - autoGainControl was already off (ducks mic on loud output).
     //
-    // Net: trust the bridge to handle echo via server-side gating,
-    // get clean unprocessed audio over the wire. Matches Pipecat /
-    // LiveKit production WebRTC voice patterns.
+    // 2026-05-03 reversal: previous "AEC off + bridge handles echo"
+    // rationale was load-bearing on the bridge's server-side VAD —
+    // which v0.381 retired (`client_owns_barge`). Without it, TTS audio
+    // leaking from the speaker into the mic gets re-transcribed as
+    // fake user turns ("1 2 3 ... zero" feedback loop, 2026-05-03
+    // 09:18). Browser AEC is the right place to suppress speaker→mic
+    // bleed now that there's nothing else doing it. Matches Pipecat /
+    // LiveKit clients running their own client-side VAD.
+    //
+    // autoGainControl stays OFF — we don't want the browser ducking
+    // user voice on loud TTS, which would mask actual speech the
+    // BargeWindow needs to detect. noiseSuppression ON helps with the
+    // feedback loop (TTS tail in speaker queue gets classified as
+    // "noise" once mic input drops past it).
+    //
+    // After this change: BargeWindow peaks will be LOWER than the
+    // 2026-05-03 09:12 measurements (no AEC was 0.008 floor / 0.05
+    // speech). With AEC, expect floor near 0 and speech ~0.02-0.04.
+    // Device defaults in voiceTuning.ts may need a follow-up tune.
     micStream = await audioPlatform.getMicStream('webrtc', {
-      echoCancellation: false,
-      noiseSuppression: false,
+      echoCancellation: true,
+      noiseSuppression: true,
       autoGainControl: false,
     });
   } catch (e: any) {
