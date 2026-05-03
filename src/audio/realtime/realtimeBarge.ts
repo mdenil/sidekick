@@ -50,6 +50,13 @@ let bargeMuteUntil = 0;
 let bargeLoop: ReturnType<typeof setInterval> | null = null;
 let onFireCb: (() => void) | null = null;
 let isPlayingCb: (() => boolean) | null = null;
+// Diag log throttle — emit one peak/threshold sample per ~500ms
+// during TTS playback (every 10th tick at the 50ms cadence) so we can
+// see whether the analyser is reading anything at all without log spam.
+// Set 2026-05-03 after barge-failed-to-fire field repro on Mac;
+// hypothesis: createMediaStreamSource on a WebRTC-bound MediaStream
+// returns silence (the iOS caveat may apply to Mac too).
+let bargeDiagTickCount = 0;
 // Per-call threshold getter — can be overridden by callers that want
 // the device-defaults table instead of the raw setting (Phase 4 of
 // the unification refactor wires this). Defaults to the setting.
@@ -134,6 +141,15 @@ function tick(): void {
 
   const peak = readPeak(analyser);
   const threshold = getThreshold();
+  // Diag: every ~500ms during TTS playback, log what the analyser is
+  // actually reading. peak=0.000 sustained means the AnalyserNode isn't
+  // getting mic frames (plumbing problem — likely the WebRTC peer has
+  // exclusive bind on the MediaStream). peak>threshold sustained without
+  // a fire means the BargeWindow N-of-K threshold isn't matching.
+  bargeDiagTickCount++;
+  if (bargeDiagTickCount % 10 === 0) {
+    log(`[realtime-barge] tick peak=${peak.toFixed(3)} threshold=${threshold.toFixed(3)} ttsPlaying=true`);
+  }
   if (bargeWindow.push(peak, threshold)) {
     log(`[realtime-barge] fire peak=${peak.toFixed(3)} threshold=${threshold.toFixed(3)}`);
     bargeWindow.clear();

@@ -1686,6 +1686,19 @@ class SidekickAdapter(BasePlatformAdapter):
         # and forcing the user to add globs for each new provider
         # would be tax. OpenRouter (the giant catalog) keeps the
         # globs above; other providers ship as-is.
+        # User-controlled provider exclusion — `sidekick.exclude_providers`
+        # in ~/.hermes/config.yaml lists provider slugs to suppress from the
+        # picker even if hermes auto-detects credentials for them. Use case:
+        # `list_authenticated_providers` is "discovery-oriented" — it shows
+        # providers the user COULD switch to (e.g. anthropic detected via
+        # CC's OAuth, copilot detected via gh CLI token) regardless of
+        # whether the user wants inference routed there. This list is the
+        # opt-out. Set 2026-05-03.
+        sk_cfg = cfg.get("sidekick", {}) if isinstance(cfg.get("sidekick"), dict) else {}
+        exclude_providers = set()
+        for p in (sk_cfg.get("exclude_providers") or []):
+            if isinstance(p, str):
+                exclude_providers.add(p.strip().lower())
         try:
             from hermes_cli.model_switch import list_authenticated_providers
             for prov in list_authenticated_providers(
@@ -1699,6 +1712,8 @@ class SidekickAdapter(BasePlatformAdapter):
                 if not slug or slug == "openrouter":
                     # Skip OpenRouter — it's already in `catalog` above
                     # with full filter logic + live supplement.
+                    continue
+                if slug.lower() in exclude_providers:
                     continue
                 for mid in (prov.get("models") or []):
                     mid_s = str(mid).strip()
