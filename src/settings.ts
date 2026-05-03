@@ -225,15 +225,13 @@ let current = { ...DEFAULTS };
 // hood we store a peak threshold (0..1; higher = requires louder sound).
 // Linear mapping: 100% ↔ BARGE_MIN_THRESHOLD, 0% ↔ BARGE_MAX_THRESHOLD.
 //
-// 2026-05-03: dropped from 0.5 → 0.10 → 0.06 across iterations.
-// AEC-on (v0.387) ducks user voice during TTS to peaks ~0.020-0.025,
-// so the high-sensitivity end of the slider needs to land in that
-// range. Min clamp at 0.012: the analyser's quantization step is
-// 1/128 ≈ 0.008, so any threshold below that is "below the noise
-// floor" and will fire on every silent frame (the v0.387 95% slider
-// self-fire bug). 0.012 = ~1.5× quantization step, enough margin
-// that ambient quantization noise doesn't trip.
-const BARGE_MAX_THRESHOLD = 0.06;
+// 2026-05-03 v0.389: scale set to (0.012, 0.10) for AEC-OFF mic
+// (reverted from the v0.387 AEC-on experiment in v0.389). No-AEC
+// speech peaks 0.03-0.08; max=0.10 puts slider 0% well above any
+// real speech. Min=0.012 keeps slider 100% safely above the
+// analyser's quantization floor (~0.008) so max-sensitivity doesn't
+// self-fire on silence.
+const BARGE_MAX_THRESHOLD = 0.10;
 const BARGE_MIN_THRESHOLD = 0.012;
 function sensitivityToThreshold(sens) {
   const clamped = Math.max(0, Math.min(100, sens));

@@ -91,7 +91,12 @@ export function start(
   isPlayingCb = isPlaying;
   onFireCb = onFire;
   if (thresholdGetter) getThreshold = thresholdGetter;
-  bargeWindow = new BargeWindow();
+  // Relaxed from default 5/4 to 5/3: 3-of-5 hot frames at 50ms cadence
+  // = ~150ms sustained voice required to fire. Default 4-of-5 needed
+  // 200ms+ which missed short utterances ("okay" fires for 200-300ms,
+  // borderline). 3-of-5 still rejects single-burst noise (key click,
+  // throat clear) but catches one-syllable barge attempts.
+  bargeWindow = new BargeWindow({ windowSize: 5, requiredHot: 3 });
   // Warmup is rolled forward each time TTS actually starts (see tick),
   // not just at start() — a long silent gap before the first reply
   // shouldn't burn the warmup window.

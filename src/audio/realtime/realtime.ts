@@ -238,28 +238,29 @@ export async function open(
     //     voice-agent setups look noisy from the browser's POV.
     //   - autoGainControl was already off (ducks mic on loud output).
     //
-    // 2026-05-03 reversal: previous "AEC off + bridge handles echo"
-    // rationale was load-bearing on the bridge's server-side VAD —
-    // which v0.381 retired (`client_owns_barge`). Without it, TTS audio
-    // leaking from the speaker into the mic gets re-transcribed as
-    // fake user turns ("1 2 3 ... zero" feedback loop, 2026-05-03
-    // 09:18). Browser AEC is the right place to suppress speaker→mic
-    // bleed now that there's nothing else doing it. Matches Pipecat /
-    // LiveKit clients running their own client-side VAD.
+    // 2026-05-03 v0.389 second reversal: AEC enabled in v0.387 to
+    // suppress TTS speaker→mic bleed, BUT Chrome's AEC was so
+    // aggressive on the Mac built-in mic+speakers setup that user
+    // voice DURING TTS got ducked to the ambient floor (0.008).
+    // BargeWindow couldn't fire on speech. Confirmed in v0.388 field
+    // tests: even loud speaking flatlined the peak readings. AEC's
+    // "is this output-correlated?" classifier swept up real user
+    // voice along with the bleed.
     //
-    // autoGainControl stays OFF — we don't want the browser ducking
-    // user voice on loud TTS, which would mask actual speech the
-    // BargeWindow needs to detect. noiseSuppression ON helps with the
-    // feedback loop (TTS tail in speaker queue gets classified as
-    // "noise" once mic input drops past it).
+    // Reverting to AEC OFF. The TTS-bleed feedback loop is now
+    // suppressed by:
+    //   - suppress.isTtsPlaying() gate on user transcripts (v0.386)
+    //   - 600ms drain grace after barge fire (v0.388)
+    // Bleed-to-STT path is closed; remaining risk is occasional
+    // false-fire of BargeWindow on loud TTS bleed (ambient cost:
+    // TTS cuts short — mild UX glitch, user can keep talking).
     //
-    // After this change: BargeWindow peaks will be LOWER than the
-    // 2026-05-03 09:12 measurements (no AEC was 0.008 floor / 0.05
-    // speech). With AEC, expect floor near 0 and speech ~0.02-0.04.
-    // Device defaults in voiceTuning.ts may need a follow-up tune.
+    // Real fix for desktop-built-in-mic users is headphones; we can
+    // detect headphones via output device label as a future tuning
+    // input (AEC=true when user has headphones plugged in).
     micStream = await audioPlatform.getMicStream('webrtc', {
-      echoCancellation: true,
-      noiseSuppression: true,
+      echoCancellation: false,
+      noiseSuppression: false,
       autoGainControl: false,
     });
   } catch (e: any) {

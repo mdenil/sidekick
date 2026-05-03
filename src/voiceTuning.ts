@@ -66,15 +66,15 @@ export function detectDeviceClass(): DeviceClass {
  *  Tunable per-row; Jonathan will adjust from real devices.
  */
 export const DEVICE_DEFAULTS: Record<DeviceClass, { bargeThreshold: number }> = {
-  // Recalibrated v0.388 for AEC-on mic stream (echoCancellation=true
-  // since v0.387). AEC ducks user voice during TTS to ~0.020-0.025
-  // peak — half of the no-AEC measurements that informed v0.385.
-  // Keep just above the analyser quantization floor (~0.008-0.012).
-  ios: { bargeThreshold: 0.020 },     // was 0.04 (v0.385 / no-AEC era)
-  android: { bargeThreshold: 0.018 }, // was 0.035
-  mac: { bargeThreshold: 0.015 },     // was 0.025 — measured speech ~0.020-0.025 with AEC
-  linux: { bargeThreshold: 0.015 },   // was 0.025
-  windows: { bargeThreshold: 0.015 }, // was 0.025
+  // Recalibrated v0.389 for AEC-OFF mic (reverted from v0.387's AEC-on
+  // experiment — Chrome AEC over-attenuated user voice during TTS to
+  // the ambient floor, no fire possible). Back to v0.385 measurements:
+  // Mac no-AEC speech peaks 0.05-0.08, ambient floor ~0.008.
+  ios: { bargeThreshold: 0.04 },
+  android: { bargeThreshold: 0.035 },
+  mac: { bargeThreshold: 0.025 },     // ~half of measured speech, well above floor
+  linux: { bargeThreshold: 0.025 },
+  windows: { bargeThreshold: 0.025 },
 };
 
 /** Sentinel for "settings.bargeThreshold has not been moved from the
