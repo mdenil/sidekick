@@ -70,12 +70,38 @@ export const DEVICE_DEFAULTS: Record<DeviceClass, { bargeThreshold: number }> = 
   // experiment — Chrome AEC over-attenuated user voice during TTS to
   // the ambient floor, no fire possible). Back to v0.385 measurements:
   // Mac no-AEC speech peaks 0.05-0.08, ambient floor ~0.008.
-  ios: { bargeThreshold: 0.04 },
-  android: { bargeThreshold: 0.035 },
+  // iOS v0.396: dropped to 0.018 — iOS Safari's WebRTC stack ignores
+  // our echoCancellation:false flag and applies built-in voice
+  // isolation; iPhone peaks for normal speech sit ~0.014-0.020 (3x
+  // smaller than Mac no-AEC peaks of 0.05-0.08).
+  ios: { bargeThreshold: 0.018 },
+  android: { bargeThreshold: 0.020 },  // assume similar processing
   mac: { bargeThreshold: 0.025 },     // ~half of measured speech, well above floor
   linux: { bargeThreshold: 0.025 },
   windows: { bargeThreshold: 0.025 },
 };
+
+/** Slider scale per device class — slider position 0-100% maps to
+ *  threshold [BARGE_MAX, BARGE_MIN] for that device. Per-device
+ *  because iPhone speech peaks are roughly 1/3 of Mac no-AEC peaks
+ *  (iOS Safari built-in voice isolation can't be disabled). With a
+ *  uniform Mac-tuned scale, the iPhone slider's useful range was
+ *  compressed into the top 20-30% — most positions mapped to
+ *  thresholds the user couldn't reach (v0.396 field test: 60%
+ *  slider = threshold 0.027, normal speech peaked at 0.008-0.015).
+ *  Per-device scales give each platform a slider where 50% is
+ *  reliably "moderately sensitive." */
+export const SLIDER_SCALE: Record<DeviceClass, { min: number; max: number }> = {
+  ios:     { min: 0.010, max: 0.025 },
+  android: { min: 0.010, max: 0.030 },
+  mac:     { min: 0.012, max: 0.050 },
+  linux:   { min: 0.012, max: 0.050 },
+  windows: { min: 0.012, max: 0.050 },
+};
+
+export function getSliderScale(): { min: number; max: number } {
+  return SLIDER_SCALE[detectDeviceClass()];
+}
 
 /** Sentinel for "settings.bargeThreshold has not been moved from the
  *  legacy global default." When the user nudges the slider, settings.ts

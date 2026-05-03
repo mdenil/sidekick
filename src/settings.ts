@@ -225,28 +225,25 @@ let current = { ...DEFAULTS };
 // hood we store a peak threshold (0..1; higher = requires louder sound).
 // Linear mapping: 100% ↔ BARGE_MIN_THRESHOLD, 0% ↔ BARGE_MAX_THRESHOLD.
 //
-// 2026-05-03 v0.390: tightened to (0.012, 0.05) after Mac field
-// measurements (no-AEC) showed normal speech peaks 0.03-0.04, loud
-// "okay" peaks ~0.05-0.055, ambient 0.008. Previous max=0.10 meant
-// only the top half of the slider was useful — Jonathan moved
-// slider to 50% and got threshold 0.056, above his loudest speech.
-// New scale:
-//   0% slider   → 0.05  ("loud only" — conservative, picks up clear speech)
-//   50% slider  → 0.031 (catches normal voice + sustained speech)
-//   100% slider → 0.012 (catches whispers, may false-fire on TTS bleed)
-// 50% is the sane default for desktop-built-in-mic users.
-const BARGE_MAX_THRESHOLD = 0.05;
-const BARGE_MIN_THRESHOLD = 0.012;
+// v0.396: per-device slider scales via voiceTuning.getSliderScale().
+// iPhone speech peaks are roughly 1/3 of Mac no-AEC peaks (iOS Safari
+// built-in voice isolation can't be disabled), so a uniform Mac scale
+// compressed iPhone's useful range to the top 20-30% of the slider.
+// Per-device scale gives each platform a useful 0-100% range:
+//   ios:     0.010 (100%) ↔ 0.025 (0%)
+//   mac/etc: 0.012 (100%) ↔ 0.050 (0%)
+// Slider semantics stay constant ("60% = moderately sensitive") but
+// the underlying threshold differs per device.
+import { getSliderScale as _getSliderScale } from './voiceTuning.ts';
 function sensitivityToThreshold(sens) {
+  const { min, max } = _getSliderScale();
   const clamped = Math.max(0, Math.min(100, sens));
-  // Linear interpolate between MIN (sens=100) and MAX (sens=0).
-  const range = BARGE_MAX_THRESHOLD - BARGE_MIN_THRESHOLD;
-  return +(BARGE_MIN_THRESHOLD + (100 - clamped) / 100 * range).toFixed(3);
+  return +(min + (100 - clamped) / 100 * (max - min)).toFixed(3);
 }
 function thresholdToSensitivity(thr) {
-  const clamped = Math.max(BARGE_MIN_THRESHOLD, Math.min(BARGE_MAX_THRESHOLD, thr));
-  const range = BARGE_MAX_THRESHOLD - BARGE_MIN_THRESHOLD;
-  return Math.round((1 - (clamped - BARGE_MIN_THRESHOLD) / range) * 100);
+  const { min, max } = _getSliderScale();
+  const clamped = Math.max(min, Math.min(max, thr));
+  return Math.round((1 - (clamped - min) / (max - min)) * 100);
 }
 
 function audioFeedbackLabel(vol) {
