@@ -46,25 +46,31 @@ export function detectDeviceClass(): DeviceClass {
 
 /** Initial BargeWindow threshold by device class.
  *
- *  ios: BT mic ambient is loud (0.10-0.15 floor on a phone in pocket
- *  on a windy bike ride); needs a higher peak threshold to distinguish
- *  voice from ambient.
+ *  RECALIBRATED 2026-05-03 from real diag-log data (v0.384 added a
+ *  per-tick peak/threshold logger). Previous values assumed speech
+ *  peaked at ~0.20 — wrong by 4-5×.
  *
- *  mac/linux/windows: clean USB or built-in mics; quieter ambient,
- *  user speech well above the floor. The legacy global default 0.10
- *  was tuned against this class.
+ *  Real Mac (Chrome built-in mic, quiet room) measurements:
+ *    floor (silence/ambient): ~0.008
+ *    "okay" loud speech:      ~0.03–0.05 peak
+ *  → Threshold 0.025 puts the bar above ambient floor (×3) but well
+ *    below actual speech (~half), so a single hot frame catches
+ *    real speech and the N-of-K window doesn't fire on stray
+ *    keyboard taps.
  *
- *  android: moderate — varies by handset more than iOS, but BT-mic
- *  ambient is typically less noisy than iOS in our field tests.
+ *  iOS / Android: don't have real data yet; values are guesses
+ *  proportionally scaled down from the prior table by the same
+ *  factor the Mac calibration revealed (~0.10 / 0.025 = 4×).
+ *  Re-tune from device after first iOS field test of v0.385.
  *
  *  Tunable per-row; Jonathan will adjust from real devices.
  */
 export const DEVICE_DEFAULTS: Record<DeviceClass, { bargeThreshold: number }> = {
-  ios: { bargeThreshold: 0.18 },
-  android: { bargeThreshold: 0.15 },
-  mac: { bargeThreshold: 0.10 },
-  linux: { bargeThreshold: 0.10 },
-  windows: { bargeThreshold: 0.10 },
+  ios: { bargeThreshold: 0.04 },     // was 0.18 — guess, retune w/ field data
+  android: { bargeThreshold: 0.035 }, // was 0.15 — guess
+  mac: { bargeThreshold: 0.025 },    // was 0.10 — measured, see comment above
+  linux: { bargeThreshold: 0.025 },  // was 0.10 — assume similar to mac built-in
+  windows: { bargeThreshold: 0.025 },// was 0.10 — assume similar to mac built-in
 };
 
 /** Sentinel for "settings.bargeThreshold has not been moved from the
