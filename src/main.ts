@@ -1152,9 +1152,34 @@ async function boot() {
     };
   }
 
+  /** Auto-grow the composer textarea with content, capped at the CSS
+   *  max-height (currently 40vh desktop / 30vh mobile — see app.css).
+   *  Past the cap the textarea scrolls internally.
+   *
+   *  We read max-height from getComputedStyle each call so the JS cap
+   *  stays in sync with CSS (no duplication of the 40vh/30vh constants).
+   *  If max-height is `none` or unparseable we fall back to 40% of
+   *  innerHeight, matching the desktop default.
+   *
+   *  Resize side-effect: growing the textarea shrinks transcript
+   *  clientHeight. If the user was pinned to the live edge before the
+   *  resize, re-pin afterwards so streaming content doesn't slide out of
+   *  view as they type. */
   function autoResize() {
+    const cs = window.getComputedStyle(composerInput);
+    const parsed = parseFloat(cs.maxHeight);
+    const cap = Number.isFinite(parsed) && parsed > 0
+      ? parsed
+      : Math.round(window.innerHeight * 0.4);
+    const transcriptEl = document.getElementById('transcript');
+    const wasPinned = transcriptEl
+      ? (transcriptEl.scrollHeight - transcriptEl.scrollTop - transcriptEl.clientHeight) <= 80
+      : false;
     composerInput.style.height = 'auto';
-    composerInput.style.height = Math.min(composerInput.scrollHeight, 160) + 'px';
+    composerInput.style.height = Math.min(composerInput.scrollHeight, cap) + 'px';
+    if (wasPinned && transcriptEl) {
+      transcriptEl.scrollTop = transcriptEl.scrollHeight;
+    }
   }
   composerInput.addEventListener('input', () => { autoResize(); updateSendButtonState(); });
 
@@ -2219,7 +2244,7 @@ async function boot() {
       await startDictate(initialCursor);
     } else {
       // PTT memo always sends on release (autoSend=true). Discard via
-      // the drag-left gesture handler in the pointerup classifier.
+      // the drag-off-bar gesture handler in the pointerup classifier.
       await startMemo(true);
     }
   }
@@ -2278,8 +2303,10 @@ async function boot() {
     // While in RECORDING (HOLD path), the existing waveform-as-button
     // drag-to-discard gesture stays live: pointer-capture on the mic
     // button means pointermove/pointerup route here even when the
-    // finger drifts onto the memo bar. Drag LEFT past the trash
-    // bounding rect → discard-armed; release in red → discard.
+    // finger drifts onto the memo bar. Drag the finger ANY direction
+    // (up/down/left/right) past the memo bar's padded bounds →
+    // discard-armed; release in red → discard. The bar itself is the
+    // "still recording" zone; outside the padded rect arms discard.
     // 200ms originally — too tight for a deliberate "tap" gesture
     // (natural finger lift takes ~250ms), so a tap that the user
     // intended as toggle-mode kept finalizing as PTT instead. 350ms
@@ -2328,17 +2355,29 @@ async function boot() {
       );
     }
 
-    /** Trash-zone hit test: trash button's bbox + generous left-side
-     *  margin so sliding off the bar leftward counts as discard. */
-    function isOverTrashZone(clientX: number, clientY: number): boolean {
+    /** Padding (px) added on every side of the memo bar's bounding rect
+     *  before the inside/outside test. Generous margin so a finger
+     *  hovering near the bar's edge stays classified as "still
+     *  recording" — Jonathan explicitly wants no false negatives where
+     *  a near-edge release accidentally discards. Once the pointer
+     *  clears this padded zone in ANY direction, discard arms. */
+    const MEMO_BAR_DISCARD_PADDING_PX = 40;
+
+    /** Inside-memo-bar hit test (padded). Returns true when the pointer
+     *  is inside the memo bar's bbox expanded by MEMO_BAR_DISCARD_PADDING_PX
+     *  on every side. The drag-to-discard gesture arms whenever this is
+     *  false, so the user can flick the finger up, down, left, or right
+     *  off the bar to discard — not just leftward. */
+    function isInsideMemoBar(clientX: number, clientY: number): boolean {
       if (!holdMemoBar) return false;
-      const trash = holdMemoBar.querySelector('.memo-trash') as HTMLElement | null;
-      if (!trash) return false;
-      const r = trash.getBoundingClientRect();
-      const barRect = holdMemoBar.getBoundingClientRect();
-      const inV = clientY >= barRect.top - 8 && clientY <= barRect.bottom + 8;
-      const inH = clientX <= r.right + 8;
-      return inV && inH;
+      const r = holdMemoBar.getBoundingClientRect();
+      const pad = MEMO_BAR_DISCARD_PADDING_PX;
+      return (
+        clientX >= r.left - pad &&
+        clientX <= r.right + pad &&
+        clientY >= r.top - pad &&
+        clientY <= r.bottom + pad
+      );
     }
 
     /** Resolve the memo bar element after startMicMode's async setup
@@ -2446,7 +2485,7 @@ async function boot() {
         log('[mic] HOLD threshold elapsed → start PTT memo');
         void startMicMode('hold');
         try {
-          status.setStatus('Recording — release to send, drag left to discard', 'live');
+          status.setStatus('Recording — release to send, drag off bar to discard', 'live');
         } catch {}
         pollForMemoBar(10);
       }, TAP_THRESHOLD_MS);
@@ -2462,10 +2501,12 @@ async function boot() {
         holdMemoBar = document.querySelector('.memo-bar') as HTMLElement | null;
         if (!holdMemoBar) return;
       }
-      const overTrash = isOverTrashZone(e.clientX, e.clientY);
-      if (overTrash !== holdDiscardArmed) {
-        holdDiscardArmed = overTrash;
-        holdMemoBar.classList.toggle('discard-armed', overTrash);
+      // Discard-armed when the pointer leaves the padded memo-bar rect
+      // in any direction (up/down/left/right). Inverse of isInsideMemoBar.
+      const discardArmed = !isInsideMemoBar(e.clientX, e.clientY);
+      if (discardArmed !== holdDiscardArmed) {
+        holdDiscardArmed = discardArmed;
+        holdMemoBar.classList.toggle('discard-armed', discardArmed);
       }
     });
 
@@ -2508,8 +2549,8 @@ async function boot() {
       }
 
       // HOLD → memo started in the timer-fire branch. Finalize:
-      //   drag-left over trash → discard
-      //   anywhere else (or just release) → send
+      //   pointer outside padded memo-bar rect → discard
+      //   pointer still inside padded rect → send
       micState = 'idle';
       const wasDiscard = (holdActive && holdDiscardArmed) || isCancel;
       holdActive = false;
