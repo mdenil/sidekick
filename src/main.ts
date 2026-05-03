@@ -3738,6 +3738,18 @@ function handleReplyDelta({ replyId, cumulativeText, conversation, messageId }: 
   // delta is fine; first call flips state, subsequent calls extend the
   // tail. See src/pipelines/webrtc/suppress.ts.
   webrtcSuppress.onAssistantDelta();
+  // New turn arriving — cancel any paused per-bubble TTS player from
+  // a prior reply. Without this, the old paused HTMLAudioElement sits
+  // in tts.active across call open/close cycles. The bug surface
+  // (Jonathan, 2026-05-03 ~12:30 BT-headset test): user barge'd to
+  // pause an old reply mid-playback, ended call, started a new call,
+  // asked a new question — pressing BT play resumed the OLD paused
+  // player from its barge location instead of routing to the NEW
+  // reply's audio path. Once a fresh assistant_delta arrives, the
+  // previous turn's playhead state is moot; clear it.
+  if (ttsModule.isPaused()) {
+    cancelReplyTts('new-turn');
+  }
   // Q1: agent ack for our optimistic bubble — flip pending → finalized.
   finalizeOldestPending(conversation);
   // renderedMessages.upsert (called inside showStreamingIndicator) is
