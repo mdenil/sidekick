@@ -66,10 +66,22 @@ describe('realtime suppress: ttsPlaying lifecycle', () => {
     assert.equal(suppress.isTtsPlaying(), false);
   });
 
-  it('flips false on barge', () => {
+  it('stays true briefly after barge (drain grace), then flips false', async () => {
+    // v0.388: barge defers ttsPlaying clear by TTS_DRAIN_GRACE_MS (600ms)
+    // so the speaker-buffer tail still draining after the bridge halts
+    // TTS doesn't get STT-transcribed as a fake user turn (the
+    // "1 2 3 ... zero" feedback loop). suppressing flips immediately
+    // (so the user's intentional follow-up speech becomes the next
+    // turn) but ttsPlaying is held until the tail drains.
     suppress.onAssistantDelta();
     suppress.onBarge();
-    assert.equal(suppress.isTtsPlaying(), false);
+    assert.equal(suppress.isTtsPlaying(), true,
+      'ttsPlaying should still be true immediately after barge — speaker tail draining');
+    assert.equal(suppress.isSuppressing(), false,
+      'isSuppressing should clear immediately on barge — sanity check');
+    await new Promise(r => setTimeout(r, 700));
+    assert.equal(suppress.isTtsPlaying(), false,
+      'ttsPlaying should clear after TTS_DRAIN_GRACE_MS (~600ms)');
   });
 
   it('clears on reset (call lifecycle)', () => {
