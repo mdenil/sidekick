@@ -18,6 +18,7 @@
 import * as conn from './realtime.ts';
 import * as dictation from './dictation.ts';
 import * as suppress from './suppress.ts';
+import * as realtimeBarge from './realtimeBarge.ts';
 import * as settings from '../../settings.ts';
 import * as backend from '../../backend.ts';
 import { log, diag } from '../../util/log.ts';
@@ -77,6 +78,27 @@ export function init(o: ControlsOpts) {
     if (state === 'idle' || state === 'closing' || state === 'failed' || state === 'requesting-mic') {
       dictation.reset();
       suppress.reset();
+      realtimeBarge.stop();
+    }
+    // Barge loop runs only while a call is connected. Started here
+    // (not in realtime.ts itself) because it depends on suppress's
+    // is-playing signal, and suppress lives in this controls layer.
+    // talk-mode only — stream mode has no TTS to barge against, so
+    // the loop would never fire and just waste a setInterval.
+    if (state === 'connected' && mode === 'talk') {
+      const stream = conn.getMicStream();
+      if (stream) {
+        realtimeBarge.start(
+          stream,
+          () => suppress.isSuppressing(),
+          () => {
+            log('[webrtc-controls] client-side barge fired — sending upstream');
+            conn.sendBarge();
+            conn.cancelRemotePlayback();
+            suppress.onBarge();
+          },
+        );
+      }
     }
     if (!opts?.onStatus) return;
     if (state === 'requesting-mic') opts.onStatus('Requesting mic…');

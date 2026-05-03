@@ -191,6 +191,22 @@ export function dispatch(text: string): boolean {
   }
 }
 
+/** Send a {type:'barge'} envelope upstream over the data channel. The
+ *  bridge's dispatch_listener calls tts_track.halt() on receipt — the
+ *  same halt sequence the (now-retired) bridge-side VAD ran. Returns
+ *  true on successful enqueue, false if no channel is open. */
+export function sendBarge(): boolean {
+  if (!active || !active.dataChannel) return false;
+  if (active.dataChannel.readyState !== 'open') return false;
+  try {
+    active.dataChannel.send(JSON.stringify({ type: 'barge' }));
+    return true;
+  } catch (e: any) {
+    diag('[webrtc] barge send failed', e?.message);
+    return false;
+  }
+}
+
 export async function open(
   mode: CallMode,
   opts?: { sessionId?: string | null; chatId?: string | null },
