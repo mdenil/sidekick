@@ -1,18 +1,32 @@
 /**
- * @fileoverview Listen — turn-based handsfree mic mode. Records locally
- * with MediaRecorder (mirroring memo), runs Web Speech API for sendword
- * detection in parallel (Phase 2), and on commit ships the FULL
- * buffered blob to /v1/transcribe (via /transcribe). Reply renders +
- * plays through the existing playReplyTts path (caller-owned). After
- * audio.ended + a small grace window, re-arms for the next turn.
+ * @fileoverview Listen — turn-based handsfree mic mode. Two body-
+ * transcription paths, gated by the `streamingEngine` setting:
+ *
+ *   - SERVER (`streamingEngine: 'server'`, the default) — record locally
+ *     with MediaRecorder, run Web Speech API for sendword detection in
+ *     parallel, and on commit ship the FULL buffered blob to
+ *     /v1/transcribe (via /transcribe). Caller's `onCommit(blob, reason)`
+ *     fires.
+ *
+ *   - LOCAL (`streamingEngine: 'local'`) — no blob, no /transcribe.
+ *     Open a `BrowserSttProvider` (Web Speech API) and accumulate its
+ *     transcript events into the turn's body text. Sendword detector
+ *     subscribes to the SAME provider via the new external-source API
+ *     so we run a single SR session per turn instead of two racing for
+ *     the mic. On commit, caller's `onCommitText(text, reason)` fires.
+ *
+ * Reply renders + plays through the existing playReplyTts path
+ * (caller-owned). After audio.ended + a small grace window, re-arms for
+ * the next turn.
  *
  * Listen is wiring on top of existing primitives, NOT a new pipeline.
  * WebRTC (talk + stream) stays untouched — Listen lives alongside.
  *
  * State machine:
  *   idle       — start() not yet called or stop() returned.
- *   armed      — recording, watching for silence (+ sendword in Phase 2).
- *   committing — silence/sendword fired; awaiting onCommit caller.
+ *   armed      — recording (server) or live-transcribing (local),
+ *                watching for silence + sendword.
+ *   committing — silence/sendword fired; awaiting onCommit/onCommitText.
  *   playing    — caller invoked notifyReplyPlayback(true); waiting
  *                for notifyReplyPlayback(false) → grace → re-arm.
  *
@@ -33,6 +47,8 @@ import { SilenceWindow, getHandsfreeConfig } from '../shared/handsfree.ts';
 import { BargeWindow } from '../shared/barge.ts';
 import { getBargeThreshold } from '../../voiceTuning.ts';
 import * as recorderBar from '../shared/recorderBar.ts';
+import { BrowserSTTProvider, isSupported as isBrowserSttSupported } from '../streaming/browserDictate.ts';
+import type { STTProvider, TranscriptEvent } from '../shared/stt-provider.ts';
 
 export type ListenState = 'idle' | 'armed' | 'committing' | 'playing' | 'cooldown';
 
@@ -51,6 +67,15 @@ export type ListenOpts = {
    *  caller should cancel any in-flight TTS before invoking
    *  notifyReplyPlayback(false) so Listen re-arms cleanly. */
   onCommit: (blob: Blob, reason?: 'silence' | 'sendword' | 'barge') => Promise<void> | void;
+  /** Called when a turn commits in LOCAL streaming-engine mode. The
+   *  body transcription has already happened in-browser via Web Speech
+   *  — caller just needs to render+submit the supplied `text`. Empty
+   *  text means the user said nothing transcribable; caller should
+   *  skip the send (Listen will re-arm directly). When set, this
+   *  REPLACES `onCommit` — the two paths are mutually exclusive per
+   *  turn (the engine setting determines which fires). When omitted,
+   *  local mode silently degrades to the server path. */
+  onCommitText?: (text: string, reason?: 'silence' | 'sendword' | 'barge') => Promise<void> | void;
   /** Optional: fired when barge detection triggers during TTS playback.
    *  Caller should cancel its TTS playback (text-tts.cancelReplyTts) and
    *  immediately call notifyReplyPlayback(false) so Listen drops the
@@ -112,6 +137,20 @@ let cooldownTimer: ReturnType<typeof setTimeout> | null = null;
 // sees a live waveform that misrepresents whether audio is being
 // captured for transcription.
 let bar: recorderBar.RecorderBar | null = null;
+// LOCAL engine (streamingEngine='local') turn-state. The active
+// BrowserSttProvider for in-browser body transcription, the running
+// transcript accumulator (final segments concatenated as they arrive,
+// latest interim layered on top for live display), and the unsubscribe
+// handle for our transcript listener. Null on every server-engine turn.
+let localProvider: STTProvider | null = null;
+let localFinalText = '';
+let localLastInterim = '';
+let localUnsub: (() => void) | null = null;
+/** True when the current turn was armed against the local provider —
+ *  determines whether commit harvests text vs blob. Captured at arm
+ *  time so a mid-turn settings flip doesn't rip the floor out from
+ *  under commitNow. */
+let armedWithLocal = false;
 
 /** External read of the current state. */
 export function getState(): ListenState { return state; }
@@ -244,6 +283,10 @@ function ensureVisibilityHandler(): void {
           sendwordDetector.start({
             phrase: sendwordPhrase,
             onMatch: () => commitFromSendword(),
+            // Pass the same provider source we're armed against so the
+            // detector resumes onto the existing SR session rather than
+            // racing it with a new instance.
+            source: armedWithLocal && localProvider ? localProvider : undefined,
           });
         }
       }
@@ -256,36 +299,90 @@ async function armRecorder(): Promise<void> {
     teardown();
     return;
   }
-  // Explicitly null the previous MediaRecorder reference so the garbage
-  // collector can release its hold on the MediaStream's audio source
-  // before we wire a new one up. Without this, Chromium can leak state
-  // across instances → the next webm container starts mid-segment and
-  // Deepgram rejects it as "corrupt or unsupported data" on POST.
+  // Engine selection — `streamingEngine: 'local'` opts out of the
+  // MediaRecorder → /transcribe path entirely. Body transcription runs
+  // in-browser via Web Speech (BrowserSttProvider). Caller's
+  // onCommitText receives the accumulated transcript at commit time.
+  // We require BOTH the setting AND a working SR ctor AND a caller
+  // that supplied onCommitText — any missing piece falls through to
+  // the server path so the user still gets a working Listen mode
+  // (e.g. Firefox without WebSpeech, or a caller that hasn't been
+  // updated to handle local mode).
+  const useLocal = (settings.get() as any).streamingEngine === 'local'
+    && isBrowserSttSupported()
+    && typeof opts?.onCommitText === 'function';
+  armedWithLocal = useLocal;
+
+  // Tear down any provider/recorder from a prior turn. We rebuild fresh
+  // each arm so a stop()/arm() cycle starts cleanly (Chromium leaks
+  // state across MediaRecorder instances → corrupt webm; SR sessions
+  // benefit from the same hygiene).
+  await teardownLocalProvider();
   if (mediaRecorder) {
     try { mediaRecorder.ondataavailable = null; } catch { /* noop */ }
     try { mediaRecorder.onstop = null; } catch { /* noop */ }
     mediaRecorder = null;
   }
   audioChunks = [];
-  // Cap the audio bitrate at 24 kbps. Speech-to-text (Deepgram / Whisper)
-  // transcribes low-bitrate audio fine, and the default MediaRecorder
-  // bitrate (~216 kbps measured in field testing 2026-05-03) makes
-  // multi-minute memos ~10x larger than they need to be — a 92s memo
-  // shrank from 2.5MB to ~250KB, cutting park-bench 5G upload time
-  // from 22s to ~2s. Works on iOS Safari (AAC) and Chrome (Opus).
-  try {
-    mediaRecorder = new MediaRecorder(mediaStream, { mimeType: 'audio/webm;codecs=opus', audioBitsPerSecond: 24000 });
-  } catch {
-    mediaRecorder = new MediaRecorder(mediaStream, { audioBitsPerSecond: 24000 });
+
+  if (useLocal) {
+    // LOCAL path — Web Speech provider for body transcription.
+    // No MediaRecorder, no blob. The mic stream stays open (analyser
+    // still drives the silence/barge loops); BrowserSttProvider opens
+    // its own SR session against the OS-default mic, which on iOS +
+    // Chrome shares the same source as the mediaStream we already
+    // hold. The redundant getUserMedia call inside SR is the platform
+    // contract we accept.
+    localFinalText = '';
+    localLastInterim = '';
+    localProvider = new BrowserSTTProvider();
+    try {
+      localUnsub = localProvider.onTranscript((ev: TranscriptEvent) => {
+        if (ev.role !== 'user') return;
+        if (ev.is_final) {
+          // Empty-text finals are the synthetic utterance-end sentinel
+          // BrowserSttProvider emits on `onend`. They carry no text;
+          // the prior content-final already accumulated.
+          if (ev.text) {
+            localFinalText = (localFinalText + ' ' + ev.text).trim();
+          }
+          localLastInterim = '';
+        } else {
+          localLastInterim = ev.text;
+        }
+      });
+      await localProvider.start();
+    } catch (e: any) {
+      diag('listen: local provider start failed, falling back to server', e?.message);
+      await teardownLocalProvider();
+      armedWithLocal = false;
+    }
   }
-  mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunks.push(e.data); };
-  // No timeslice — `start()` writes the complete webm container
-  // (EBML header + segment + cluster + duration) to a single blob
-  // on stop(). With timeslice, Chromium fragments the file into
-  // segments that concatenate cleanly only on the FIRST recorder
-  // instance per MediaStream lifetime; the second recorder's
-  // segments produce a malformed container that Deepgram rejects.
-  mediaRecorder.start();
+
+  if (!armedWithLocal) {
+    // SERVER path — MediaRecorder buffers a blob for /transcribe.
+    // Cap the audio bitrate at 24 kbps. Speech-to-text (Deepgram /
+    // Whisper) transcribes low-bitrate audio fine, and the default
+    // MediaRecorder bitrate (~216 kbps measured in field testing
+    // 2026-05-03) makes multi-minute memos ~10x larger than they need
+    // to be — a 92s memo shrank from 2.5MB to ~250KB, cutting park-
+    // bench 5G upload time from 22s to ~2s. Works on iOS Safari (AAC)
+    // and Chrome (Opus).
+    try {
+      mediaRecorder = new MediaRecorder(mediaStream, { mimeType: 'audio/webm;codecs=opus', audioBitsPerSecond: 24000 });
+    } catch {
+      mediaRecorder = new MediaRecorder(mediaStream, { audioBitsPerSecond: 24000 });
+    }
+    mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunks.push(e.data); };
+    // No timeslice — `start()` writes the complete webm container
+    // (EBML header + segment + cluster + duration) to a single blob
+    // on stop(). With timeslice, Chromium fragments the file into
+    // segments that concatenate cleanly only on the FIRST recorder
+    // instance per MediaStream lifetime; the second recorder's
+    // segments produce a malformed container that Deepgram rejects.
+    mediaRecorder.start();
+  }
+
   armedAt = Date.now();
   // Initialise the silence window from current handsfree config.
   // tickSilence reads expired() each frame; setThreshold lets a live
@@ -293,17 +390,38 @@ async function armRecorder(): Promise<void> {
   const cfg = getHandsfreeConfig();
   silenceWindow = new SilenceWindow(cfg.silenceSec, armedAt);
   startSilenceLoop();
-  // Sendword detector: fail-soft — if SR is unsupported, listen
-  // continues with silence-only commits. listenSttEngine='silence-only'
-  // forces the user-side opt-out path even when SR IS available.
-  const engine = (settings.get() as any).listenSttEngine || 'local';
-  if (cfg.sendwordPhrase && engine !== 'silence-only') {
+  // Sendword detector. Two source modes:
+  //   - LOCAL engine: subscribe to the same BrowserSttProvider we just
+  //     started for body transcription. One SR session per turn,
+  //     shared event stream — no second instance racing for the mic.
+  //   - SERVER engine: open a standalone SR session inside the
+  //     detector (the original v0.397 path). The MediaRecorder blob
+  //     doesn't expose realtime text, so we have no source to share.
+  // listenSttEngine='silence-only' opts out of sendword detection in
+  // both paths.
+  const sendwordEngine = (settings.get() as any).listenSttEngine || 'local';
+  if (cfg.sendwordPhrase && sendwordEngine !== 'silence-only') {
     sendwordDetector.start({
       phrase: cfg.sendwordPhrase,
       onMatch: () => commitFromSendword(),
+      source: armedWithLocal && localProvider ? localProvider : undefined,
     });
   }
   transition('armed');
+}
+
+/** Stop + release the BrowserSttProvider, drop the transcript listener.
+ *  Idempotent. Safe to call from the server-engine path (no-op when
+ *  the provider was never created). */
+async function teardownLocalProvider(): Promise<void> {
+  if (localUnsub) {
+    try { localUnsub(); } catch { /* noop */ }
+    localUnsub = null;
+  }
+  if (localProvider) {
+    try { await localProvider.stop(); } catch { /* noop */ }
+    localProvider = null;
+  }
 }
 
 function startSilenceLoop(): void {
@@ -415,29 +533,62 @@ function readPeak(node: AnalyserNode): number {
   return peak;
 }
 
-/** Internal: stop the recorder, harvest the blob, fire onCommit. */
+/** Internal: stop the recorder/provider, harvest the body (blob or
+ *  text), fire onCommit/onCommitText per the active engine. */
 async function commitNow(reason: 'silence' | 'sendword'): Promise<void> {
   if (state !== 'armed') return;
   transition('committing');
   stopSilenceLoop();
   try { sendwordDetector.stop(); } catch { /* noop */ }
-  const blob = await stopRecorder();
-  log(`listen: commit (${reason}) blob=${blob ? blob.size : 0}b`);
-  if (!blob || blob.size === 0) {
-    // Empty blob — re-arm directly without invoking onCommit.
-    armRecorder().catch(() => teardown());
-    return;
-  }
-  try {
-    const out = opts?.onCommit?.(blob, reason);
-    if (out && typeof (out as Promise<void>).then === 'function') {
-      await out;
+
+  if (armedWithLocal) {
+    // LOCAL path — pull the accumulated transcript from the provider.
+    // Stop the provider FIRST so any in-flight final landing during
+    // teardown still appends to localFinalText (the listener stays
+    // active until teardownLocalProvider's unsub).
+    // Pad the final text with the latest interim if no final landed
+    // yet — Web Speech sometimes commits a long utterance only on
+    // session end, and the silence detector beat us to it.
+    const text = localFinalText
+      || localLastInterim
+      || '';
+    await teardownLocalProvider();
+    log(`listen: commit (${reason}) text="${text.slice(0, 60)}${text.length > 60 ? '…' : ''}"`);
+    if (!text.trim()) {
+      // Empty turn — re-arm directly without invoking the caller.
+      armRecorder().catch(() => teardown());
+      return;
     }
-  } catch (e: any) {
-    diag('listen: onCommit threw', e?.message);
-    // Best-effort recovery — re-arm so the user isn't stranded.
-    armRecorder().catch(() => teardown());
-    return;
+    try {
+      const out = opts?.onCommitText?.(text.trim(), reason);
+      if (out && typeof (out as Promise<void>).then === 'function') {
+        await out;
+      }
+    } catch (e: any) {
+      diag('listen: onCommitText threw', e?.message);
+      armRecorder().catch(() => teardown());
+      return;
+    }
+  } else {
+    // SERVER path — harvest the MediaRecorder blob, ship to caller.
+    const blob = await stopRecorder();
+    log(`listen: commit (${reason}) blob=${blob ? blob.size : 0}b`);
+    if (!blob || blob.size === 0) {
+      // Empty blob — re-arm directly without invoking onCommit.
+      armRecorder().catch(() => teardown());
+      return;
+    }
+    try {
+      const out = opts?.onCommit?.(blob, reason);
+      if (out && typeof (out as Promise<void>).then === 'function') {
+        await out;
+      }
+    } catch (e: any) {
+      diag('listen: onCommit threw', e?.message);
+      // Best-effort recovery — re-arm so the user isn't stranded.
+      armRecorder().catch(() => teardown());
+      return;
+    }
   }
   // If the caller never moved us to 'playing' (e.g. the reply was
   // empty so playReplyTts skipped), re-arm directly after a grace.
@@ -497,6 +648,14 @@ function teardown(): void {
   } catch { /* noop */ }
   mediaRecorder = null;
   audioChunks = [];
+  // Release the local STT provider if we were running on the local
+  // engine. Fire-and-forget — the await chain isn't worth the async
+  // teardown signature change for downstream callers (cancel/stop are
+  // declared sync and we don't want to break that contract).
+  void teardownLocalProvider();
+  localFinalText = '';
+  localLastInterim = '';
+  armedWithLocal = false;
   if (mediaStream) {
     audioPlatform.releaseMicStream('listen');
     mediaStream = null;

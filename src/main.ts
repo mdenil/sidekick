@@ -2157,6 +2157,25 @@ async function boot() {
           diag('listen: /transcribe failed', e?.message);
         }
       },
+      onCommitText: async (text, reason) => {
+        // LOCAL streamingEngine path — turnbased.ts already ran Web
+        // Speech in-browser and accumulated the transcript. No
+        // /transcribe call. Same sendword strip + composer
+        // append/submit as the server path so downstream behaviour is
+        // identical from the user's perspective.
+        let body = text;
+        if (body && reason === 'sendword') {
+          const { sendwordPhrase } = handsfree.getHandsfreeConfig();
+          const m = handsfree.matchSendword(body, sendwordPhrase);
+          if (m.matched) body = m.cleaned;
+        }
+        if (!body) {
+          log('listen: empty local transcript, skipping send');
+          return;
+        }
+        composer.appendText(body);
+        composer.submit();
+      },
       onCancel: () => {
         listenActive = false;
         if (btnMic) btnMic.classList.remove('listening-armed', 'listening');
