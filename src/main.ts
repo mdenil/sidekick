@@ -1060,14 +1060,19 @@ async function boot() {
     }
     if (ev.type !== 'transcript' || typeof ev.text !== 'string') return;
     if (ev.role === 'user') {
-      // Half-duplex: while the agent is speaking, the iOS speakerphone
-      // re-captures TTS output as mic input and the STT provider
-      // transcribes it. We can't tell the difference between that and
-      // real user speech from the transcript alone, so drop user
-      // transcripts entirely while suppressing. The bridge-side VAD fires
-      // {type:'barge'} when the user actually wants to interrupt; the
-      // handler above clears suppression in that case.
-      if (webrtcSuppress.isSuppressing()) return;
+      // Half-duplex: while the agent is speaking, the speaker-to-mic
+      // path re-captures TTS output as STT input. Drop user transcripts
+      // for the entire TTS audio playback window — `isTtsPlaying()`
+      // is the authoritative "TTS audio not yet done" signal (set on
+      // assistant_delta, cleared on bridge `listening` envelope).
+      // `isSuppressing()` was the old gate but only covered the
+      // text-final + 1.2s grace window — TTS audio plays for many
+      // more seconds, so the post-grace window leaked TTS bleed-through
+      // back as fake user transcripts (the "1 2 3 4 5 6 7 8 9 zero"
+      // feedback loop Jonathan saw 2026-05-03 09:18). Use ttsPlaying
+      // for full playback coverage; client-side BargeWindow handles
+      // the legitimate barge case independently.
+      if (webrtcSuppress.isTtsPlaying()) return;
       if (!ev.is_final) {
         // Interim: upsert the streaming user bubble. Display = previously
         // is_finalized segments for this utterance + current interim.

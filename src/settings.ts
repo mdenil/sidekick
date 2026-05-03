@@ -223,8 +223,18 @@ let current = { ...DEFAULTS };
 // Barge-in sensitivity ↔ threshold mapping. The user-facing slider is a
 // "sensitivity %" (higher = more sensitive, matches the label). Under the
 // hood we store a peak threshold (0..1; higher = requires louder sound).
-// Linear mapping: 100% ↔ threshold 0.0, 0% ↔ threshold 0.5.
-const BARGE_MAX_THRESHOLD = 0.5;
+// Linear mapping: 100% ↔ threshold 0.0, 0% ↔ threshold BARGE_MAX_THRESHOLD.
+//
+// 2026-05-03: dropped from 0.5 → 0.10. Real-mic measurements (v0.384
+// diag log) showed Mac speech peaks at 0.03-0.08, ambient floor 0.008.
+// At max=0.5, only the top ~10% of the slider's range produced
+// thresholds reachable by speech — Jonathan moved slider to 60%
+// expecting "fairly sensitive" and got threshold 0.20 (4× above his
+// loudest "okay"). New max=0.10 puts the entire slider range in the
+// useful operating zone: 50% = threshold 0.05 (catches normal voice),
+// 100% = threshold 0.0 (max sensitivity / hair trigger), 0% = 0.10
+// (well above measured peaks, effectively off).
+const BARGE_MAX_THRESHOLD = 0.10;
 function sensitivityToThreshold(sens) {
   const clamped = Math.max(0, Math.min(100, sens));
   return +((100 - clamped) / 100 * BARGE_MAX_THRESHOLD).toFixed(3);
