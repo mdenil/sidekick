@@ -1588,13 +1588,26 @@
     .composer { margin-bottom: 25px; }
   }
   .composer textarea {
-    resize: none; min-height: 44px; max-height: 160px;
+    /* Auto-grows up to --composer-textarea-max (set per breakpoint below).
+     * JS in main.ts:autoResize() sets the inline height, reading this same
+     * computed max-height so the cap stays in CSS. Past the cap the textarea
+     * scrolls internally — overflow-y:auto guarantees that even if the
+     * inline height were over-set, content stays reachable. */
+    resize: none;
+    min-height: 44px;
+    max-height: var(--composer-textarea-max, 40vh);
+    overflow-y: auto;
     background: transparent; color: var(--fg); border: none;
     padding: 12px 14px 4px; line-height: 1.45;
     font-family: var(--font-sans); font-size: var(--content-size);
     outline: none; width: 100%; box-sizing: border-box;
   }
   .composer textarea::placeholder { color: #666; }
+  /* Mobile: keep more chat visible; coarse-pointer breakpoint matches the
+   * existing 699px cutoff used elsewhere in this file. */
+  @media (max-width: 699px) {
+    .composer textarea { --composer-textarea-max: 30vh; }
+  }
 
   .composer-actions {
     display: flex; align-items: center; justify-content: space-between;
