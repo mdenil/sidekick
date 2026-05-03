@@ -225,13 +225,17 @@ let current = { ...DEFAULTS };
 // hood we store a peak threshold (0..1; higher = requires louder sound).
 // Linear mapping: 100% ↔ BARGE_MIN_THRESHOLD, 0% ↔ BARGE_MAX_THRESHOLD.
 //
-// 2026-05-03 v0.389: scale set to (0.012, 0.10) for AEC-OFF mic
-// (reverted from the v0.387 AEC-on experiment in v0.389). No-AEC
-// speech peaks 0.03-0.08; max=0.10 puts slider 0% well above any
-// real speech. Min=0.012 keeps slider 100% safely above the
-// analyser's quantization floor (~0.008) so max-sensitivity doesn't
-// self-fire on silence.
-const BARGE_MAX_THRESHOLD = 0.10;
+// 2026-05-03 v0.390: tightened to (0.012, 0.05) after Mac field
+// measurements (no-AEC) showed normal speech peaks 0.03-0.04, loud
+// "okay" peaks ~0.05-0.055, ambient 0.008. Previous max=0.10 meant
+// only the top half of the slider was useful — Jonathan moved
+// slider to 50% and got threshold 0.056, above his loudest speech.
+// New scale:
+//   0% slider   → 0.05  ("loud only" — conservative, picks up clear speech)
+//   50% slider  → 0.031 (catches normal voice + sustained speech)
+//   100% slider → 0.012 (catches whispers, may false-fire on TTS bleed)
+// 50% is the sane default for desktop-built-in-mic users.
+const BARGE_MAX_THRESHOLD = 0.05;
 const BARGE_MIN_THRESHOLD = 0.012;
 function sensitivityToThreshold(sens) {
   const clamped = Math.max(0, Math.min(100, sens));
