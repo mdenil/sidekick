@@ -1035,6 +1035,13 @@ async function boot() {
       // else on the client.
       log('[bubble-diag] listening envelope received from bridge');
       try { playFeedback('listening'); } catch { /* ignore */ }
+      // Authoritative "TTS audio done" signal — flips the realtime
+      // BargeWindow's playback gate off. Without this the gate was
+      // tied to suppress.isSuppressing() (a SHORT transcript-grace
+      // window) and the detector stopped running while TTS was still
+      // playing through the speaker — barge couldn't fire past the
+      // first 1.2s of any reply (v0.381 field-test regression).
+      webrtcSuppress.onListening();
       // Visual pulse — adds the .listening class to the mic button so
       // the user can distinguish "we got your touch" (red filled, no
       // pulse) from "actually listening" (red filled + pulse). The

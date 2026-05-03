@@ -91,7 +91,11 @@ export function init(o: ControlsOpts) {
       if (stream) {
         realtimeBarge.start(
           stream,
-          () => suppress.isSuppressing(),
+          // Gate barge on TTS AUDIO playback (assistant-delta → bridge
+          // 'listening' envelope), NOT transcript-suppression (which
+          // ends 1.2s after `final` while audio plays for many more
+          // seconds — see suppress.ts comment on ttsPlaying).
+          () => suppress.isTtsPlaying(),
           () => {
             log('[webrtc-controls] client-side barge fired — sending upstream');
             conn.sendBarge();
