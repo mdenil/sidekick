@@ -128,12 +128,20 @@ export function onBarge(): void {
 /** Called by main.ts when the bridge sends `{type:'listening'}` —
  *  TTS audio playback is finished and the bridge is ready for the next
  *  user turn. Authoritative "audio done" signal: the bridge knows when
- *  its own TTS sender stopped pushing frames. The transcript-suppression
- *  grace timer is independent (shorter, AEC-tail-focused). */
+ *  its own TTS sender stopped pushing frames.
+ *
+ *  v0.398 race fix: when a barge JUST fired (drain-grace timer still
+ *  pending), the bridge's listening envelope arrives within ~200ms.
+ *  Pre-fix, this preempted the drain grace and re-enabled transcripts
+ *  before the user's reflex post-barge speech ("okay okay") settled.
+ *  Now: if a drain-grace timer is active, let it run — the timer is
+ *  the user-reaction-time signal, not the speaker-frame-end signal. */
 export function onListening(): void {
   if (ttsPlayingClearTimer) {
-    clearTimeout(ttsPlayingClearTimer);
-    ttsPlayingClearTimer = null;
+    // Barge in flight; drain grace owns the ttsPlaying clear. Don't
+    // override the timer — the user is still in the "okay okay reflex
+    // wind-down" window.
+    return;
   }
   ttsPlaying = false;
 }
