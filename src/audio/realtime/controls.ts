@@ -143,7 +143,11 @@ export async function toggleCall(): Promise<void> {
     await conn.close();
     return;
   }
-  const mode: conn.CallMode = settings.get().tts ? 'talk' : 'stream';
+  // Talk mode requires bridge TTS over the peer track; with
+  // ttsEngine='local' the bridge isn't the audio source so force
+  // stream mode (matches the gating in main.ts startCallStream).
+  const sx = settings.get() as any;
+  const mode: conn.CallMode = (sx.tts && sx.ttsEngine !== 'local') ? 'talk' : 'stream';
   log('[webrtc-controls] toggleCall open mode=', mode);
   try {
     await conn.open(mode, resolveCallSession());

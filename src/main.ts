@@ -2061,7 +2061,16 @@ async function boot() {
     // openCall picks the mode per the user's settings.tts preference at
     // open time — same behavior as the old toolbar mic, just invoked
     // from the composer.
-    const mode: 'stream' | 'talk' = settings.get().tts ? 'talk' : 'stream';
+    //
+    // Talk mode requires bridge-side TTS over the WebRTC peer track.
+    // When ttsEngine === 'local' (browser speechSynthesis), the bridge
+    // wouldn't be the audio source — there's nothing for the call's
+    // outbound audio path to carry. Force stream mode in that case so
+    // the user gets text replies + can use the per-bubble play button
+    // (which honors ttsEngine='local'). Set 2026-05-03 v0.401.
+    const sx = settings.get() as any;
+    const wantTalk = sx.tts && sx.ttsEngine !== 'local';
+    const mode: 'stream' | 'talk' = wantTalk ? 'talk' : 'stream';
     try {
       await webrtcControls.openCall(mode);
     } catch (e: any) {
