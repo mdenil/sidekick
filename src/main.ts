@@ -500,8 +500,14 @@ async function boot() {
       if (webrtcControls.isOpen()) void webrtcControls.closeIfOpen();
     },
     onStreamingEngineChange: () => {
-      // STT engine selection now lives entirely server-side under the
-      // hermes voice-config. Client-side flip is a no-op for WebRTC.
+      // Engine flip — re-evaluate UI affordances. Local engine hides
+      // btn-call (realtime+speak mode disappears); server restores it.
+      // The actual engine selection happens at dictate.start() time
+      // via browserDictate.pickStreamingProvider() — no in-flight state
+      // to migrate here, just the UI. The applyMicModeUi function is
+      // declared inside setupComposerActions further below; defer the
+      // call to the rebroadcast event so wiring order doesn't matter.
+      window.dispatchEvent(new CustomEvent('sidekick:engine-changed'));
     },
     onWakeLockChange: () => {
       // Decoupled from `listening`: the UI checkbox is labelled
@@ -2780,6 +2786,16 @@ async function boot() {
     if (callModeWrap) {
       callModeWrap.dataset.mode = s.realtime ? 'realtime' : 'turn-based';
     }
+    // streamingEngine === 'local' kills the realtime+speak mode entirely
+    // (no WebRTC bridge means no peer-track TTS). Hide the whole call-
+    // button wrap (icon + chevron + menu) so the user doesn't tap a
+    // dead button. realtime+talkonly is still reachable via btn-mic
+    // tap, which now drives browser-local SpeechRecognition through
+    // the streamingEngine selector in startDictate.
+    if (callModeWrap) {
+      const localEngine = s.streamingEngine === 'local';
+      callModeWrap.style.display = localEngine ? 'none' : '';
+    }
     // Dynamic call-button tooltip — only meaningful on hover devices
     // (setTooltip skips title= on touch).
     const btnCallEl = document.getElementById('btn-call');
@@ -2791,6 +2807,9 @@ async function boot() {
     }
   }
   applyMicModeUi();
+  // Engine flip (set-streaming-engine select in the Settings panel)
+  // → re-render mic/call UI so btn-call hide/show keeps up live.
+  window.addEventListener('sidekick:engine-changed', () => applyMicModeUi());
 
   // Mirror static composer aria-label → title for hover devices. iOS
   // touch path keeps title-less buttons (no long-press tooltip popup).
