@@ -51,8 +51,12 @@ async function seedOrphanIdbRow(page, chatId) {
     const DB_NAME = 'sidekick-conversations';
     const STORE = 'conversations';
     const META = 'meta';
+    // v2 schema (matches src/conversations.ts post-v0.383). Test must
+    // open at the SAME version the PWA expects — opening at v1 would
+    // trigger the v1→v2 clear() upgrade path on next PWA load and
+    // wipe the seed.
     const db = await new Promise((resolve, reject) => {
-      const req = indexedDB.open(DB_NAME, 1);
+      const req = indexedDB.open(DB_NAME, 2);
       req.onupgradeneeded = () => {
         const d = req.result;
         if (!d.objectStoreNames.contains(STORE)) d.createObjectStore(STORE, { keyPath: 'chat_id' });

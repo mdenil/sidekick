@@ -24,7 +24,18 @@ const DB_NAME = 'sidekick-conversations';
 const STORE_CONV = 'conversations';
 const STORE_META = 'meta';
 const META_ACTIVE = 'active_chat_id';
-const DB_VERSION = 1;
+// v2 (2026-05-03): chat_id format unification. v1 stored BARE chat_ids
+// (`<uuid>`); the post-prefix-fix server gateway exposes them as
+// `${source}:${chat_id}`. The mismatch caused two data-loss regressions
+// this week (bare-id ghost shadowing prefixed sibling →
+// cleanupAbandonedChat firing DELETE on the real server-owned row, then
+// the plugin's bare-id DELETE fallback wiping it). Bumping schema +
+// clearing the store on upgrade forces every client to rehydrate from
+// the gateway, guaranteeing IDB rows are stored under the SAME prefixed
+// keys the server uses. Per Jonathan 2026-05-03: "I'm not worried about
+// blasting IDB on my clients" — the server is authoritative for chat
+// metadata; the local store is a cache + lazy-create staging area.
+const DB_VERSION = 2;
 
 export interface Conversation {
   /** UUID minted locally on `create()`. Becomes the gateway chat_id. */
@@ -42,7 +53,7 @@ export interface Conversation {
 function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
-    req.onupgradeneeded = () => {
+    req.onupgradeneeded = (event) => {
       const db = req.result;
       if (!db.objectStoreNames.contains(STORE_CONV)) {
         db.createObjectStore(STORE_CONV, { keyPath: 'chat_id' });
@@ -51,6 +62,23 @@ function openDB(): Promise<IDBDatabase> {
         // Single-record-per-key store. `id` is e.g. 'active_chat_id',
         // `value` is whatever JSON-serializable scalar we want to keep.
         db.createObjectStore(STORE_META, { keyPath: 'id' });
+      }
+      // v1 → v2: clear bare-chat_id rows (incompatible with the new
+      // prefixed-id contract). Future loads rehydrate from the server's
+      // /api/sidekick/sessions response — the gateway returns prefixed
+      // ids natively, so the listSessions merge will repopulate IDB
+      // for any chat the user touches. Active pointer cleared too →
+      // boot picks the most-recent server row instead of dangling at
+      // a now-orphaned bare id. WHY this is safe: the server is
+      // authoritative for chat metadata; the local store is a cache.
+      // Per Jonathan 2026-05-03: blast OK ("not worried about IDB on
+      // my clients").
+      if (event.oldVersion < 2) {
+        const tx = req.transaction;
+        if (tx) {
+          tx.objectStore(STORE_CONV).clear();
+          tx.objectStore(STORE_META).clear();
+        }
       }
     };
     req.onsuccess = () => resolve(req.result);
