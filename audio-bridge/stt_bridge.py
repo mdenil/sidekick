@@ -361,6 +361,16 @@ async def _run_stt(
         # of any false-positive mic activity. Set at offer time
         # (signaling.py:peer.extra["barge_enabled"]); defaults True.
         barge_enabled = bool(peer.extra.get("barge_enabled", True))
+        # Client-owned barge (v0.381+): PWA ships {type:'barge'} upstream
+        # via its own BargeWindow detector. Bridge skips its own VAD in
+        # that case — running both produces a double-fire race where
+        # the bridge's stale-cache false-fire beats the client's clean
+        # result. The mic-frame→silence substitution (half-duplex echo
+        # guard) below stays active regardless, since that's about
+        # protecting Deepgram from TTS bleed, not about firing barge.
+        client_owns_barge = bool(peer.extra.get("client_owns_barge", False))
+        if client_owns_barge:
+            barge_enabled = False
         # Observability state — sampled and logged every VAD_OBS_LOG_EVERY
         # frames so we can see what RMS values the mic is actually
         # producing during a TTS turn without flooding the log.

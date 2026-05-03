@@ -433,6 +433,13 @@ export async function open(
     // consistent with what the client would compute. Once the bridge
     // VAD is fully retired this field becomes informational.
     barge_threshold: getBargeThreshold(),
+    // Tell the bridge: this client owns barge detection and ships
+    // {type:'barge'} envelopes upstream over the data channel. Bridge
+    // SHOULD skip its own server-side VAD when this is set, to avoid
+    // a double-fire race where the bridge's stale-cache false-fire
+    // beats the client's clean BargeWindow result. Older PWA builds
+    // omit this field; bridge keeps its VAD on for them.
+    client_owns_barge: true,
   };
   if (opts?.chatId) offerPayload.chat_id = opts.chatId;
 

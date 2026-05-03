@@ -191,6 +191,17 @@ async def handle_offer(request: "web.Request") -> "web.Response":
     else:
         peer.extra["barge_threshold_01"] = None
 
+    # Client-owned barge: when the PWA sets client_owns_barge=true in
+    # the offer, it ships {type:'barge'} envelopes upstream over the
+    # data channel via its own BargeWindow detector. Bridge skips its
+    # own server-side VAD entirely in that case — running both produces
+    # a double-fire race where the bridge's stale-cache false-fire
+    # beats the client's clean result. Older PWA builds omit the flag;
+    # the legacy server-side VAD stays active for them.
+    peer.extra["client_owns_barge"] = bool(payload.get("client_owns_barge", False))
+    if peer.extra["client_owns_barge"]:
+        logger.info("[signaling] peer %s client owns barge (server VAD disabled)", peer_id)
+
     # Defer to bridge modules to install ontrack / outbound track wiring.
     # The dispatch listener handles inbound DataChannel control messages
     # ({type:'dispatch', text} from the PWA).
