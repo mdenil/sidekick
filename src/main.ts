@@ -13,6 +13,7 @@ import * as wakeLock from './wakeLock.ts';
 import * as chat from './chat.ts';
 import * as renderedMessages from './renderedMessages.ts';
 import * as backend from './backend.ts';
+import * as conversations from './conversations.ts';
 import * as sessionDrawer from './sessionDrawer.ts';
 import * as cmdkPalette from './cmdkPalette.ts';
 import * as sidebarResize from './sidebarResize.ts';
@@ -372,14 +373,30 @@ async function boot() {
   // survive even with 0 backend messages.
   function cleanupAbandonedChat(leavingId: string | null): void {
     if (!leavingId) return;
-    const cached = sessionDrawer.getCachedSessions().find(s => s.id === leavingId);
-    const isEmpty = !cached || cached.messageCount === 0;
-    if (!isEmpty) return;
     if (draft.hasContent() || attachments.hasPending()) return;
-    diag(`navigate-away: dropping empty chat ${leavingId}`);
-    (backend as any).deleteSession?.(leavingId)
-      ?.catch?.((e: any) => diag(`navigate-away cleanup failed: ${e?.message}`))
-      ?.then?.(() => sessionDrawer.scheduleRefresh());
+    // CONTRACT (post-2026-05-03 data-loss regression):
+    // Auto-cleanup is LOCAL-IDB-ONLY. backend.deleteSession is reserved
+    // for explicit user actions (menu delete, multi-select bulk).
+    // The id format encodes ownership:
+    //   - bare (no `:`)            → conversations.create() local IDB row,
+    //                                 backend never registered it (line 115 —
+    //                                 local writes only until first send).
+    //   - `${source}:${chat_id}`   → server's gateway-prefixed row; backend
+    //                                 owns the lifecycle. Refuse to auto-clean.
+    // Pre-fix this called backend.deleteSession on bare ids. The plugin's
+    // un-prefixed DELETE fallback defaulted source=sidekick and silently
+    // wiped real sessions whose chat_id matched a bare local-IDB orphan
+    // (Jonathan's morning audio-test session, 2026-05-03 01:29).
+    if (leavingId.includes(':')) return;
+    // Defense: don't auto-clean a row the cache says has actual messages.
+    // After the merge dedup in proxyClient.listSessions this should be
+    // unreachable for non-orphans, but the guard is cheap.
+    const cached = sessionDrawer.getCachedSessions().find(s => s.id === leavingId);
+    if (cached && cached.messageCount > 0) return;
+    diag(`navigate-away: dropping local-only orphan ${leavingId}`);
+    void conversations.remove(leavingId)
+      .catch((e: any) => diag(`navigate-away cleanup failed: ${e?.message}`))
+      .then(() => sessionDrawer.scheduleRefresh());
   }
 
   // Drag handle on the sidebar's right edge. Restores the persisted

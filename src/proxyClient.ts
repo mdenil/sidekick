@@ -753,20 +753,30 @@ export const proxyClientAdapter = {
     // the user just minted but hasn't sent in. Without this, the
     // newly-created drawer entry would vanish on the first refresh
     // (server doesn't have it yet → not in `enrich` → dropped).
+    //
+    // Dedup against `sidekick:${chat_id}`: the local IDB only mints
+    // sidekick-source chats (conversations.create writes IDB only,
+    // backend never sees the chat_id until first send). Once the user
+    // sends, the gateway exposes that chat as `sidekick:${chat_id}`.
+    // Without the prefix-aware check we'd double-list every existing
+    // chat as a 0-msg ghost (the 2026-05-03 data-loss-regression
+    // surface — the bare-id ghost let cleanupAbandonedChat fire DELETE
+    // against the prefixed sibling). Whatsapp/telegram/etc never
+    // appear in local IDB, so only the sidekick prefix matters here.
     const serverIds = new Set(enrich.map(e => e.chat_id));
     for (const conv of local) {
-      if (!serverIds.has(conv.chat_id)) {
-        merged.push({
-          id: conv.chat_id,
-          source: 'sidekick',  // local-only chats are always sidekick-minted
-          title: conv.title || 'New chat',
-          // Local-only chats have no server-side snippet — they exist
-          // because the user just minted a chat and hasn't sent yet.
-          snippet: '',
-          lastMessageAt: Math.floor(conv.last_message_at / 1000),
-          messageCount: 0,
-        });
-      }
+      if (serverIds.has(conv.chat_id)) continue;
+      if (serverIds.has(`sidekick:${conv.chat_id}`)) continue;
+      merged.push({
+        id: conv.chat_id,
+        source: 'sidekick',  // local-only chats are always sidekick-minted
+        title: conv.title || 'New chat',
+        // Local-only chats have no server-side snippet — they exist
+        // because the user just minted a chat and hasn't sent yet.
+        snippet: '',
+        lastMessageAt: Math.floor(conv.last_message_at / 1000),
+        messageCount: 0,
+      });
     }
     // Resort: server may already be sorted but the appended local-only
     // rows could be older OR newer than the server's tail.
