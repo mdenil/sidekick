@@ -207,7 +207,25 @@ const DEFAULTS = {
   // listenSendword + listenSilenceSec keys migrate into commitPhrase /
   // silenceSec on first load (see migrateLegacyHandsfreeKeys below).
   realtime: false,
-  listenSttEngine: 'local' as 'local' | 'server' | 'silence-only',
+  // Sendword detector toggle for Listen mode. With design A
+  // (`streamingEngine` is the canonical body-STT switch as of v0.403),
+  // this setting now controls ONLY the sendword detector — body
+  // transcription is determined entirely by streamingEngine. Two
+  // values:
+  //   'local'        — sendword detector ON (Web Speech, in-browser).
+  //                    When streamingEngine='local' it shares the
+  //                    same SR session as body transcription.
+  //                    When streamingEngine='server' it opens a
+  //                    standalone session in parallel with the
+  //                    MediaRecorder blob.
+  //   'silence-only' — sendword detector OFF. Listen commits only on
+  //                    the silence timeout. Useful when the user
+  //                    doesn't want the mic listening for trigger
+  //                    phrases (privacy, or Web Speech unreliability
+  //                    on their device).
+  // The legacy 'server' value (reserved for a never-wired backend
+  // sendword detector) is migrated to 'local' on first load.
+  listenSttEngine: 'local' as 'local' | 'silence-only',
 };
 
 /** Settings whose value is hardware-specific to the browser; stay
@@ -332,6 +350,14 @@ export async function load() {
       }
     }
   } catch {}
+  // listenSttEngine migration (v0.403): the reserved 'server' value
+  // never had a backend wire-up; collapse it to 'local' so users on
+  // old localStorage snapshots don't see the picker stuck on a
+  // value the new <select> doesn't render.
+  if ((current as any).listenSttEngine === 'server') {
+    (current as any).listenSttEngine = 'local';
+    save();
+  }
   // Yaml-backed: fetch flat snapshot from the proxy. The proxy
   // returns built-in defaults for any key the yaml doesn't define
   // yet, so partial yamls work.

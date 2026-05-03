@@ -398,7 +398,8 @@ async function armRecorder(): Promise<void> {
   //     detector (the original v0.397 path). The MediaRecorder blob
   //     doesn't expose realtime text, so we have no source to share.
   // listenSttEngine='silence-only' opts out of sendword detection in
-  // both paths.
+  // both paths (the user-facing kill switch — separate from
+  // streamingEngine which controls body transcription).
   const sendwordEngine = (settings.get() as any).listenSttEngine || 'local';
   if (cfg.sendwordPhrase && sendwordEngine !== 'silence-only') {
     sendwordDetector.start({

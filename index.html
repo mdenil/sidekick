@@ -329,15 +329,16 @@
     <div class="row">
       <label for="set-listen-stt">Sendword detector</label>
       <select id="set-listen-stt" class="text-input">
-        <option value="local">Web Speech (this device)</option>
+        <option value="local">On — Web Speech (this device)</option>
         <option value="silence-only">Off — silence only</option>
       </select>
     </div>
     <div class="row hint">
       Watches the live mic stream for the configured "send word" phrase to
-      commit the recording early. Web Speech runs entirely in the browser —
-      no server required. Set to Off to disable; the silence-driven commit
-      fallback still works either way.
+      commit the recording early. Body transcription is controlled by the
+      Streaming → STT engine setting; this toggle only affects the
+      sendword detector. Set to Off to disable; the silence-driven
+      commit fallback still works either way.
     </div>
   </div>
 
