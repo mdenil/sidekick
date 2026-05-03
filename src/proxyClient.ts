@@ -735,6 +735,30 @@ export const proxyClientAdapter = {
       const localTitle = localConv?.title === 'New chat' ? '' : (localConv?.title || '');
       const title = e.title || localTitle || '';
       const snippet = e.first_user_message || '';
+      const messageCount = e.message_count || 0;
+      // Title fallback chain (post-2026-05-03 race fix):
+      //   - real title or snippet → use as-is
+      //   - empty title + empty snippet + messageCount > 0
+      //         → "(processing…)" — chat has real content but neither
+      //           hermes-generated title NOR first_user_message has
+      //           landed yet. Surfaced 2026-05-03 ~07:58 when an SW
+      //           reload mid agent tool-loop left a row with msgCount
+      //           but no title/snippet for several minutes; "New chat"
+      //           was indistinguishable from a fresh orphan and we
+      //           almost cleaned it.
+      //   - empty title + empty snippet + messageCount === 0
+      //         → "New chat" — truly empty, preserves the orphan
+      //           affordance the cleanup paths rely on.
+      let resolvedTitle: string;
+      if (title) {
+        resolvedTitle = title;
+      } else if (snippet) {
+        resolvedTitle = '';                    // drawer falls through to snippet
+      } else if (messageCount > 0) {
+        resolvedTitle = '(processing…)';
+      } else {
+        resolvedTitle = 'New chat';
+      }
       return {
         id: e.chat_id,
         // source = platform that owns this chat (sidekick / telegram /
@@ -742,10 +766,10 @@ export const proxyClientAdapter = {
         // legacy single-platform default). Drawer uses this to render
         // a source badge on non-sidekick rows + go composer-read-only.
         source: e.source || 'sidekick',
-        title: title || (snippet ? '' : 'New chat'),
+        title: resolvedTitle,
         snippet,
         lastMessageAt: lastActive,
-        messageCount: e.message_count || 0,
+        messageCount,
       };
     });
 
