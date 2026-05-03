@@ -3,22 +3,29 @@
 // local-IDB-only; backend deletes are reserved for explicit user
 // actions (menu delete, multi-select bulk).
 //
-// 2026-05-03 data-loss bug:
-//   1. Plugin patch (yesterday) made the gateway emit `${source}:${chat_id}`
-//      ids. Local IDB still held bare chat_ids from before the patch.
-//   2. Merge in proxyClient.listSessions (pre-fix) appended every local
-//      bare-id row as "server doesn't know about this" → drawer rendered
-//      a 0-msg ghost shadowing each real prefixed sibling.
-//   3. cleanupAbandonedChat (pre-fix) saw the 0-msg ghost on navigate-away,
+// 2026-05-03 data-loss bug (origin):
+//   1. Plugin patch made the gateway emit `${source}:${chat_id}` ids.
+//      Local IDB still held bare chat_ids from before the patch.
+//   2. Pre-fix merge appended every local bare-id row as "server
+//      doesn't know about this" → 0-msg ghost shadowing each real
+//      prefixed sibling.
+//   3. cleanupAbandonedChat saw the 0-msg ghost on navigate-away,
 //      called backend.deleteSession(bare_id).
-//   4. Plugin's bare-id DELETE fallback defaulted source=sidekick, found
-//      the real session, deleted it. Jonathan's morning audio session +
-//      8 prior chats wiped silently.
+//   4. Plugin's bare-id DELETE fallback defaulted source=sidekick,
+//      found the real session, deleted it. 9 chats wiped silently.
 //
-// This smoke seeds the exact bug condition and asserts BOTH halves of
-// the post-fix invariant:
-//   A. Merge dedup: bare local row + prefixed server sibling render as
-//      ONE drawer row (no ghost).
+// Post-v0.383 unification (current shape):
+//   - IDB schema v2 clears the store on upgrade; bare-id rows can
+//     no longer exist locally.
+//   - mintChatId stamps `sidekick:`; cross-device hydrate carries the
+//     gateway prefix. Local + server use the SAME id format.
+//   - Merge dedup collapsed to direct key-equality — no prefix
+//     arithmetic.
+//
+// This smoke seeds the realistic post-unification cross-device case
+// (server has prefixed row, IDB has the SAME prefixed row from a
+// prior hydrate) and locks in BOTH halves of the post-fix invariant:
+//   A. Merge dedup: same prefixed key on both sides → ONE drawer row.
 //   B. Cleanup contract: navigate-away from any populated chat fires
 //      ZERO `DELETE /api/sidekick/sessions/*` requests.
 //
@@ -29,12 +36,13 @@
 import { waitForReady, openSidebar, assert } from './lib.mjs';
 
 export const NAME = 'navigate-away-no-backend-delete';
-export const DESCRIPTION = 'Bare local IDB row + prefixed server sibling: no ghost in drawer, no backend DELETE on navigate-away';
+export const DESCRIPTION = 'Cross-device prefixed IDB row + prefixed server sibling: no ghost in drawer, no backend DELETE on navigate-away';
 export const STATUS = 'implemented';
 export const BACKEND = 'mocked';
 
-// The "real" chat — server has it under prefixed id (post-patch shape),
-// local IDB has it under bare id (pre-patch shape that hasn't migrated).
+// Post-v0.383: server has prefixed id; IDB has the SAME prefixed id
+// (cross-device hydrate scenario). The merge collapses on direct
+// key-equality.
 const NATIVE_CHAT_ID = 'a4705789-9c40-4c09-a3c1-8a7c0acba35c';
 const PREFIXED_ID = `sidekick:${NATIVE_CHAT_ID}`;
 const OTHER_CHAT = 'sidekick:188ebca3-105c-45e9-b130-4fa63d7d6055';
@@ -66,9 +74,10 @@ export function MOCK_SETUP(mock) {
   // mirror exactly what a pre-patch user upgrading would see.
 }
 
-/** Seed the post-patch ghost condition: a local IDB row whose chat_id
- *  is the bare form of a prefixed server row. */
-async function seedBareIdbRow(page, chatId) {
+/** Seed a local IDB row matching a prefixed server row — the
+ *  post-v0.383 cross-device hydrate shape. The merge in
+ *  proxyClient.listSessions must collapse them into ONE drawer entry. */
+async function seedPrefixedIdbRow(page, chatId) {
   await page.evaluate(async (id) => {
     const DB_NAME = 'sidekick-conversations';
     const STORE = 'conversations';
@@ -121,32 +130,36 @@ export default async function run({ page, ctx, log }) {
     return route.fallback();
   });
 
-  // Pre-seed the bug condition: bare-id IDB row matching the server's
-  // prefixed sibling. Reload so boot's listSessions merge picks it up.
+  // Pre-seed the post-v0.383 cross-device shape: prefixed IDB row
+  // matching the prefixed server sibling. Reload so boot's listSessions
+  // merge picks it up.
   await waitForReady(page);
-  await seedBareIdbRow(page, NATIVE_CHAT_ID);
+  await seedPrefixedIdbRow(page, PREFIXED_ID);
   await page.evaluate(() => location.reload());
   await waitForReady(page);
   await openSidebar(page);
 
   // ── Assertion A: merge dedup ── only ONE row for this chat in the
-  // drawer (the prefixed server row). The bare-id ghost MUST NOT appear.
+  // drawer. Same prefixed key on both sides → simple key-equality dedup
+  // (post-v0.383 unification dropped the prefix-arithmetic dedup hack).
   await page.waitForSelector(`#sessions-list li[data-chat-id="${PREFIXED_ID}"]`, { timeout: 5_000 });
-  const allMatching = await page.evaluate((bareId) => {
+  const allMatching = await page.evaluate((nativeId) => {
     return Array.from(document.querySelectorAll('#sessions-list li[data-chat-id]'))
       .map(li => li.getAttribute('data-chat-id'))
-      .filter(id => id === bareId || id?.endsWith(`:${bareId}`));
+      .filter(id => id === nativeId || id?.endsWith(`:${nativeId}`));
   }, NATIVE_CHAT_ID);
   assert(
     allMatching.length === 1 && allMatching[0] === PREFIXED_ID,
     `merge dedup: expected ONE row [${PREFIXED_ID}]; got ${JSON.stringify(allMatching)} ` +
-    `(bare-id ghost shadowing the prefixed sibling — proxyClient.listSessions merge regression)`,
+    `(local + server should collapse on direct key-equality)`,
   );
-  log('merge dedup ✓ — no bare-id ghost in drawer');
+  log('merge dedup ✓ — single row for the chat');
 
   // ── Assertion B: cleanup contract ── activate the prefixed row, then
   // navigate to the other chat. cleanupAbandonedChat fires with leaving =
-  // PREFIXED_ID. New rule: prefixed ids are off-limits to auto-cleanup.
+  // PREFIXED_ID. Pre-rewrite rule: prefixed ids are off-limits to
+  // auto-cleanup (rewritten in a follow-up commit to key off cached
+  // messageCount instead of id shape — same end-result for this case).
   await clickRow(page, PREFIXED_ID);
   await page.waitForFunction(
     (id) => document.querySelector('#sessions-list li.active[data-chat-id]')?.getAttribute('data-chat-id') === id,

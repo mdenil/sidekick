@@ -754,22 +754,22 @@ export const proxyClientAdapter = {
     // newly-created drawer entry would vanish on the first refresh
     // (server doesn't have it yet → not in `enrich` → dropped).
     //
-    // Dedup against `sidekick:${chat_id}`: the local IDB only mints
-    // sidekick-source chats (conversations.create writes IDB only,
-    // backend never sees the chat_id until first send). Once the user
-    // sends, the gateway exposes that chat as `sidekick:${chat_id}`.
-    // Without the prefix-aware check we'd double-list every existing
-    // chat as a 0-msg ghost (the 2026-05-03 data-loss-regression
-    // surface — the bare-id ghost let cleanupAbandonedChat fire DELETE
-    // against the prefixed sibling). Whatsapp/telegram/etc never
-    // appear in local IDB, so only the sidekick prefix matters here.
+    // v0.383 unification (2026-05-03): post-IDB-schema-v2 the local
+    // store and server use the SAME prefixed id format
+    // (`sidekick:<uuid>` from mintChatId). The merge collapses to a
+    // straight key-equality check — no more `sidekick:${chat_id}`
+    // prefix arithmetic. The earlier prefix-aware dedup hack was
+    // covering for the bare/prefixed mismatch that's now eliminated
+    // at the source.
     const serverIds = new Set(enrich.map(e => e.chat_id));
     for (const conv of local) {
       if (serverIds.has(conv.chat_id)) continue;
-      if (serverIds.has(`sidekick:${conv.chat_id}`)) continue;
       merged.push({
         id: conv.chat_id,
-        source: 'sidekick',  // local-only chats are always sidekick-minted
+        // Source is encoded in the chat_id prefix; default to sidekick
+        // for any unprefixed legacy row (v1 IDB blasted on upgrade, so
+        // this should never happen — defensive only).
+        source: conv.chat_id.includes(':') ? conv.chat_id.split(':')[0] : 'sidekick',
         title: conv.title || 'New chat',
         // Local-only chats have no server-side snippet — they exist
         // because the user just minted a chat and hasn't sent yet.
