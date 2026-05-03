@@ -91,12 +91,16 @@ export function start(
   isPlayingCb = isPlaying;
   onFireCb = onFire;
   if (thresholdGetter) getThreshold = thresholdGetter;
-  // Relaxed from default 5/4 to 5/3: 3-of-5 hot frames at 50ms cadence
-  // = ~150ms sustained voice required to fire. Default 4-of-5 needed
-  // 200ms+ which missed short utterances ("okay" fires for 200-300ms,
-  // borderline). 3-of-5 still rejects single-burst noise (key click,
-  // throat clear) but catches one-syllable barge attempts.
-  bargeWindow = new BargeWindow({ windowSize: 5, requiredHot: 3 });
+  // Relaxed from default 5/4 to 5/2 over two iterations:
+  //   v0.389: 5/3 (~150ms sustained) — caught most "okay"s
+  //   v0.397: 5/2 (~100ms sustained) — Jonathan's iPhone field test
+  //     showed iOS Safari aggressively voice-isolates so only the
+  //     middle of each word produces detectable peaks; many "okay"
+  //     attempts had only 1-2 hot frames before getting cancelled
+  //     out. 2-of-5 still rejects single-frame quantization noise
+  //     (1 hot frame can't fire) and any sub-100ms transient (key
+  //     click, hand brush).
+  bargeWindow = new BargeWindow({ windowSize: 5, requiredHot: 2 });
   // Warmup is rolled forward each time TTS actually starts (see tick),
   // not just at start() — a long silent gap before the first reply
   // shouldn't burn the warmup window.

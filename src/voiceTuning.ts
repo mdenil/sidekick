@@ -92,7 +92,14 @@ export const DEVICE_DEFAULTS: Record<DeviceClass, { bargeThreshold: number }> = 
  *  Per-device scales give each platform a slider where 50% is
  *  reliably "moderately sensitive." */
 export const SLIDER_SCALE: Record<DeviceClass, { min: number; max: number }> = {
-  ios:     { min: 0.010, max: 0.025 },
+  // v0.397 iOS lowered to (0.009, 0.018) after field test showed even
+  // 80% slider (threshold 0.013) required Jonathan to say "okay"
+  // multiple times for fire — iOS Safari's voice-isolation keeps
+  // detectable peaks below 0.020 for normal-volume speech. New scale:
+  //   0% slider   → 0.018 (loud only)
+  //   50% slider  → 0.0135 (catches normal voice — most positions usable)
+  //   100% slider → 0.009 (just above quantization floor 0.008; whisper)
+  ios:     { min: 0.009, max: 0.018 },
   android: { min: 0.010, max: 0.030 },
   mac:     { min: 0.012, max: 0.050 },
   linux:   { min: 0.012, max: 0.050 },

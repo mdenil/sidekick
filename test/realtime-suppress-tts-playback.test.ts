@@ -79,9 +79,9 @@ describe('realtime suppress: ttsPlaying lifecycle', () => {
       'ttsPlaying should still be true immediately after barge — speaker tail draining');
     assert.equal(suppress.isSuppressing(), false,
       'isSuppressing should clear immediately on barge — sanity check');
-    await new Promise(r => setTimeout(r, 700));
+    await new Promise(r => setTimeout(r, 1600));
     assert.equal(suppress.isTtsPlaying(), false,
-      'ttsPlaying should clear after TTS_DRAIN_GRACE_MS (~600ms)');
+      'ttsPlaying should clear after TTS_DRAIN_GRACE_MS (~1500ms)');
   });
 
   it('clears on reset (call lifecycle)', () => {

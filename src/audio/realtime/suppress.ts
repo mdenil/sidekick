@@ -38,8 +38,15 @@ const SUPPRESS_GRACE_MS = 1200;
 // has ~300-500ms of TTS already in flight. During that drain window,
 // the mic captures the residual TTS audio — without this grace, the
 // drained tail gets STT-transcribed into a fake user turn (the
-// "1 2 3 ... zero" feedback loop, 2026-05-03 09:34). Set 2026-05-03.
-const TTS_DRAIN_GRACE_MS = 600;
+// "1 2 3 ... zero" feedback loop, 2026-05-03 09:34).
+// v0.397: bumped 600 → 1500ms after Jonathan's field test showed his
+// post-barge speech (e.g. "okay okay") was bleeding past the 600ms
+// window because he couldn't react fast enough to the chime to stop
+// talking. The longer grace gives both the speaker tail AND the user's
+// reflex talking-stop time to settle before transcripts re-enable.
+// Trade-off: legitimate post-barge follow-up speech takes 1.5s before
+// it counts as the next turn.
+const TTS_DRAIN_GRACE_MS = 1500;
 
 let suppressing = false;
 let suppressEndTimer: ReturnType<typeof setTimeout> | null = null;

@@ -213,18 +213,22 @@ export function playFeedback(type) {
       osc2.start(t2);
       osc2.stop(t2 + 0.08);
     } else if (type === 'barge') {
-      // Single short sine ping — "I heard you, stopping". ~80ms at
+      // Single short sine ping — "I heard you, stopping". ~120ms at
       // 600Hz with a quick fade-out. Sine (not triangle) so it doesn't
       // jangle against the agent's TTS that we're cutting off; low
       // enough in pitch that it reads as a "halt" rather than an
-      // alert. Slightly under 'send' gain so it doesn't compete with
-      // the user's continued speech immediately afterwards.
+      // alert.
+      // v0.397 louder + longer (Jonathan field-tested 2026-05-03 —
+      // hard to hear over agent TTS at the original 0.06 gain).
+      // Bumped gain 0.06 → 0.18 (3×) and duration 80ms → 120ms.
+      // Triangle wave option considered but kept sine so it stays
+      // non-jangly when it cuts off TTS mid-syllable.
       osc.type = 'sine';
       osc.frequency.setValueAtTime(600, now);
-      gain.gain.setValueAtTime(0.06 * scale, now);
-      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.08);
+      gain.gain.setValueAtTime(0.18 * scale, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
       osc.start(now);
-      osc.stop(now + 0.08);
+      osc.stop(now + 0.12);
     } else if (type === 'error') {
       // Two short low-pitched descending tones — alert, not alarming.
       // Uses triangle wave for a fuller sound that carries over wind
