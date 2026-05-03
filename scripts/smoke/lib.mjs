@@ -241,7 +241,12 @@ export function captureNextChatId(page, { timeoutMs = 5000 } = {}) {
       timeoutMs,
     );
     const handler = (msg) => {
-      const m = /new session \(chat_id=([0-9a-f-]+)\)/.exec(msg.text());
+      // Post-v0.383 unification: chat_ids are now prefixed
+      // (`sidekick:<uuid>`). Regex accepts BOTH the prefixed shape
+      // and the legacy bare-uuid shape so this helper stays
+      // forward-and-back-compat with any old log line that might
+      // surface during a partial deploy.
+      const m = /new session \(chat_id=([^)\s]+)\)/.exec(msg.text());
       if (m) {
         clearTimeout(t);
         page.off('console', handler);

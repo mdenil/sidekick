@@ -38,7 +38,12 @@ const META_ACTIVE = 'active_chat_id';
 const DB_VERSION = 2;
 
 export interface Conversation {
-  /** UUID minted locally on `create()`. Becomes the gateway chat_id. */
+  /** Prefixed chat_id (`${source}:${native_id}`) — the SAME contract-
+   *  unique gateway id the server uses. Sidekick is the only platform
+   *  that mints client-side; `mintChatId()` produces `sidekick:<uuid>`.
+   *  Cross-device chats hydrated from /api/sidekick/sessions arrive
+   *  already-prefixed (any source). v2 schema invariant: never store
+   *  a bare uuid here. */
   chat_id: string;
   /** Display label. Falls back to "New chat" until enrichment lands or
    *  the user renames. */
@@ -93,14 +98,18 @@ function reqP<T = any>(r: IDBRequest<T>): Promise<T> {
   });
 }
 
-/** RFC4122-ish v4 UUID. crypto.randomUUID is available in all modern
- *  browsers; the fallback covers ancient Safari (<15.4) and any
- *  insecure-context / unit-test environment without crypto.
- *  Exported as `mintChatId` so the adapter can lazy-allocate a
- *  chat_id without writing the IDB conversation row (Option B —
- *  drawer never shows empty stubs). */
+/** Mint a fresh prefixed chat_id. Sidekick is the only platform that
+ *  client-mints; we stamp `sidekick:` so the id matches the gateway's
+ *  prefix-encoded contract from the moment it exists. Lets the adapter
+ *  lazy-allocate without writing the IDB conversation row (Option B —
+ *  drawer never shows empty stubs).
+ *
+ *  v0.383 unification (2026-05-03): pre-fix this returned a bare uuid,
+ *  which mismatched the prefixed id the gateway exposed for the same
+ *  chat once the user sent. The bare/prefixed mismatch is the root
+ *  cause of the data-loss regression chain — see DB_VERSION comment. */
 export function mintChatId(): string {
-  return uuid();
+  return `sidekick:${uuid()}`;
 }
 
 function uuid(): string {
@@ -137,13 +146,17 @@ export async function list(): Promise<Conversation[]> {
   }
 }
 
-/** Mint a UUID + persist. Title defaults to "New chat" — caller can
- *  later updateTitle once the gateway sends `session_changed` with a
- *  compression-derived label. */
+/** Mint a prefixed chat_id + persist. Title defaults to "New chat" —
+ *  caller can later updateTitle once the gateway sends `session_changed`
+ *  with a compression-derived label.
+ *
+ *  v0.383 unification: chat_id is now `sidekick:<uuid>` (mintChatId),
+ *  matching the gateway's prefix-encoded id. IDB and server agree on
+ *  the same key shape end-to-end. */
 export async function create(title?: string): Promise<Conversation> {
   const now = Date.now();
   const conv: Conversation = {
-    chat_id: uuid(),
+    chat_id: mintChatId(),
     title: title || 'New chat',
     created_at: now,
     last_message_at: now,
