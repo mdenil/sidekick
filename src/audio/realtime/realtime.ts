@@ -35,6 +35,7 @@ import { log, diag } from '../../util/log.ts';
 import { playFeedback } from '../shared/feedback.ts';
 import * as audioPlatform from '../shared/platform.ts';
 import * as settings from '../../settings.ts';
+import { getBargeThreshold } from '../../voiceTuning.ts';
 import type {
   STTProvider,
   TranscriptEvent as STTTranscriptEvent,
@@ -427,7 +428,11 @@ export async function open(
     conv_name: opts?.sessionId || null,
     keyterms,
     barge_enabled: !!settings.get().bargeIn,
-    barge_threshold: Number(settings.get().bargeThreshold) || 0,
+    // Send the resolved (device-default-aware) threshold so any bridge
+    // build still running the legacy server-side VAD uses a value
+    // consistent with what the client would compute. Once the bridge
+    // VAD is fully retired this field becomes informational.
+    barge_threshold: getBargeThreshold(),
   };
   if (opts?.chatId) offerPayload.chat_id = opts.chatId;
 

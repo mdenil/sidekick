@@ -31,6 +31,7 @@ import { playFeedback } from '../shared/feedback.ts';
 import * as sendwordDetector from './sendwordDetector.ts';
 import { SilenceWindow, getHandsfreeConfig } from '../shared/handsfree.ts';
 import { BargeWindow } from '../shared/barge.ts';
+import { getBargeThreshold } from '../../voiceTuning.ts';
 import * as recorderBar from '../shared/recorderBar.ts';
 
 export type ListenState = 'idle' | 'armed' | 'committing' | 'playing' | 'cooldown';
@@ -342,7 +343,10 @@ function tickBarge(): void {
   if (!(s as any).bargeIn) return;
 
   const peak = readPeak(analyser);
-  const threshold = ((s.bargeThreshold as number) || 0.20);
+  // Device-class default lookup (voiceTuning) honoring the user's
+  // slider override. Same threshold path the realtime barge uses, so
+  // both modes barge at consistent peak levels per device.
+  const threshold = getBargeThreshold();
   if (bargeWindow.push(peak, threshold)) {
     log(`listen: barge fire peak=${peak.toFixed(3)}`);
     stopBargeLoop();
@@ -377,14 +381,18 @@ function tickSilence(): void {
   // without us subscribing to the settings module.
   silenceWindow.setThreshold(getHandsfreeConfig().silenceSec);
 
-  const s = settings.get();
   let isSpeech = false;
   if (mockFrames && mockFrames.remainingMs > 0) {
     isSpeech = mockFrames.type === 'speech';
     mockFrames.remainingMs -= SILENCE_FRAME_MS;
     if (mockFrames.remainingMs <= 0) mockFrames = null;
   } else if (analyser) {
-    isSpeech = readPeak(analyser) > ((s.bargeThreshold as number) || 0.20);
+    // Same device-aware threshold the barge loop uses — silence
+    // detection has the same "is this speech or ambient?" question,
+    // so the cutoff should match. Otherwise a mic that sits at 0.12
+    // ambient on iOS BT would never trigger silence-end with a 0.10
+    // global default.
+    isSpeech = readPeak(analyser) > getBargeThreshold();
   }
 
   if (isSpeech) {
