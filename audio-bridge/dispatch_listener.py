@@ -14,6 +14,14 @@ outbound transcripts.  Schema:
 
         Reserved for future barge-in support.  V1 logs and ignores.
 
+    {type: 'barge'}
+
+        Client-side BargeWindow detected sustained mic activity during
+        TTS playback.  Bridge halts the outbound TTS track (drains queue,
+        flips is_active() False so the mic→STT loop resumes on next
+        frame).  Mirrors the previous bridge-side VAD path; the client
+        is now the single source of truth for barge detection.
+
 Signaling.handle_offer wires this listener via attach(peer) right after
 the data channel is opened by the browser.
 """
@@ -107,6 +115,32 @@ def _handle_inbound(peer, raw) -> None:
     elif msg_type == "interrupt":
         # Reserved for future barge-in support.
         logger.info("[dispatch-listener] peer %s interrupt (ignored in V1)", peer.peer_id)
+    elif msg_type == "barge":
+        # Client-side BargeWindow fired during TTS playback. Halt the
+        # outbound TTS track exactly as the (now-removed) bridge-side
+        # VAD path did: track.halt() drains the queued PCM frames and
+        # flips is_active() False, so the mic→STT loop in stt_bridge
+        # resumes on the very next inbound frame. Idempotent: a second
+        # barge envelope after the track has already halted is a
+        # cheap no-op.
+        tts_track = peer.extra.get("tts_track")
+        if tts_track is None:
+            # talk-mode-only path; in stream mode there's no TTS to
+            # halt and the envelope is moot. Log debug so a stray
+            # client send is visible without alarming.
+            logger.debug(
+                "[dispatch-listener] peer %s barge ignored (no tts_track)",
+                peer.peer_id,
+            )
+            return
+        try:
+            tts_track.halt()
+            logger.info("[dispatch-listener] peer %s barge halted TTS", peer.peer_id)
+        except Exception as e:  # pragma: no cover
+            logger.warning(
+                "[dispatch-listener] peer %s tts_track.halt() raised: %s",
+                peer.peer_id, e,
+            )
     else:
         logger.debug("[dispatch-listener] peer %s unknown type %r", peer.peer_id, msg_type)
 
