@@ -48,6 +48,7 @@ import * as webrtcControls from './audio/realtime/controls.ts';
 import * as webrtcConnection from './audio/realtime/realtime.ts';
 import * as webrtcDictation from './audio/realtime/dictation.ts';
 import * as webrtcDictate from './audio/realtime/dictate.ts';
+import * as browserDictate from './audio/streaming/browserDictate.ts';
 import * as webrtcSuppress from './audio/realtime/suppress.ts';
 import * as bgTrace from './bgTrace.ts';
 import * as activityRow from './activityRow.ts';
@@ -1997,7 +1998,13 @@ async function boot() {
   async function startDictate(initialCursor: number | null = null): Promise<void> {
     if (dictateActive) return;
     if (memoActive) return;
-    if (!navigator.onLine) {
+    // streamingEngine === 'local' uses browser Web Speech (Chrome/Safari);
+    // it's typically reachable even when navigator.onLine reports false
+    // since most browsers cache enough to keep recognising. Skip the
+    // memo fallback for the local engine — fall through to the speech
+    // start, which throws cleanly if Web Speech is genuinely unavailable.
+    const useLocalEngine = settings.get().streamingEngine === 'local';
+    if (!navigator.onLine && !useLocalEngine) {
       status.setStatus('Offline — using memo mode', null);
       await startMemo(false);
       return;
@@ -2005,9 +2012,15 @@ async function boot() {
     primeAudio(player);
     audioSession.prepareForCapture();
     try {
+      // Engine selector — server (default) routes the WebRTC bridge;
+      // local uses the in-browser SpeechRecognition path. Both are
+      // STTProvider impls so dictate.ts's cursor-aware splice machine
+      // stays the single owner of the textarea state.
+      const provider = browserDictate.pickStreamingProvider();
       await webrtcDictate.start({
         sessionId: sessionDrawer.getViewed() || backend.getCurrentSessionId?.() || null,
         initialCursor,
+        provider,
       });
     } catch (e: any) {
       diag('dictate start failed', e?.message);
