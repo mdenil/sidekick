@@ -72,6 +72,19 @@ export function init(o: ControlsOpts) {
       // lingering until next paint.
       if (!conn.isOpen()) mic.classList.remove('listening');
     }
+    // Disable btn-call during transient states so rapid double-taps
+    // can't race the WebRTC handshake (field repro 2026-05-03: a second
+    // pointerdown while connecting tore down the in-flight session and
+    // failed the call). idle/connected/failed stay enabled — the user
+    // wants those clickable (open / hang up / retry).
+    const call = btnEl('btn-call');
+    if (call) {
+      const transient = state === 'requesting-mic'
+        || state === 'connecting'
+        || state === 'closing';
+      call.disabled = transient;
+      call.classList.toggle('disabled', transient);
+    }
     // Reset the dictation state machine whenever a call ends so a
     // pending utterance buffer or silence timer doesn't leak across
     // calls. requesting-mic / connecting on a fresh open is also a

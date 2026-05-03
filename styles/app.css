@@ -1749,6 +1749,17 @@
     background: var(--primary);
     border-radius: 50%;
   }
+  /* Disabled during transient WebRTC handshake states (requesting-mic /
+     connecting / closing) so rapid double-taps can't race the call open.
+     Visual cue (dim + not-allowed cursor) tells the user why the tap
+     went nowhere; pointer-events:none is belt-and-braces against any
+     handler still listening to pointerdown on a disabled button. */
+  .composer #btn-call.disabled,
+  .composer #btn-call:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+    pointer-events: none;
+  }
   /* Call-menu anchors LEFT (button is on the left side of composer), so
      the dropdown opens flush with the button instead of overflowing
      into the textarea. Same visual style as .mic-mode-menu otherwise. */
