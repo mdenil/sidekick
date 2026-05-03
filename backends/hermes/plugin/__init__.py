@@ -1116,6 +1116,20 @@ class SidekickAdapter(BasePlatformAdapter):
         # chat_ids collide across platforms.
         parsed_source, chat_id = _parse_gateway_id(raw_id)
         source = parsed_source if parsed_source is not None else SIDEKICK_SOURCE
+        if parsed_source is None:
+            # Surfaces any caller still using bare-id DELETE so we can
+            # tighten this fallback (eventually 400) once all callers
+            # migrate. The 2026-05-03 data-loss regression flowed through
+            # this exact path: a stale frontend cleanup hit bare-id
+            # DELETE, this fallback defaulted to sidekick, and a real
+            # session was wiped silently. The frontend cleanup is now
+            # local-IDB-only (src/main.ts cleanupAbandonedChat) — any
+            # bare-id DELETE arriving here is unexpected and worth a log.
+            logger.warning(
+                "[sidekick] bare-id DELETE %s — defaulting source=sidekick. "
+                "Caller should use prefixed id `sidekick:%s` to be explicit.",
+                raw_id, chat_id,
+            )
         result = await asyncio.to_thread(
             self._delete_conversation_sync, chat_id, source,
         )
