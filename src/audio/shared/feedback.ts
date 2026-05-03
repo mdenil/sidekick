@@ -47,7 +47,7 @@ function getCtx() {
 
 /**
  * Play a short click/pop sound.
- * @param {'send'|'receive'|'error'|'start'|'commit'|'connect'|'listening'} type
+ * @param {'send'|'receive'|'error'|'start'|'commit'|'connect'|'listening'|'barge'} type
  *   - send:    short rising click, confirms outbound
  *   - receive: soft descending pop, confirms inbound
  *   - error:   two low descending tones — distinct from send/receive so
@@ -80,6 +80,12 @@ function getCtx() {
  *              compete with the user starting to speak. Distinct from
  *              'connect' which is the louder handshake notice; this
  *              is the gentler "you can talk now" cue.
+ *   - barge:   single short sine ping (~80ms, ~600Hz) — "I heard you,
+ *              stopping". Fires the moment the BargeWindow detector
+ *              triggers, BEFORE the upstream halt round-trip. Gives the
+ *              user instant feedback that "barge worked, stop yelling
+ *              at the phone." Same chime for realtime + turn-based
+ *              (both call playFeedback('barge') on BargeWindow.onFire).
  */
 export function playFeedback(type) {
   // Test instrumentation hook — Playwright smokes use this to assert
@@ -206,6 +212,19 @@ export function playFeedback(type) {
       gain2.gain.exponentialRampToValueAtTime(0.001, t2 + 0.08);
       osc2.start(t2);
       osc2.stop(t2 + 0.08);
+    } else if (type === 'barge') {
+      // Single short sine ping — "I heard you, stopping". ~80ms at
+      // 600Hz with a quick fade-out. Sine (not triangle) so it doesn't
+      // jangle against the agent's TTS that we're cutting off; low
+      // enough in pitch that it reads as a "halt" rather than an
+      // alert. Slightly under 'send' gain so it doesn't compete with
+      // the user's continued speech immediately afterwards.
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(600, now);
+      gain.gain.setValueAtTime(0.06 * scale, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.08);
+      osc.start(now);
+      osc.stop(now + 0.08);
     } else if (type === 'error') {
       // Two short low-pitched descending tones — alert, not alarming.
       // Uses triangle wave for a fuller sound that carries over wind

@@ -346,6 +346,12 @@ function tickBarge(): void {
   if (bargeWindow.push(peak, threshold)) {
     log(`listen: barge fire peak=${peak.toFixed(3)}`);
     stopBargeLoop();
+    // Audible feedback — same chime realtime fires on barge so the
+    // user hears a consistent "I heard you, stopping" cue across both
+    // modes. Plays BEFORE the caller's onBarge runs so the user
+    // doesn't hear silence between the agent's TTS being cut and the
+    // re-arm chime that fires on next-turn re-arm.
+    try { playFeedback('barge'); } catch { /* noop */ }
     try { opts?.onBarge?.(); } catch (e: any) {
       diag('listen: onBarge threw', e?.message);
     }

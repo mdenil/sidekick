@@ -32,6 +32,7 @@
 
 import { log } from '../../util/log.ts';
 import { BargeWindow } from '../shared/barge.ts';
+import { playFeedback } from '../shared/feedback.ts';
 import * as audioPlatform from '../shared/platform.ts';
 import * as settings from '../../settings.ts';
 
@@ -140,6 +141,10 @@ function tick(): void {
     // after the caller halts TTS — the next isPlaying() flip resets
     // bargeMuteUntil cleanly.
     bargeMuteUntil = 0;
+    // Audible feedback BEFORE the upstream halt round-trip. The user
+    // hears "barge worked" instantly; the actual TTS halt follows
+    // when the bridge processes the upstream envelope.
+    try { playFeedback('barge'); } catch { /* noop */ }
     try { onFireCb?.(); } catch (e: any) {
       log('[realtime-barge] onFire threw', e?.message);
     }
