@@ -2791,19 +2791,29 @@ async function boot() {
 
   function applyMicModeUi(): void {
     const s = settings.get() as any;
+    // streamingEngine === 'local' makes the REALTIME mode unreachable
+    // (no WebRTC bridge → no peer track for streaming). But TURN-BASED
+    // call mode (Listen) is still valid with local STT + local TTS —
+    // the user gets a handsfree silence-driven flow that's fully
+    // browser-side. So: hide the Realtime toggle in the call-mode
+    // menu when local, force settings.realtime=false so btn-call
+    // opens Listen mode, but keep the button itself visible.
+    const localEngine = s.streamingEngine === 'local';
+    if (localEngine && s.realtime) {
+      // Force-flip settings.realtime off — local engine can't do realtime
+      void settings.set('realtime', false);
+      (s as any).realtime = false;
+    }
     applyMenuRows(callModeMenu, s);
     if (callModeWrap) {
       callModeWrap.dataset.mode = s.realtime ? 'realtime' : 'turn-based';
     }
-    // streamingEngine === 'local' kills the realtime+speak mode entirely
-    // (no WebRTC bridge means no peer-track TTS). Hide the whole call-
-    // button wrap (icon + chevron + menu) so the user doesn't tap a
-    // dead button. realtime+talkonly is still reachable via btn-mic
-    // tap, which now drives browser-local SpeechRecognition through
-    // the streamingEngine selector in startDictate.
-    if (callModeWrap) {
-      const localEngine = s.streamingEngine === 'local';
-      callModeWrap.style.display = localEngine ? 'none' : '';
+    // Toggle the Realtime row visibility based on engine.
+    const realtimeRow = callModeMenu?.querySelector(
+      'button.mic-toggle-row[data-toggle="realtime"]',
+    ) as HTMLElement | null;
+    if (realtimeRow) {
+      realtimeRow.style.display = localEngine ? 'none' : '';
     }
     // Dynamic call-button tooltip — only meaningful on hover devices
     // (setTooltip skips title= on touch).
