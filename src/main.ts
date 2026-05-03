@@ -1547,6 +1547,15 @@ async function boot() {
     updateSendButtonState();
   }
 
+  // Tracks the in-flight /transcribe upload size (bytes) so the periodic
+  // status refresher can surface "Uploading audio (NKB)…" while the
+  // request is on the wire. Field bug 2026-05-02: 14-22s queue→flush
+  // window was completely silent, leaving the user wondering if anything
+  // was happening between "queued" and the eventual transcript landing
+  // in the composer. null = no upload in flight; the refresher falls
+  // back to its normal connected/stalled narrative.
+  let uploadInFlightBytes: number | null = null;
+
   /** Flush queued audio items — update the corresponding memo cards with transcripts. */
   async function flushOutbox() {
     const result = await queue.flush(
@@ -1574,23 +1583,36 @@ async function boot() {
           ? `/transcribe?${kt.map(t => 'keyterms=' + encodeURIComponent(t)).join('&')}`
           : '/transcribe';
         let res;
+        // Surface "Uploading audio (NKB)…" immediately + via the
+        // periodic refresher (which prefers uploadInFlightBytes when
+        // set). Cleared in finally so success/timeout/error all reset
+        // the indicator. fetchWithTimeout doesn't expose progress
+        // events, so this is indeterminate by design — just enough
+        // to tell the user "stop tapping, it's working."
+        uploadInFlightBytes = blob.size;
+        const kb = Math.round(blob.size / 1024);
+        status.setStatus(`Uploading audio (${kb} KB)…`, 'live');
         try {
-          res = await fetchWithTimeout(url, {
-            method: 'POST', headers: { 'Content-Type': mimeType }, body: blob,
-            timeoutMs,
-          });
-        } catch (e) {
-          if (e instanceof TimeoutError) {
-            // Surface + chime; blob stays in queue for retry on next
-            // reconnect. The card moves to queued(⏳) so the user sees
-            // something is pending.
-            log('transcribe timeout — blob stays queued for retry');
-            const transcriptEl = document.getElementById('transcript');
-            const card = id && transcriptEl ? memoCard.find(transcriptEl, id) : null;
-            if (card) memoCard.update(card, { status: 'queued' });
-            playFeedback('error');
+          try {
+            res = await fetchWithTimeout(url, {
+              method: 'POST', headers: { 'Content-Type': mimeType }, body: blob,
+              timeoutMs,
+            });
+          } catch (e) {
+            if (e instanceof TimeoutError) {
+              // Surface + chime; blob stays in queue for retry on next
+              // reconnect. The card moves to queued(⏳) so the user sees
+              // something is pending.
+              log('transcribe timeout — blob stays queued for retry');
+              const transcriptEl = document.getElementById('transcript');
+              const card = id && transcriptEl ? memoCard.find(transcriptEl, id) : null;
+              if (card) memoCard.update(card, { status: 'queued' });
+              playFeedback('error');
+            }
+            throw e;  // re-throw so queue.flush keeps the item
           }
-          throw e;  // re-throw so queue.flush keeps the item
+        } finally {
+          uploadInFlightBytes = null;
         }
         const data = await res.json();
         if (!data.ok) {
@@ -1693,7 +1715,15 @@ async function boot() {
       // fire on idle would be a constant false positive. Stalled
       // (idle + queued outbound) IS unambiguous and stays.
       const msIdle = backend.msSinceLastEnvelope();
-      if (!gwConnected) {
+      // Upload-in-flight wins over the connectivity narrative — the
+      // user wants to see "uploading" until the request lands, even
+      // if the gateway briefly looks idle. Without this the 2s
+      // refresher would clobber the "Uploading…" pill back to
+      // "Connected" within a tick.
+      if (uploadInFlightBytes != null) {
+        const kb = Math.round(uploadInFlightBytes / 1024);
+        status.setStatus(`Uploading audio (${kb} KB)…`, 'live');
+      } else if (!gwConnected) {
         status.setState('reconnecting', { queuedCount: summary.count, queuedAudioMs: summary.totalAudioMs });
       } else if (msIdle > WEAK_SIGNAL_MS && summary.count > 0) {
         status.setState('stalled', { queuedCount: summary.count, queuedAudioMs: summary.totalAudioMs });
