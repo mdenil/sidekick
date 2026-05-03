@@ -32,8 +32,18 @@ import { log } from '../../util/log.ts';
  *  typical buffer plus a small margin. */
 const SUPPRESS_GRACE_MS = 1200;
 
+// Speaker-buffer drain time after a barge halt. The bridge stops
+// sending TTS frames when it receives the upstream barge envelope,
+// but the client's audio output queue (Web Audio + OS speaker buffer)
+// has ~300-500ms of TTS already in flight. During that drain window,
+// the mic captures the residual TTS audio — without this grace, the
+// drained tail gets STT-transcribed into a fake user turn (the
+// "1 2 3 ... zero" feedback loop, 2026-05-03 09:34). Set 2026-05-03.
+const TTS_DRAIN_GRACE_MS = 600;
+
 let suppressing = false;
 let suppressEndTimer: ReturnType<typeof setTimeout> | null = null;
+let ttsPlayingClearTimer: ReturnType<typeof setTimeout> | null = null;
 // TTS audio playback flag — distinct from `suppressing` because the
 // transcript-suppression window is short (final + 1.2s grace, just long
 // enough to drop the AEC-leaked speakerphone tail) but the TTS audio
@@ -88,15 +98,24 @@ export function onAssistantFinal(): void {
 
 /** Called by main.ts when the bridge sends `{type:'barge'}` — the
  *  user interrupted, so cancel any pending tail-grace and let user
- *  transcripts flow again immediately. */
+ *  transcripts flow again immediately for the user's intentional
+ *  speech. BUT: keep `ttsPlaying` true for TTS_DRAIN_GRACE_MS so the
+ *  speaker-buffer tail draining over the next ~500ms doesn't get
+ *  STT-transcribed as a fake user turn. */
 export function onBarge(): void {
   if (suppressEndTimer) {
     clearTimeout(suppressEndTimer);
     suppressEndTimer = null;
   }
   if (suppressing) stopSuppressing('barge');
-  // Bridge will halt its TTS sender; the audio in the speaker is gone.
-  ttsPlaying = false;
+  // Schedule ttsPlaying clear AFTER the speaker tail drains — was
+  // immediate, but the drained tail leaked to STT and created fake
+  // user turns ("1 2 3 ... zero" feedback loop, 2026-05-03 09:34).
+  if (ttsPlayingClearTimer) clearTimeout(ttsPlayingClearTimer);
+  ttsPlayingClearTimer = setTimeout(() => {
+    ttsPlayingClearTimer = null;
+    ttsPlaying = false;
+  }, TTS_DRAIN_GRACE_MS);
 }
 
 /** Called by main.ts when the bridge sends `{type:'listening'}` —
@@ -105,6 +124,10 @@ export function onBarge(): void {
  *  its own TTS sender stopped pushing frames. The transcript-suppression
  *  grace timer is independent (shorter, AEC-tail-focused). */
 export function onListening(): void {
+  if (ttsPlayingClearTimer) {
+    clearTimeout(ttsPlayingClearTimer);
+    ttsPlayingClearTimer = null;
+  }
   ttsPlaying = false;
 }
 
@@ -118,6 +141,10 @@ export function reset(): void {
   if (suppressing) {
     suppressing = false;
     log('[suppress] reset (call lifecycle)');
+  }
+  if (ttsPlayingClearTimer) {
+    clearTimeout(ttsPlayingClearTimer);
+    ttsPlayingClearTimer = null;
   }
   ttsPlaying = false;
 }

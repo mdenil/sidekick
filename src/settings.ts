@@ -223,25 +223,28 @@ let current = { ...DEFAULTS };
 // Barge-in sensitivity ↔ threshold mapping. The user-facing slider is a
 // "sensitivity %" (higher = more sensitive, matches the label). Under the
 // hood we store a peak threshold (0..1; higher = requires louder sound).
-// Linear mapping: 100% ↔ threshold 0.0, 0% ↔ threshold BARGE_MAX_THRESHOLD.
+// Linear mapping: 100% ↔ BARGE_MIN_THRESHOLD, 0% ↔ BARGE_MAX_THRESHOLD.
 //
-// 2026-05-03: dropped from 0.5 → 0.10. Real-mic measurements (v0.384
-// diag log) showed Mac speech peaks at 0.03-0.08, ambient floor 0.008.
-// At max=0.5, only the top ~10% of the slider's range produced
-// thresholds reachable by speech — Jonathan moved slider to 60%
-// expecting "fairly sensitive" and got threshold 0.20 (4× above his
-// loudest "okay"). New max=0.10 puts the entire slider range in the
-// useful operating zone: 50% = threshold 0.05 (catches normal voice),
-// 100% = threshold 0.0 (max sensitivity / hair trigger), 0% = 0.10
-// (well above measured peaks, effectively off).
-const BARGE_MAX_THRESHOLD = 0.10;
+// 2026-05-03: dropped from 0.5 → 0.10 → 0.06 across iterations.
+// AEC-on (v0.387) ducks user voice during TTS to peaks ~0.020-0.025,
+// so the high-sensitivity end of the slider needs to land in that
+// range. Min clamp at 0.012: the analyser's quantization step is
+// 1/128 ≈ 0.008, so any threshold below that is "below the noise
+// floor" and will fire on every silent frame (the v0.387 95% slider
+// self-fire bug). 0.012 = ~1.5× quantization step, enough margin
+// that ambient quantization noise doesn't trip.
+const BARGE_MAX_THRESHOLD = 0.06;
+const BARGE_MIN_THRESHOLD = 0.012;
 function sensitivityToThreshold(sens) {
   const clamped = Math.max(0, Math.min(100, sens));
-  return +((100 - clamped) / 100 * BARGE_MAX_THRESHOLD).toFixed(3);
+  // Linear interpolate between MIN (sens=100) and MAX (sens=0).
+  const range = BARGE_MAX_THRESHOLD - BARGE_MIN_THRESHOLD;
+  return +(BARGE_MIN_THRESHOLD + (100 - clamped) / 100 * range).toFixed(3);
 }
 function thresholdToSensitivity(thr) {
-  const clamped = Math.max(0, Math.min(BARGE_MAX_THRESHOLD, thr));
-  return Math.round((1 - clamped / BARGE_MAX_THRESHOLD) * 100);
+  const clamped = Math.max(BARGE_MIN_THRESHOLD, Math.min(BARGE_MAX_THRESHOLD, thr));
+  const range = BARGE_MAX_THRESHOLD - BARGE_MIN_THRESHOLD;
+  return Math.round((1 - (clamped - BARGE_MIN_THRESHOLD) / range) * 100);
 }
 
 function audioFeedbackLabel(vol) {
