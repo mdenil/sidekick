@@ -372,10 +372,16 @@ export function addLine(speaker: string, text: string, cls = '', opts: {
   if (cls.includes('agent')) {
     const playGlyph = `<svg class="glyph-play" viewBox="0 0 16 16" fill="none"><polygon points="5 3 13 8 5 13 5 3" fill="currentColor"/></svg>`;
     const pauseGlyph = `<svg class="glyph-pause" viewBox="0 0 16 16" fill="none"><rect x="4" y="3" width="3" height="10" fill="currentColor"/><rect x="9" y="3" width="3" height="10" fill="currentColor"/></svg>`;
+    // Loading spinner — minimal line-style ring; CSS spins it via
+    // @keyframes when .tts-streaming is on the bubble. Replaces the
+    // play glyph during /tts fetch so the user sees "loading, hands
+    // off" instead of an unchanged play button (tap-then-nothing was
+    // the field-bug: 6 taps over 80s while waiting for the first one).
+    const loadingGlyph = `<svg class="glyph-loading" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><path d="M14 8a6 6 0 1 1-3-5.196"/></svg>`;
     const playBtn = document.createElement('button');
     playBtn.className = 'play-btn';
     playBtn.title = 'Play / pause this reply';
-    playBtn.innerHTML = playGlyph + pauseGlyph;
+    playBtn.innerHTML = playGlyph + pauseGlyph + loadingGlyph;
     div.appendChild(playBtn);
 
     const bar = document.createElement('div');

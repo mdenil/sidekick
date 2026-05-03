@@ -316,6 +316,17 @@ async function onPlayClick(e: Event, btn: HTMLElement): Promise<void> {
   if (!text) return;
 
   const activeId = tts.getActiveReplyId();
+  // Guard against tap-while-loading: each subsequent tap supersedes
+  // the in-flight /tts fetch and restarts it, leaving the user
+  // waiting forever and producing no feedback. Field bug 2026-05-02:
+  // 6 taps over 80s on a single bubble while waiting for the first
+  // synth. If THIS bubble is currently loading, drop the click — the
+  // CSS spinner already signals "working on it." Other bubbles can
+  // still steal focus; that's the supersede-and-cancel design.
+  if (activeId === replyId && tts.getState() === 'loading') {
+    log(`[reply-player] click ignored (loading) bubble=${replyId}`);
+    return;
+  }
   log(`[reply-player] click bubble=${replyId} active=${activeId} state=${tts.getState()}`);
 
   // If THIS bubble is active, toggle on the live state machine.

@@ -1352,11 +1352,31 @@
   .line.agent.tts-active .play-btn,
   .line.agent.tts-playing .play-btn,
   .line.agent.tts-paused .play-btn { opacity: 1; color: var(--primary); }
-  /* Glyph swap via CSS (both SVGs in DOM). Default = play visible,
-   * pause hidden. .tts-playing flips it. */
-  .line.agent .play-btn .glyph-pause { display: none; }
+  /* Glyph swap via CSS (all three SVGs in DOM). Default = play visible,
+   * pause + loading hidden. .tts-playing flips play→pause.
+   * .tts-streaming flips play→loading. Loading takes precedence over
+   * playing because synth-start always precedes play-start, and we want
+   * the spinner to keep showing until audio actually begins. */
+  .line.agent .play-btn .glyph-pause,
+  .line.agent .play-btn .glyph-loading { display: none; }
   .line.agent.tts-playing .play-btn .glyph-play { display: none; }
   .line.agent.tts-playing .play-btn .glyph-pause { display: inline-block; }
+  .line.agent.tts-streaming .play-btn .glyph-play,
+  .line.agent.tts-streaming .play-btn .glyph-pause { display: none; }
+  .line.agent.tts-streaming .play-btn .glyph-loading {
+    display: inline-block;
+    animation: play-btn-spin 0.9s linear infinite;
+    transform-origin: 50% 50%;
+  }
+  /* Loading state shows the user "we're working on it" + visually
+   * hints that further taps won't help (the click handler also
+   * no-ops while loading — see replyPlayer.onPlayClick). Force the
+   * button to its "active" opacity so it doesn't fade back to muted. */
+  .line.agent.tts-streaming .play-btn { opacity: 1; color: var(--primary); cursor: wait; }
+  @keyframes play-btn-spin {
+    from { transform: rotate(0deg); }
+    to   { transform: rotate(360deg); }
+  }
   .line .line-ts {
     position: absolute; top: 6px; right: 34px;
     font-family: var(--font-mono); font-size: 10.5px;
