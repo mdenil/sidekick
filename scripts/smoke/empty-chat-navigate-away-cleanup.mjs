@@ -22,7 +22,12 @@ export const STATUS = 'implemented';
 export const BACKEND = 'mocked';
 
 const CHAT_A = 'mock-chat-with-content-A';
-const ORPHAN_ID = '00000000-orphan-empty-aaaa-000000000001';
+// Post-v0.383 unification: locally-minted ids carry the `sidekick:` prefix.
+// Old smoke seeded a bare uuid; the new cleanup rule no longer cares
+// about id shape (keys off cached messageCount), but aligning the seed
+// with the unified shape keeps the test honest about what the world
+// actually looks like.
+const ORPHAN_ID = 'sidekick:00000000-orphan-empty-aaaa-000000000001';
 
 export function MOCK_SETUP(mock) {
   // Real chat with messages on the backend.

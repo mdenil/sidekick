@@ -374,25 +374,33 @@ async function boot() {
   function cleanupAbandonedChat(leavingId: string | null): void {
     if (!leavingId) return;
     if (draft.hasContent() || attachments.hasPending()) return;
-    // CONTRACT (post-2026-05-03 data-loss regression):
+    // CONTRACT (post-v0.383 unification, 2026-05-03):
     // Auto-cleanup is LOCAL-IDB-ONLY. backend.deleteSession is reserved
     // for explicit user actions (menu delete, multi-select bulk).
-    // The id format encodes ownership:
-    //   - bare (no `:`)            → conversations.create() local IDB row,
-    //                                 backend never registered it (line 115 —
-    //                                 local writes only until first send).
-    //   - `${source}:${chat_id}`   → server's gateway-prefixed row; backend
-    //                                 owns the lifecycle. Refuse to auto-clean.
-    // Pre-fix this called backend.deleteSession on bare ids. The plugin's
-    // un-prefixed DELETE fallback defaulted source=sidekick and silently
-    // wiped real sessions whose chat_id matched a bare local-IDB orphan
-    // (Jonathan's morning audio-test session, 2026-05-03 01:29).
-    if (leavingId.includes(':')) return;
-    // Defense: don't auto-clean a row the cache says has actual messages.
-    // After the merge dedup in proxyClient.listSessions this should be
-    // unreachable for non-orphans, but the guard is cheap.
+    //
+    // Replaces the pre-unification rule "refuse if id contains ':'":
+    // post-IDB-schema-v2 EVERY id is prefixed (mintChatId stamps
+    // `sidekick:`; cross-device hydrate carries the gateway prefix),
+    // so the old gate would refuse every cleanup. The new rule keys
+    // off whether the SERVER knows about the row, not the id shape:
+    //   - cached row not in sessions list  → server never registered;
+    //                                        local-only orphan, drop it.
+    //   - cached row found, messageCount=0 → real-but-empty (e.g. a
+    //                                        send aborted before any
+    //                                        message landed); also a
+    //                                        local-only orphan from
+    //                                        the user's perspective.
+    //   - otherwise                        → server owns the lifecycle,
+    //                                        refuse to auto-clean.
+    //
+    // Pre-fix this called backend.deleteSession on bare ids; the
+    // plugin's un-prefixed DELETE fallback wiped real sessions whose
+    // chat_id matched a bare local-IDB orphan (Jonathan's morning
+    // audio-test session, 2026-05-03 01:29). This path now NEVER
+    // touches the backend.
     const cached = sessionDrawer.getCachedSessions().find(s => s.id === leavingId);
-    if (cached && cached.messageCount > 0) return;
+    const serverKnowsRow = !!cached && cached.messageCount > 0;
+    if (serverKnowsRow) return;
     diag(`navigate-away: dropping local-only orphan ${leavingId}`);
     void conversations.remove(leavingId)
       .catch((e: any) => diag(`navigate-away cleanup failed: ${e?.message}`))
