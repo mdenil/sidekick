@@ -136,7 +136,20 @@ function updateButton(): void {
  *  follow-along during reply still glides. */
 export function forceScrollToBottom(): void {
   if (!transcriptEl) return;
-  transcriptEl.scrollTo({ top: transcriptEl.scrollHeight, behavior: 'instant' as ScrollBehavior });
+  const doScroll = () => {
+    if (!transcriptEl) return;
+    transcriptEl.scrollTo({ top: transcriptEl.scrollHeight, behavior: 'instant' as ScrollBehavior });
+  };
+  // Belt-and-braces: scroll immediately (works in 95% of cases when
+  // layout is already up-to-date), AND again on next animation frame
+  // (covers the cases where bubbles were just appended and the browser
+  // hadn't run layout yet — scrollHeight read returned a stale value
+  // that didn't include the new content). Field repro 2026-05-04
+  // (Jonathan): switching sessions occasionally left the chat scrolled
+  // to top with content below the viewport; manual scroll revealed the
+  // bubbles were rendered correctly, just not scrolled to.
+  doScroll();
+  requestAnimationFrame(doScroll);
   pinnedToBottom = true;
   missedWhileScrolled = 0;
   updateButton();

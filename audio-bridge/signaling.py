@@ -139,6 +139,17 @@ async def handle_offer(request: "web.Request") -> "web.Response":
 
     pc = create_peer_connection()
     peer_id = make_peer_id()
+    # [ice-trace] instrumentation (Jonathan, 2026-05-04 overnight) —
+    # diagnose Mac Chrome 8s ICE hang. Captures EVERY connection +
+    # ICE state transition with monotonic timing. print() to stderr
+    # so it bypasses the (apparently INFO-suppressed) logger.
+    import time as _ice_time
+    import sys as _ice_sys
+    _ice_t0 = _ice_time.monotonic()
+    def _ice_trace(event: str, extra: str = "") -> None:
+        ms = int((_ice_time.monotonic() - _ice_t0) * 1000)
+        print(f"[ice-trace {peer_id[:8]}] +{ms}ms {event}{' ' + extra if extra else ''}", flush=True, file=_ice_sys.stderr)
+    _ice_trace("offer-received", f"mode={mode}")
     peer = PeerSession(peer_id=peer_id, mode=mode, pc=pc)
     peer.extra["conv_name"] = conv_name
     peer.extra["chat_id"] = chat_id
@@ -194,13 +205,19 @@ async def handle_offer(request: "web.Request") -> "web.Response":
     @pc.on("connectionstatechange")
     async def _on_state_change():  # pragma: no cover — logging hook
         state = pc.connectionState
+        _ice_trace("connection-state", state)
         logger.info("[peer %s] connection state -> %s", peer_id, state)
         if state in ("failed", "closed"):
             await REGISTRY.evict(peer_id)
 
     @pc.on("iceconnectionstatechange")
     async def _on_ice_state():  # pragma: no cover
+        _ice_trace("ice-state", pc.iceConnectionState)
         logger.info("[peer %s] ICE state -> %s", peer_id, pc.iceConnectionState)
+
+    @pc.on("icegatheringstatechange")
+    async def _on_ice_gather():  # pragma: no cover
+        _ice_trace("ice-gathering", pc.iceGatheringState)
 
     @pc.on("datachannel")
     def _on_datachannel(channel):  # pragma: no cover — wiring hook
@@ -223,10 +240,17 @@ async def handle_offer(request: "web.Request") -> "web.Response":
                 peer.data_channel = None
 
     try:
+        _ice_trace("setRemoteDescription-start")
         await pc.setRemoteDescription(RTCSessionDescription(sdp=sdp, type=sdp_type))
+        _ice_trace("setRemoteDescription-end")
+        _ice_trace("createAnswer-start")
         answer = await pc.createAnswer()
+        _ice_trace("createAnswer-end")
+        _ice_trace("setLocalDescription-start")
         await pc.setLocalDescription(answer)
+        _ice_trace("setLocalDescription-end")
     except Exception as e:
+        _ice_trace("setup-failed", str(e)[:80])
         logger.exception("[peer %s] offer/answer setup failed", peer_id)
         try:
             await pc.close()
@@ -339,16 +363,36 @@ async def handle_ice(request: "web.Request") -> "web.Response":
     candidate_payload = payload.get("candidate")
     # End-of-candidates sentinel: { "candidate": "" } or { "candidate": null }
     if not candidate_payload or not (candidate_payload or {}).get("candidate"):
+        # [ice-trace] hint: end-of-candidates from PWA. This rarely
+        # arrives (PWA filters out null candidates) but log when it does.
+        import sys as _sys
+        print(f"[ice-trace {peer_id[:8]}] end-of-candidates", flush=True, file=_sys.stderr)
         logger.debug("[peer %s] end-of-candidates", peer_id)
         return web.json_response({"ok": True, "end_of_candidates": True})
 
     cand = parse_ice_candidate(candidate_payload)
+    # [ice-trace] log every remote candidate add — reveals timing
+    # between client offering candidates and bridge processing them.
+    # Note: addIceCandidate is await'd downstream; if a candidate is
+    # an mDNS host, aioice will attempt resolution (1s timeout per
+    # mdns.py:122) which may explain part of the 8s wait.
+    import sys as _ice_sys
+    _cand_str = candidate_payload.get("candidate", "")[:80]
+    print(f"[ice-trace {peer_id[:8]}] candidate-recv {_cand_str}", flush=True, file=_ice_sys.stderr)
     if cand is None:
         return _err("could not parse ICE candidate")
 
     try:
+        # Wrap with timing — if mDNS resolution is the wait, addIceCandidate
+        # for an mDNS host will block 1s+ per candidate before aioice gives up.
+        import time as _t
+        _add_t0 = _t.monotonic()
         await peer.pc.addIceCandidate(cand)
+        _add_ms = int((_t.monotonic() - _add_t0) * 1000)
+        if _add_ms > 50:
+            print(f"[ice-trace {peer_id[:8]}] addIceCandidate slow={_add_ms}ms", flush=True, file=_ice_sys.stderr)
     except Exception as e:
+        print(f"[ice-trace {peer_id[:8]}] addIceCandidate-failed {e}", flush=True, file=_ice_sys.stderr)
         logger.warning("[peer %s] addIceCandidate failed: %s", peer_id, e)
         return _err(f"addIceCandidate failed: {e}", status=500, code="ice_failed")
 

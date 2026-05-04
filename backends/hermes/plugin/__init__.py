@@ -1008,6 +1008,18 @@ class SidekickAdapter(BasePlatformAdapter):
         are short ints, so collisions are vanishingly unlikely in
         practice but the deterministic preference keeps behavior
         reproducible)."""
+        # [items-trace] instrumentation (Jonathan, 2026-05-04 overnight)
+        # — diagnose the 4-20s `/messages` latency. Print() bypasses
+        # hermes logger config (which seemingly drops INFO from journal).
+        # Removes once the bottleneck is identified.
+        import time as _time
+        import sys as _sys
+        _trace_id = secrets.token_hex(3)
+        _t0 = _time.monotonic()
+        def _trace(event: str, extra: str = "") -> None:
+            ms = int((_time.monotonic() - _t0) * 1000)
+            print(f"[items-trace {_trace_id}] +{ms}ms {event}{' ' + extra if extra else ''}", flush=True, file=_sys.stderr)
+        _trace("enter")
         if not self._check_http_auth(request):
             return web.Response(status=401, text="invalid token")
         raw_id = request.match_info["id"]
@@ -1031,23 +1043,30 @@ class SidekickAdapter(BasePlatformAdapter):
         parsed_source, chat_id = _parse_gateway_id(raw_id)
         if parsed_source is not None:
             source = parsed_source
+            _trace("source-from-prefix", f"source={source} chat={chat_id[:24]}")
         else:
+            _trace("source-resolve-start", f"chat={chat_id[:24]}")
             source = await asyncio.to_thread(self._resolve_source_for_chat_id, chat_id)
+            _trace("source-resolve-end", f"source={source}")
             if source is None:
                 return web.Response(status=404, text="conversation not found")
 
+        _trace("query-start", f"limit={limit} before={before_id}")
         result = await asyncio.to_thread(
             self._items_by_user_id, chat_id, source, limit, before_id,
         )
+        _trace("query-end", f"rows={len(result[0]) if result else 0}")
         if result is None:
             return web.Response(status=404, text="conversation not found")
         items, first_id, has_more = result
-        return web.json_response({
+        response = web.json_response({
             "object": "list",
             "data": items,
             "first_id": first_id,
             "has_more": has_more,
         })
+        _trace("response-built")
+        return response
 
     async def _handle_list_gateway_conversations(
         self, request: "web.Request"

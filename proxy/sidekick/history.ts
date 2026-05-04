@@ -46,15 +46,22 @@ async function handleSessionMessagesViaUpstream(
   limit: number,
   before: number | null,
 ): Promise<void> {
+  // [/messages-trace] instrumentation (Jonathan, 2026-05-04 overnight) —
+  // diagnose where the 4-20s server-side latency lives. Three phase
+  // timings: enter, upstream-call, response-serialize. Disable by
+  // commenting out once the bottleneck is identified.
+  const traceId = `msgs_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+  const t0 = Date.now();
+  const trace = (event: string, extra: string = '') =>
+    console.log(`[messages-trace ${traceId}] +${Date.now() - t0}ms ${event} chat=${chatId}${extra ? ' ' + extra : ''}`);
+  trace('enter', `limit=${limit}${before !== null ? ` before=${before}` : ''}`);
   try {
+    trace('upstream-call-start');
     const r = await upstream.getMessages(chatId, {
       limit,
       ...(before !== null ? { before } : {}),
     });
-    // Translate OAI items → existing wire shape ({id, role, content,
-    // timestamp, toolName?}). The sidekick extension carries
-    // `tool_name` per item so the agent-activity drawer view stays
-    // lossless on replay.
+    trace('upstream-call-end', `n=${r.items?.length ?? 0}`);
     const messages = r.items.map((it) => ({
       id: it.id,
       role: it.role,
@@ -62,13 +69,18 @@ async function handleSessionMessagesViaUpstream(
       timestamp: it.created_at,
       ...(it.tool_name ? { toolName: it.tool_name } : {}),
     }));
-    res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({
+    trace('serialize-start');
+    const body = JSON.stringify({
       messages,
       firstId: r.first_id,
       hasMore: r.has_more,
-    }));
+    });
+    trace('serialize-end', `bytes=${body.length}`);
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(body);
+    trace('response-sent');
   } catch (e: any) {
+    trace('failed', `err=${e.message}`);
     console.error('[sidekick] session messages failed:', e.message);
     res.writeHead(500, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ error: e.message }));

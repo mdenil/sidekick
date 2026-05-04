@@ -1374,13 +1374,31 @@ async function boot() {
       updateSendButtonState();
     },
     onResetSignal: () => {
+      // /new (and /reset, /clear aliases) trigger a SERVER-SIDE
+      // session_reset: hermes mints a fresh session_id (agent forgets
+      // prior context) but keeps the SAME chat_id (visible thread +
+      // history preserved). The PWA used to wipe renderedMessages on
+      // the slash, making history LOOK gone for the brief window
+      // before the server fetch refilled the DOM (Jonathan, 2026-05-04
+      // panicked "lost history!" then it reappeared).
+      //
+      // Right behavior: leave the rendered scroll alone. Drop a system
+      // marker line that visually delimits the boundary between
+      // "agent saw this above" and "agent forgot, fresh context below."
+      // History scroll-back stays useful; user gets clear UX signal.
       diag('reset history: slash command');
       releaseCaptureIfActive();
-      renderedMessages.clear();
-      activityRow.clearAll();
+      // NOT clearing renderedMessages / activityRow / historyLoaded —
+      // those are about transcript identity, which doesn't change on
+      // session_reset (chat_id stays the same).
       draft.dismiss();
       voiceMemos.clearAll().catch(() => {});
-      historyLoaded = false;
+      chat.addLine(
+        '',
+        '— context reset, agent forgot prior turns —',
+        'system',
+        { source: 'sent' },
+      );
     },
   });
   composerInput.addEventListener('keydown', (e) => {
