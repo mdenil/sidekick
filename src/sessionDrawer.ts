@@ -474,9 +474,20 @@ export async function refresh() {
   // mounted it stays put. Also re-syncs `currentFilter` from the live
   // input value in case the user typed before refresh ever ran.
   ensureFilterInput();
-  // Priority: viewed (what's on screen) → optimistic (click in flight) →
+  // Priority: optimistic (click in flight) → viewed (what's on screen) →
   // adapter's conversationName (fallback for fresh state / new chats).
-  const active = viewedSessionId || optimisticActiveId || backend.getCurrentSessionId?.() || '';
+  //
+  // 2026-05-04 fix: previously this had viewed → optimistic precedence,
+  // which disagreed with every other read site (line 62, 82, 115, 262,
+  // 288). Result: a refresh() running during a cache-miss click (any
+  // refresh between click-fire and the server fetch resolving) would
+  // paint the OLD viewed chat as active, momentarily flickering the
+  // sidebar selection back to the previous chat before snapping to
+  // the click target when setViewed finally fired. Field repro:
+  // Jonathan, virgin Chrome cleared cache, "click chat A → flickers to
+  // current → back to A". Symptom predates today's work; surfaced
+  // because the cache-miss path is more visible post-cascade-fix.
+  const active = optimisticActiveId || viewedSessionId || backend.getCurrentSessionId?.() || '';
 
   // 1. Render from cache if available.
   const cached = await sessionCache.getListCache();
@@ -607,7 +618,7 @@ async function runServerFilterReconcile(q: string) {
     await sessionCache.putListCache(sessions);
     const listEl = document.getElementById('sessions-list');
     if (!listEl) return;
-    const active = viewedSessionId || optimisticActiveId || backend.getCurrentSessionId?.() || '';
+    const active = optimisticActiveId || viewedSessionId || backend.getCurrentSessionId?.() || '';
     renderListFiltered(listEl, active);
   } catch (e: any) {
     if (e?.name === 'AbortError') return;
@@ -1100,7 +1111,7 @@ function ensureFilterInput(): HTMLInputElement | null {
       filterRenderTimer = null;
       const listEl = document.getElementById('sessions-list');
       if (!listEl) return;
-      const active = viewedSessionId || optimisticActiveId || backend.getCurrentSessionId?.() || '';
+      const active = optimisticActiveId || viewedSessionId || backend.getCurrentSessionId?.() || '';
       renderListFiltered(listEl, active);
     }, 100) as unknown as number;
     // 2. Debounced server-authoritative reconcile — covers the case
@@ -1130,7 +1141,7 @@ function ensureFilterInput(): HTMLInputElement | null {
       clearStoredFilter();
       const listEl = document.getElementById('sessions-list');
       if (listEl) {
-        const active = viewedSessionId || optimisticActiveId || backend.getCurrentSessionId?.() || '';
+        const active = optimisticActiveId || viewedSessionId || backend.getCurrentSessionId?.() || '';
         renderListFiltered(listEl, active);
       }
       // Drop focus so a follow-up Esc can hit other Esc handlers (close
@@ -1178,7 +1189,7 @@ export function init(opts: {
     if (input) input.value = saved;
     const listEl = document.getElementById('sessions-list');
     if (listEl && cachedSessions.length) {
-      const active = viewedSessionId || optimisticActiveId || backend.getCurrentSessionId?.() || '';
+      const active = optimisticActiveId || viewedSessionId || backend.getCurrentSessionId?.() || '';
       renderListFiltered(listEl, active);
     }
   });
@@ -1217,7 +1228,7 @@ export function handleSessionAnnounced(ev: { id?: string; snippet?: string; sour
   });
   const listEl = document.getElementById('sessions-list');
   if (!listEl) return;
-  const active = viewedSessionId || optimisticActiveId || backend.getCurrentSessionId?.() || '';
+  const active = optimisticActiveId || viewedSessionId || backend.getCurrentSessionId?.() || '';
   renderListFiltered(listEl, active);
 }
 
