@@ -395,7 +395,14 @@ function handleEnvelope(type: string, env: any, chatId: string): void {
       subs?.onFinal?.({ replyId, text: finalText, conversation: chatId, messageId: msgId, isReplay });
       // Bump last_message_at so the drawer sort surfaces this row even
       // before /api/sidekick/sessions enrichment refreshes.
-      conversations.updateLastMessageAt(chatId, Date.now()).catch(() => {});
+      // NOT on replay: server replays past envelopes on stream
+      // reconnect; bumping then triggers a drawer-reorder cascade
+      // (Jonathan, 2026-05-04 field repro: 5+ resumes per page-load).
+      // The IDB row's lastMessageAt is already correct from the
+      // original live event, so skipping replay is safe.
+      if (!isReplay) {
+        conversations.updateLastMessageAt(chatId, Date.now()).catch(() => {});
+      }
       return;
     }
 
@@ -438,12 +445,15 @@ function handleEnvelope(type: string, env: any, chatId: string): void {
       // thread, badge on the drawer entry, etc.).
       const kind = typeof env.kind === 'string' ? env.kind : 'unknown';
       const content = typeof env.content === 'string' ? env.content : '';
-      log(`proxy-client: notification kind=${kind} chat_id=${chatId}`);
+      const isReplay = env?._replay === true;
+      log(`proxy-client: notification kind=${kind} chat_id=${chatId}${isReplay ? ' (replay)' : ''}`);
       subs?.onNotification?.({ chatId, kind, content });
       // Bump the drawer ordering so the chat with the freshest
-      // notification floats up. last_message_at semantically tracks
-      // "most-recent activity" — a cron-pushed message qualifies.
-      conversations.updateLastMessageAt(chatId, Date.now()).catch(() => {});
+      // notification floats up. Skip on replay (see reply_final's
+      // matching guard for cascade rationale).
+      if (!isReplay) {
+        conversations.updateLastMessageAt(chatId, Date.now()).catch(() => {});
+      }
       return;
     }
 
@@ -456,11 +466,15 @@ function handleEnvelope(type: string, env: any, chatId: string): void {
       const text = typeof env.text === 'string' ? env.text : '';
       const messageId = typeof env?.message_id === 'string' ? env.message_id : '';
       if (!messageId) return;
+      const isReplay = env?._replay === true;
       subs?.onUserMessage?.({ conversation: chatId, text, messageId });
-      // Drawer ordering — same rationale as notification: any user
-      // message is "recent activity," surfaces the chat to the top of
-      // the list on receiving devices.
-      conversations.updateLastMessageAt(chatId, Date.now()).catch(() => {});
+      // Drawer ordering — skip on replay (see reply_final's matching
+      // guard). Server replays N user_message envelopes per chat on
+      // every reconnect; without this gate that triggers N drawer
+      // reorders → N resume cascades.
+      if (!isReplay) {
+        conversations.updateLastMessageAt(chatId, Date.now()).catch(() => {});
+      }
       return;
     }
 
