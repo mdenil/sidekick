@@ -3498,14 +3498,21 @@ function replaySessionMessages(
   chat.trackViewedSession(id);
   viewedSessionForLoadEarlier = id;
   const label = getAgentLabel();
-  // Batch-render: skip per-line autoScroll + persist (which reads
-  // transcriptEl.innerHTML on each call — O(N²) for the full loop on
-  // a 200-message chat, ~5s of main-thread block). One flush at end
-  // does the same work O(N).
+  // Batch-render: skip per-line autoScroll + persist (O(N²) without
+  // batching). One flush at end does the same work O(N).
+  const tRender0 = performance.now();
   for (const m of messages) {
     renderHistoryMessage(m, label, 'append', /*batch*/ true);
   }
+  const tFlush0 = performance.now();
   chat.flushBatchedRender();
+  const tEnd = performance.now();
+  log(
+    `[chat-resume] rendered ${messages.length} msgs ` +
+    `loop=${Math.round(tFlush0 - tRender0)}ms ` +
+    `flush=${Math.round(tEnd - tFlush0)}ms ` +
+    `total=${Math.round(tEnd - tRender0)}ms`,
+  );
   // Register pagination state AFTER messages land so the scroll listener
   // doesn't fire mid-render. hasMore=false (or missing) disables lazy-load.
   chat.setPaginationState(pagination?.firstId ?? null, !!pagination?.hasMore);

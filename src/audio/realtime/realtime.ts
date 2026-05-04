@@ -256,10 +256,20 @@ export async function open(
 
   setState('connecting');
 
-  // Empty iceServers — Tailscale provides reachability between phone and
-  // Pi without STUN/TURN.  Add a public STUN server later if we need
-  // off-tailnet operation.
-  const pc = new RTCPeerConnection({ iceServers: [] });
+  // Public STUN server — required to defeat Mac Chrome's mDNS-obfuscated
+  // host candidates (Chrome since v80 hides local IPs as `xxxxx.local`
+  // for privacy). aioice on the bridge tries to resolve those via mDNS
+  // multicast, which Tailscale doesn't carry between nodes — resolution
+  // times out at ~5-8s before falling back, producing the "8s ICE on
+  // cold realtime call" symptom on Mac Chrome (Jonathan, 2026-05-04).
+  // STUN gives Chrome `srflx` server-reflexive candidates with real
+  // public IPs that complete ICE in <1s. Other browsers don't use mDNS
+  // (Safari, iOS Chrome) so STUN is a no-op for them. Google's STUN
+  // is the ubiquitous choice; alternatives (cloudflare, twilio) work
+  // identically for our needs.
+  const pc = new RTCPeerConnection({
+    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+  });
 
   // Add the mic track (sendrecv direction).
   for (const t of micStream.getAudioTracks()) {
