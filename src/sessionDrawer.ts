@@ -797,21 +797,26 @@ function renderRow(s: any, activeId: string): HTMLLIElement {
       return;
     }
     if (multiSelect.size > 0) clearMultiSelect();
-    // (Mac: ctrl+click fires contextmenu BEFORE click and suppresses
-    // the click entirely. The contextmenu listener below routes that
-    // case back into toggleSelection so ctrl+click works the same as
-    // on Linux/Windows.)
-    // Optimistic highlight: flip the active class synchronously at click
-    // time. resume() is async (cache read + server fetch) and on a cache
-    // miss can take 5-10s, which was leaving the highlight stale long
-    // after the transcript rendered. refresh() still runs later and
-    // re-derives from backend state; if everything's consistent the
-    // re-render paints the same active row and there's no flicker.
+    // ── Click-trace instrumentation (Jonathan, 2026-05-04) ────────────
+    // Diagnose-before-fix: capture timing at every phase from this
+    // click event through to the rendered transcript so the sidebar
+    // flicker / slow-load symptoms can be located in actual data, not
+    // hypothesized. Trace id correlates concurrent clicks.
+    const traceId = `click_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+    const traceT0 = performance.now();
+    const trace = (event: string, extra: string = '') => {
+      const t = Math.round(performance.now() - traceT0);
+      log(`[click-trace ${traceId}] +${t}ms ${event}${extra ? ' ' + extra : ''}`);
+    };
+    trace('click', `chat=${s.id}`);
+    // Stash on the resumeInFlight slot so resume() can pick it up.
+    pendingTrace = { traceId, traceT0, trace };
     const listEl = document.getElementById('sessions-list');
     if (listEl) {
       listEl.querySelectorAll('li.active').forEach(el => el.classList.remove('active'));
       li.classList.add('active');
     }
+    trace('sync-active-flip');
     resume(s.id);
   };
   // macOS Chrome / Safari fire `contextmenu` on ctrl+click instead
@@ -965,6 +970,10 @@ async function promptDelete(s: any) {
   }
 }
 
+/** Pending click-trace from the body.onclick handler — picked up by
+ *  resume() so the trace continues into the async work. */
+let pendingTrace: { traceId: string; traceT0: number; trace: (event: string, extra?: string) => void } | null = null;
+
 /** Monotonically increasing per-click generation counter. Each call
  *  to resume() captures the new value; the cache and server callbacks
  *  bail when they fire under a stale generation (i.e. a newer click
@@ -985,7 +994,12 @@ let resumeGen = 0;
 let resumeInFlight: { id: string; gen: number; promise: Promise<void> } | null = null;
 
 async function resume(id: string) {
+  // Adopt the trace from the click handler if present.
+  const t = pendingTrace;
+  pendingTrace = null;
+  t?.trace('resume-entered');
   if (resumeInFlight?.id === id && resumeInFlight.gen === resumeGen) {
+    t?.trace('resume-dedup-hit');
     return resumeInFlight.promise;
   }
   const myGen = ++resumeGen;
@@ -1003,25 +1017,28 @@ async function resume(id: string) {
   // fully settle.
   const leaving = viewedSessionId || optimisticActiveId;
   if (leaving && leaving !== id) {
+    t?.trace('onBeforeSwitch-start', `leaving=${leaving}`);
     try { onBeforeSwitchCb?.(leaving); }
     catch (e: any) { diag(`onBeforeSwitch threw: ${e?.message || e}`); }
+    t?.trace('onBeforeSwitch-end');
   }
   // Claim the optimistic active id immediately so refresh() paints the
   // clicked row as active even before the server fetch completes (and
   // even if the server fetch is slow or fails).
   optimisticActiveId = id;
+  t?.trace('optimistic-set');
   const promise = (async () => {
     // 1. Paint from cached transcript if we have one — instant feel.
+    t?.trace('cache-fetch-start');
     const cached = await sessionCache.getMessagesCache(id);
+    t?.trace('cache-fetch-end', `hit=${!!cached?.messages?.length} n=${cached?.messages?.length ?? 0}`);
     let cacheRendered = false;
     if (cached?.messages?.length) {
-      // Stale-generation guard: a newer click has incremented resumeGen.
-      // Render the SUPERSEDED chat would clobber the user's just-
-      // clicked one. The previous id-equality check was insufficient
-      // when two clicks shared an id (A → B → A); generation is.
       if (myGen === resumeGen) {
+        t?.trace('cache-render-start');
         log(`sessionDrawer: resumed ${id} from cache (${cached.messages.length} messages)`);
         onResumeCb?.(id, cached.messages);
+        t?.trace('cache-render-end');
         scheduleRefresh();
         cacheRendered = true;
       }
@@ -1030,7 +1047,9 @@ async function resume(id: string) {
     //    has new turns), the second replay catches up. resumeSession also
     //    abort-in-flights any stray stream from a prior session.
     try {
+      t?.trace('server-fetch-start');
       const result: any = await backend.resumeSession(id);
+      t?.trace('server-fetch-end', `n=${(result.messages || []).length}`);
       const messages = result.messages || [];
       const pagination = { firstId: result.firstId ?? null, hasMore: !!result.hasMore };
       await sessionCache.putMessagesCache(id, messages);
@@ -1046,9 +1065,14 @@ async function resume(id: string) {
       // — must run, otherwise chat.clear() never fires when the user
       // clicks an empty chat for the SECOND time and the previous
       // chat's transcript leaks through (2026-04-29 Jonathan repro).
-      if (cacheRendered && cached && cached.messages.length === messages.length) return;
+      if (cacheRendered && cached && cached.messages.length === messages.length) {
+        t?.trace('server-render-skip-cache-match');
+        return;
+      }
+      t?.trace('server-render-start');
       log(`sessionDrawer: resumed ${id} (${messages.length} messages, hasMore=${pagination.hasMore})`);
       onResumeCb?.(id, messages, pagination);
+      t?.trace('server-render-end');
       scheduleRefresh();
     } catch (e: any) {
       diag(`sessionDrawer: resume ${id} failed: ${e.message}`);
@@ -1071,6 +1095,7 @@ async function resume(id: string) {
     // Clear optimistic only if our generation is still live (no newer
     // click superseded us).
     if (myGen === resumeGen && optimisticActiveId === id) optimisticActiveId = null;
+    t?.trace('resume-finally');
   }
 }
 
