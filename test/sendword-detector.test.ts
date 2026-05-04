@@ -178,7 +178,7 @@ class MockSttProvider {
   emit(ev: any) { if (this.listener) this.listener(ev); }
 }
 
-describe('sendword detector — external STTProvider source', () => {
+describe('sendword detector — fed mode (caller-driven matching)', () => {
   beforeEach(() => {
     (globalThis as any).window.SpeechRecognition = StubSR;
     (globalThis as any).window.webkitSpeechRecognition = StubSR;
@@ -190,83 +190,55 @@ describe('sendword detector — external STTProvider source', () => {
     delete (globalThis as any).window.webkitSpeechRecognition;
   });
 
-  it('does NOT construct a standalone SR when source is provided', () => {
-    const src = new MockSttProvider();
-    const ok = sendword.start({ phrase: 'over', onMatch: () => {}, source: src as any });
+  it('does NOT construct a standalone SR when feed is true', () => {
+    const ok = sendword.start({ phrase: 'over', onMatch: () => {}, feed: true });
     assert.equal(ok, true);
     // No fresh SR instance — the constructor was never invoked.
     assert.equal(lastInstance, null);
-    // We did NOT call start() on the source — caller owns its lifecycle.
-    assert.equal(src.startCalls, 0);
-    assert.ok(src.listener, 'detector should have subscribed to source');
   });
 
-  it('matches phrase from source transcript events (interim)', () => {
+  it('matches phrase from fed interim transcript events', () => {
     let matched = false;
-    const src = new MockSttProvider();
-    sendword.start({
-      phrase: 'over',
-      onMatch: () => { matched = true; },
-      source: src as any,
-    });
-    src.emit({ type: 'transcript', text: 'hello over', is_final: false, role: 'user' });
+    sendword.start({ phrase: 'over', onMatch: () => { matched = true; }, feed: true });
+    sendword.feedTranscript({ type: 'transcript', text: 'hello over', is_final: false, role: 'user' });
     assert.equal(matched, true);
   });
 
-  it('matches phrase on final transcript event', () => {
+  it('matches phrase on fed final transcript event', () => {
     let matched = false;
-    const src = new MockSttProvider();
-    sendword.start({
-      phrase: 'over',
-      onMatch: () => { matched = true; },
-      source: src as any,
-    });
-    src.emit({ type: 'transcript', text: 'all done over', is_final: true, role: 'user' });
+    sendword.start({ phrase: 'over', onMatch: () => { matched = true; }, feed: true });
+    sendword.feedTranscript({ type: 'transcript', text: 'all done over', is_final: true, role: 'user' });
     assert.equal(matched, true);
   });
 
   it('ignores assistant-role events (TTS captions must not trigger sendword)', () => {
     let matched = false;
-    const src = new MockSttProvider();
-    sendword.start({
-      phrase: 'over',
-      onMatch: () => { matched = true; },
-      source: src as any,
-    });
-    // Assistant TTS caption that happens to contain the word — must not fire.
-    src.emit({ type: 'transcript', text: 'sure, sending it over', is_final: false, role: 'assistant' });
+    sendword.start({ phrase: 'over', onMatch: () => { matched = true; }, feed: true });
+    sendword.feedTranscript({ type: 'transcript', text: 'sure, sending it over', is_final: false, role: 'assistant' });
     assert.equal(matched, false);
   });
 
   it('ignores empty-text final (utterance-end sentinel)', () => {
     let matched = false;
-    const src = new MockSttProvider();
-    sendword.start({
-      phrase: 'over',
-      onMatch: () => { matched = true; },
-      source: src as any,
-    });
-    src.emit({ type: 'transcript', text: '', is_final: true, role: 'user' });
+    sendword.start({ phrase: 'over', onMatch: () => { matched = true; }, feed: true });
+    sendword.feedTranscript({ type: 'transcript', text: '', is_final: true, role: 'user' });
     assert.equal(matched, false);
   });
 
-  it('stop() unsubscribes but does NOT stop the source', () => {
-    const src = new MockSttProvider();
-    sendword.start({ phrase: 'over', onMatch: () => {}, source: src as any });
+  it('feedTranscript is a no-op before start() / after stop()', () => {
+    let matched = false;
+    sendword.feedTranscript({ type: 'transcript', text: 'hello over', is_final: false, role: 'user' });
+    assert.equal(matched, false);  // no opts → ignored
+    sendword.start({ phrase: 'over', onMatch: () => { matched = true; }, feed: true });
     sendword.stop();
-    assert.equal(src.unsubCalls, 1, 'detector should have unsubscribed');
-    assert.equal(src.stopCalls, 0, 'detector must NOT stop the source — caller owns it');
+    sendword.feedTranscript({ type: 'transcript', text: 'hello over', is_final: false, role: 'user' });
+    assert.equal(matched, false);  // post-stop → ignored
   });
 
-  it('does not match mid-segment phrase from source', () => {
+  it('does not match mid-segment phrase', () => {
     let matched = false;
-    const src = new MockSttProvider();
-    sendword.start({
-      phrase: 'over',
-      onMatch: () => { matched = true; },
-      source: src as any,
-    });
-    src.emit({ type: 'transcript', text: 'i went over to the store', is_final: false, role: 'user' });
+    sendword.start({ phrase: 'over', onMatch: () => { matched = true; }, feed: true });
+    sendword.feedTranscript({ type: 'transcript', text: 'i went over to the store', is_final: false, role: 'user' });
     assert.equal(matched, false);
   });
 });

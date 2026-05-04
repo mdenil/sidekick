@@ -193,6 +193,12 @@ export async function installMockBackend(page) {
     catch { body = {}; }
     const chatId = body.chat_id;
     const text = body.text || '';
+    // user_message_id may ride on the body OR on metadata.
+    // Mirrors what real plugin reads — see backends/hermes/plugin/__init__.py.
+    const incomingUserMsgId =
+      body.user_message_id
+      || (body.metadata && body.metadata.user_message_id)
+      || null;
     if (chatId) {
       let chat = chats.get(chatId);
       if (!chat) {
@@ -201,11 +207,20 @@ export async function installMockBackend(page) {
       }
       chat.messages.push({ role: 'user', content: text, timestamp: Date.now() / 1000 });
       chat.lastActiveAt = Date.now();
-      // Synthetic agent reply with deterministic content.
+      // Mirror plugin behavior: emit a user_message envelope BEFORE
+      // dispatch so cross-device clients render the bubble. Echo back
+      // the PWA-supplied user_message_id (if any) so the originating
+      // device's renderedMessages.upsert collapses idempotently.
+      const userMsgId = incomingUserMsgId || `umsg_mock_${envelopeId + 1}`;
       const replyText = `[mock] echo: ${text}`;
       const messageId = `mock-msg-${envelopeId + 1}`;
-      // Schedule the envelope sequence after the POST returns.
       setTimeout(() => {
+        broadcast({
+          type: 'user_message',
+          chat_id: chatId,
+          message_id: userMsgId,
+          text,
+        });
         broadcast({ type: 'typing', chat_id: chatId });
         broadcast({
           type: 'reply_delta',

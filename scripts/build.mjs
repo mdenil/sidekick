@@ -61,6 +61,33 @@ async function rewriteImportExtensions(dir) {
   }
 }
 
+/** Vendor bundle for @ricky0123/vad-web — Silero VAD WebAssembly speech
+ *  classifier used by src/audio/shared/speechVad.ts. The library ships
+ *  CommonJS in node_modules; the browser-direct UMD bundle externalizes
+ *  onnxruntime-web. We produce a SINGLE ESM that includes both, dynamic-
+ *  imported on demand from the SpeechVAD adapter so the cold-start cost
+ *  is paid only when a barge loop spins up (not on every page load).
+ *
+ *  Output: build/vendor/vad-web.mjs (≈ a few hundred KB of JS — the wasm
+ *  + onnx model + audio worklet are loaded separately at runtime from
+ *  /assets/vad/, NOT bundled in here). */
+async function buildVendorBundles() {
+  await esbuild.build({
+    entryPoints: [join(ROOT, 'src/audio/shared/speechVad/vendor-entry.mjs')],
+    outfile: join(OUT, 'vendor/vad-web.mjs'),
+    format: 'esm',
+    target: 'es2022',
+    bundle: true,
+    minify: true,
+    sourcemap: false,
+    logLevel: 'info',
+    // Keep the wasm/onnx/worklet asset references resolved at runtime via
+    // the adapter's `baseAssetPath` / `onnxWASMBasePath` options — esbuild
+    // shouldn't try to inline them into the JS bundle.
+    loader: { '.wasm': 'file', '.onnx': 'file' },
+  });
+}
+
 async function build({ watch }) {
   await rm(OUT, { recursive: true, force: true });
   const entries = await collectSources(SRC);
@@ -83,6 +110,7 @@ async function build({ watch }) {
     await esbuild.build(opts);
     await copyAssets();
     await rewriteImportExtensions(OUT);
+    await buildVendorBundles();
     console.log(`[build] compiled ${entries.length} files → ${relative(ROOT, OUT)}/`);
   }
 }

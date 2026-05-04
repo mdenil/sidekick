@@ -25,6 +25,13 @@ export type SidekickEnvelope =
   | { type: 'image'; chat_id: string; url: string; caption?: string }
   | { type: 'notification'; chat_id: string; kind: string; content: string }
   | { type: 'session_changed'; chat_id: string; session_id: string; title: string }
+  // Cross-device user-message broadcast. Emitted by the upstream as
+  // soon as a /v1/responses POST lands, BEFORE the agent dispatches.
+  // Other connected PWA tabs render the user bubble immediately; the
+  // originating tab dedups against its optimistic bubble via
+  // `message_id`. See backends/hermes/plugin/__init__.py
+  // `_handle_responses` for the emission site.
+  | { type: 'user_message'; chat_id: string; message_id: string; text: string }
   | { type: 'error'; chat_id: string; message: string };
 
 /** Drawer-list row, OAI Conversations API shape. */
@@ -109,7 +116,17 @@ export interface UpstreamAgent {
   sendMessage(
     chatId: string,
     text: string,
-    opts?: { signal?: AbortSignal; attachments?: unknown[] },
+    opts?: {
+      signal?: AbortSignal;
+      attachments?: unknown[];
+      voice?: boolean;
+      /** Pre-minted user-message id from the PWA — propagated into the
+       *  upstream's `user_message` broadcast envelope. Lets the
+       *  originating device dedup against its optimistic user bubble.
+       *  Omit and the upstream mints one (originating device just won't
+       *  dedup against the broadcast — fine for single-device clients). */
+      userMessageId?: string;
+    },
   ): AsyncIterable<SidekickEnvelope>;
 
   /** Drawer list. Most-recent-first, bounded by `limit`. */
@@ -129,6 +146,13 @@ export interface UpstreamAgent {
 
   /** Drawer delete. Cascades upstream (transcript + memory store). */
   deleteConversation(chatId: string): Promise<void>;
+
+  /** Rename a conversation. Persists `title` server-side so other
+   *  connected clients see the change via the agent's session_changed
+   *  envelope. Throws UpstreamHTTPError on 4xx/5xx so the proxy can
+   *  forward status+body to the PWA verbatim (validation errors flow
+   *  back as 400 with a body the user-facing layer can surface). */
+  renameConversation(chatId: string, title: string): Promise<{ title: string }>;
 
   /** Persistent SSE subscription for out-of-turn envelopes
    *  (notifications, session_changed for chats not currently in a
@@ -312,6 +336,28 @@ export class HTTPAgentUpstream implements UpstreamAgent {
     if (!r.ok) throw new Error(`upstream deleteConversation: HTTP ${r.status}`);
   }
 
+  async renameConversation(
+    chatId: string, title: string,
+  ): Promise<{ title: string }> {
+    const r = await fetch(
+      `${this.url}/v1/conversations/${encodeURIComponent(chatId)}`,
+      {
+        method: 'PATCH',
+        headers: this.headers({ 'content-type': 'application/json' }),
+        body: JSON.stringify({ title }),
+      },
+    );
+    let body: any;
+    try { body = await r.json(); } catch { body = null; }
+    if (!r.ok) {
+      // Same status+body forwarding pattern as updateSetting — the
+      // upstream is the validator (length cap, source restriction),
+      // and a 400 should reach the PWA with its body intact.
+      throw new UpstreamHTTPError(r.status, body);
+    }
+    return { title: typeof body?.title === 'string' ? body.title : title };
+  }
+
   /** Translate a /v1/responses SSE stream into sidekick envelopes.
    *  Maintains per-turn assembled-text state to compute additive
    *  deltas (the multiplexer's reply_delta protocol expects either
@@ -322,12 +368,30 @@ export class HTTPAgentUpstream implements UpstreamAgent {
   async *sendMessage(
     chatId: string,
     text: string,
-    opts: { signal?: AbortSignal; attachments?: unknown[] } = {},
+    opts: {
+      signal?: AbortSignal;
+      attachments?: unknown[];
+      voice?: boolean;
+      userMessageId?: string;
+    } = {},
   ): AsyncIterable<SidekickEnvelope> {
     // Plugins that implement the sidekick `attachments` extension on
     // /v1/responses materialize them server-side. Raw OAI-compat
     // upstreams ignore the field — additive, OAI tolerates unknown
     // body keys.
+    //
+    // user_message_id and voice ride `metadata` (OAI-blessed
+    // Dict[str,str] extension point — every Responses-API server
+    // accepts it; vanilla servers store-and-ignore unknown keys,
+    // sidekick's plugin reads them out). Better than top-level
+    // custom fields which strict servers may reject.
+    //
+    // attachments is structured (not Dict[str,str]); future work
+    // restructures it to OAI's multimodal `input` content parts.
+    // See backlog: "/v1/responses attachments → OAI multimodal input".
+    const metadata: Record<string, string> = {};
+    if (opts.userMessageId) metadata.user_message_id = opts.userMessageId;
+    if (opts.voice) metadata.voice = 'true';
     const body: Record<string, unknown> = {
       conversation: chatId,
       input: text,
@@ -336,6 +400,7 @@ export class HTTPAgentUpstream implements UpstreamAgent {
     if (opts.attachments && opts.attachments.length > 0) {
       body.attachments = opts.attachments;
     }
+    if (Object.keys(metadata).length > 0) body.metadata = metadata;
     const r = await fetch(`${this.url}/v1/responses`, {
       method: 'POST',
       headers: this.headers({ 'content-type': 'application/json' }),

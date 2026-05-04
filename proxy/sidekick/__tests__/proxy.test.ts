@@ -509,3 +509,126 @@ test('SSE — last_event_id query param resumes from the ring (manual reconnect)
     await rig.stop();
   }
 });
+
+test('user_message — broadcast envelope reaches /api/sidekick/stream subscribers', async () => {
+  // Cross-device user-message asymmetry fix: when the upstream
+  // emits a user_message envelope (out-of-turn, before agent
+  // dispatch), the proxy must fan it out on the persistent SSE
+  // channel just like notification / session_changed. Originating
+  // device dedups via message_id; other devices render fresh.
+  const rig = await startRig({ mode: 'gateway' });
+  try {
+    const ac = new AbortController();
+    const r = await fetch(
+      `${rig.proxyUrl}/api/sidekick/stream?chat_id=cross-dev`,
+      { signal: ac.signal },
+    );
+    assert.equal(r.status, 200);
+    const reader = r.body!.getReader();
+    const dec = new TextDecoder();
+
+    // Push the envelope as if hermes plugin had just emitted it.
+    await new Promise<void>((rs) => setTimeout(rs, 50));
+    rig.fakeAgent.pushOutOfTurnEvent({
+      type: 'user_message',
+      chat_id: 'cross-dev',
+      message_id: 'umsg_test_001',
+      text: 'hello from device A',
+    });
+
+    // Drain.
+    const deadline = Date.now() + 800;
+    let buf = '';
+    const seen: any[] = [];
+    while (Date.now() < deadline && !seen.find((e) => e.type === 'user_message')) {
+      const { value, done } = await Promise.race([
+        reader.read(),
+        new Promise<{ value: undefined; done: boolean }>((rs) =>
+          setTimeout(() => rs({ value: undefined, done: false }), 50),
+        ),
+      ]);
+      if (done) break;
+      if (value) buf += dec.decode(value, { stream: true });
+      let sep = buf.indexOf('\n\n');
+      while (sep !== -1) {
+        const frame = buf.slice(0, sep);
+        buf = buf.slice(sep + 2);
+        sep = buf.indexOf('\n\n');
+        let data = '';
+        for (const line of frame.split('\n')) {
+          if (line.startsWith('data:')) data += line.slice(5).trim();
+        }
+        if (!data) continue;
+        try { seen.push(JSON.parse(data)); } catch {}
+      }
+    }
+    ac.abort();
+
+    const userMsgs = seen.filter((e) => e.type === 'user_message');
+    assert.equal(userMsgs.length, 1,
+      `expected one user_message on the wire, saw ${JSON.stringify(seen)}`);
+    assert.equal(userMsgs[0].chat_id, 'cross-dev');
+    assert.equal(userMsgs[0].message_id, 'umsg_test_001');
+    assert.equal(userMsgs[0].text, 'hello from device A');
+  } finally {
+    await rig.stop();
+  }
+});
+
+test('user_message — POST /api/sidekick/messages forwards user_message_id to upstream', async () => {
+  // The PWA pre-mints the user-message id to use as the dedup key
+  // for its optimistic bubble vs. the upstream's broadcast. The
+  // proxy must propagate it verbatim into the /v1/responses request
+  // body so the plugin emits the broadcast under the same id.
+  const rig = await startRig({ mode: 'gateway' });
+  try {
+    rig.fakeAgent.enqueueTurnEvents([
+      { event: 'response.completed', data: { type: 'response.completed' } },
+    ]);
+
+    // Capture what the FakeAgent sees on the /v1/responses POST body.
+    // The harness already records `lastResponsesConversation` and
+    // `lastResponsesAttachments`; mirror that pattern by reading the
+    // fakeAgent.lastResponsesUserMessageId after the dispatch lands.
+    // We patch the fake's recorder dynamically rather than extending
+    // the harness — keeps the harness change scoped.
+    let bodySeen: any = null;
+    const origDispatch = (rig.fakeAgent as any).dispatch?.bind(rig.fakeAgent);
+    const origHandleResponses = (rig.fakeAgent as any).handleResponses
+      ?.bind(rig.fakeAgent);
+    if (origHandleResponses) {
+      (rig.fakeAgent as any).handleResponses = async function(req: any, res: any) {
+        // Consume the body, snapshot it, then write a synthetic
+        // response that mimics what the original handler does.
+        let raw = '';
+        for await (const chunk of req) raw += chunk;
+        try { bodySeen = JSON.parse(raw); } catch { bodySeen = null; }
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        res.write(`event: response.completed\ndata: ${JSON.stringify({ type: 'response.completed' })}\n\n`);
+        res.end();
+      };
+    }
+
+    const r = await fetch(`${rig.proxyUrl}/api/sidekick/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: 'umid-test', text: 'pre-minted',
+        user_message_id: 'umsg_pwa_pre_minted_42',
+      }),
+    });
+    assert.equal(r.status, 202);
+    await new Promise<void>((rs) => setTimeout(rs, 200));
+
+    assert.ok(bodySeen, 'expected /v1/responses to have received a body');
+    // 2026-05-04: user_message_id moved from top-level body to
+    // metadata.user_message_id (OAI-blessed Dict[str,str] extension).
+    // Vanilla Responses-API servers preserve unknown metadata keys;
+    // sidekick's plugin reads ours out. See proxy/sidekick/upstream.ts
+    // build of `metadata` and plugin/__init__.py read path.
+    assert.equal(bodySeen?.metadata?.user_message_id, 'umsg_pwa_pre_minted_42',
+      `expected proxy to forward metadata.user_message_id verbatim; saw ${JSON.stringify(bodySeen)}`);
+  } finally {
+    await rig.stop();
+  }
+});

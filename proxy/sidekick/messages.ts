@@ -5,9 +5,18 @@
 // /api/sidekick/stream SSE channel.
 //
 // Request body (JSON):
-//   { chat_id: string, text: string, attachments?: any[] }
+//   { chat_id: string, text: string, attachments?: any[],
+//     voice?: boolean, user_message_id?: string }
 //
 // Response (202): { ok: true, message_id: string }
+//
+// `user_message_id` is the PWA-pre-minted id used as the dedup key for
+// the upstream's `user_message` cross-device broadcast envelope. The
+// originating device's optimistic user bubble shares this id; on the
+// broadcast roundtrip it no-ops the dedup. Other devices see it for
+// the first time and render fresh. Optional — server mints one when
+// absent (originating device just won't dedup; fine for legacy/single
+// device callers).
 //
 // Wire path:
 //   PWA → POST /api/sidekick/messages
@@ -80,6 +89,9 @@ export async function handleSidekickMessage(req, res) {
   const chatId = typeof body?.chat_id === 'string' ? body.chat_id.trim() : '';
   const text = typeof body?.text === 'string' ? body.text : '';
   const attachments = Array.isArray(body?.attachments) ? body.attachments : undefined;
+  const voice = body?.voice === true;
+  const userMessageId = typeof body?.user_message_id === 'string' && body.user_message_id
+    ? body.user_message_id : undefined;
   if (!chatId) {
     res.writeHead(400, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ error: 'chat_id required' }));
@@ -98,7 +110,7 @@ export async function handleSidekickMessage(req, res) {
   // hermes' vision tools can read them; raw OAI third-party upstreams
   // ignore the unknown field.
   const messageId = newMessageId();
-  void dispatchTurnViaUpstream(upstream, chatId, text, attachments);
+  void dispatchTurnViaUpstream(upstream, chatId, text, attachments, voice, userMessageId);
   res.writeHead(202, { 'content-type': 'application/json' });
   res.end(JSON.stringify({ ok: true, message_id: messageId }));
 }
@@ -108,10 +120,14 @@ async function dispatchTurnViaUpstream(
   chatId: string,
   text: string,
   attachments?: unknown[],
+  voice?: boolean,
+  userMessageId?: string,
 ): Promise<void> {
   try {
     for await (const envelope of upstream.sendMessage(chatId, text, {
       ...(attachments && attachments.length > 0 ? { attachments } : {}),
+      ...(voice ? { voice: true } : {}),
+      ...(userMessageId ? { userMessageId } : {}),
     })) {
       pushEnvelope(envelope);
     }

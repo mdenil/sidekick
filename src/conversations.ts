@@ -239,6 +239,25 @@ export async function updateTitle(chat_id: string, title: string): Promise<void>
   }
 }
 
+/** Same shape but also stamps `userTitle` so the drawer-list merge
+ *  prefers it over server-side auto-generated titles. The user
+ *  explicitly renamed; stop letting hermes' compression renumber etc.
+ *  shadow that. Cleared only by deleting the row. */
+export async function setUserTitle(chat_id: string, title: string): Promise<void> {
+  const db = await openDB();
+  try {
+    const tx = db.transaction(STORE_CONV, 'readwrite');
+    const store = tx.objectStore(STORE_CONV);
+    const existing: any = await reqP(store.get(chat_id));
+    if (!existing) return;
+    existing.title = title;
+    existing.userTitle = title;
+    await reqP(store.put(existing));
+  } finally {
+    db.close();
+  }
+}
+
 /** Removes the row. Caller is responsible for any active-pointer
  *  cleanup (call setActive(null) if this was the active chat_id). */
 export async function remove(chat_id: string): Promise<void> {

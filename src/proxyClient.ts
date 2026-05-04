@@ -221,7 +221,7 @@ function startStreamChannel(): void {
   };
   for (const t of ['reply_delta', 'reply_final', 'image', 'typing',
                    'notification', 'session_changed', 'error',
-                   'tool_call', 'tool_result']) {
+                   'tool_call', 'tool_result', 'user_message']) {
     streamES.addEventListener(t, onEvent as any);
   }
   streamES.onerror = (e) => {
@@ -447,6 +447,23 @@ function handleEnvelope(type: string, env: any, chatId: string): void {
       return;
     }
 
+    case 'user_message': {
+      // Cross-device user-message broadcast. Originating device's
+      // optimistic bubble was registered under the same messageId
+      // (PWA pre-mints in sendMessage), so the shell's onUserMessage
+      // handler upserts idempotently — no double-render. Other devices
+      // see this for the first time and create the bubble fresh.
+      const text = typeof env.text === 'string' ? env.text : '';
+      const messageId = typeof env?.message_id === 'string' ? env.message_id : '';
+      if (!messageId) return;
+      subs?.onUserMessage?.({ conversation: chatId, text, messageId });
+      // Drawer ordering — same rationale as notification: any user
+      // message is "recent activity," surfaces the chat to the top of
+      // the list on receiving devices.
+      conversations.updateLastMessageAt(chatId, Date.now()).catch(() => {});
+      return;
+    }
+
     case 'error':
       log(`proxy-client: error for ${chatId}: ${env.detail || 'unknown'}`);
       subs?.onActivity?.({ working: false, conversation: chatId });
@@ -608,6 +625,15 @@ export const proxyClientAdapter = {
     if (Array.isArray(opts.attachments) && opts.attachments.length) {
       body.attachments = opts.attachments;
     }
+    if (opts.voice) body.voice = true;
+    // Cross-device user-message dedup: when the shell pre-minted an
+    // id for its optimistic bubble, ship it so the upstream's
+    // user_message broadcast carries the same id. Originating device
+    // dedups via renderedMessages (idempotent on key); other devices
+    // see the id for the first time and render fresh.
+    if (typeof opts.userMessageId === 'string' && opts.userMessageId) {
+      body.user_message_id = opts.userMessageId;
+    }
 
     // Fire-and-forget — the proxy returns 202 once the WS frame is
     // queued. Reply envelopes arrive on the persistent stream
@@ -733,7 +759,17 @@ export const proxyClientAdapter = {
       // placeholder, not a real user-set title, so it doesn't shadow
       // the snippet for chats hermes hasn't titled yet.
       const localTitle = localConv?.title === 'New chat' ? '' : (localConv?.title || '');
-      const title = e.title || localTitle || '';
+      // Server title wins (since v0.420 — server-side rename PATCH now
+      // exists, so the server is the source of truth for cross-device
+      // consistency). userTitle is kept as a fallback ONLY when the
+      // server has no title yet (offline buffer / pre-PATCH-existed
+      // orphans on this device). Pre-v0.420 behavior preferred
+      // userTitle universally — that's what caused mobile-rename to
+      // not propagate to desktops where userTitle was set during the
+      // local-only era. Server propagation now overrides those
+      // orphan locals naturally.
+      const userTitle = (localConv as any)?.userTitle || '';
+      const title = e.title || userTitle || localTitle || '';
       const snippet = e.first_user_message || '';
       const messageCount = e.message_count || 0;
       // Title fallback chain (post-2026-05-03 race fix):
@@ -946,6 +982,42 @@ export const proxyClientAdapter = {
       throw err;
     }
     return await r.json();
+  },
+
+  async renameSession(id: string, title: string) {
+    // Two-step: stamp the local IDB row first (the listSessions merge
+    // prefers `userTitle` over server auto-titles, so the rename feels
+    // permanent from this device's POV), then fire-and-forget the
+    // server-side PATCH so other connected clients (Mac + iPhone) pick
+    // up the new title via /v1/events session_changed.
+    //
+    // Local stamp is the source of truth for THIS device — the server
+    // PATCH is best-effort. We log a failure but never throw, because
+    // a network blip on the propagation step shouldn't undo the local
+    // rename the user just confirmed.
+    if (id.startsWith('__sidekick:hint:')) return;
+    const trimmed = title.trim();
+    await conversations.setUserTitle(id, trimmed);
+    log(`proxy-client: renamed session ${id} to "${trimmed.slice(0, 40)}"`);
+    // Fire-and-forget — don't await.
+    void (async () => {
+      try {
+        const r = await fetch(
+          `${apiBase()}/sessions/${encodeURIComponent(id)}`,
+          {
+            method: 'PATCH',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ title: trimmed }),
+          },
+        );
+        if (!r.ok && r.status !== 404 && r.status !== 503) {
+          const errText = await r.text().catch(() => '');
+          diag(`proxy-client.renameSession: server PATCH returned ${r.status}: ${errText.slice(0, 120)}`);
+        }
+      } catch (e: any) {
+        diag(`proxy-client.renameSession: server PATCH failed: ${e?.message || String(e)}`);
+      }
+    })();
   },
 
   async deleteSession(id: string) {

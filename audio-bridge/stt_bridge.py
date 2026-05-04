@@ -21,23 +21,16 @@ Per peer:
                 owns all UX logic (utterance buffer, silence timeout,
                 commit-phrase, dispatch decision).
 
-    Server-side VAD / barge detection (Path B):
+    Half-duplex echo guard:
 
-        The same per-frame loop that gates mic→Deepgram on
-        tts_track.is_active() also runs a simple RMS VAD. When TTS is
-        active AND the frame's RMS clears VAD_RMS_THRESHOLD for
-        VAD_HOLD_FRAMES consecutive frames, the bridge sends a
-        {"type": "barge"} envelope over the data channel exactly once
-        per TTS turn, and the PWA cancels its local TTS playback.
-
-        Why server-side: the PWA's only handle on the mic is the
-        getUserMedia stream, which Chrome/Safari pipe through their
-        WebRTC capture-side AEC BEFORE Web Audio sees any samples.
-        AEC actively ducks anything correlated with system output
-        (the TTS we're playing), so a client-side analyser on the mic
-        reads near-silence during TTS and can't distinguish user voice.
-        Raw mic PCM arrives at the bridge pre-DSP, which is the only
-        place the user's voice is actually visible during TTS playback.
+        While TTS is active on this peer's outbound track, mic frames
+        are substituted with silence before being handed to Deepgram.
+        Stops the speaker→mic bleed of our own TTS from polluting the
+        user's transcript without disconnecting the WSS or starving
+        Deepgram of paced audio. Pure silence-substitution — barge
+        detection is owned entirely by the PWA's client-side
+        BargeWindow (since v0.381+), which now ships `{type:'barge'}`
+        envelopes upstream over the data channel.
 
 Dispatch path:
 
@@ -78,94 +71,6 @@ TARGET_FORMAT = "s16"
 # Cap the audio queue so a slow STT upstream doesn't grow memory
 # unboundedly.  20 ms frames * 100 = ~2 s of buffer.
 MAX_PCM_QUEUE = 100
-
-# ── Server-side VAD / barge detection thresholds ──────────────────────
-#
-# Frame energy (RMS over the 20 ms s16 PCM frame). int16 samples range
-# ±32767. Mic gain varies hugely across capture paths:
-#   - Pi USB mic: ambient 80-300, speech 2000-8000, shouting 10k+
-#   - iPhone Safari w/ AEC: ambient 50-150, speech 200-800
-#   - Desktop Chrome built-in mic: ambient 100-400, speech 800-2000
-#
-# Default 100 — the floor at sensitivity 100% (slider all the way up).
-# Lower than original (300) so iPhone/desktop captures, which sit much
-# quieter than the Pi reference rig the threshold was originally tuned
-# against, can barge at normal speaking volume. Tunable via
-# SIDEKICK_VAD_RMS_THRESHOLD env var.
-VAD_RMS_THRESHOLD = int(os.environ.get("SIDEKICK_VAD_RMS_THRESHOLD", "100"))
-
-# Consecutive 20 ms frames over threshold required to fire a barge.
-# 4 * 20 ms = 80 ms — long enough to filter cough/keypress transients
-# (which usually clear in 1-2 frames), short enough that natural voice
-# fluctuation between phonemes still produces enough consecutive
-# above-threshold frames to fire reliably. Original 8 was too strict:
-# bridge logs from desktop-speaker barge tests showed 9-15 hot frames
-# per 50 (~20-30% duty cycle) but rarely 8 consecutive — voice has
-# brief valleys between syllables that broke the run repeatedly.
-VAD_HOLD_FRAMES = int(os.environ.get("SIDEKICK_VAD_HOLD_FRAMES", "4"))
-
-# Periodic RMS observability while TTS is active. Every N frames during
-# a TTS-active window, log the running max RMS + count of over-threshold
-# frames. Lets us see "during this TTS turn, the mic peaked at NNN"
-# without a hot path debug toggle. 50 frames * 20 ms = 1 Hz.
-VAD_OBS_LOG_EVERY = 50
-
-
-class BargeGate:
-    """RMS-VAD-driven barge fire decider — fires once per TTS turn.
-
-    State machine for one peer's TTS-active window:
-      - Each call to `feed(rms)` ingests one 20 ms frame's RMS.
-      - `feed` returns True iff the gate decides to fire NOW: RMS has
-        been ≥ threshold for at least `hold_frames` consecutive frames
-        AND the gate has not already fired in this turn.
-      - `reset_turn()` is called when TTS ends (the inactive→… handoff
-        in `_pcm_iter` runs `gate.reset_turn()` right after the
-        was_active block). Clears hold counter + the fired-this-turn
-        flag so the NEXT TTS turn starts armed.
-
-    Pre-2026-04-30 history: this was an inline `barge_fired_this_turn`
-    boolean. A false-positive consumed the gate for the entire turn
-    and a real user interrupt was ignored. The 2026-04-30 fix added
-    a cooldown re-arm; the 2026-04-30-evening fix made
-    PCMTrack.halt() the structural cure (drops queued frames + flips
-    is_active() False, so the was_active branch fires immediately on
-    the next mic frame, which calls reset_turn() and re-arms the gate
-    for the next turn). With halt() in place, the cooldown is dead
-    code — once-per-turn is the right semantics again.
-    """
-
-    def __init__(
-        self,
-        threshold: int = 300,
-        hold_frames: int = 8,
-    ) -> None:
-        self.threshold = threshold
-        self.hold_frames = hold_frames
-        self._hold = 0
-        self._fired_this_turn = False
-
-    def reset_turn(self) -> None:
-        self._hold = 0
-        self._fired_this_turn = False
-
-    def feed(self, rms: int) -> bool:
-        """Returns True if the gate decides to fire on this frame."""
-        if rms >= self.threshold:
-            self._hold += 1
-        else:
-            self._hold = 0
-        if self._hold < self.hold_frames:
-            return False
-        if self._fired_this_turn:
-            return False
-        self._fired_this_turn = True
-        # Reset hold so a sustained voice doesn't fire on every frame
-        # past the threshold; not strictly needed once `_fired_this_turn`
-        # is set, but keeps the counter honest if something resets the
-        # flag without a full reset_turn().
-        self._hold = 0
-        return True
 
 
 def attach(peer, *, voice_config: VoiceConfig, api_server: Any = None) -> None:
@@ -324,59 +229,6 @@ async def _run_stt(
         # frame (spam) or only at call-start (one-shot, useless for
         # multi-turn calls).
         listening_announced = False
-        # VAD state — encapsulated in BargeGate which handles the
-        # threshold + hold-frames + once-per-turn logic. Lives in the
-        # closure (per turn) rather than peer.extra so a generator
-        # restart starts from a clean state. Once-per-turn is safe
-        # again now that the fire path calls tts_track.halt(): a
-        # false-positive halt-then-reset_turn cycle re-arms the gate
-        # within the next mic frame (see BargeGate docstring).
-        # Threshold: peer can override via offer's barge_threshold
-        # (PWA's bargeThreshold setting, 0..0.5; PWA UI exposes the
-        # inverse as a sensitivity %). Mapping with VAD_RMS_THRESHOLD=100
-        # base + 1000 multiplier gives:
-        #   sens 100% (thr_01=0)    → 100 RMS  — fires on whispers
-        #   sens 80%  (thr_01=0.10) → 200 RMS  — quiet speech (default)
-        #   sens 55%  (thr_01=0.225)→ 325 RMS  — normal indoor voice
-        #   sens 0%   (thr_01=0.5)  → 600 RMS  — loud-only / shouted
-        # Multiplier dropped from 2000 → 1000: bridge logs from real
-        # desktop-speaker tests showed voice peaks of 1024-1760 only
-        # produced 9-15 hot frames per 50 at threshold 550 — duty
-        # cycle below what hold_frames could chain. Lowering the
-        # threshold ceiling means each frame is more likely to be hot,
-        # so the hold-frames test passes without requiring shouting.
-        thr_01 = peer.extra.get("barge_threshold_01")
-        if thr_01 is not None:
-            peer_threshold = int(VAD_RMS_THRESHOLD + float(thr_01) * 1000)
-        else:
-            peer_threshold = VAD_RMS_THRESHOLD
-        gate = BargeGate(
-            threshold=peer_threshold,
-            hold_frames=VAD_HOLD_FRAMES,
-        )
-        # PWA's "Barge-in" toggle short-circuits the VAD entirely.
-        # When disabled, mic frames during TTS still get gated to
-        # silence (the half-duplex echo guard) but the gate.feed()
-        # call is skipped — TTS plays through to the end regardless
-        # of any false-positive mic activity. Set at offer time
-        # (signaling.py:peer.extra["barge_enabled"]); defaults True.
-        barge_enabled = bool(peer.extra.get("barge_enabled", True))
-        # Client-owned barge (v0.381+): PWA ships {type:'barge'} upstream
-        # via its own BargeWindow detector. Bridge skips its own VAD in
-        # that case — running both produces a double-fire race where
-        # the bridge's stale-cache false-fire beats the client's clean
-        # result. The mic-frame→silence substitution (half-duplex echo
-        # guard) below stays active regardless, since that's about
-        # protecting Deepgram from TTS bleed, not about firing barge.
-        client_owns_barge = bool(peer.extra.get("client_owns_barge", False))
-        if client_owns_barge:
-            barge_enabled = False
-        # Observability state — sampled and logged every VAD_OBS_LOG_EVERY
-        # frames so we can see what RMS values the mic is actually
-        # producing during a TTS turn without flooding the log.
-        obs_frames = 0
-        obs_max_rms = 0
-        obs_above = 0
         while True:
             chunk = await pcm_q.get()
             if chunk is None:
@@ -385,63 +237,15 @@ async def _run_stt(
             if tts_active:
                 if not was_active:
                     logger.info(
-                        "[stt-bridge] peer %s: gating mic→Deepgram (TTS active, vad_threshold=%d, hold=%d)",
-                        peer.peer_id, peer_threshold, VAD_HOLD_FRAMES,
+                        "[stt-bridge] peer %s: gating mic→Deepgram (TTS active)",
+                        peer.peer_id,
                     )
                     was_active = True
-                # Compute RMS once — used by both VAD and observability.
-                rms = _frame_rms(chunk)
-                obs_frames += 1
-                if rms > obs_max_rms:
-                    obs_max_rms = rms
-                if rms >= peer_threshold:
-                    obs_above += 1
-                if obs_frames >= VAD_OBS_LOG_EVERY:
-                    logger.info(
-                        "[stt-bridge] peer %s: vad-obs frames=%d max_rms=%d above_thresh=%d/%d (need %d consecutive ≥%d)",
-                        peer.peer_id, obs_frames, obs_max_rms, obs_above, obs_frames,
-                        VAD_HOLD_FRAMES, peer_threshold,
-                    )
-                    obs_frames = 0
-                    obs_max_rms = 0
-                    obs_above = 0
-                # Simple VAD: RMS over the 20ms frame.
-                # Fires when:
-                #   1) tts_track is active (we're playing TTS),
-                #   2) RMS exceeds VAD_RMS_THRESHOLD (above ambient),
-                #   3) sustained for VAD_HOLD_FRAMES consecutive frames
-                #      (~160ms hold),
-                #   4) the gate hasn't already fired this TTS turn —
-                #      reset_turn() in the was_active branch below
-                #      re-arms it on TTS-end (which halt() forces
-                #      immediately on barge fire).
-                #   5) the PWA hasn't disabled barge for this peer
-                #      (offer carries barge_enabled — see signaling.py).
-                # Tunable via SIDEKICK_VAD_RMS_THRESHOLD /
-                # SIDEKICK_VAD_HOLD_FRAMES.
-                if barge_enabled and gate.feed(rms):
-                    logger.info(
-                        "[stt-bridge] peer %s: barge fired (rms=%d, threshold=%d)",
-                        peer.peer_id, rms, peer_threshold,
-                    )
-                    # Halt bridge-side TTS BEFORE the envelope so the
-                    # next iteration of this loop sees is_active()=False
-                    # and resumes mic→Deepgram. Symmetrizes with the
-                    # PWA's cancelRemotePlayback (which fires on receipt
-                    # of the barge envelope below). Without this, the
-                    # synth task would keep refilling the frame queue
-                    # for up to TTS_TAIL_GRACE_S (1.2s) + however much
-                    # text remained in text_queue, and the user's voice
-                    # would be silently substituted with silence the
-                    # whole time.
-                    try:
-                        tts_track.halt()
-                    except Exception as e:  # pragma: no cover
-                        logger.warning(
-                            "[stt-bridge] peer %s: tts_track.halt() raised: %s",
-                            peer.peer_id, e,
-                        )
-                    _send_data_channel(peer, {"type": "barge"})
+                # Half-duplex echo guard: substitute silence so Deepgram
+                # doesn't get fed the speakerphone bleed of our own TTS.
+                # Barge detection is owned by the PWA's client-side
+                # BargeWindow (mic AnalyserNode → {type:'barge'} envelope
+                # over the data channel); see src/audio/realtime/realtimeBarge.ts.
                 yield silence_frame
                 # While TTS is active we are NOT listening, so re-arm
                 # the listening announcement for the next user turn.
@@ -449,17 +253,10 @@ async def _run_stt(
                 continue
             if was_active:
                 logger.info(
-                    "[stt-bridge] peer %s: resuming mic→Deepgram (TTS done; final-turn max_rms=%d above_thresh=%d/%d)",
-                    peer.peer_id, obs_max_rms, obs_above, obs_frames,
+                    "[stt-bridge] peer %s: resuming mic→Deepgram (TTS done)",
+                    peer.peer_id,
                 )
                 was_active = False
-                # TTS turn ended — reset the gate so the NEXT turn
-                # starts with a clean hold counter and re-armed
-                # fire-once flag.
-                gate.reset_turn()
-                obs_frames = 0
-                obs_max_rms = 0
-                obs_above = 0
             # First mic frame after a TTS-active window (or the first
             # frame of the call entirely): announce listening so the
             # PWA can chime "your turn." Idempotent within a single
@@ -498,34 +295,6 @@ async def _run_stt(
                 await pump_task
             except (asyncio.CancelledError, Exception):
                 pass
-
-
-def _frame_rms(pcm: bytes) -> int:
-    """RMS energy of a 16-bit-signed-LE mono PCM frame.
-
-    Used by the VAD path to decide whether the user is speaking during
-    a TTS turn (i.e. wants to barge). Returns 0 for an empty frame.
-
-    Implementation: pure Python int math via array.array, no numpy
-    dependency to keep the bridge slim. 20ms @ 16kHz = 320 samples,
-    cheap enough to run every frame even on the Pi.
-    """
-    if not pcm:
-        return 0
-    import array
-    samples = array.array("h")
-    samples.frombytes(pcm)
-    if not samples:
-        return 0
-    # Sum of squares; avoid float math for the inner loop.
-    acc = 0
-    for s in samples:
-        acc += s * s
-    mean_sq = acc // len(samples)
-    # int.isqrt avoids math.sqrt's float roundtrip — RMS as an int
-    # threshold is exactly what VAD_RMS_THRESHOLD compares against.
-    import math
-    return int(math.isqrt(mean_sq))
 
 
 # Match XML/HTML-style tags <foo …> and </foo>. Conservative — won't
@@ -641,19 +410,24 @@ async def _handle_transcript(peer, tx: Transcript) -> None:
     })
 
 
-async def dispatch_to_agent(peer, utterance: str) -> None:
+async def dispatch_to_agent(peer, utterance: str, *, user_message_id: Optional[str] = None) -> None:
     """Public dispatch entry point invoked by the PWA-driven dispatch listener.
 
     POSTs *utterance* to the sidekick proxy and streams the agent's
     reply back over the data channel as assistant transcript envelopes.
+
+    *user_message_id* (when set) is the PWA-minted id riding the
+    dispatch envelope. We forward it so the upstream's user_message
+    echo carries the same id, letting the originating device's
+    optimistic bubble dedup idempotently. Absent → server mints.
     """
     asyncio.create_task(
-        _dispatch_to_agent(peer, utterance),
+        _dispatch_to_agent(peer, utterance, user_message_id=user_message_id),
         name=f"webrtc-agent-{peer.peer_id[:8]}",
     )
 
 
-async def _dispatch_to_agent(peer, utterance: str) -> None:
+async def _dispatch_to_agent(peer, utterance: str, *, user_message_id: Optional[str] = None) -> None:
     """Run an agent turn for *utterance* and route the streaming reply.
 
     Two routing paths, selected by which identifier the offer payload
@@ -686,6 +460,8 @@ async def _dispatch_to_agent(peer, utterance: str) -> None:
     if chat_id:
         url = f"{proxy_url}/api/sidekick/messages"
         body: Dict[str, Any] = {"chat_id": chat_id, "text": utterance}
+        if user_message_id:
+            body["user_message_id"] = user_message_id
         route = "sidekick-platform"
     else:
         backend = peer.extra.get("backend") or "hermes"
@@ -694,6 +470,11 @@ async def _dispatch_to_agent(peer, utterance: str) -> None:
         body = {"input": utterance, "stream": True}
         if conv_name:
             body["conversation"] = conv_name
+        if user_message_id:
+            # Riding metadata (OAI-blessed Dict[str,str] extension
+            # point) so vanilla OpenAI servers ignore-gracefully
+            # instead of choking on an unknown top-level field.
+            body["metadata"] = {"user_message_id": user_message_id}
         route = "responses"
 
     headers = {"Content-Type": "application/json"}

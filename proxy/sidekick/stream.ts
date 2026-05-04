@@ -26,10 +26,13 @@
 //   data: <json envelope verbatim>
 //
 // Event types fanned out: reply_delta, reply_final, image, typing,
-// notification, session_changed, error, tool_call, tool_result. All
-// carry chat_id so the PWA can route to the right view. tool_call /
-// tool_result are observational (Phase 3) — the PWA decides whether
-// to render them based on the agentActivity setting.
+// notification, session_changed, error, tool_call, tool_result,
+// user_message. All carry chat_id so the PWA can route to the right
+// view. tool_call / tool_result are observational (Phase 3) — the PWA
+// decides whether to render them based on the agentActivity setting.
+// user_message is the cross-device broadcast for the user's own
+// dispatched message (the originating device's optimistic bubble
+// dedups against it).
 //
 // Replay ring: when no PWA tabs are subscribed, recent envelopes are
 // held in a small ring so a tab opened seconds-after-fire still
@@ -62,6 +65,11 @@ const FANOUT_TYPES = new Set<string>([
   'error',
   'tool_call',
   'tool_result',
+  // Cross-device user-message broadcast. Originating device dedups
+  // against its optimistic bubble via message_id; other devices render
+  // the user bubble for the first time. See proxyClient `handleEnvelope`
+  // case 'user_message' for the PWA-side handler.
+  'user_message',
 ]);
 
 // Bumped from 32 → 128: traffic is heavier now (every reply_delta

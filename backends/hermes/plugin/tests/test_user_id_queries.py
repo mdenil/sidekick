@@ -476,3 +476,153 @@ def test_delete_conversation_sync_default_source_back_compat(plugin, state_db):
     adapter = _make_adapter(plugin, state_db)
     result = adapter._delete_conversation_sync("u")
     assert result == "ok"
+
+
+# ── Rename (PATCH /v1/conversations/{id}) ────────────────────────────
+
+
+def test_rename_conversation_sync_updates_title(plugin, state_db):
+    """Happy path: PATCH-driven rename rewrites sessions.title for the
+    `(source, user_id)` pair and is visible via the drawer aggregate."""
+    chat = "709fdd42-7d8c-4105-a1ce-977f3b56e77e"
+    _insert_session(state_db, "s1", "sidekick", chat, 1000.0, title="auto-title")
+    _insert_message(state_db, "s1", "user", "hi", 1001.0)
+
+    adapter = _make_adapter(plugin, state_db)
+    result = adapter._rename_conversation_sync(chat, "sidekick", "Bug bash")
+    assert result == "ok"
+
+    # Verify state.db was actually written.
+    conn = sqlite3.connect(state_db)
+    rows = conn.execute(
+        "SELECT title FROM sessions WHERE user_id = ? AND source = ?",
+        (chat, "sidekick"),
+    ).fetchall()
+    conn.close()
+    assert rows == [("Bug bash",)]
+
+    # And the drawer surfaces the new title via _summaries_by_user_id.
+    drawer = adapter._summaries_by_user_id(("sidekick",), 50)
+    assert len(drawer) == 1
+    assert drawer[0][3] == "Bug bash"
+
+
+def test_rename_conversation_sync_updates_only_latest_session(plugin, state_db):
+    """A chat with rotated sessions (compression / auto-reset) only
+    has the LATEST row's title updated. We can't rewrite all rotated
+    rows to the same title because hermes-agent's real schema has a
+    partial UNIQUE INDEX on ``sessions(title) WHERE title IS NOT
+    NULL``; the drawer's ``_summaries_by_user_id`` picks the latest
+    title via ``ORDER BY started_at DESC LIMIT 1`` so this is the
+    row that surfaces in the UI."""
+    chat = "u"
+    _insert_session(state_db, "old", "sidekick", chat, 1000.0, title="old-auto")
+    _insert_message(state_db, "old", "user", "msg1", 1001.0)
+    _insert_session(state_db, "new", "sidekick", chat, 2000.0, title="new-auto")
+    _insert_message(state_db, "new", "user", "msg2", 2001.0)
+
+    adapter = _make_adapter(plugin, state_db)
+    result = adapter._rename_conversation_sync(chat, "sidekick", "Renamed")
+    assert result == "ok"
+
+    conn = sqlite3.connect(state_db)
+    rows = conn.execute(
+        "SELECT id, title FROM sessions WHERE user_id = ? AND source = ?"
+        " ORDER BY id",
+        (chat, "sidekick"),
+    ).fetchall()
+    conn.close()
+    # Only the latest (started_at=2000) row is updated.
+    assert rows == [("new", "Renamed"), ("old", "old-auto")]
+
+    # Drawer surfaces the updated title regardless.
+    drawer = adapter._summaries_by_user_id(("sidekick",), 50)
+    assert len(drawer) == 1
+    assert drawer[0][3] == "Renamed"
+
+
+def test_rename_conversation_sync_title_conflict(plugin, state_db):
+    """If another session already holds this title, return
+    'title_conflict' (route surfaces 409). Models the partial UNIQUE
+    INDEX in hermes-agent's real schema."""
+    # Build a state.db with the same partial UNIQUE INDEX hermes-agent
+    # ships. The base fixture omits it because most tests don't need
+    # it; we add it here so the rename helper's pre-check actually
+    # has a competitor to find.
+    conn = sqlite3.connect(state_db)
+    conn.execute(
+        "CREATE UNIQUE INDEX idx_sessions_title_unique "
+        "ON sessions(title) WHERE title IS NOT NULL"
+    )
+    conn.commit()
+    conn.close()
+
+    _insert_session(state_db, "a", "sidekick", "chat-a", 1000.0, title="Series A")
+    _insert_message(state_db, "a", "user", "hi", 1001.0)
+    _insert_session(state_db, "b", "sidekick", "chat-b", 2000.0, title="Series B")
+    _insert_message(state_db, "b", "user", "hi", 2001.0)
+
+    adapter = _make_adapter(plugin, state_db)
+    result = adapter._rename_conversation_sync("chat-b", "sidekick", "Series A")
+    assert result == "title_conflict"
+
+    # Original row untouched.
+    conn = sqlite3.connect(state_db)
+    rows = conn.execute(
+        "SELECT id, title FROM sessions ORDER BY id",
+    ).fetchall()
+    conn.close()
+    assert rows == [("a", "Series A"), ("b", "Series B")]
+
+
+def test_rename_conversation_sync_idempotent_same_title(plugin, state_db):
+    """Renaming to the title the row already has is a no-op success,
+    NOT a conflict — the latest row matches its own title."""
+    chat = "u"
+    _insert_session(state_db, "s1", "sidekick", chat, 1000.0, title="Existing")
+    _insert_message(state_db, "s1", "user", "hi", 1001.0)
+
+    adapter = _make_adapter(plugin, state_db)
+    result = adapter._rename_conversation_sync(chat, "sidekick", "Existing")
+    assert result == "ok"
+
+
+def test_rename_conversation_sync_not_found(plugin, state_db):
+    """No session for `(source, user_id)` → 'not_found' (route
+    surfaces 404)."""
+    adapter = _make_adapter(plugin, state_db)
+    result = adapter._rename_conversation_sync(
+        "nonexistent", "sidekick", "Whatever",
+    )
+    assert result == "not_found"
+
+
+def test_rename_conversation_sync_source_isolation(plugin, state_db):
+    """Renaming `(sidekick, chat_id)` doesn't touch a `(whatsapp,
+    chat_id)` row that happens to share the same user_id string."""
+    same_id = "199999999999999@lid"
+    _insert_session(state_db, "wa", "whatsapp", same_id, 1000.0, title="WA-orig")
+    _insert_message(state_db, "wa", "user", "wa", 1001.0)
+    _insert_session(state_db, "sk", "sidekick", same_id, 2000.0, title="SK-orig")
+    _insert_message(state_db, "sk", "user", "sk", 2001.0)
+
+    adapter = _make_adapter(plugin, state_db)
+    result = adapter._rename_conversation_sync(same_id, "sidekick", "SK-new")
+    assert result == "ok"
+
+    conn = sqlite3.connect(state_db)
+    rows = conn.execute(
+        "SELECT id, source, title FROM sessions WHERE user_id = ?"
+        " ORDER BY id",
+        (same_id,),
+    ).fetchall()
+    conn.close()
+    assert rows == [
+        ("sk", "sidekick", "SK-new"),
+        ("wa", "whatsapp", "WA-orig"),
+    ]
+
+
+def test_session_title_max_len_constant(plugin):
+    """Document the cap so a future bump doesn't silently lose data."""
+    assert plugin.SESSION_TITLE_MAX_LEN == 200

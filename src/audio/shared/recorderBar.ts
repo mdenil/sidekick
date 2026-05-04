@@ -132,7 +132,14 @@ export function mount(opts: RecorderBarOpts): RecorderBar {
     for (let i = 0; i < WAVE_DOTS; i++) {
       const idx = (wavePos + i) % WAVE_DOTS;
       const amp = waveHistory[idx];
-      const barH = Math.max(2, amp * h * 4);
+      // Visual gain — calibrated for AGC=OFF. Pre-2026-05-04 the mic
+      // pipeline ran AGC=ON (which compressed voice to ~0.3-0.5 RMS
+      // peaks); the 4x multiplier was tuned for that. With AGC=OFF
+      // (our new DSP triple — see audio/shared/capture.ts) voice RMS
+      // peaks at ~0.1-0.15, so the bars looked barely-visible. 10x
+      // restores the perceived amplitude; clamp at h to prevent visual
+      // overflow on loud peaks.
+      const barH = Math.min(h, Math.max(2, amp * h * 10));
       const x = i * dotSpacing + dotSpacing / 2;
       const y = (h - barH) / 2;
 

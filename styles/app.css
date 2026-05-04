@@ -397,6 +397,15 @@
   .info-caveat-list { padding-left: 18px; margin: 0; }
   .info-caveat-list li { font-size: 12.5px; color: var(--muted); margin-bottom: 6px; line-height: 1.45; }
   .info-caveat-list strong { color: var(--fg); }
+  .info-credit {
+    margin-top: 24px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+    font-size: 11px;
+    color: var(--muted);
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+  }
   .info-panel-inner ul { margin: 0 0 8px; padding-left: 18px; }
   .info-panel-inner ul li { font-size: 13.5px; margin-bottom: 4px; line-height: 1.45; }
 
@@ -1680,6 +1689,14 @@
   }
   .composer .icon-btn-plain:hover { color: var(--fg); }
   .composer .icon-btn-plain svg { width: 22px; height: 22px; }
+  /* Composer mic icon swap: shows the stop glyph while a voice path is
+     active (call open / memo recording / dictation / listen). The mic
+     dispatcher's "voiceActive defensive → stopVoice" branch makes a
+     mid-call mic tap end the current path; the icon needs to advertise
+     that. main.ts toggles `.voice-active` on the button. */
+  .composer #btn-mic [data-icon="stop"] { display: none; }
+  .composer #btn-mic.voice-active [data-icon="mic"] { display: none; }
+  .composer #btn-mic.voice-active [data-icon="stop"] { display: inline-block; }
   /* Active = button press registered (red filled, no animation).
      Listening = .active PLUS the bridge or recorder confirmed audio is
      actually flowing (red filled + soft pulse). The two-state visual
@@ -1842,6 +1859,33 @@
     background: var(--primary);
     border-color: var(--primary);
   }
+  /* Compact slider row inside the call-mode menu — barge sensitivity.
+     Slider value 0 = OFF (folds the prior toggle); 5–100 = ON.
+     Matches the row-height of the toggle rows so the menu stays
+     compact. The slider itself is sized to fit (~110px) leaving room
+     for the label + percent value. */
+  .mic-mode-menu .mic-barge-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 10px; border-radius: 6px;
+    -webkit-user-select: none; user-select: none;
+  }
+  .mic-mode-menu .mic-barge-label {
+    font-size: 13px;
+    flex: 0 0 auto;
+  }
+  .mic-mode-menu .mic-barge-row input[type="range"] {
+    flex: 1 1 auto;
+    min-width: 90px; max-width: 140px;
+    margin: 0;
+    accent-color: var(--primary);
+    cursor: pointer;
+  }
+  .mic-mode-menu .mic-barge-val {
+    font-size: 12px; color: var(--muted);
+    min-width: 36px; text-align: right;
+    flex: 0 0 auto;
+  }
+  .mic-mode-menu .mic-barge-row[hidden] { display: none; }
   .mic-mode-menu .mic-toggle-row[aria-checked="true"] .mic-toggle-thumb {
     transform: translateX(16px);
   }

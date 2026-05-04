@@ -253,15 +253,19 @@ let current = { ...DEFAULTS };
 // Slider semantics stay constant ("60% = moderately sensitive") but
 // the underlying threshold differs per device.
 import { getSliderScale as _getSliderScale } from './voiceTuning.ts';
-function sensitivityToThreshold(sens) {
+export function sensitivityToThreshold(sens: number): number {
   const { min, max } = _getSliderScale();
   const clamped = Math.max(0, Math.min(100, sens));
   return +(min + (100 - clamped) / 100 * (max - min)).toFixed(3);
 }
-function thresholdToSensitivity(thr) {
+export function thresholdToSensitivity(thr: number): number {
   const { min, max } = _getSliderScale();
   const clamped = Math.max(min, Math.min(max, thr));
-  return Math.round((1 - (clamped - min) / (max - min)) * 100);
+  // Round to nearest step-5 to match the call-mode slider's step
+  // resolution — fixes the "61% on reload" cosmetic quantization
+  // issue Jonathan flagged 2026-05-04.
+  const raw = (1 - (clamped - min) / (max - min)) * 100;
+  return Math.round(raw / 5) * 5;
 }
 
 function audioFeedbackLabel(vol) {
@@ -485,6 +489,10 @@ export function hydrate(handlers: {
   const setNavNext = $inp('set-nav-next');
   const setNavPause = $inp('set-nav-pause');
   const setListenStt = $sel('set-listen-stt');
+  // Barge controls (set-barge, set-barge-sens) moved to call-mode menu
+  // in v0.421 — see main.ts wiring of #call-mode-barge-slider. The
+  // settings-panel rows are gone; these vars stay null and the
+  // applyToDOM/handler blocks below no-op gracefully.
   const setBarge = $inp('set-barge');
   const setBargeSens = $inp('set-barge-sens');
   const setBargeSensVal = $any('set-barge-sens-val');

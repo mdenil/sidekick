@@ -4,28 +4,27 @@
  *
  * Two source modes:
  *
- *   1. EXTERNAL (preferred when caller already runs an STTProvider).
- *      The caller passes `source: STTProvider` — typically the same
- *      `BrowserSttProvider` instance Listen mode uses for body
- *      transcription when `streamingEngine: 'local'`. We subscribe to
- *      its transcript events and run the phrase regex on each interim/
- *      final segment. Single SR session per Listen run, no mic
- *      contention, no second Web Speech instance racing for the same
- *      audio.
+ *   1. FED (preferred when caller already runs an STTProvider).
+ *      Caller passes `feed: true`, the detector opens NO SR session,
+ *      and the caller drives matching by calling `feedTranscript(ev)`
+ *      on each transcript event from its own provider. Avoids racing
+ *      a second Web Speech instance against the caller's, and respects
+ *      the STTProvider contract (single listener — see stt-provider.ts
+ *      docstring; "callers that need fan-out should multiplex above
+ *      this layer"). Used by Listen mode when streamingEngine='local'.
  *
- *   2. STANDALONE (back-compat — when no source is given). We construct
- *      our own `webkitSpeechRecognition` / `SpeechRecognition` instance
- *      in continuous + interim mode. This is the original v0.397 path
- *      and is still used when Listen runs against a server-side body
- *      transcription pipeline (`streamingEngine: 'server'`) — the
- *      MediaRecorder blob → /transcribe path doesn't expose realtime
- *      transcript events to subscribe to.
+ *   2. STANDALONE (when `feed` is omitted). We construct our own
+ *      `webkitSpeechRecognition` / `SpeechRecognition` instance in
+ *      continuous + interim mode. Used when Listen runs against a
+ *      server-side body transcription pipeline (streamingEngine='server')
+ *      — the MediaRecorder blob → /transcribe path doesn't expose
+ *      realtime transcript events to feed.
  *
  * Auto-restart loop (standalone path): Safari kills the SR session every
  * ~30s + on every server round trip. The `onend` handler restarts unless
  * stop() was explicitly invoked, so the detector survives long Listen
- * sessions. External path inherits whatever auto-restart logic the
- * source provider implements (BrowserSttProvider has its own).
+ * sessions. Fed path inherits whatever restart logic the caller's
+ * provider implements (BrowserSttProvider has its own).
  *
  * Fail-soft: if `SpeechRecognition` is undefined OR `start()` throws
  * (Firefox without WebSpeech, browser quotas exceeded), the detector
@@ -39,7 +38,7 @@
  */
 
 import { log, diag } from '../../util/log.ts';
-import type { STTProvider, TranscriptEvent, Unsubscribe } from '../shared/stt-provider.ts';
+import type { TranscriptEvent } from '../shared/stt-provider.ts';
 
 export type SendwordOpts = {
   /** Phrase to match on. Empty string disables matching. Caller resolves
@@ -49,12 +48,12 @@ export type SendwordOpts = {
   /** Fired when the phrase is detected in an interim or final result.
    *  Caller (listen.ts) should commit the buffered audio blob. */
   onMatch: () => void;
-  /** Optional external transcript source. When provided, we subscribe
-   *  to its events instead of opening our own SR session — single
-   *  source of truth when the caller already runs Web Speech for body
-   *  transcription (Listen mode + streamingEngine=local). When omitted,
-   *  falls back to the standalone Web Speech path. */
-  source?: STTProvider;
+  /** When true, this module opens NO SR session — caller will drive
+   *  matching by calling `feedTranscript(ev)` on each transcript event
+   *  from its own STTProvider. Use when the caller already runs Web
+   *  Speech for body transcription (Listen mode + streamingEngine=local).
+   *  When omitted, the standalone Web Speech path takes over. */
+  feed?: boolean;
 };
 
 type SR = {
@@ -74,10 +73,9 @@ let sr: SR | null = null;
 let opts: SendwordOpts | null = null;
 let stopRequested = false;
 let restartTimer: ReturnType<typeof setTimeout> | null = null;
-/** Unsubscribe handle when running in EXTERNAL source mode. Calling it
- *  detaches our transcript listener from the caller's STTProvider. The
- *  provider itself is owned by the caller — we don't start/stop it. */
-let externalUnsub: Unsubscribe | null = null;
+/** True when start() ran in FED mode — feedTranscript() is live, no SR
+ *  was constructed, and stop() just clears state. */
+let fedMode = false;
 
 export function isSupported(): boolean {
   if (typeof window === 'undefined') return false;
@@ -166,39 +164,21 @@ function handleError(ev: any): void {
 
 /** Begin listening. Two paths:
  *
- *   - EXTERNAL: `o.source` set → subscribe to its onTranscript events.
- *     We don't start the source (caller owns its lifecycle); we just
- *     wire a listener. Returns true unconditionally (the contract is
- *     "events flow when the source is hot" — that's the caller's job).
+ *   - FED: `o.feed === true` → no SR session opened. Caller drives
+ *     matching by calling `feedTranscript(ev)` on each transcript event
+ *     from its own STTProvider. Returns true unconditionally — the
+ *     "is matching live" question is the caller's responsibility.
  *
- *   - STANDALONE: no `o.source` → construct our own SR. Fails soft on
+ *   - STANDALONE: `o.feed` omitted → construct our own SR. Fails soft on
  *     unsupported / construction errors and returns false so the
  *     caller knows to expect no matches.
  */
 export function start(o: SendwordOpts): boolean {
-  if (sr || externalUnsub) return true;  // already running
+  if (sr || fedMode) return true;  // already running
   opts = o;
   stopRequested = false;
-  if (o.source) {
-    // External-source mode: subscribe to the caller's STTProvider.
-    // We watch BOTH interim and final segments — same as the standalone
-    // path's continuous + interimResults config — so the user doesn't
-    // have to wait for an utterance-final to commit on their sendword.
-    try {
-      externalUnsub = o.source.onTranscript((ev: TranscriptEvent) => {
-        // role:'user' only — assistant captions (TTS) shouldn't trigger
-        // a sendword match. Empty-text synthetic finals (utterance-end
-        // sentinels) carry no transcript content; skip them too.
-        if (ev.role !== 'user') return;
-        if (!ev.text) return;
-        checkTranscript(ev.text);
-      });
-    } catch (e: any) {
-      diag('sendword: source.onTranscript threw', e?.message);
-      externalUnsub = null;
-      opts = null;
-      return false;
-    }
+  if (o.feed) {
+    fedMode = true;
     return true;
   }
   // Standalone mode: open our own SR session.
@@ -214,16 +194,24 @@ export function start(o: SendwordOpts): boolean {
   return true;
 }
 
-/** Stop + release. Idempotent. Detaches from external source if running
- *  in that mode (does NOT call source.stop() — caller owns its
- *  provider's lifecycle). */
+/** Caller-driven match check (FED mode). No-op when fedMode is false or
+ *  the event isn't a user transcript. Caller invokes this from their own
+ *  STTProvider.onTranscript listener so a single listener does both body
+ *  accumulation and sendword matching — STTProvider only supports one
+ *  listener (see stt-provider.ts contract). */
+export function feedTranscript(ev: TranscriptEvent): void {
+  if (!fedMode || !opts) return;
+  if (ev.role !== 'user') return;
+  if (!ev.text) return;
+  checkTranscript(ev.text);
+}
+
+/** Stop + release. Idempotent. In FED mode just clears state (the
+ *  caller's provider lifecycle is unaffected). */
 export function stop(): void {
   stopRequested = true;
   if (restartTimer) { clearTimeout(restartTimer); restartTimer = null; }
-  if (externalUnsub) {
-    try { externalUnsub(); } catch { /* noop */ }
-    externalUnsub = null;
-  }
+  fedMode = false;
   if (sr) {
     try { sr.abort(); } catch { /* noop */ }
     sr = null;

@@ -27,6 +27,7 @@ export { handleSidekickModelModalities } from './modelModalities.ts';
 export {
   handleSidekickSessionsList,
   handleSidekickSessionDelete,
+  handleSidekickSessionRename,
 } from './sessions.ts';
 export { handleSidekickSessionMessages } from './history.ts';
 export { handleSidekickStream } from './stream.ts';

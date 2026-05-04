@@ -132,6 +132,14 @@
  *   may have rolled over. The shell handles this the same way as a
  *   drawer-click resume (clear + re-render); other adapters can leave
  *   it unset.
+ * @property {(e: {conversation: string; text: string; messageId: string}) => void} [onUserMessage]
+ *   Cross-device user-message broadcast. Fires when the upstream
+ *   announces that a user dispatched a message in `conversation`. The
+ *   originating device dedups against its optimistic bubble via
+ *   `messageId` (renderedMessages is idempotent on the same key); other
+ *   connected devices render the user bubble for the first time.
+ *   Without this, the user's own message was invisible on every device
+ *   except the one that typed it until manual refresh.
  * @property {(e: {id: string; snippet?: string; source?: string; started_at?: string}) => void} [onSessionStarted]
  *   Pre-emptive new-session announcement. Fires when the adapter's
  *   wire protocol surfaces a freshly-created session BEFORE the next

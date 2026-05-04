@@ -44,7 +44,7 @@ import * as settings from '../../settings.ts';
 import { playFeedback } from '../shared/feedback.ts';
 import * as sendwordDetector from './sendwordDetector.ts';
 import { SilenceWindow, getHandsfreeConfig } from '../shared/handsfree.ts';
-import { BargeWindow } from '../shared/barge.ts';
+import { BargeDetector } from '../shared/bargeDetector.ts';
 import { getBargeThreshold } from '../../voiceTuning.ts';
 import * as recorderBar from '../shared/recorderBar.ts';
 import { BrowserSTTProvider, isSupported as isBrowserSttSupported } from '../streaming/browserDictate.ts';
@@ -109,13 +109,6 @@ export type ListenOpts = {
 const REARM_GRACE_MS = 500;
 const SILENCE_WARMUP_MS = 500;
 const SILENCE_FRAME_MS = 50;
-// Barge detection (active during 'playing' state). Algorithm lives
-// in shared/barge.ts (sliding N-of-K hot frames, used by both modes).
-// We just own the warmup mute + frame cadence here — same 500ms
-// warmup as the classic pipeline (worst speakerphone bleed window
-// before the AEC adapter locks on).
-const BARGE_WARMUP_MS = 500;
-const BARGE_FRAME_MS = 50;
 
 let state: ListenState = 'idle';
 let opts: ListenOpts | null = null;
@@ -124,9 +117,7 @@ let mediaRecorder: MediaRecorder | null = null;
 let audioChunks: Blob[] = [];
 let analyser: AnalyserNode | null = null;
 let silenceLoop: ReturnType<typeof setInterval> | null = null;
-let bargeLoop: ReturnType<typeof setInterval> | null = null;
-let bargeWindow: BargeWindow | null = null;
-let bargeMuteUntil = 0;
+let bargeDetector: BargeDetector | null = null;
 let armedAt = 0;
 let silenceWindow: SilenceWindow | null = null;
 let mockFrames: { type: 'silence' | 'speech'; remainingMs: number } | null = null;
@@ -139,12 +130,20 @@ let cooldownTimer: ReturnType<typeof setTimeout> | null = null;
 let bar: recorderBar.RecorderBar | null = null;
 // LOCAL engine (streamingEngine='local') turn-state. The active
 // BrowserSttProvider for in-browser body transcription, the running
-// transcript accumulator (final segments concatenated as they arrive,
-// latest interim layered on top for live display), and the unsubscribe
-// handle for our transcript listener. Null on every server-engine turn.
+// transcript accumulators, and the unsubscribe handle for our transcript
+// listener. Null on every server-engine turn.
+//   localBufferedText — accumulated across utterances within this turn
+//     (one final's worth of text appended per utterance boundary).
+//   localBestInterim  — longest text seen DURING the current utterance.
+//     Web Speech sometimes commits a phrase like "test test test over"
+//     as a single final whose recognized text is just "over" (low
+//     confidence on the leading words → engine drops them). The longest
+//     interim we saw before that final is the engine's earlier guess
+//     for the same audio; we prefer whichever of (final, best-interim)
+//     is longer at utterance boundary.
 let localProvider: STTProvider | null = null;
-let localFinalText = '';
-let localLastInterim = '';
+let localBufferedText = '';
+let localBestInterim = '';
 let localUnsub: (() => void) | null = null;
 /** True when the current turn was armed against the local provider —
  *  determines whether commit harvests text vs blob. Captured at arm
@@ -221,7 +220,16 @@ export async function start(o: ListenOpts): Promise<boolean> {
     try { await ctx.resume(); } catch { /* ignore */ }
   }
   try {
-    mediaStream = await audioPlatform.getMicStream('listen');
+    // Match realtime talk's DSP triple (the v0.413 setting Jonathan
+    // confirmed worked perfectly). Pairs with the v0.417 TTS-via-Web-
+    // Audio routing experiment in tts.ts: by routing player output
+    // through the same AudioContext as the mic, we hope Chrome's AEC
+    // engages on the speaker bleed. AEC alone should be enough — NS+AGC
+    // ON would shape the signal in ways that defeat Silero on real
+    // user voice during double-talk.
+    mediaStream = await audioPlatform.getMicStream('listen', {
+      echoCancellation: true, noiseSuppression: false, autoGainControl: false,
+    });
   } catch (e: any) {
     log('listen: mic error:', e?.message);
     teardown();
@@ -283,10 +291,10 @@ function ensureVisibilityHandler(): void {
           sendwordDetector.start({
             phrase: sendwordPhrase,
             onMatch: () => commitFromSendword(),
-            // Pass the same provider source we're armed against so the
-            // detector resumes onto the existing SR session rather than
-            // racing it with a new instance.
-            source: armedWithLocal && localProvider ? localProvider : undefined,
+            // FED mode when we're armed against the local provider —
+            // the body listener (still alive in armRecorder's closure)
+            // calls sendwordDetector.feedTranscript() on each event.
+            feed: armedWithLocal && !!localProvider,
           });
         }
       }
@@ -333,23 +341,33 @@ async function armRecorder(): Promise<void> {
     // Chrome shares the same source as the mediaStream we already
     // hold. The redundant getUserMedia call inside SR is the platform
     // contract we accept.
-    localFinalText = '';
-    localLastInterim = '';
+    localBufferedText = '';
+    localBestInterim = '';
     localProvider = new BrowserSTTProvider();
     try {
       localUnsub = localProvider.onTranscript((ev: TranscriptEvent) => {
         if (ev.role !== 'user') return;
+        // (1) Body accumulation
         if (ev.is_final) {
           // Empty-text finals are the synthetic utterance-end sentinel
           // BrowserSttProvider emits on `onend`. They carry no text;
-          // the prior content-final already accumulated.
-          if (ev.text) {
-            localFinalText = (localFinalText + ' ' + ev.text).trim();
+          // the longest interim still applies as the utterance.
+          // Otherwise pick whichever of (final, best-interim) is longer
+          // — see localBestInterim docstring for the Web Speech case
+          // where a final truncates a longer interim.
+          const utterance = ev.text.length >= localBestInterim.length
+            ? ev.text
+            : localBestInterim;
+          if (utterance) {
+            localBufferedText = (localBufferedText + ' ' + utterance).trim();
           }
-          localLastInterim = '';
-        } else {
-          localLastInterim = ev.text;
+          localBestInterim = '';
+        } else if (ev.text.length > localBestInterim.length) {
+          localBestInterim = ev.text;
         }
+        // (2) Sendword matching (FED mode — same listener does both,
+        // since STTProvider only supports one onTranscript subscriber).
+        sendwordDetector.feedTranscript(ev);
       });
       await localProvider.start();
     } catch (e: any) {
@@ -405,7 +423,10 @@ async function armRecorder(): Promise<void> {
     sendwordDetector.start({
       phrase: cfg.sendwordPhrase,
       onMatch: () => commitFromSendword(),
-      source: armedWithLocal && localProvider ? localProvider : undefined,
+      // FED mode for the local body-STT path — the listener above
+      // calls feedTranscript() inline. Standalone (own SR) for the
+      // server path, which has no realtime transcript stream to feed.
+      feed: armedWithLocal && !!localProvider,
     });
   }
   transition('armed');
@@ -435,49 +456,22 @@ function stopSilenceLoop(): void {
 }
 
 function startBargeLoop(): void {
-  if (bargeLoop) clearInterval(bargeLoop);
-  bargeWindow = new BargeWindow();  // defaults: 5 frames, 4 hot
-  bargeMuteUntil = Date.now() + BARGE_WARMUP_MS;
-  bargeLoop = setInterval(tickBarge, BARGE_FRAME_MS);
+  if (!mediaStream) return;
+  stopBargeLoop();
+  bargeDetector = new BargeDetector();
+  void bargeDetector.start({
+    micStream: mediaStream,
+    isPlayingCb: () => state === 'playing',
+    isEnabledCb: () => !!(settings.get() as any).bargeIn,
+    onFire: () => { try { opts?.onBarge?.(); } catch (e: any) { diag('listen: onBarge threw', e?.message); } },
+  });
+  log('[turnbased-barge] started');
 }
 
 function stopBargeLoop(): void {
-  if (bargeLoop) { clearInterval(bargeLoop); bargeLoop = null; }
-  bargeWindow = null;
-  bargeMuteUntil = 0;
-}
-
-/** One frame of barge detection. Algorithm in shared/barge.ts; this
- *  just provides the per-frame plumbing (warmup mute, settings kill
- *  switch, peak read from analyser, fire onBarge on a positive). */
-function tickBarge(): void {
-  if (state !== 'playing') return;
-  if (!analyser || !bargeWindow) return;
-  if (Date.now() < bargeMuteUntil) return;
-
-  const s = settings.get();
-  // PWA-side bargeIn setting acts as a kill switch for Listen too —
-  // user toggling barge off in the menu disables here, same wire as
-  // the WebRTC path (which sends barge_enabled in the offer).
-  if (!(s as any).bargeIn) return;
-
-  const peak = readPeak(analyser);
-  // Device-class default lookup (voiceTuning) honoring the user's
-  // slider override. Same threshold path the realtime barge uses, so
-  // both modes barge at consistent peak levels per device.
-  const threshold = getBargeThreshold();
-  if (bargeWindow.push(peak, threshold)) {
-    log(`listen: barge fire peak=${peak.toFixed(3)}`);
-    stopBargeLoop();
-    // Audible feedback — same chime realtime fires on barge so the
-    // user hears a consistent "I heard you, stopping" cue across both
-    // modes. Plays BEFORE the caller's onBarge runs so the user
-    // doesn't hear silence between the agent's TTS being cut and the
-    // re-arm chime that fires on next-turn re-arm.
-    try { playFeedback('barge'); } catch { /* noop */ }
-    try { opts?.onBarge?.(); } catch (e: any) {
-      diag('listen: onBarge threw', e?.message);
-    }
+  if (bargeDetector) {
+    void bargeDetector.stop();
+    bargeDetector = null;
   }
 }
 
@@ -541,18 +535,25 @@ async function commitNow(reason: 'silence' | 'sendword'): Promise<void> {
   transition('committing');
   stopSilenceLoop();
   try { sendwordDetector.stop(); } catch { /* noop */ }
+  // Immediate audio feedback the moment the sendword is detected, so a
+  // bike-mode user knows their utterance was captured BEFORE the
+  // /transcribe round-trip (which can take 10+s). Mirrors the realtime
+  // path's chime in dictation.ts:handleUserFinal. Silence-commits don't
+  // chime — the silence itself was the trigger, no surprise to confirm.
+  if (reason === 'sendword') {
+    try { playFeedback('commit'); } catch { /* feedback is best-effort */ }
+  }
 
   if (armedWithLocal) {
     // LOCAL path — pull the accumulated transcript from the provider.
     // Stop the provider FIRST so any in-flight final landing during
-    // teardown still appends to localFinalText (the listener stays
+    // teardown still appends to localBufferedText (the listener stays
     // active until teardownLocalProvider's unsub).
-    // Pad the final text with the latest interim if no final landed
-    // yet — Web Speech sometimes commits a long utterance only on
-    // session end, and the silence detector beat us to it.
-    const text = localFinalText
-      || localLastInterim
-      || '';
+    // Concatenate buffered finals with the in-progress utterance's
+    // longest interim — covers the silence-fired-before-final case
+    // (Web Speech can hold a final until session end).
+    const text = [localBufferedText, localBestInterim]
+      .filter(Boolean).join(' ').trim();
     await teardownLocalProvider();
     log(`listen: commit (${reason}) text="${text.slice(0, 60)}${text.length > 60 ? '…' : ''}"`);
     if (!text.trim()) {
@@ -654,8 +655,8 @@ function teardown(): void {
   // teardown signature change for downstream callers (cancel/stop are
   // declared sync and we don't want to break that contract).
   void teardownLocalProvider();
-  localFinalText = '';
-  localLastInterim = '';
+  localBufferedText = '';
+  localBestInterim = '';
   armedWithLocal = false;
   if (mediaStream) {
     audioPlatform.releaseMicStream('listen');

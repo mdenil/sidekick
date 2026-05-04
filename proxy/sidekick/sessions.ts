@@ -5,6 +5,7 @@
 //
 //   GET    /api/sidekick/sessions          → drawer list
 //   DELETE /api/sidekick/sessions/<chatId> → cascade delete
+//   PATCH  /api/sidekick/sessions/<chatId> → rename (sets title server-side)
 //
 // Drawer-list behavior:
 //   1. Probe `/v1/gateway/conversations` (gateway extension). Hermes
@@ -15,10 +16,11 @@
 //      on each row so the composer stays editable.
 
 import { getUpstream } from './index.ts';
-import type {
-  ConversationSummary,
-  GatewayConversationSummary,
-  UpstreamAgent,
+import {
+  UpstreamHTTPError,
+  type ConversationSummary,
+  type GatewayConversationSummary,
+  type UpstreamAgent,
 } from './upstream.ts';
 
 interface SidekickSessionRow {
@@ -105,6 +107,84 @@ export async function handleSidekickSessionDelete(req, res, chatId: string) {
   }
   res.writeHead(200, { 'content-type': 'application/json' });
   res.end(JSON.stringify({ ok: true }));
+}
+
+/** PATCH /api/sidekick/sessions/<chat_id>
+ *
+ *  Body: `{ title: string }`. Forwards to the upstream's
+ *  `PATCH /v1/conversations/{id}` which writes through to state.db
+ *  and emits a `session_changed` envelope so other connected clients
+ *  pick up the new title via `/v1/events`.
+ *
+ *  Mirrors the DELETE handler's shape: same chat_id validator, same
+ *  503 when no upstream, same {ok:true,...} response envelope. */
+export async function handleSidekickSessionRename(
+  req, res, chatId: string,
+) {
+  const upstream = getUpstream();
+  if (!upstream) {
+    res.writeHead(503, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: 'sidekick_platform_unconfigured' }));
+    return;
+  }
+  if (!chatId || !/^[A-Za-z0-9._@:-]{1,128}$/.test(chatId)) {
+    res.writeHead(400, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: 'invalid chat_id' }));
+    return;
+  }
+  // Read body. Same 1MB cap as messages.ts; titles are tiny so the
+  // cap is mostly defensive.
+  let raw = '';
+  let aborted = false;
+  req.on('data', (c) => {
+    raw += c;
+    if (raw.length > 1 * 1024 * 1024) {
+      aborted = true;
+      req.destroy();
+    }
+  });
+  req.on('error', () => { aborted = true; });
+  await new Promise<void>((resolve) => {
+    req.on('end', () => resolve());
+    req.on('close', () => resolve());
+  });
+  if (aborted) {
+    if (!res.headersSent) {
+      res.writeHead(413, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: 'request body too large' }));
+    }
+    return;
+  }
+  let body: any;
+  try { body = JSON.parse(raw); }
+  catch {
+    res.writeHead(400, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: 'invalid json' }));
+    return;
+  }
+  const title = typeof body?.title === 'string' ? body.title : '';
+  if (!title.trim()) {
+    res.writeHead(400, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: 'title required' }));
+    return;
+  }
+  try {
+    const result = await upstream.renameConversation(chatId, title);
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, title: result.title }));
+  } catch (e: any) {
+    if (e instanceof UpstreamHTTPError) {
+      // Forward the upstream's status + body verbatim so the PWA
+      // surfaces validation errors (length cap, cross-source guard)
+      // with the agent's wording rather than an opaque 500.
+      res.writeHead(e.status, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(e.body ?? { error: 'rename failed' }));
+      return;
+    }
+    console.warn(`[sidekick] rename failed for ${chatId}:`, e?.message);
+    res.writeHead(500, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: e?.message || 'upstream rename failed' }));
+  }
 }
 
 /** Translate the agent's OAI-shape gateway row into the on-the-wire

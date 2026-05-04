@@ -21,7 +21,6 @@ import * as suppress from './suppress.ts';
 import * as realtimeBarge from './realtimeBarge.ts';
 import * as settings from '../../settings.ts';
 import * as backend from '../../backend.ts';
-import { getBargeThreshold } from '../../voiceTuning.ts';
 import { log, diag } from '../../util/log.ts';
 
 /** Resolve the (sessionId, chatId) pair to ship in the offer payload.
@@ -115,10 +114,6 @@ export function init(o: ControlsOpts) {
             conn.cancelRemotePlayback();
             suppress.onBarge();
           },
-          // Device-class default lookup (voiceTuning) honoring the
-          // user's slider override when set. Read on every frame so a
-          // mid-call settings nudge takes effect without a reconnect.
-          () => getBargeThreshold(),
         );
       }
     }

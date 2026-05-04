@@ -141,11 +141,11 @@ export function getMicAnalyser(stream: MediaStream, fftSize: number = 256): Anal
 }
 
 // ── Chime playback ─────────────────────────────────────────────────────
-
-/** Play a short feedback chime. Delegates to audio/feedback.ts which
- *  pulls the shared AudioContext via getAudioCtx (NOT via this shim —
- *  feedback.ts is a leaf to avoid a circular import). */
-export const playChime = playFeedbackImpl;
+// Canonical chime API is `playFeedback` from audio/shared/feedback.ts —
+// import it directly. The platform shim used to re-export it as
+// `playChime`, but that re-export was unused (zero callers in src/test)
+// and invited the "two ways to chime" footgun Jonathan flagged 2026-05-04.
+// Removed; ChimeName re-export kept for type-only consumers.
 
 export type ChimeName = Parameters<typeof playFeedbackImpl>[0];
 

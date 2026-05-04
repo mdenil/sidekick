@@ -100,16 +100,20 @@ def _handle_inbound(peer, raw) -> None:
         if not text:
             logger.debug("[dispatch-listener] peer %s empty dispatch ignored", peer.peer_id)
             return
+        # PWA-minted user_message_id rides through so the upstream's
+        # user_message echo collapses idempotently into the same
+        # bubble (no dupe). Optional — falls back to server-minted if
+        # absent (older PWA builds, future tooling, manual debugging).
+        user_message_id = payload.get("user_message_id") or None
         logger.info(
-            "[dispatch-listener] peer %s dispatch: %s",
+            "[dispatch-listener] peer %s dispatch: %s%s",
             peer.peer_id,
             text[:120] + ("..." if len(text) > 120 else ""),
+            f" (umsg={user_message_id})" if user_message_id else "",
         )
-        # Schedule but don't await — the listener must return promptly
-        # so further data-channel messages can be processed.
         import asyncio
         asyncio.create_task(
-            stt_bridge.dispatch_to_agent(peer, text),
+            stt_bridge.dispatch_to_agent(peer, text, user_message_id=user_message_id),
             name=f"dispatch-listener-{peer.peer_id[:8]}",
         )
     elif msg_type == "interrupt":

@@ -42,19 +42,24 @@ let activeOwner: string | null = null;
  * memo and streaming cleanly).
  *
  * @param {string} owner   - Short tag for diagnostics: 'memo' | 'streaming'.
- * @param {MediaTrackConstraints} [constraints] - Override default audio
- *                          constraints (echo/noise/gain). Streaming passes
- *                          a deviceId when the user has picked a specific mic.
+ * @param {MediaTrackConstraints} constraints - Audio constraints (REQUIRED).
+ *   Every caller declares its own DSP intent — no defaults. Standard policy
+ *   for any mode that has both speaker output AND mic input on the SAME
+ *   physical device (i.e. anywhere barge detection runs) is:
+ *     { echoCancellation: true, noiseSuppression: false, autoGainControl: false }
+ *   AEC removes speaker bleed (lets Silero VAD discriminate user voice from
+ *   the agent's TTS playing through the same device). NS+AGC are off because
+ *   they shape the spectrum / gain in ways Silero is sensitive to and can
+ *   defeat barge detection by ducking real user speech to the noise floor.
+ *   See history in realtime.ts comments for the v0.387/v0.389/v0.413 saga
+ *   that landed this policy.
  */
-export async function acquire(owner: string, constraints?: MediaTrackConstraints): Promise<MediaStream> {
+export async function acquire(owner: string, constraints: MediaTrackConstraints): Promise<MediaStream> {
   if (activeStream) {
     throw new Error(`capture: already held by ${activeOwner}; cannot acquire for ${owner}`);
   }
   audioSession.prepareForCapture();
-  const audio = constraints || {
-    echoCancellation: true, noiseSuppression: true, autoGainControl: true,
-  };
-  activeStream = await navigator.mediaDevices.getUserMedia({ audio });
+  activeStream = await navigator.mediaDevices.getUserMedia({ audio: constraints });
   activeOwner = owner;
   // Any active capture holds a wake-lock keyed on the owner tag. The user's
   // "Pocket Lock / Stay Awake" setting lives in a separate 'setting' key,

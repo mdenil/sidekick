@@ -138,6 +138,15 @@ const MIME = {
   '.jpg': 'image/jpeg',
   '.jpeg': 'image/jpeg',
   '.ico': 'image/x-icon',
+  // Silero VAD assets — WebAssembly + ONNX model bytes loaded by
+  // @ricky0123/vad-web at MicVAD.new() time. application/wasm enables
+  // browser WebAssembly.instantiateStreaming (fast path); without it
+  // ORT falls back to fetch+compile which works but adds ~50-150 ms
+  // to cold start. application/octet-stream for .onnx is what
+  // onnxruntime-web fetches directly into a model URL — content-type
+  // doesn't gate behavior, but octet-stream is the correct value.
+  '.wasm': 'application/wasm',
+  '.onnx': 'application/octet-stream',
 };
 
 async function serveStatic(req, res) {
@@ -884,6 +893,11 @@ const server = http.createServer(async (req, res) => {
       && req.url.match(/^\/api\/sidekick\/sessions\/([^/?]+)(?:\?.*)?$/);
     if (sidekickDelete) {
       return sidekick.handleSidekickSessionDelete(req, res, decodeURIComponent(sidekickDelete[1]));
+    }
+    const sidekickRename = req.method === 'PATCH'
+      && req.url.match(/^\/api\/sidekick\/sessions\/([^/?]+)(?:\?.*)?$/);
+    if (sidekickRename) {
+      return sidekick.handleSidekickSessionRename(req, res, decodeURIComponent(sidekickRename[1]));
     }
     if (req.method === 'GET' && /^\/api\/sidekick\/settings\/schema(?:\?.*)?$/.test(req.url)) {
       return sidekick.handleSidekickSettingsSchema(req, res);

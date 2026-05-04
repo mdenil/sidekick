@@ -35,7 +35,6 @@ import { log, diag } from '../../util/log.ts';
 import { playFeedback } from '../shared/feedback.ts';
 import * as audioPlatform from '../shared/platform.ts';
 import * as settings from '../../settings.ts';
-import { getBargeThreshold } from '../../voiceTuning.ts';
 import type {
   STTProvider,
   TranscriptEvent as STTTranscriptEvent,
@@ -180,11 +179,13 @@ export function cancelRemotePlayback(): void {
   /* intentionally empty — see docstring */
 }
 
-export function dispatch(text: string): boolean {
+export function dispatch(text: string, userMessageId?: string): boolean {
   if (!active || !active.dataChannel) return false;
   if (active.dataChannel.readyState !== 'open') return false;
   try {
-    active.dataChannel.send(JSON.stringify({ type: 'dispatch', text }));
+    const env: Record<string, unknown> = { type: 'dispatch', text };
+    if (userMessageId) env.user_message_id = userMessageId;
+    active.dataChannel.send(JSON.stringify(env));
     return true;
   } catch (e: any) {
     diag('[webrtc] dispatch send failed', e?.message);
@@ -217,49 +218,32 @@ export async function open(
     await close();
   }
 
+  // Phase timing — emitted on every state transition so a "5s+ to
+  // connect" complaint is debuggable from the chat log alone. Phases:
+  // mic, signal (offer→answer), ice (answer→connected). Each line
+  // shows ms-since-call-start AND ms-since-prev-phase.
+  const callT0 = performance.now();
+  let phaseT = callT0;
+  const phase = (label: string) => {
+    const now = performance.now();
+    log(`[webrtc-timing] ${label} +${Math.round(now - phaseT)}ms (total ${Math.round(now - callT0)}ms)`);
+    phaseT = now;
+  };
+
   setState('requesting-mic');
   let micStream: MediaStream;
   try {
-    // ALL DSP OFF on the WebRTC mic. Reasoning:
-    //
-    //   - Echo handling is already SERVER-SIDE: the bridge's STT gate
-    //     swaps mic frames for silence whenever its outbound TTS track
-    //     is active (audio-bridge/stt_bridge.py). So Deepgram never
-    //     sees a TTS-bleed echo, regardless of browser AEC state.
-    //   - Browser AEC actively REDUCES the mic signal whenever it
-    //     correlates with system output. With server-side VAD checking
-    //     for user-voice-during-TTS to fire barge, AEC means the
-    //     bridge sees attenuated audio (max_rms ~140 instead of
-    //     2000+ during normal speech). Empirically, user speech during
-    //     TTS with AEC on lands at max_rms ~140 — well below any
-    //     reasonable VAD threshold.
-    //   - noiseSuppression similarly suppresses anything it considers
-    //     "background." Mac built-in mic + speakers tend to make AI-
-    //     voice-agent setups look noisy from the browser's POV.
-    //   - autoGainControl was already off (ducks mic on loud output).
-    //
-    // 2026-05-03 v0.389 second reversal: AEC enabled in v0.387 to
-    // suppress TTS speaker→mic bleed, BUT Chrome's AEC was so
-    // aggressive on the Mac built-in mic+speakers setup that user
-    // voice DURING TTS got ducked to the ambient floor (0.008).
-    // BargeWindow couldn't fire on speech. Confirmed in v0.388 field
-    // tests: even loud speaking flatlined the peak readings. AEC's
-    // "is this output-correlated?" classifier swept up real user
-    // voice along with the bleed.
-    //
-    // Reverting to AEC OFF. The TTS-bleed feedback loop is now
-    // suppressed by:
-    //   - suppress.isTtsPlaying() gate on user transcripts (v0.386)
-    //   - 600ms drain grace after barge fire (v0.388)
-    // Bleed-to-STT path is closed; remaining risk is occasional
-    // false-fire of BargeWindow on loud TTS bleed (ambient cost:
-    // TTS cuts short — mild UX glitch, user can keep talking).
-    //
-    // Real fix for desktop-built-in-mic users is headphones; we can
-    // detect headphones via output device label as a future tuning
-    // input (AEC=true when user has headphones plugged in).
+    // v0.413 baseline (restored 2026-05-04 after v0.414/v0.415 broke
+    // both realtime and turnbased barge):
+    //   - talk mode:   AEC ON (suppress speaker→mic bleed of TTS),
+    //                  NS off, AGC off (both can defeat barge).
+    //   - stream mode: AEC OFF (no peer-track TTS to bleed),
+    //                  NS off, AGC off.
+    // This is the DSP triple Jonathan field-tested as "worked
+    // perfectly first try" on v0.413 realtime talk mode.
+    const useAec = (mode === 'talk');
     micStream = await audioPlatform.getMicStream('webrtc', {
-      echoCancellation: false,
+      echoCancellation: useAec,
       noiseSuppression: false,
       autoGainControl: false,
     });
@@ -268,6 +252,7 @@ export async function open(
     setState('failed');
     throw e;
   }
+  phase('mic');
 
   setState('connecting');
 
@@ -370,6 +355,7 @@ export async function open(
     log('[webrtc] connectionstate=', pc.connectionState);
     if (!active) return;
     if (pc.connectionState === 'connected') {
+      phase('ice→connected');
       setState('connected');
       // No chime here. The 'listening' chime is now driven by the
       // bridge sending {type: 'listening'} over the data channel
@@ -435,28 +421,16 @@ export async function open(
   // Honour the user's "Barge-in" toggle + sensitivity on the bridge
   // side. Both used to be no-ops since the WebRTC pivot — only the
   // (now-removed) client-side barge ever read them. The threshold is
-  // PWA-internal 0..1 (where 0 = fire on anything, 0.5 = needs loud
-  // sound); bridge maps to integer RMS internally. Sampled at
-  // call-open time; mid-call setting flips need a hangup + reopen.
+  // Barge detection runs client-side (BargeWindow over the mic
+  // AnalyserNode); the bridge no longer ships an RMS VAD as of
+  // 2026-05-03. The user's `bargeIn` toggle + sensitivity are read
+  // locally by realtimeBarge.ts on every frame.
   const offerPayload: Record<string, unknown> = {
     sdp: pc.localDescription?.sdp ?? '',
     type: pc.localDescription?.type ?? 'offer',
     mode,
     conv_name: opts?.sessionId || null,
     keyterms,
-    barge_enabled: !!settings.get().bargeIn,
-    // Send the resolved (device-default-aware) threshold so any bridge
-    // build still running the legacy server-side VAD uses a value
-    // consistent with what the client would compute. Once the bridge
-    // VAD is fully retired this field becomes informational.
-    barge_threshold: getBargeThreshold(),
-    // Tell the bridge: this client owns barge detection and ships
-    // {type:'barge'} envelopes upstream over the data channel. Bridge
-    // SHOULD skip its own server-side VAD when this is set, to avoid
-    // a double-fire race where the bridge's stale-cache false-fire
-    // beats the client's clean BargeWindow result. Older PWA builds
-    // omit this field; bridge keeps its VAD on for them.
-    client_owns_barge: true,
   };
   if (opts?.chatId) offerPayload.chat_id = opts.chatId;
 
@@ -478,6 +452,7 @@ export async function open(
     await close();
     throw e;
   }
+  phase('signal');
 
   if (!answer || !answer.peer_id) {
     setState('failed');
@@ -531,14 +506,10 @@ async function postIce(peerId: string, candidate: RTCIceCandidate) {
 
 export async function close(): Promise<void> {
   if (!active) return;
+  const closeT0 = performance.now();
   setState('closing');
   const session = active;
   active = null;
-  // Release the mic stream through the platform shim — capture.ts owns
-  // track-stop + wakeLock release + active-stream nullification, all
-  // keyed on the 'webrtc' owner tag we acquired with above. Without
-  // this release, capture.ts would still think 'webrtc' holds the
-  // stream and the next memo/webrtc acquire would throw.
   try { audioPlatform.releaseMicStream('webrtc'); } catch { /* ignore */ }
   if (session.dataChannel) {
     try { session.dataChannel.close(); } catch { /* ignore */ }
@@ -551,6 +522,7 @@ export async function close(): Promise<void> {
       session.remoteAudio.remove();
     } catch { /* ignore */ }
   }
+  const tLocalClose = performance.now();
   if (session.peerId) {
     try {
       await fetch('/api/rtc/close', {
@@ -562,6 +534,8 @@ export async function close(): Promise<void> {
       diag('[webrtc] close POST err', e?.message);
     }
   }
+  const tRemoteClose = performance.now();
+  log(`[webrtc-timing] close local=${Math.round(tLocalClose - closeT0)}ms remote=${Math.round(tRemoteClose - tLocalClose)}ms total=${Math.round(tRemoteClose - closeT0)}ms`);
   notify('idle', null);
 }
 

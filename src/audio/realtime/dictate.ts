@@ -547,12 +547,16 @@ function writeRange(start: number, end: number, text: string): void {
   if (!composerInput) return;
   updating = true;
   try {
-    // setRangeText splices in place + dispatches an `input` event to
-    // the textarea. Our own onUserInput sees that event but `updating`
-    // makes it a no-op for the state machine; the OTHER listeners on
-    // the textarea (autoResize, updateSendButtonState in main.ts)
-    // still fire.
+    // setRangeText splices in place but DOES NOT dispatch an input
+    // event (per HTML spec — was wrong in the prior comment). We
+    // dispatch one explicitly so the OTHER listeners on the textarea
+    // (autoResize + updateSendButtonState in main.ts) react. Without
+    // this dispatch, streaming dictation grew the value but the box
+    // didn't auto-grow — Jonathan's UX bug 2026-05-04.
+    // Our own onUserInput sees this event but `updating=true` makes
+    // it a no-op for the state machine.
     composerInput.setRangeText(text, start, end, 'preserve');
+    composerInput.dispatchEvent(new Event('input', { bubbles: true }));
   } finally {
     updating = false;
   }

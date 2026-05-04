@@ -170,37 +170,13 @@ async def handle_offer(request: "web.Request") -> "web.Response":
         f"first={peer.extra['keyterms'][0]!r}" if peer.extra["keyterms"] else "(empty)",
     )
 
-    # Honour the PWA's "Barge-in" setting. Default True for backward
-    # compatibility (older PWA builds don't send the flag). When False,
-    # stt_bridge skips the VAD gate entirely — TTS plays through to
-    # the end regardless of mic activity. Sampled at offer time;
-    # mid-call setting flips don't take effect until next call.
-    peer.extra["barge_enabled"] = bool(payload.get("barge_enabled", True))
-    if not peer.extra["barge_enabled"]:
-        logger.info("[signaling] peer %s barge DISABLED by PWA setting", peer_id)
-
-    # Per-peer barge sensitivity. PWA sends 0..1 ratio (0 = fire on any
-    # sound, ~0.5 = need loud sound). Bridge maps to integer RMS
-    # threshold via stt_bridge._barge_threshold_rms. Older PWAs that
-    # don't send the field fall back to None → bridge uses the env-var
-    # default. Desktop/laptop with speakers benefits from higher values
-    # (~0.2-0.3) because of speaker→mic bleed; headphones can go lower.
-    raw_thr = payload.get("barge_threshold")
-    if isinstance(raw_thr, (int, float)) and 0.0 <= float(raw_thr) <= 1.0:
-        peer.extra["barge_threshold_01"] = float(raw_thr)
-    else:
-        peer.extra["barge_threshold_01"] = None
-
-    # Client-owned barge: when the PWA sets client_owns_barge=true in
-    # the offer, it ships {type:'barge'} envelopes upstream over the
-    # data channel via its own BargeWindow detector. Bridge skips its
-    # own server-side VAD entirely in that case — running both produces
-    # a double-fire race where the bridge's stale-cache false-fire
-    # beats the client's clean result. Older PWA builds omit the flag;
-    # the legacy server-side VAD stays active for them.
-    peer.extra["client_owns_barge"] = bool(payload.get("client_owns_barge", False))
-    if peer.extra["client_owns_barge"]:
-        logger.info("[signaling] peer %s client owns barge (server VAD disabled)", peer_id)
+    # Barge detection is owned entirely by the PWA's client-side
+    # BargeWindow (mic AnalyserNode → {type:'barge'} envelope on the
+    # data channel). The legacy server-side RMS VAD was removed in
+    # 2026-05-03 once all live PWA builds had been on the client-owned
+    # path for a few weeks. Older offer fields (`barge_enabled`,
+    # `barge_threshold`, `client_owns_barge`) are silently ignored if
+    # a stale build still sends them.
 
     # Defer to bridge modules to install ontrack / outbound track wiring.
     # The dispatch listener handles inbound DataChannel control messages

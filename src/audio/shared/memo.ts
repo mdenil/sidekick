@@ -77,7 +77,9 @@ export async function start(opts) {
     // another subscriber (streaming) still holds the stream — callers
     // (main.ts's memo button) guarantee that state is released before
     // calling start().
-    mediaStream = await audioPlatform.getMicStream('memo');
+    mediaStream = await audioPlatform.getMicStream('memo', {
+      echoCancellation: true, noiseSuppression: true, autoGainControl: true,
+    });
   } catch (e) {
     log('memo: mic error:', e.message);
     cleanup();

@@ -34,6 +34,7 @@ let buffer: string[] = [];
 let silenceTimer: ReturnType<typeof setTimeout> | null = null;
 let onUserBubble: ((text: string) => void) | null = null;
 let onReset: (() => void) | null = null;
+let userMessageIdProvider: (() => string) | null = null;
 
 /** Caller registers a handler that renders the user bubble (and any
  *  other "utterance committed" UI) at dispatch time. */
@@ -43,11 +44,18 @@ export function setUserBubbleHandler(cb: (text: string) => void): void {
 
 /** Caller registers a handler that fires from inside reset() so any
  *  out-of-tree state mirroring the dictation buffer (e.g. main.ts's
- *  streaming user bubble id) can clear in lockstep. Lets us keep
- *  controls.ts as the single owner of when-to-reset (state listener)
- *  while still notifying everyone who cares. */
+ *  streaming user bubble id) can clear in lockstep. */
 export function setOnResetHandler(cb: () => void): void {
   onReset = cb;
+}
+
+/** Caller registers a provider that returns the current utterance's
+ *  pre-minted user_message_id. Called inside dispatchNow so the same
+ *  id ships to the bridge → upstream → user_message echo. The
+ *  provider is responsible for minting on first call within an
+ *  utterance and returning the same value through finalize. */
+export function setUserMessageIdProvider(fn: (() => string) | null): void {
+  userMessageIdProvider = fn;
 }
 
 /** Clear all per-call dictation state. Call on call open AND close. */
@@ -71,10 +79,15 @@ function dispatchNow(): void {
   buffer = [];
   if (!utterance) return;
   log('[dictation] dispatch:', utterance.slice(0, 120));
+  // Snag the userMessageId BEFORE invoking onUserBubble — the bubble
+  // handler may consume + clear the provider's state when it
+  // finalizes (next utterance mints fresh). Same id rides the wire
+  // so the server's user_message echo collapses idempotently.
+  const userMessageId = userMessageIdProvider ? userMessageIdProvider() : undefined;
   if (onUserBubble) {
     try { onUserBubble(utterance); } catch (e: any) { diag('[dictation] bubble handler err', e?.message); }
   }
-  const ok = conn.dispatch(utterance);
+  const ok = conn.dispatch(utterance, userMessageId);
   if (!ok) {
     diag('[dictation] dispatch send failed (channel not open?)');
     return;

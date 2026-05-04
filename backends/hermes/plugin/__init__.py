@@ -20,6 +20,7 @@ Channel contract (the OAI-compat surface)::
     GET    /v1/conversations              # drawer list (sidekick rows)
     GET    /v1/conversations/{id}/items   # transcript replay
     DELETE /v1/conversations/{id}         # cascade delete
+    PATCH  /v1/conversations/{id}         # rename (sets sessions.title)
     POST   /v1/responses                  # turn dispatch (SSE on stream:true)
     GET    /v1/events                     # out-of-turn SSE
 
@@ -178,6 +179,12 @@ TOOL_RESULT_MAX_BYTES = 50 * 1024
 TURN_QUEUE_MAX = 1000          # per-chat envelope queue depth
 TURN_TIMEOUT_S = 120           # hold a /v1/responses turn open this long
 EVENT_REPLAY_CAP = 256         # bounded ring for /v1/events replay
+
+# Session title cap on the PATCH /v1/conversations/{id} rename path.
+# 200 chars is comfortably more than the drawer renders (~40 visible
+# before ellipsis) but small enough that an abusive client can't bloat
+# the sessions row. The PWA's UI already truncates at 80 in the bubble.
+SESSION_TITLE_MAX_LEN = 200
 
 
 def _iso_from_epoch(t: float) -> str:
@@ -509,6 +516,14 @@ class SidekickAdapter(BasePlatformAdapter):
         )
         self._app.router.add_delete(
             "/v1/conversations/{id}", self._handle_delete_conversation
+        )
+        # Cross-device session rename. Local-IDB userTitle stamping
+        # remains the source of truth from the originating device, but
+        # this PATCH writes through to state.db so other connected
+        # clients (Mac + iPhone) see the new title via the existing
+        # session_changed envelope on /v1/events.
+        self._app.router.add_patch(
+            "/v1/conversations/{id}", self._handle_rename_conversation
         )
         # Gateway extension: cross-platform enumeration. Optional second
         # contract (`/v1/gateway/*`) the proxy probes-and-falls-back on.
@@ -1144,6 +1159,95 @@ class SidekickAdapter(BasePlatformAdapter):
             self._sid_to_chat_id_cache.pop(sid, None)
         return web.json_response({"ok": True})
 
+    async def _handle_rename_conversation(
+        self, request: "web.Request"
+    ) -> "web.Response":
+        """PATCH /v1/conversations/{id} — set sessions.title.
+
+        Body: ``{"title": "..."}`` — non-empty trimmed string ≤
+        ``SESSION_TITLE_MAX_LEN`` chars. Updates every session row
+        sharing ``(source, user_id=chat_id)`` so a chat that's been
+        rotated by compression / auto-reset still surfaces the new
+        title via ``_summaries_by_user_id`` (which picks the latest
+        session's title).
+
+        Sidekick-source-only today — telegram / slack / whatsapp don't
+        expose a "rename" surface, and a sidekick-tab rename of a
+        cross-source row would silently mutate state.db rows owned by
+        a different platform. Rejected with 400 to make the boundary
+        explicit.
+
+        Emits a ``session_changed`` envelope so any other connected
+        clients (PWA on a second device, the originating client's other
+        tabs) see the live update via /v1/events. Same shape the
+        compression poller uses; the event_id ring de-dupes if the
+        poller's next tick observes the same change.
+        """
+        if not self._check_http_auth(request):
+            return web.Response(status=401, text="invalid token")
+        raw_id = request.match_info["id"]
+        parsed_source, chat_id = _parse_gateway_id(raw_id)
+        source = parsed_source if parsed_source is not None else SIDEKICK_SOURCE
+        if source != SIDEKICK_SOURCE:
+            # Cross-source rename has no defined semantics yet — refuse
+            # rather than silently mutate a non-sidekick session row.
+            return web.json_response(
+                {"error": "rename only supported for sidekick sessions"},
+                status=400,
+            )
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid json"}, status=400)
+        title = body.get("title") if isinstance(body, dict) else None
+        if not isinstance(title, str):
+            return web.json_response(
+                {"error": "title must be a string"}, status=400,
+            )
+        title = title.strip()
+        if not title:
+            return web.json_response(
+                {"error": "title must be non-empty"}, status=400,
+            )
+        if len(title) > SESSION_TITLE_MAX_LEN:
+            return web.json_response(
+                {"error": f"title exceeds {SESSION_TITLE_MAX_LEN} chars"},
+                status=400,
+            )
+        result = await asyncio.to_thread(
+            self._rename_conversation_sync, chat_id, source, title,
+        )
+        if result == "not_found":
+            return web.json_response(
+                {"error": "conversation not found"}, status=404,
+            )
+        if result == "title_conflict":
+            # state.db has a partial UNIQUE INDEX on title. Surfacing
+            # 409 lets the PWA tell the user "another chat already
+            # has that name" instead of crashing.
+            return web.json_response(
+                {"error": "another conversation already uses this title"},
+                status=409,
+            )
+        if result == "error":
+            return web.json_response({"error": "rename failed"}, status=500)
+        # Surface to other connected clients. Use the same envelope
+        # shape the compression poller emits — clients already know how
+        # to consume it. session_id field is best-effort: we surface
+        # whatever the poller has cached; downstream consumers key on
+        # chat_id+title so a stale/empty session_id is harmless.
+        cached_sid = (self._session_state_cache.get(chat_id) or ("", ""))[0]
+        # Update the cache so the next poll tick doesn't immediately
+        # re-emit a session_changed for the same (sid, title) pair.
+        self._session_state_cache[chat_id] = (cached_sid, title)
+        await self._safe_send_envelope({
+            "type": "session_changed",
+            "chat_id": chat_id,
+            "session_id": cached_sid,
+            "title": title,
+        })
+        return web.json_response({"ok": True, "title": title})
+
     # ── user_id-keyed read path (chat_id is the durable identity) ────
     #
     # Background: an earlier iteration of this plugin walked
@@ -1447,6 +1551,65 @@ class SidekickAdapter(BasePlatformAdapter):
             self._purge_hindsight_for_session_uuids(fork_sids)
         except Exception as exc:
             logger.warning("[sidekick] hindsight purge failed: %s", exc)
+        return "ok"
+
+    def _rename_conversation_sync(
+        self, chat_id: str, source: str, title: str,
+    ) -> str:
+        """Synchronous rename. Returns 'ok', 'not_found', or 'error'.
+        Worker-thread safe.
+
+        Updates only the LATEST session row for ``(user_id=chat_id,
+        source)`` — that's the row the drawer's ``_summaries_by_user_id``
+        picks up via ``ORDER BY started_at DESC LIMIT 1``. We can't
+        update all rotated sessions in one shot because hermes-agent's
+        state.db schema has a partial UNIQUE INDEX on
+        ``sessions(title) WHERE title IS NOT NULL`` — every other
+        rotated session for this chat ALREADY holds a (likely auto-
+        generated, distinct) title, and rewriting them all to the same
+        new title violates that constraint. The drawer's read path
+        already prefers the latest, so updating just that row is
+        sufficient and constraint-safe.
+        """
+        if self._state_db_path is None or not self._state_db_path.exists():
+            return "error"
+        try:
+            with contextlib.closing(
+                sqlite3.connect(self._state_db_path, timeout=5.0)
+            ) as conn:
+                with conn:
+                    # Find the latest session for this chat — that's
+                    # the one the drawer surfaces and the one a rename
+                    # should target.
+                    row = conn.execute(
+                        "SELECT id FROM sessions "
+                        "WHERE user_id = ? AND source = ? "
+                        "ORDER BY started_at DESC LIMIT 1",
+                        (chat_id, source),
+                    ).fetchone()
+                    if row is None:
+                        return "not_found"
+                    latest_sid = row[0]
+                    # If another session already holds this title,
+                    # the partial UNIQUE INDEX would reject the UPDATE.
+                    # Treat the no-op rename (current row already has
+                    # this title) as success rather than 500.
+                    existing = conn.execute(
+                        "SELECT id FROM sessions WHERE title = ?",
+                        (title,),
+                    ).fetchone()
+                    if existing is not None and existing[0] != latest_sid:
+                        return "title_conflict"
+                    conn.execute(
+                        "UPDATE sessions SET title = ? WHERE id = ?",
+                        (title, latest_sid),
+                    )
+        except Exception as exc:
+            logger.warning(
+                "[sidekick] state.db rename failed for chat_id=%s: %s",
+                chat_id, exc,
+            )
+            return "error"
         return "ok"
 
     def _purge_hindsight_for_session_uuids(self, session_uuids: list) -> None:
@@ -2103,6 +2266,14 @@ class SidekickAdapter(BasePlatformAdapter):
         # interoperates.
         raw_attachments = body.get("attachments")
         attachments = raw_attachments if isinstance(raw_attachments, list) else None
+        # Sidekick extension: `voice: true` flags the input as dictated.
+        # We prepend `[voice]` so the agent can recognise it (AGENTS.md
+        # tells the agent to expect occasional STT errors in such turns
+        # and to interpret them charitably). Lives in metadata
+        # alongside user_message_id for OAI-blessed compatibility;
+        # back-compat reads top-level `voice` from older PWA bundles.
+        body_metadata = body.get("metadata") if isinstance(body.get("metadata"), dict) else {}
+        voice_flag = body_metadata.get("voice") == "true" or body.get("voice") is True
 
         if not isinstance(conversation, str) or not conversation:
             return web.json_response(
@@ -2123,6 +2294,8 @@ class SidekickAdapter(BasePlatformAdapter):
                            "message": "`input` must be a string or array of {role, content}"}},
                 status=400,
             )
+        if voice_flag and text and not text.lstrip().startswith("[voice]"):
+            text = f"[voice] {text}"
 
         # Decode the gateway-prefixed conversation id. The drawer hands
         # back ids of the form `${source}:${chat_id}` (see
@@ -2143,6 +2316,48 @@ class SidekickAdapter(BasePlatformAdapter):
         response_id = f"resp_{secrets.token_hex(12)}"
         message_id = f"msg_{secrets.token_hex(10)}"
         created_at = int(time.time())
+
+        # Sidekick extension: PWA may pre-mint the user-message id and
+        # ship it as `metadata.user_message_id` (OAI Responses API
+        # `metadata: Dict[str, str]` — a documented extension point
+        # vanilla servers preserve unchanged; we read ours out). The
+        # bubble it broadcasts in the `user_message` envelope below
+        # uses this id as the dedup key for cross-device sync. When
+        # absent (raw OAI third-parties, legacy clients pre-2026-05)
+        # we mint one server-side; the originating device just won't
+        # dedup against the broadcast.
+        #
+        # Back-compat: also accept the legacy top-level
+        # `user_message_id` for one release cycle. Sidekick PWA
+        # bundle v0.424+ uses metadata; older bundles still using
+        # top-level get correct behavior until they're refreshed.
+        # body_metadata captured above (voice handling).
+        raw_user_msg_id = (
+            body_metadata.get("user_message_id")
+            or body.get("user_message_id")  # legacy top-level
+        )
+        if isinstance(raw_user_msg_id, str) and raw_user_msg_id:
+            user_message_id = raw_user_msg_id
+        else:
+            user_message_id = f"umsg_{secrets.token_hex(10)}"
+
+        # Cross-device user-message broadcast. Emit BEFORE dispatching
+        # the turn so other connected PWA tabs render the user bubble
+        # immediately (asymmetry fix: previously only the agent's reply
+        # envelopes propagated to other devices, so the user's own
+        # bubble was invisible until manual refresh). The originating
+        # device dedups against this broadcast via `user_message_id`
+        # (the optimistic bubble it already rendered shares the id).
+        # Out-of-turn channel: this fires before _dispatch_message, so
+        # there's no in-turn queue to bypass — _safe_send_envelope will
+        # route it through _publish_out_of_turn which prefixes the
+        # chat_id to `sidekick:<chat_id>` on the wire.
+        await self._safe_send_envelope({
+            "type": "user_message",
+            "chat_id": chat_id,
+            "message_id": user_message_id,
+            "text": text,
+        })
 
         # Register the turn queue. If a queue already exists for this
         # chat_id, replace it — the proxy is expected to serialize per-
@@ -2476,7 +2691,21 @@ class SidekickAdapter(BasePlatformAdapter):
         envelopes for subscribers whose queue is full — protects the
         plugin from a hung consumer; the affected client gets gaps,
         which it can detect via Last-Event-ID skips on reconnect.
+
+        Wire-side chat_id normalization: prefix bare chat_ids with
+        ``sidekick:`` so the field matches the format the PWA pins via
+        ``getViewed()`` (drawer rows + URLs use ``_format_gateway_id``,
+        which always prefixes). Without this, post-tool-result `send()`
+        envelopes (sk-* message ids) carry bare chat_ids and the PWA's
+        handleReplyDelta gate drops them as off-screen — symptom: agent
+        reply hangs behind the activity row until session-switch+back
+        re-fetches via the prefixed `/v1/conversations/sidekick:.../items`
+        path. Internal queue routing (in-turn path) keys on bare chat_id
+        and is unaffected — only the wire field is rewritten.
         """
+        chat_id = env.get("chat_id")
+        if isinstance(chat_id, str) and chat_id and _GATEWAY_ID_SEP not in chat_id:
+            env = {**env, "chat_id": _format_gateway_id(SIDEKICK_SOURCE, chat_id)}
         self._event_id_counter += 1
         eid = self._event_id_counter
         self._event_replay_ring.append((eid, env))

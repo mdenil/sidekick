@@ -8,6 +8,7 @@ import { log, diag, setDebugElement } from './util/log.ts';
 import { fetchWithTimeout, TimeoutError } from './util/fetchWithTimeout.ts';
 import * as status from './status.ts';
 import * as settings from './settings.ts';
+import * as headphones from './audio/shared/headphones.ts';
 import * as theme from './theme.ts';
 import * as wakeLock from './wakeLock.ts';
 import * as chat from './chat.ts';
@@ -637,14 +638,20 @@ async function boot() {
     onChange: updateSendButtonState,
     onScroll: chat.autoScroll,
     onFlush: (text) => {
-      // User bubble FIRST, then send. Send fires backend.onSend → the
-      // "thinking…" agent bubble, which appends at the end of the
-      // transcript. If we sent first, the thinking bubble would land
-      // above the user's message, making the agent look like it was
-      // replying to something not yet written. Matches sendTypedMessage's
-      // order for typed messages (see sendTypedMessage above).
-      chat.addLine('You', text, 's0', { source: 'voice' });
-      backend.sendMessage(text, { voice: true });
+      // User bubble FIRST, then send. Pre-mint userMessageId + use
+      // renderedMessages so the server's user_message envelope echo
+      // dedups idempotently (the SSOT contract every user-bubble
+      // path follows post-2026-05-04).
+      const userMessageId = `umsg_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+      renderedMessages.upsert(userMessageId, {
+        role: 'user',
+        text,
+        status: 'finalized',
+        speaker: 'You',
+        cls: 's0',
+        source: 'voice',
+      });
+      backend.sendMessage(text, { voice: true, userMessageId });
       playFeedback('send');
     },
   });
@@ -872,6 +879,7 @@ async function boot() {
     onToolEvent: handleToolEvent,
     onActivity: handleActivity,
     onNotification: handleNotification,
+    onUserMessage: handleUserMessage,
     onSessionChanged: () => {
       // Adapter has already updated its local state (IDB title etc).
       // Re-render the drawer so the new title surfaces immediately
@@ -968,69 +976,83 @@ async function boot() {
 
   // Streaming user bubble for live dictation. Created on first interim
   // of a new utterance; updated as interims/finals arrive; finalized
-  // on dispatch (drop streaming class, set text to dispatched utterance).
-  // Replaces the old composer-interim caption strip — the bubble lives
-  // inline in chat so the user sees their words land in the conversation
-  // surface as they speak.
-  let dcUserStreamingId: string | null = null;
-  // Joined is_final segments for the in-progress utterance. Mirrors
-  // dictation.ts's buffer; we keep our own copy so the bubble can show
-  // bufferedFinals + currentInterim without poking dictation internals.
+  // on dispatch. Lives in `renderedMessages` keyed by a pre-minted
+  // `userMessageId` so the server's `user_message` envelope echo
+  // collapses idempotently into the same bubble (no dupe).
+  //
+  // The id rides through the data-channel `dispatch` envelope →
+  // bridge → `/v1/responses` `metadata.user_message_id` → plugin
+  // emits user_message envelope with the same id → handleUserMessage
+  // upserts under same key → no-op for the originator.
+  let dcUserMessageId: string | null = null;
   let dcUserBufferedFinals = '';
   function userBubbleEl(): HTMLElement | null {
-    if (!dcUserStreamingId) return null;
+    if (!dcUserMessageId) return null;
     return document.querySelector(
-      `.line[data-reply-id="${CSS.escape(dcUserStreamingId)}"]`,
+      `.line[data-message-id="${CSS.escape(dcUserMessageId)}"]`,
     ) as HTMLElement | null;
   }
   function ensureUserBubble(initial: string): HTMLElement | null {
-    if (!dcUserStreamingId) {
-      dcUserStreamingId = `dc-u-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      chat.addLine('You', initial, 's0 streaming', {
+    if (!dcUserMessageId) {
+      dcUserMessageId = `umsg_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+      renderedMessages.upsert(dcUserMessageId, {
+        role: 'user',
+        text: initial,
+        status: 'streaming',
+        speaker: 'You',
+        cls: 's0 streaming',
         source: 'voice',
-        replyId: dcUserStreamingId,
       });
     }
     return userBubbleEl();
   }
   function setUserBubbleText(text: string): void {
-    const el = userBubbleEl();
-    if (!el) return;
-    const span = el.querySelector('.text') as HTMLElement | null;
-    if (span) span.textContent = text;
+    if (!dcUserMessageId) return;
+    renderedMessages.upsert(dcUserMessageId, {
+      role: 'user',
+      text,
+      status: 'streaming',
+      speaker: 'You',
+      cls: 's0 streaming',
+    });
+  }
+  /** Pulled by webrtcDictation when it dispatches — pre-mints a bubble
+   *  id if one isn't already alive (e.g. dispatch fired before any
+   *  interim was rendered). The id ships in the dispatch envelope so
+   *  the server's user_message echo dedups against the same key. */
+  function getOrMintUserMessageId(): string {
+    if (!dcUserMessageId) {
+      dcUserMessageId = `umsg_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+    }
+    return dcUserMessageId;
   }
   webrtcDictation.setOnResetHandler(() => {
-    // Call closed (or reopened) — drop any in-flight streaming state so
-    // the next utterance starts a fresh bubble. If a streaming bubble
-    // is still around at reset time, it means dispatch never fired for
-    // it (otherwise setUserBubbleHandler would have cleared the id) —
-    // i.e. the user toggled stream off mid-utterance. Remove the orphan
-    // entirely; no agent reply is coming for it. Dispatched bubbles
-    // already have dcUserStreamingId=null and are unaffected.
-    const el = userBubbleEl();
-    if (el) el.remove();
-    dcUserStreamingId = null;
+    // Call closed (or reopened) — drop any in-flight streaming state.
+    // Orphan streaming bubble (dispatch never fired) gets removed.
+    if (dcUserMessageId) {
+      const el = userBubbleEl();
+      if (el) el.remove();
+      renderedMessages.remove(dcUserMessageId);
+    }
+    dcUserMessageId = null;
     dcUserBufferedFinals = '';
   });
   webrtcDictation.setUserBubbleHandler((text) => {
-    // Dispatch fired — finalize whichever streaming bubble is in flight.
-    // dictation gives us the post-commit-phrase-stripped utterance, which
-    // may differ from our running display (which still includes the
-    // commit word); use dictation's value as the source of truth.
-    const el = userBubbleEl();
-    if (el) {
-      const span = el.querySelector('.text') as HTMLElement | null;
-      if (span) span.textContent = text;
-      el.classList.remove('streaming');
-    } else {
-      // No streaming bubble (e.g. dispatch fired with no preceding interim
-      // — defensive). Render a plain user bubble so the utterance still
-      // shows up in chat.
-      chat.addLine('You', text, 's0', { source: 'voice' });
-    }
-    dcUserStreamingId = null;
+    // Dispatch fired — finalize the bubble. If we never rendered an
+    // interim (e.g. silence-commit on empty utterance), mint an id now.
+    const id = getOrMintUserMessageId();
+    renderedMessages.upsert(id, {
+      role: 'user',
+      text,
+      status: 'finalized',
+      speaker: 'You',
+      cls: 's0',
+      source: 'voice',
+    });
+    dcUserMessageId = null;  // next utterance mints a fresh id
     dcUserBufferedFinals = '';
   });
+  webrtcDictation.setUserMessageIdProvider(getOrMintUserMessageId);
   webrtcConnection.setDataChannelListener((ev) => {
     if (ev.type === 'barge') {
       // Server-side VAD detected user voice during TTS. Cancel local
@@ -1236,7 +1258,21 @@ async function boot() {
       // first reply_delta / typing the bubble flips to a normal user
       // line. On send-failure it flips to `.failed` with a Retry button
       // that restores the composer text and re-fires sendTypedMessage.
-      const bubble = chat.addLine('You', text || '', 's0', {
+      //
+      // Cross-device dedup: pre-mint a userMessageId and key the
+      // optimistic bubble in renderedMessages with it. The same id
+      // ships in the POST body → the upstream's user_message broadcast
+      // carries it back → handleUserMessage upserts under the same key
+      // and the renderedMessages map's idempotency gives us free dedup
+      // on the originating device. Other devices see the id for the
+      // first time and render fresh.
+      const userMessageId = `umsg_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+      const bubble = renderedMessages.upsert(userMessageId, {
+        role: 'user',
+        text: text || '',
+        status: 'finalized',
+        speaker: 'You',
+        cls: 's0',
         source: 'text',
         attachments: hasAttachments ? attachments.toChatEcho() : undefined,
         pending: true,
@@ -1247,7 +1283,8 @@ async function boot() {
         list.push(bubble);
         pendingBubblesByChat.set(sendChatId, list);
       }
-      const sendOpts = hasAttachments ? { attachments: attachments.toSendPayload() } : {};
+      const sendOpts: Record<string, any> = { userMessageId };
+      if (hasAttachments) sendOpts.attachments = attachments.toSendPayload();
       // sendMessage is async (POST + await !res.ok rejection), so a
       // sync try/catch only catches the !connected synchronous throw.
       // Capture both via the promise's .catch — flips bubble → failed
@@ -1916,6 +1953,12 @@ async function boot() {
       status.setStatus(`Dictate error: ${error}`, 'err');
     } else if (opening) {
       status.setStatus('Listening — speak; tap mic / Send / Esc to stop', 'live');
+      // Audible "your turn" cue — same chime call mode plays from the
+      // bridge's listening envelope. Dictate doesn't go through the
+      // bridge so we fire it directly when the provider reports
+      // opening. Matches the chime vocabulary across modes (Jonathan,
+      // 2026-05-04 UX nit: "no chime for dictate when listening").
+      try { playFeedback('listening'); } catch { /* feedback is best-effort */ }
     } else {
       status.setStatus('');
     }
@@ -2749,12 +2792,22 @@ async function boot() {
       || (webrtcControls.isOpen() && !dictateActive);
     btnCall.classList.toggle('active', active);
   }
+  /** Composer mic shows a stop glyph whenever some voice path is in
+   *  flight, since the mic-tap dispatcher routes to stopVoice in that
+   *  case (see pointerdown's "voiceActive defensive" branch). Without
+   *  the swap the user sees a mic icon that actually ends the call. */
+  function syncMicIcon(): void {
+    const btn = document.getElementById('btn-mic');
+    if (!btn) return;
+    btn.classList.toggle('voice-active', voiceActive());
+  }
   // Sync on every settings flip + every voice-state transition we know
   // about. Enough coverage: webrtcControls open/close fires through
   // controls.ts; listenActive flips through startListen/stopListen.
   // Hooking those would be cleaner but the polling here is cheap.
-  setInterval(syncCallButtonVisual, 250);
+  setInterval(() => { syncCallButtonVisual(); syncMicIcon(); }, 250);
   syncCallButtonVisual();
+  syncMicIcon();
 
   // ── Mic + Call mode chevron menus (per-button toggle rows) ─────────
   // Two independent menus. State persists in settings; reads on every
@@ -2810,29 +2863,17 @@ async function boot() {
 
   function applyMicModeUi(): void {
     const s = settings.get() as any;
-    // streamingEngine === 'local' makes the REALTIME mode unreachable
-    // (no WebRTC bridge → no peer track for streaming). But TURN-BASED
-    // call mode (Listen) is still valid with local STT + local TTS —
-    // the user gets a handsfree silence-driven flow that's fully
-    // browser-side. So: hide the Realtime toggle in the call-mode
-    // menu when local, force settings.realtime=false so btn-call
-    // opens Listen mode, but keep the button itself visible.
-    const localEngine = s.streamingEngine === 'local';
-    if (localEngine && s.realtime) {
-      // Force-flip settings.realtime off — local engine can't do realtime
-      void settings.set('realtime', false);
-      (s as any).realtime = false;
-    }
+    // Realtime + streamingEngine are conceptually one knob from the
+    // user's perspective: "do you want WebRTC or turn-based." The
+    // call-mode menu shows the Realtime toggle unconditionally; the
+    // engine pairing is an implementation detail handled in the
+    // toggle handler (flipping Realtime ON auto-flips streamingEngine
+    // away from local). Reverse coupling NOT applied — the user can
+    // still keep streamingEngine=server AND turn-based mode (real
+    // bridge, full-fidelity recording) by leaving Realtime OFF.
     applyMenuRows(callModeMenu, s);
     if (callModeWrap) {
       callModeWrap.dataset.mode = s.realtime ? 'realtime' : 'turn-based';
-    }
-    // Toggle the Realtime row visibility based on engine.
-    const realtimeRow = callModeMenu?.querySelector(
-      'button.mic-toggle-row[data-toggle="realtime"]',
-    ) as HTMLElement | null;
-    if (realtimeRow) {
-      realtimeRow.style.display = localEngine ? 'none' : '';
     }
     // Dynamic call-button tooltip — only meaningful on hover devices
     // (setTooltip skips title= on touch).
@@ -2848,6 +2889,58 @@ async function boot() {
   // Engine flip (set-streaming-engine select in the Settings panel)
   // → re-render mic/call UI so btn-call hide/show keeps up live.
   window.addEventListener('sidekick:engine-changed', () => applyMicModeUi());
+
+  // ── Barge slider (call-mode menu) ──────────────────────────────────
+  // Single slider 0..100 that folds the bargeIn boolean into its
+  // leftmost position (0 = OFF). Replaces the prior settings-panel
+  // checkbox + slider pair. iOS speakerphone hides the row entirely
+  // because barge is acoustically impossible there (no AEC against
+  // <audio>-element TTS playing through the same physical device).
+  // See audio/shared/headphones.ts for the routing detector.
+  {
+    const slider = document.getElementById('call-mode-barge-slider') as HTMLInputElement | null;
+    const valEl = document.getElementById('call-mode-barge-val');
+    const row = document.getElementById('call-mode-barge-row');
+    function readSettingsToSlider(): void {
+      if (!slider || !valEl) return;
+      const s = settings.get() as any;
+      const sens = s.bargeIn
+        ? settings.thresholdToSensitivity(s.bargeThreshold)
+        : 0;
+      slider.value = String(sens);
+      valEl.textContent = sens === 0 ? 'Off' : `${sens}%`;
+    }
+    function writeSliderToSettings(): void {
+      if (!slider || !valEl) return;
+      const sens = Number(slider.value);
+      valEl.textContent = sens === 0 ? 'Off' : `${sens}%`;
+      if (sens === 0) {
+        void settings.set('bargeIn', false);
+      } else {
+        void settings.set('bargeIn', true);
+        void settings.set('bargeThreshold', settings.sensitivityToThreshold(sens));
+      }
+    }
+    slider?.addEventListener('input', writeSliderToSettings);
+    readSettingsToSlider();
+    // Hide the slider row whenever barge is physically unavailable —
+    // SSOT lives in headphones.isBargeAvailable() so future callers
+    // (settings hints, tap-to-interrupt fallback decision, etc.)
+    // read from the same function and stay in sync.
+    function applyBargeRowVisibility(): void {
+      if (!row) return;
+      const s = settings.get() as any;
+      const mode = s.realtime ? 'realtime' : 'turnbased';
+      const { available } = headphones.isBargeAvailable(mode);
+      row.hidden = !available;
+    }
+    headphones.onChange(() => applyBargeRowVisibility());
+    window.addEventListener('sidekick:settings-changed', () => {
+      readSettingsToSlider();
+      applyBargeRowVisibility();
+    });
+    applyBargeRowVisibility();
+  }
 
   // Mirror static composer aria-label → title for hover devices. iOS
   // touch path keeps title-less buttons (no long-press tooltip popup).
@@ -2868,6 +2961,15 @@ async function boot() {
     const cur = !!(settings.get() as any)[key];
     const next = !cur;
     settings.set(key, next);
+    // Flipping Realtime ON requires the WebRTC bridge — coerce
+    // streamingEngine away from 'local' so the toggle is meaningful
+    // immediately. One-way coupling: turning Realtime OFF leaves the
+    // engine alone (user may still want server-engine turn-based,
+    // which is a valid combination).
+    if (key === 'realtime' && next) {
+      const engine = (settings.get() as any).streamingEngine;
+      if (engine === 'local') settings.set('streamingEngine', 'server');
+    }
     applyMicModeUi();
     const label = key === 'realtime' ? 'Realtime' : 'Speak replies';
     const live = !!(settings.get() as any)[key];
@@ -3227,6 +3329,47 @@ async function boot() {
   } catch { /* noop */ }
 
   log('page loaded, UA:', navigator.userAgent);
+
+  // Background prefetch of EVERYTHING the first BargeDetector.start()
+  // would otherwise pull serially:
+  //   1. /build/vendor/vad-web.mjs (~423 KB) — the lib bundle that
+  //      isSupported() dynamically imports. WAS NOT prefetched until
+  //      v0.426 (Jonathan, 2026-05-04: "16s on Safari fresh load,
+  //      what happened to staged loading?"). Without this, even with
+  //      the wasm/onnx pre-cached, first call still parses the lib
+  //      synchronously after the dynamic import resolves.
+  //   2. The four /assets/vad/* files (~14.7 MB total) — wasm + onnx
+  //      + worklet + ort loader. Each one is served by the SW's
+  //      vad-assets cache (sw.js) which survives app version bumps,
+  //      so the 14.7 MB downloads exactly once per VAD lib upgrade.
+  //   3. speechVad.isSupported() — triggers the dynamic import +
+  //      module-eval, so by the time the user taps call the lib is
+  //      already parsed and ready (saves ~50-100ms on cold).
+  // Fire-and-forget; failures (offline, asset 404) are silent — first
+  // real call will retry the fetch path. 5s delay so it doesn't
+  // compete with the foreground boot sequence.
+  setTimeout(() => {
+    const urls = [
+      '/build/vendor/vad-web.mjs',
+      '/assets/vad/silero_vad_legacy.onnx',
+      '/assets/vad/vad.worklet.bundle.min.js',
+      '/assets/vad/ort-wasm-simd-threaded.mjs',
+      '/assets/vad/ort-wasm-simd-threaded.wasm',
+    ];
+    for (const url of urls) fetch(url).catch(() => { /* best-effort warm */ });
+    log(`VAD prefetch: ${urls.length} assets kicked off`);
+    // After a tick, parse the lib by invoking isSupported(). Costs ~0
+    // network (fetched above) — just dynamic-import + module eval.
+    setTimeout(async () => {
+      try {
+        const speechVad = await import('./audio/shared/speechVad/index.ts');
+        const supported = await speechVad.isSupported();
+        log(`VAD prefetch: lib parsed, supported=${supported}`);
+      } catch (e: any) {
+        log(`VAD prefetch: lib import failed: ${e?.message}`);
+      }
+    }, 100);
+  }, 5000);
 }
 
 /** Wait for a newly-detected SW to install + activate (signaled by a
@@ -3987,6 +4130,41 @@ function handleNotification({ chatId, kind, content }: any) {
   const label = kind ? `notification — ${kind}` : 'notification';
   const text = content ? `(${label}) ${content}` : `(${label})`;
   chat.addSystemLine(text);
+}
+
+/** Cross-device user-message broadcast handler. The upstream emits a
+ *  `user_message` envelope as soon as a /v1/responses POST lands —
+ *  every connected device receives it, including the originator.
+ *
+ *  Dedup: the originating device pre-minted `messageId` for its
+ *  optimistic bubble (see sendTypedMessage) and registered it in
+ *  renderedMessages. The upsert below is idempotent on that key, so
+ *  for the originator this is a no-op (entry exists; status doesn't
+ *  change; text doesn't change). For every OTHER device the entry
+ *  doesn't exist yet — upsert creates a fresh user bubble.
+ *
+ *  Off-screen filtering: like reply_delta, drop only when the
+ *  conversation is explicitly different from the viewed one. When
+ *  getViewed() is null (boot races), render — there's no on-screen
+ *  session to protect. */
+function handleUserMessage({ conversation, text, messageId }: any) {
+  if (!messageId) return;
+  const viewed = sessionDrawer.getViewed();
+  if (viewed && conversation && conversation !== viewed) {
+    log(`user_message (off-screen) chat=${conversation} msgId=${messageId}`);
+    return;
+  }
+  // Idempotent — originating device's optimistic bubble is already
+  // registered under this id, so this collapses to a no-op upsert
+  // (text is unchanged, status stays 'finalized'). Other devices
+  // create the bubble for the first time.
+  renderedMessages.upsert(messageId, {
+    role: 'user',
+    text: text || '',
+    status: 'finalized',
+    speaker: 'You',
+    cls: 's0',
+  });
 }
 
 // ─── Go ─────────────────────────────────────────────────────────────────────

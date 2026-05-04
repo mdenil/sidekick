@@ -121,6 +121,15 @@ function ensurePlayerListenersAttached(player: HTMLAudioElement): void {
   if (playerListenersAttached) return;
   playerListenersAttached = true;
 
+  // Experiment #1 (v0.417): tried createMediaElementSource(player)
+  // routing through the shared AudioContext to make Chrome's AEC see
+  // the TTS output as part of the same graph as the Silero mic input.
+  // RESULT: catastrophic — MicVAD.new() started taking ~40 seconds
+  // instead of <1s when the player was wired into the same context,
+  // breaking barge for BOTH realtime and turnbased modes. Reverted in
+  // v0.418. The AEC + AudioContext interaction is not safely
+  // composable with our AudioWorklet-based VAD load. See backlog.
+
   player.addEventListener('loadedmetadata', () => {
     if (!activeReplyId) return;
     const dur = player.duration;

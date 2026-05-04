@@ -6,11 +6,35 @@ hermes owns the `chat_id → session_id` mapping natively.
 
 The adapter exposes the abstract agent contract over HTTP+SSE
 (`/v1/responses`, `/v1/conversations*`, `/v1/events`, plus the
-sidekick gateway extension `/v1/gateway/conversations`). See the
-sidekick repo's `docs/ABSTRACT_AGENT_PROTOCOL.md` for the canonical
-reference.
+sidekick gateway extension `/v1/gateway/conversations`,
+`/v1/settings/*`, `/v1/commands`). See the sidekick repo's
+[`docs/ABSTRACT_AGENT_PROTOCOL.md`](../../../docs/ABSTRACT_AGENT_PROTOCOL.md)
+for the canonical reference.
 
 This directory contains the **plugin source**. Installing it is opt-in.
+
+The module docstring at the top of `__init__.py` is the authoritative
+envelope catalogue + adapter surface reference. Read it before
+modifying the plugin.
+
+## Highlights
+
+- Owns the `chat_id → session_id` resolution against hermes' state.db.
+  Sessions rotate (compression, manual `/reset`); the read path walks
+  rotations transparently so the drawer + transcript stay coherent.
+- Emits the cross-device `user_message` broadcast on every
+  `POST /v1/responses` so other connected PWA tabs render the user's
+  bubble immediately. PWA's pre-minted `user_message_id` is the
+  dedup key for the originating tab.
+- Persists agent-declared settings (`/v1/settings/*`) back to
+  `~/.hermes/config.yaml` under the `sidekick:` namespace so changes
+  survive restarts and agree across CLI + PWA.
+- Slash-command catalog (`/v1/commands`) wraps the hermes-cli
+  registry; categories `cli_only` are filtered out (PWA can't
+  exercise terminal affordances).
+- Cross-platform drawer (`/v1/gateway/conversations`) — telegram /
+  slack / whatsapp sessions surface alongside sidekick's own with a
+  source badge.
 
 ## Files
 
@@ -71,16 +95,17 @@ then `reply_final`.
 
 ## Wire protocol
 
-See the module docstring at the top of `__init__.py` for the
-envelope catalogue. Single persistent WS at
-`ws://127.0.0.1:8645/ws` authenticated via
-`Authorization: Bearer <token>` on the upgrade request.
+HTTP+SSE on `:8645` (default; configurable via
+`SIDEKICK_PLATFORM_PORT`). Endpoints listed in the top-level
+[`README.md`](../../../README.md) endpoint inventory; full details
+in the module docstring at the top of `__init__.py`.
+
+Auth: `Authorization: Bearer <SIDEKICK_PLATFORM_TOKEN>` on every
+request. Same token goes into the sidekick proxy's
+`SIDEKICK_PLATFORM_TOKEN` env so the proxy can authenticate as a
+client.
 
 ## Known limitations
 
-* `session_changed` envelope is documented but not yet emitted — needs a
-  gateway-side compression hook.
 * `reply_to` threading is ignored on outbound — sidekick has no thread
   primitive in the PWA today.
-* Single proxy client per gateway. A second connection cleanly drops
-  the previous one.

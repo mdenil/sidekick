@@ -11,7 +11,21 @@
  * network-first, so first-load pulls anything missed and caches on the
  * way through.
  */
-const CACHE_NAME = 'v0.403';
+const CACHE_NAME = 'v0.427';
+
+// Dedicated cache for VAD assets. Key insight (Jonathan, 2026-05-04):
+// VAD assets are 14.7 MB and don't change with every app deploy — the
+// Silero model is versioned by filename, the ORT runtime is from a
+// pinned npm package. Bumping CACHE_NAME ABOVE used to evict them
+// every release, forcing a 14.7 MB re-download per refresh. They now
+// live in this separate cache that survives app version bumps; only
+// invalidate when the VAD lib version itself changes (bump VAD_CACHE).
+//
+// Update protocol: when @ricky0123/vad-web is upgraded OR the Silero
+// model changes, bump VAD_CACHE — the activate handler then prunes
+// the old VAD cache and the next call re-fetches. Dev workflow: this
+// is rare; ~once per quarter at most.
+const VAD_CACHE = 'vad-assets-v1';
 
 // Minimum viable shell for offline boot. Bundle JS modules used to be
 // listed here too — that was the source of the 2026-05-01 cache.addAll
@@ -31,6 +45,15 @@ const APP_SHELL = [
   // Audio worklet — loaded out-of-band by the AudioContext, not via
   // import; pre-cache so the talk-mode pipeline boots offline.
   '/build/audio/shared/audio-processor.js',
+  // Silero VAD WASM assets are NOT in APP_SHELL — they're 14.7 MB
+  // total (12.8 MB ORT WASM + 1.8 MB Silero model + 24 KB ESM loader +
+  // 3 KB worklet). Pre-caching blocked SW install/activate by 15-20s
+  // on every version bump (Jonathan, 2026-05-04). Lazy-cache instead:
+  // the existing /assets/* fetch handler caches on first hit, so the
+  // first call after a version bump pays the one-time download cost
+  // and warms the cache for everything after. main.ts kicks off a
+  // background prefetch ~5s after page ready so the cost is hidden
+  // during idle instead of blocking the first call.
 ];
 
 self.addEventListener('install', (e) => {
@@ -57,9 +80,13 @@ self.addEventListener('install', (e) => {
 });
 
 self.addEventListener('activate', (e) => {
+  // Prune old caches BUT preserve VAD_CACHE — VAD assets survive app
+  // version bumps (see VAD_CACHE docstring). Whitelist both the
+  // current app cache + the VAD cache; everything else gets evicted.
+  const keep = new Set([CACHE_NAME, VAD_CACHE]);
   e.waitUntil(
     caches.keys().then(keys =>
-      Promise.all(keys.filter(k => k !== CACHE_NAME).map(k => caches.delete(k)))
+      Promise.all(keys.filter(k => !keep.has(k)).map(k => caches.delete(k)))
     ).then(() => self.clients.claim())
   );
 });
@@ -78,12 +105,50 @@ self.addEventListener('fetch', (e) => {
        '/spotify-check', '/screenshot', '/canvas/show', '/transcribe'].includes(url.pathname)) return;
   if (url.origin !== self.location.origin) return;
 
+  // /assets/vad/* — CACHE-FIRST against the dedicated VAD_CACHE.
+  // Survives app version bumps (see VAD_CACHE comment above) so the
+  // 14.7 MB download happens once per VAD lib upgrade, not once per
+  // app deploy.
+  if (url.pathname.startsWith('/assets/vad/')) {
+    e.respondWith(
+      caches.open(VAD_CACHE).then(cache =>
+        cache.match(e.request).then(cached => {
+          if (cached) return cached;
+          return fetch(e.request).then(response => {
+            if (response.ok) cache.put(e.request, response.clone());
+            return response;
+          });
+        }),
+      ),
+    );
+    return;
+  }
+
   // /build/* — NETWORK-FIRST. Compiled JS bundle modules. Every code
   // change rebuilds these; cache-first served stale modules across SW
   // updates (new SW activates, page header shows new CACHE_NAME, but
   // the in-memory JS is from the OLD cached bundle until a SECOND
   // reload). Network-first guarantees fresh code on reload while
   // still falling back to cache when offline.
+  //
+  // Exception: /build/vendor/vad-web.mjs lives in VAD_CACHE alongside
+  // the wasm/onnx assets so the VAD lib bundle ALSO survives app
+  // version bumps. Same upgrade cadence (bump VAD_CACHE when @ricky0123/
+  // vad-web upgrades).
+  if (url.pathname === '/build/vendor/vad-web.mjs') {
+    e.respondWith(
+      caches.open(VAD_CACHE).then(cache =>
+        cache.match(e.request).then(cached => {
+          if (cached) return cached;
+          return fetch(e.request).then(response => {
+            if (response.ok) cache.put(e.request, response.clone());
+            return response;
+          });
+        }),
+      ),
+    );
+    return;
+  }
   if (url.pathname.startsWith('/build/')) {
     e.respondWith(
       fetch(e.request).then(response => {
