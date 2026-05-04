@@ -3498,9 +3498,14 @@ function replaySessionMessages(
   chat.trackViewedSession(id);
   viewedSessionForLoadEarlier = id;
   const label = getAgentLabel();
+  // Batch-render: skip per-line autoScroll + persist (which reads
+  // transcriptEl.innerHTML on each call — O(N²) for the full loop on
+  // a 200-message chat, ~5s of main-thread block). One flush at end
+  // does the same work O(N).
   for (const m of messages) {
-    renderHistoryMessage(m, label);
+    renderHistoryMessage(m, label, 'append', /*batch*/ true);
   }
+  chat.flushBatchedRender();
   // Register pagination state AFTER messages land so the scroll listener
   // doesn't fire mid-render. hasMore=false (or missing) disables lazy-load.
   chat.setPaginationState(pagination?.firstId ?? null, !!pagination?.hasMore);
@@ -3509,7 +3514,7 @@ function replaySessionMessages(
 
 /** Shared rendering for both initial replay (append) and load-earlier
  *  (prepend, batched). The caller owns scroll behavior + persist. */
-function renderHistoryMessage(m: any, label: string, mode: 'append' | 'prepend' = 'append') {
+function renderHistoryMessage(m: any, label: string, mode: 'append' | 'prepend' = 'append', batch: boolean = false) {
   const raw = (m.content || '').trim();
   const text = raw;
   if (!text) return;
@@ -3527,6 +3532,9 @@ function renderHistoryMessage(m: any, label: string, mode: 'append' | 'prepend' 
   // returns `id` matching the SSE envelope `message_id` (see
   // proxy/sidekick/history.ts → it.id and proxy/sidekick/upstream.ts).
   const messageId = m.id != null ? String(m.id) : undefined;
+  // Caller may force batching even for append (resume-loop case);
+  // prepend always batches because chat.prependHistory wraps the loop.
+  const useBatch = prepend || batch;
   if (m.role === 'assistant') {
     if (NO_REPLY_RE.test(text)) return;
     if (messageId) {
@@ -3539,7 +3547,7 @@ function renderHistoryMessage(m: any, label: string, mode: 'append' | 'prepend' 
         markdown: true,
         timestamp: ts,
         prepend,
-        batch: prepend,
+        batch: useBatch,
         // replyNavigator (BT skip-fwd / skip-back, per-bubble play
         // chips) keys off data-reply-id. For history-rendered bubbles
         // there's no separate replyId from the live SSE path, so reuse
@@ -3548,7 +3556,7 @@ function renderHistoryMessage(m: any, label: string, mode: 'append' | 'prepend' 
       });
     } else {
       chat.addLine(label, text, 'agent', {
-        markdown: true, timestamp: ts, prepend, batch: prepend,
+        markdown: true, timestamp: ts, prepend, batch: useBatch,
       });
     }
   } else if (m.role === 'user') {
@@ -3561,11 +3569,11 @@ function renderHistoryMessage(m: any, label: string, mode: 'append' | 'prepend' 
         cls: 's0',
         timestamp: ts,
         prepend,
-        batch: prepend,
+        batch: useBatch,
       });
     } else {
       chat.addLine('You', text, 's0', {
-        timestamp: ts, prepend, batch: prepend,
+        timestamp: ts, prepend, batch: useBatch,
       });
     }
   }

@@ -256,6 +256,21 @@ function persist(): void {
   saveSnapshot(html).catch((e) => diag(`chat.persist failed: ${e?.message || 'idb error'}`));
 }
 
+/** Public flush helper — callers that batch many addLine calls (e.g.
+ *  `replaySessionMessages` rendering a 200-message chat) skip the
+ *  per-line autoScroll + persist via `batch: true`, then call this
+ *  ONCE at the end. Without batching, the resume loop is O(N²): each
+ *  `persist()` reads `transcriptEl.innerHTML` (O(N) DOM serialization)
+ *  and writes the full snapshot to IDB — N calls × O(N) bytes per
+ *  call. Field repro 2026-05-04: 200-msg chat took ~5s to render
+ *  client-side (server-side fetch was <1s). Pre-existing slowness;
+ *  surfaced when the cascade fix made click-to-content the dominant
+ *  load-time component. */
+export function flushBatchedRender(): void {
+  autoScroll();
+  persist();
+}
+
 export function speakerLabel(id: string | number | null | undefined): string {
   if (id == null) return 'Speaker';
   if (!speakerNames[id]) speakerNames[id] = `Speaker ${++speakerCount}`;
