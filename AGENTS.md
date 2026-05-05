@@ -1,142 +1,121 @@
-# AGENTS.md — guide for AI coding assistants
+# AGENTS.md — for AI coding assistants
 
-> Naming note: this file is for **AI coding assistants** (Claude Code,
-> Cursor, Aider, etc. — see [agents.md](https://agents.md/)). Not to be
-> confused with sidekick's "agent backends" (Hermes, stub, OpenAI
-> Responses-compatible servers) which sidekick connects TO; those are
-> documented in `backends/README.md` and `docs/ABSTRACT_AGENT_PROTOCOL.md`.
+> This file follows the [agents.md](https://agents.md/) convention. It's
+> for AI coding assistants (Claude Code, Cursor, Aider, ...) that the
+> user has pointed at this repo. Most users land here via:
+> *"set Sidekick up to talk to my agent."*
 
-Read this first if you're an AI coding assistant about to make
-non-trivial changes. Five-minute orientation, saves a multi-hour
-thrash later.
+## What Sidekick is
 
-## Before you change anything
+A voice-first PWA chat client. It talks to any backend that speaks the
+**OpenAI Responses API** (`POST /v1/responses` with SSE), plus a few
+optional sidekick-specific endpoints for richer features (drawer,
+search, settings, attachments). See [`docs/ABSTRACT_AGENT_PROTOCOL.md`](docs/ABSTRACT_AGENT_PROTOCOL.md)
+for the full contract.
 
-1. **`CONTRIBUTING.md`** — dev setup, test commands, code style, and
-   the test-layout convention. Read the "Tests" section in full; the
-   diagnostic recipes alone will save you hours.
-2. **`docs/ABSTRACT_AGENT_PROTOCOL.md`** — if your change touches the
-   proxy or PWA backend client. Documents the `/v1/*` HTTP+SSE
-   surface (`/v1/responses`, `/v1/conversations*`) the proxy speaks
-   to upstream agents.
-3. **`docs/SIDEKICK_AUDIO_PROTOCOL.md`** — wire format between the PWA
-   and audio bridge; relevant if you're touching the bridge or its
-   reference impl in `audio-bridge/`.
+## What you're (probably) being asked to do
 
-## Workflow rules (learned the hard way)
+Wire Sidekick up to the user's existing agent backend so they can use
+the PWA as the frontend for it. Three shapes this usually takes,
+ordered easiest → hardest:
 
-- **Map the contract before writing integration code.** If you're
-  bridging two systems, the canonical wire / API contract beats your
-  guesses. Spend 5 minutes reading the spec; don't reverse-engineer
-  it from one or two endpoints. (`docs/ABSTRACT_AGENT_PROTOCOL.md`
-  exists for this reason.)
+1. **The user's agent already speaks `/v1/responses`** (e.g. it's
+   already an OpenAI-compatible server, or a wrapper around one).
+   → Point Sidekick at it via env vars. No code needed.
+2. **The user's agent speaks a different protocol** (their own HTTP
+   shape, gRPC, a CLI, ...). → Write a small adapter. Cleanest place
+   is a fork of [`backends/stub/`](backends/stub/) — that's the
+   reference implementation of the contract in TypeScript.
+3. **The user's agent has a plugin system** (like Hermes does). → Drop
+   a plugin in alongside the user's agent that exposes the contract
+   over HTTP. See [`backends/hermes/plugin/`](backends/hermes/plugin/)
+   for the reference.
 
-- **Read API docs before writing API code.** Every recurring problem
-  on this codebase has traced back to misunderstanding or misusing
-  someone else's API. If you're calling a library or external
-  service, find its docs FIRST — `~/.hermes/hermes-agent/gateway/`
-  for hermes, the official docs for npm packages, the project's
-  own `docs/` for in-tree contracts. "I'll figure it out from the
-  type signatures" is the path to the multi-hour thrash.
+## Path 1 — point at an existing `/v1/responses` server
 
-- **For bugs at integration boundaries, write a failing test first.**
-  The test pins the misbehavior at the lowest layer where it's
-  observable. Adding instrumentation to "see what's happening" is
-  almost always the wrong instinct — the test stays as regression
-  armor; the instrumentation gets ripped out the next day.
-
-- **Hermetic test harness is load-bearing, not premature.** If you're
-  adding a feature that touches shared state (state.db, sessions.json,
-  IDB), build the mock / scratch path before the feature. The proxy
-  test suite at `proxy/sidekick/__tests__/` is the template.
-
-- **Use the Plan agent for tasks > 30 minutes.** Five minutes of
-  planning saves hours of thrash. Pattern: dispatch the Plan agent
-  with concrete context, review the plan, execute in commits.
-
-- **Don't fix more than one thing per commit.** Each commit must be
-  independently rollback-safe; the user tests at branch tip and
-  needs to be able to revert one bad commit without losing others.
-
-- **If a fix takes more than 2 attempts, stop.** Write a test that
-  pins what's actually happening. Fix once, with confidence.
-
-## Test before committing
-
-Always run, in this order:
-```
-npm test           # ~1.4s, 120+ tests
-npm run typecheck  # ~3s
-```
-
-If your change touches `proxy/sidekick/*`, also:
-```
-npm test -- proxy/sidekick/__tests__/proxy.test.ts
-```
-to surface failures with proxy-test-only output. The full suite hides
-the per-test detail.
-
-For UI-touching changes, run the relevant Playwright smoke:
-```
-npm run smoke -- --filter drawer-switch    # specific scenario
-npm run smoke                              # all scenarios
-```
-Smoke runs use the mock backend by default. Real-backend runs are for
-when you're validating that mock matches reality.
-
-## Backend-specific changes
-
-The repo is meant to be modular. Hermes is the default backend but
-not the only one — `src/proxyClientTypes.ts` defines the abstraction
-and `src/proxyClient.ts` is the single client implementation that
-talks to whatever upstream the proxy is configured against.
-
-If you're changing **only** hermes-specific code: edit under
-`proxy/sidekick/` (server side) or `backends/hermes/plugin/` (the
-in-process hermes plugin). Tests go under
-`proxy/sidekick/__tests__/`.
-
-If you're changing **shared / generic** behavior (composer, drawer,
-chat, voice): edit under `src/`, with tests in `test/`. These must
-work against any backend.
-
-If you find yourself editing `src/main.ts` or `src/composer.ts` to
-add backend-specific behavior, stop — that's a leaky abstraction. Add
-a method to the backend adapter interface instead.
-
-## Local hermes patches
-
-If you're editing hermes-agent itself (`~/.hermes/hermes-agent/`),
-you're outside this repo. Read `~/your-agent-private/HERMES_PATCHES.md`
-first — it documents the long-lived patch branches, the rebase
-workflow before `pip install -U hermes-agent`, and the upstream-PR
-plan. Don't add patches without updating that ledger.
-
-## Restarting services during development
-
-**Two long-running services**:
-- `hermes-gateway.service` — hermes-agent (Python, in `~/.hermes/hermes-agent/`)
-- `sidekick.service` — sidekick proxy (`server.ts` + `proxy/`)
-
-If you change Python code under `~/.hermes/hermes-agent/`, restart
-hermes-gateway. If you change anything under `proxy/` or
-`server.ts`, **restart sidekick.service**. The PWA bundle
-(`build/*`) is served by the proxy and re-loaded on browser hard-
-reload, so frontend changes don't need a service restart — just
-`npm run build` + reload — but proxy code is loaded once at process
-start.
+Edit `.env`:
 
 ```
-systemctl --user restart hermes-gateway   # after hermes-agent code changes
-systemctl --user restart sidekick         # after proxy code changes
+SIDEKICK_PLATFORM_URL=https://your-agent.example.com
+SIDEKICK_PLATFORM_TOKEN=<bearer token if your agent requires auth>
 ```
 
-**Gotcha**: smoke tests using the mock backend (`BACKEND='mocked'`)
-intercept HTTP at the BROWSER side via Playwright `page.route()`,
-so they bypass the proxy entirely. They will pass even if the
-deployed proxy is running stale code. To verify a proxy fix is
-actually live, hit the proxy directly with `curl` after restart, or
-run a `BACKEND='real'` smoke scenario.
+`npm start`, open `http://localhost:3001`. Done.
 
-State.db / sessions.json / IDB survive both restarts. The user
-(Jonathan) has consented to autonomous restarts during dev sessions.
+If the user's agent doesn't fully implement the contract (e.g. no
+`/v1/conversations` for the drawer, no `/v1/events` for cross-device
+sync), Sidekick degrades gracefully — those features just disappear
+from the UI. Read the **Optional vs required** section of
+[`docs/ABSTRACT_AGENT_PROTOCOL.md`](docs/ABSTRACT_AGENT_PROTOCOL.md)
+to see what each endpoint unlocks.
+
+## Path 2 — write an adapter
+
+Copy `backends/stub/` → `backends/<their-agent>/`. The stub is ~500
+lines of TS, no external deps beyond `node:http`. Each handler has a
+docstring pointing at the relevant section of the contract doc.
+
+What to change:
+
+- `src/server.mjs` — replace the route handlers with calls into the
+  user's agent. Keep the wire shapes (request bodies, SSE event
+  names) unchanged — that's the contract.
+- `src/llm/echo.mjs` — replace with the user's actual LLM invocation.
+  The other adapters in `src/llm/` (`gemini.mjs`, `ollama.mjs`) are
+  examples of how to wrap external APIs.
+- `src/conversations.mjs` — replace the local-jsonl persistence with
+  the user's session storage. The methods
+  (`history`, `add`, `setTitle`, `delete`, ...) are what the route
+  handlers expect.
+
+Boot via `npm start` from the project root — `scripts/start-all.mjs`
+will spawn the proxy + your new adapter together. Override the agent
+command via `SIDEKICK_AGENT_CMD`.
+
+## Path 3 — write a plugin
+
+If the user's agent already has a plugin system, expose the contract
+from inside it rather than running a separate process. See
+[`backends/hermes/plugin/__init__.py`](backends/hermes/plugin/__init__.py)
+for a Python reference (~2000 LOC, but most of that is feature
+extensions — the core contract is ~400).
+
+Hermes-specific install steps live in
+[`backends/hermes/README.md`](backends/hermes/README.md). The pattern
+generalizes to any host: register the routes the contract requires,
+hand off message dispatch to the host's existing turn loop.
+
+## Test it works
+
+The bundled stub agent is the reference for "does the contract work
+end-to-end." Boot it (`npm start` with no env overrides) and verify:
+
+- Browser at `http://localhost:3001` shows the empty-chat state
+- Type "hello" → echo agent replies "You said: hello"
+- Hard-refresh → conversation persists in the drawer
+- Delete the conversation from the drawer → gone
+
+If your adapter / plugin matches that behavior, you're done.
+
+## What NOT to do
+
+- Don't modify the proxy (`server.ts` / `proxy/sidekick/*`) or the PWA
+  (`src/`) for backend-specific quirks. Those layers are agent-
+  agnostic by design — the seam is the `/v1/*` contract. Backend
+  quirks live in the adapter or plugin.
+- Don't invent new wire endpoints. If the contract is missing
+  something the user wants, file an issue or PR — adding to the
+  shared contract is preferable to per-fork extensions.
+- Don't paste the user's API keys or tokens into committed config.
+  `.env` is gitignored; `sidekick.config.yaml` is for non-secret
+  deployment tuning only.
+
+## Shipping it
+
+`npm test` (proxy + parser unit tests, ~250 tests) and `npm run
+typecheck` should pass before commit. `npm run smoke` runs Playwright
+UX scenarios against a mock backend — useful if your changes touched
+the PWA or proxy, not strictly required for adapter-only work.
+
+For full development guidance (test layout, code style, rebuild
+expectations), see [`CONTRIBUTING.md`](CONTRIBUTING.md).

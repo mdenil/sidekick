@@ -2,14 +2,14 @@
 
 **A voice-first PWA agent portal — bring your own backend.**
 
-Hands-free chat with any agent that speaks the OpenAI Responses API. Streaming voice in (Deepgram + Web Speech fallback), streaming voice out (Deepgram Aura TTS), lockscreen-friendly background audio for in-pocket use, push-to-talk and tap-to-talk modes, and an installable PWA shell that runs on a Raspberry Pi or any Linux/Mac host.
+Hands-free chat with any agent that speaks the OpenAI Responses API. Configurable STT + TTS (Deepgram, ElevenLabs, OpenAI Whisper — easy to add others), lockscreen-friendly background audio for in-pocket use, WhatsApp-style voice memos, streaming voice keyboard, and full hands-free calling via WebRTC. Installable PWA shell that runs on anything from a Raspberry Pi to a cloud server.
 
 <p align="center">
   <img src="docs/images/hero-desktop.png" alt="Sidekick on desktop — session drawer + agent reply with inline Google Maps directions card" width="640" />
+  &nbsp;&nbsp;
+  <img src="docs/images/hero-mobile.png" alt="Sidekick on iOS — same conversation in mobile portrait" width="200" />
   <br/>
-  <em>Same conversation, mobile portrait:</em>
-  <br/>
-  <img src="docs/images/hero-mobile.png" alt="Sidekick on iOS — same conversation in mobile portrait" width="240" />
+  <em>Same conversation, two viewports.</em>
 </p>
 
 ## Install
@@ -35,13 +35,15 @@ npm install
 npm start
 ```
 
+**Wiring up your own agent backend?** Sidekick ships with [`AGENTS.md`](AGENTS.md) — a short context file aimed at AI coding assistants (Claude Code, Cursor, Aider, ...). Open the cloned repo in your assistant of choice and say *"set sidekick up against my agent"*; the file gives it everything it needs (the contract, where to write the adapter, how to test).
+
 ## What's different
 
 Most chat UIs treat voice as a bolt-on. Sidekick is voice-first:
 
 - **Two handsfree modes** — turn-based (record-then-send) and realtime (full-duplex WebRTC). User picks per session.
 - **Background-audio survival** — PWA stays alive on iOS lockscreen so you can talk to the agent while your phone is in your pocket. Pocket-lock overlay absorbs touches; mic + TTS + barge-in keep working.
-- **Barge-in** — interrupt the agent mid-sentence by speaking. Silero VAD + per-device tuning.
+- **Barge-in** — interrupt the agent mid-sentence by speaking. Client-side Silero VAD + per-device tuning.
 - **Per-bubble TTS replay** — every agent reply has a play button. BT headset skip-fwd/back navigates between replies.
 - **Bring your own agent** — speaks the OpenAI Responses API (`/v1/responses`, `/v1/conversations/*`). Drop-in compatible with any server that does, plus richer plugins for Hermes (and openclaw, soon).
 
@@ -80,4 +82,4 @@ See [`CONTRIBUTING.md`](CONTRIBUTING.md) for dev setup, test commands, and code 
 
 ## License
 
-Apache License 2.0 — see [`LICENSE`](LICENSE).
+MIT — see [`LICENSE`](LICENSE).

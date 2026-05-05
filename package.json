@@ -4,7 +4,7 @@
   "type": "module",
   "private": true,
   "description": "Voice-first PWA agent portal — bring your own backend. Speaks the OpenAI Responses API.",
-  "license": "Apache-2.0",
+  "license": "MIT",
   "homepage": "https://github.com/jscholz/sidekick",
   "repository": {
     "type": "git",
