@@ -90,6 +90,14 @@ export interface BargeDetectorOpts {
 const DEFAULT_WARMUP_MS = 500;
 const DEFAULT_FRAME_MS = 50;
 const DEFAULT_COOLDOWN_MS = 2000;
+// Silero minSpeechMs — minimum sustained speech-like energy required
+// before isSpeechActive flips true. Bumped 150 → 400 (Jonathan, 2026-05-05)
+// to suppress wind/breathing/road-rumble false-fires on bike (BT headset
+// open mic). Wind has speech-shaped spectral content briefly but rarely
+// sustains vocal-band character for 400ms; legitimate barge takes ~250ms
+// longer to register, acceptable trade. Tunable per-call via
+// BargeDetectorOpts.minSpeechMs if a quieter env wants snappier UX.
+const DEFAULT_MIN_SPEECH_MS = 400;
 
 /** Test-only override of `speechVad.isSpeechActive`. Unit tests inject a
  *  function returning the synthetic speech-active state for the current
@@ -153,7 +161,7 @@ export class BargeDetector {
       frameMs: opts.frameMs ?? DEFAULT_FRAME_MS,
       cooldownMs: opts.cooldownMs ?? DEFAULT_COOLDOWN_MS,
       positiveSpeechThreshold: opts.positiveSpeechThreshold ?? 0.5,
-      minSpeechMs: opts.minSpeechMs ?? 150,
+      minSpeechMs: opts.minSpeechMs ?? DEFAULT_MIN_SPEECH_MS,
       silentFire: opts.silentFire ?? false,
     };
     // Start the loop FIRST so ticks fire even if VAD never finishes
