@@ -1,8 +1,14 @@
-# Agent guide for sidekick
+# AGENTS.md — guide for AI coding assistants
 
-Read this first if you're an AI coding agent (Claude Code, Cursor,
-etc.) about to make non-trivial changes. Five-minute orientation,
-saves a multi-hour thrash later.
+> Naming note: this file is for **AI coding assistants** (Claude Code,
+> Cursor, Aider, etc. — see [agents.md](https://agents.md/)). Not to be
+> confused with sidekick's "agent backends" (Hermes, stub, OpenAI
+> Responses-compatible servers) which sidekick connects TO; those are
+> documented in `backends/README.md` and `docs/ABSTRACT_AGENT_PROTOCOL.md`.
+
+Read this first if you're an AI coding assistant about to make
+non-trivial changes. Five-minute orientation, saves a multi-hour
+thrash later.
 
 ## Before you change anything
 
@@ -13,13 +19,9 @@ saves a multi-hour thrash later.
    proxy or PWA backend client. Documents the `/v1/*` HTTP+SSE
    surface (`/v1/responses`, `/v1/conversations*`) the proxy speaks
    to upstream agents.
-3. **`docs/UX_TEST_PLAN.md`** — proposed UX-layer tests, tiered. If
-   you're touching composer / drawer / chat / dictation, check
-   whether your area is in Tier 1; consider writing the test before
-   the fix.
-4. **`docs/ABSTRACT_AGENT_PROTOCOL.md`** + **`docs/SIDEKICK_AUDIO_PROTOCOL.md`**
-   — agent / audio wire formats, only relevant if you're touching
-   those layers.
+3. **`docs/SIDEKICK_AUDIO_PROTOCOL.md`** — wire format between the PWA
+   and audio bridge; relevant if you're touching the bridge or its
+   reference impl in `audio-bridge/`.
 
 ## Workflow rules (learned the hard way)
 

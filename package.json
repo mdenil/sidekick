@@ -3,7 +3,7 @@
   "version": "0.2.0",
   "type": "module",
   "private": true,
-  "description": "Voice-first PWA frontend for OpenClaw — streaming speech-to-text, Deepgram Aura TTS, inline card renderers, and a pocket-lock overlay for mobile use.",
+  "description": "Voice-first PWA agent portal — bring your own backend. Speaks the OpenAI Responses API.",
   "license": "Apache-2.0",
   "homepage": "https://github.com/jscholz/sidekick",
   "repository": {
@@ -13,7 +13,8 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "watch": "node scripts/build.mjs --watch",
-    "start": "npm run build && node --experimental-strip-types --disable-warning=ExperimentalWarning server.ts",
+    "start": "npm run build && node scripts/start-all.mjs",
+    "start:proxy": "npm run build && node --experimental-strip-types --disable-warning=ExperimentalWarning server.ts",
     "start:dev": "node scripts/build.mjs --watch & node --experimental-strip-types --disable-warning=ExperimentalWarning --watch server.ts",
     "test": "node --test --experimental-strip-types --disable-warning=ExperimentalWarning 'test/**/*.test.ts' 'src/**/*.test.ts' 'proxy/**/*.test.ts'",
     "typecheck": "tsc --noEmit",
@@ -29,7 +30,8 @@
     "js-yaml": "^4.1.1",
     "onnxruntime-web": "^1.25.1",
     "playwright-core": "^1.59.1",
-    "ws": "^8.20.0"
+    "ws": "^8.20.0",
+    "yaml": "^2.8.4"
   },
   "devDependencies": {
     "@types/node": "^25.6.0",

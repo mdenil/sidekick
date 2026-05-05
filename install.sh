@@ -4,25 +4,24 @@
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/jscholz/sidekick/master/install.sh | bash
 #
-# What it does:
-#   1. Verifies node >= 22 is on PATH (sidekick uses node 22's
-#      --experimental-strip-types flag at runtime).
-#   2. Clones the sidekick repo to ~/sidekick if missing, or pulls
-#      latest if already there.
-#   3. Runs `npm install` at root + under `backends/stub/`.
-#   4. Copies `.env.example` to `.env` (idempotent — won't overwrite
-#      an existing .env).
-#   5. Starts the proxy + the in-tree stub agent (echo LLM) via
-#      `npm start`, and prints the URL to visit.
+# Clones to ./sidekick in your CURRENT directory (cd into where you
+# want it before running). Override with SIDEKICK_INSTALL_DIR=/abs/path.
 #
-# After the script returns, open http://localhost:3001 in your
-# browser. The agent is the in-tree stub by default — point at a
-# real hermes install or any /v1/*-speaking server by editing
-# `~/sidekick/.env` and restarting.
+# What it does:
+#   1. Verifies node >= 22 (sidekick uses node 22's
+#      --experimental-strip-types flag at runtime).
+#   2. Clones the repo to ./sidekick (or pulls latest if already there).
+#   3. Runs `npm install` at root + under `backends/stub/`.
+#   4. Copies `.env.example` to `.env` (idempotent).
+#   5. Starts the proxy + the in-tree stub agent (echo LLM) — no API
+#      keys required. Open the printed URL.
+#
+# After it boots, point at a real backend by editing `./sidekick/.env`
+# (uncomment SIDEKICK_PLATFORM_URL) and restarting `npm start`.
 
 set -euo pipefail
 
-INSTALL_DIR="${SIDEKICK_INSTALL_DIR:-$HOME/sidekick}"
+INSTALL_DIR="${SIDEKICK_INSTALL_DIR:-$(pwd)/sidekick}"
 REPO_URL="https://github.com/jscholz/sidekick.git"
 
 echo "==> sidekick install — target: $INSTALL_DIR"
@@ -56,7 +55,7 @@ cd "$INSTALL_DIR"
 echo "==> installing root dependencies"
 npm install --no-audit --no-fund
 if [ -f "backends/stub/package.json" ]; then
-  echo "==> installing agent dependencies"
+  echo "==> installing stub agent dependencies"
   (cd backends/stub && npm install --no-audit --no-fund)
 fi
 
@@ -73,14 +72,11 @@ echo ""
 echo "================================================================"
 echo "  Sidekick is starting up."
 echo ""
-echo "  Defaults: proxy on :3001, stub agent on :4001 — start-all"
-echo "  auto-shifts to :3002/:4002 (etc) if either is busy. The"
-echo "  actual URL is printed below as soon as the proxy binds."
+echo "  Defaults: proxy on :3001, in-tree stub agent on :4001 (echo"
+echo "  LLM, no API keys required). Both ports auto-shift if busy"
+echo "  (3002/4002, etc.)."
 echo ""
-echo "  Override with PROXY_PORT / AGENT_PORT, or set"
-echo "  SIDEKICK_PLATFORM_URL=http://host:port to skip the in-tree"
-echo "  stub and proxy to an existing agent."
-echo ""
+echo "  Open the URL printed below in your browser."
 echo "  Stop with Ctrl+C."
 echo "================================================================"
 echo ""

@@ -1,562 +1,88 @@
 # Sidekick
 
-Voice-first PWA frontend for agent backends. Designed to run on a Raspberry Pi or any Linux host, installed as a standalone home-screen app on iOS / Android / desktop Chrome.
+**A voice-first PWA agent portal — bring your own backend.**
 
-Talks to any agent that speaks the abstract agent contract
-(OpenAI-Responses-shaped HTTP+SSE — see
-`docs/ABSTRACT_AGENT_PROTOCOL.md`). Ships with:
+Hands-free chat with any agent that speaks the OpenAI Responses API. Streaming voice in (Deepgram + Web Speech fallback), streaming voice out (Deepgram Aura TTS), lockscreen-friendly background audio for in-pocket use, push-to-talk and tap-to-talk modes, and an installable PWA shell that runs on a Raspberry Pi or any Linux/Mac host.
 
-- **Hermes plugin** (`backends/hermes/plugin/`) — turns a hermes-agent install
-  into a sidekick-compatible upstream. Supports cross-platform
-  drawer (telegram, slack, whatsapp sessions surface alongside
-  sidekick) via the `/v1/gateway/conversations` extension.
-- **Stub agent** (`backends/stub/`) — standalone TypeScript reference
-  implementation with echo / Gemini / Ollama LLM adapters. Run it
-  on `localhost:4001` with `cd backends/stub && npm start` for
-  hermes-free demos and tests.
+<p align="center">
+  <img src="docs/images/hero-live.png" alt="Sidekick on iOS — directions reply with inline map card" width="320" />
+  &nbsp;&nbsp;
+  <img src="docs/images/hero-live-light.png" alt="Same conversation, light theme" width="320" />
+</p>
 
-**Features**
-- Streaming speech-to-text with Deepgram + automatic Web Speech API fallback
-- Deepgram Aura TTS with barge-in (the user interrupts by speaking)
-- Local TTS fallback (on-device voices) as a privacy/offline option
-- Session drawer — browse, resume, rename, delete past conversations (backends that support it)
-- Cross-channel sessions — when the agent runs multiple messaging platforms (Telegram, WhatsApp, etc.), those conversations surface in the drawer too
-- Inline card renderers: link previews, YouTube/Spotify embeds, images, markdown tables, loading states
-- Offline outbox — queue messages and voice memos when the backend is unreachable; auto-flush on reconnect
-- Pocket-lock overlay for bike / in-pocket use (mic/TTS stay live, touches absorbed)
-- Ambient clock + weather widget in the corner; tap to expand into a HUD
-- Attachments: camera + image picker, with model-capability gating
-
-## Run it
+## Install
 
 ```bash
-cp .env.example .env       # fill in DEEPGRAM_API_KEY at minimum
+curl -fsSL https://raw.githubusercontent.com/jscholz/sidekick/master/install.sh | bash
+```
+
+Clones into `./sidekick` in your current directory, installs deps, and boots:
+
+- Sidekick proxy on `http://localhost:3001` (open this in a browser)
+- Bundled stub agent on `:4001` (echo LLM, no API keys needed)
+
+Add a [Deepgram](https://console.deepgram.com) key to `./sidekick/.env` to enable voice; everything else is optional.
+
+Manual install:
+
+```bash
+git clone https://github.com/jscholz/sidekick.git
+cd sidekick
+cp .env.example .env
 npm install
 npm start
 ```
 
-Then open `http://localhost:3001` (install as a PWA from the browser menu for full lockscreen / background-audio support).
+## What's different
 
-The default backend is Hermes. See [Backend setup](#backend-setup) below.
+Most chat UIs treat voice as a bolt-on. Sidekick is voice-first:
 
-### Configuration
+- **Two handsfree modes** — turn-based (record-then-send) and realtime (full-duplex WebRTC). User picks per session.
+- **Background-audio survival** — PWA stays alive on iOS lockscreen so you can talk to the agent while your phone is in your pocket. Pocket-lock overlay absorbs touches; mic + TTS + barge-in keep working.
+- **Barge-in** — interrupt the agent mid-sentence by speaking. Silero VAD + per-device tuning.
+- **Per-bubble TTS replay** — every agent reply has a play button. BT headset skip-fwd/back navigates between replies.
+- **Bring your own agent** — speaks the OpenAI Responses API (`/v1/responses`, `/v1/conversations/*`). Drop-in compatible with any server that does, plus richer plugins for Hermes (and openclaw, soon).
 
-Sidekick configuration spans **two surfaces**:
+## Sessions
 
-**1. Static on-disk** (set at deploy time, requires service restart to change)
+Drawer view of past conversations — search, rename, delete, cross-platform if your backend exposes a gateway extension (Hermes does — Telegram / Slack / WhatsApp threads surface alongside Sidekick).
 
-- **`.env`** (gitignored) — secrets only: API keys, bearer tokens.
-- **`sidekick.config.yaml`** (optional, gitignored) — non-secret deployment tuning: app name, theme, backend choice, preferred-models filter defaults, server port, etc. Every key here can be overridden by an env var of the matching name — handy for Docker/CI. Point sidekick at it via `SIDEKICK_CONFIG=/path/to/sidekick.config.yaml`.
+<p align="center">
+  <img src="docs/images/desktop-sessions.png" alt="Sidekick desktop — session drawer" width="640" />
+</p>
 
-Precedence: env vars > yaml > built-in default. See `.env.example` for the full annotated env var list and `example.sidekick.config.yaml` for the YAML schema.
+## Backends
 
-**2. Tunable from the frontend** (live, no restart)
-
-The Settings panel (gear icon, bottom-left of the sidebar) edits three categories of state, each stored in a different place:
-
-| Category | Examples | Stored where |
+| Backend | Status | Use when |
 |---|---|---|
-| **Sidekick-owned, per-user** | theme, hotkeys, text size, mic device, TTS voice, audio feedback level, barge-in | browser `localStorage` (`sidekick.settings.v2`) — per-tab, syncs across tabs in the same browser |
-| **Sidekick-owned, server-side** | STT keyterms | `sidekick.config.yaml` — `stt.keyterms` is the first-launch seed; per-user chips then live in IDB and the Refresh button merges new yaml entries in additively. |
-| **Agent-owned** | model picker, preferred-models filter, anything else the agent declares via `/v1/settings/schema` | upstream agent's persistence (e.g. backends/hermes/plugin writes back to `~/.hermes/config.yaml` under the `sidekick:` namespace). See [Agent settings](#agent-settings-v1settings) below. |
+| **stub** (in-tree) | ✅ Built-in default | First-clone demos, hermes-free dev, CI smoke runs. Echo / Gemini / Ollama LLM adapters. See [`backends/stub/README.md`](backends/stub/README.md). |
+| **Hermes** | ✅ Bundled plugin | Full-featured agent — sessions, multi-platform drawer (Telegram/Slack/WhatsApp surface alongside sidekick), tool-call activity rows, attachment auto-routing through auxiliary vision. See [`backends/hermes/README.md`](backends/hermes/README.md). |
+| **openclaw** | 🚧 Coming soon | Working sketch in [`docs/OPENCLAW_COMPATIBILITY.md`](docs/OPENCLAW_COMPATIBILITY.md). |
+| **Any `/v1/responses`-compatible server** | ✅ Point `SIDEKICK_PLATFORM_URL` at it | OpenRouter, LMStudio, your own — see [`docs/ABSTRACT_AGENT_PROTOCOL.md`](docs/ABSTRACT_AGENT_PROTOCOL.md) for what's required vs. optional. |
 
-The split mirrors the architecture: settings the agent doesn't care about (theme, mic device) stay client-side; settings the agent owns (model, persona) round-trip through the agent contract; settings sidekick-the-deployment cares about (preferred-models filter, keyterms) live on the proxy.
+## Configure
 
-The essentials:
+Two surfaces:
 
-| Variable | Required | What |
-|---|---|---|
-| `DEEPGRAM_API_KEY` | yes | Deepgram key — powers STT (audio-bridge: live + batch via `/transcribe`) and Aura TTS (`/tts`) |
-| `SIDEKICK_PLATFORM_URL` | yes | Upstream agent URL (default `http://127.0.0.1:8645`). Hermes-plugin's HTTP server, the stub agent, or any `/v1/responses`-speaking server. |
-| `SIDEKICK_PLATFORM_TOKEN` | yes | Bearer token shared with the upstream — matches `SIDEKICK_PLATFORM_TOKEN` in your `~/.hermes/.env` (hermes path) or your stub-agent invocation. |
-| `GOOGLE_API_KEY` | no | Enables `/gen-image` (Gemini image gen) |
-| `MAPS_EMBED_KEY` | no | Google Maps Embed API key for map cards |
-| `OPENROUTER_API_KEY` | no | Populates the model picker (hermes) |
-| `SIDEKICK_APP_NAME` | no | Display name (default `SideKick`) |
-| `SIDEKICK_AGENT_LABEL` | no | Speaker label for agent bubbles / lockscreen |
-| `SIDEKICK_THEME_PRIMARY` | no | Override the sage `--primary` CSS variable with any color |
-| `PORT` | no | Defaults to 3001 |
+- **`.env`** — secrets (Deepgram, optional API keys). See [`.env.example`](.env.example).
+- **`sidekick.config.yaml`** — non-secret deployment tuning (branding, theme, preferred-models filter, server ports). See [`example.sidekick.config.yaml`](example.sidekick.config.yaml). Point sidekick at it via `SIDEKICK_CONFIG=/path/to/file`.
 
-## Backend setup
+The Settings panel inside the app handles per-user preferences (theme, mic device, TTS voice, STT keyterms, etc.) live without restart.
 
-### Hermes (recommended)
+## Documentation
 
-Install Hermes via its [official guide](https://github.com/NousResearch/hermes-agent), then drop the bundled plugin in:
-
-```bash
-ln -s "$(pwd)/backends/hermes/plugin" ~/.hermes/plugins/sidekick
-echo "SIDEKICK_PLATFORM_TOKEN=$(openssl rand -hex 32)" >> ~/.hermes/.env
-```
-
-Apply the one-time hermes-core patch (registers `Platform.SIDEKICK`):
-```bash
-cd <your hermes-agent install>
-patch -p1 < <sidekick-repo>/backends/hermes/plugin/0001-add-sidekick-platform.patch
-```
-
-Restart hermes-gateway. Sidekick's drawer, replay, delete, attachments, and cross-platform views (telegram/slack/whatsapp sessions surface alongside sidekick) all work out of the box.
-
-See `backends/hermes/README.md` for full install instructions, hermes-side config keys (`backends/hermes/config.example.yaml`), and a description of which contract pieces this backend implements.
-
-### Stub agent (no hermes required)
-
-Useful for development and demos. Full install + LLM-adapter docs in
-`backends/stub/README.md`. tl;dr:
-
-```bash
-cd backends/stub && npm start
-# port 4001, echo LLM by default
-# Set AGENT_LLM=gemini + GEMINI_API_KEY (or AGENT_LLM=ollama) to swap
-```
-
-Then point sidekick at it:
-
-```bash
-export SIDEKICK_PLATFORM_URL=http://127.0.0.1:4001
-export SIDEKICK_PLATFORM_TOKEN=     # stub runs open-mode by default
-npm start
-```
-
-### Any `/v1/responses`-speaking server
-
-Sidekick consumes the abstract agent contract (`docs/ABSTRACT_AGENT_PROTOCOL.md`). Any server that implements `POST /v1/responses` (streaming SSE), `GET /v1/conversations*`, `DELETE /v1/conversations/{id}`, and `GET /v1/events` drops in. Two optional extensions add features without changing the core contract:
-
-- `/v1/gateway/conversations` — cross-platform drawer (sessions from telegram/slack/whatsapp surface alongside sidekick).
-- `/v1/settings/*` — agent-declared user-facing knobs (model picker, persona, temperature, etc.). See below.
-
-### Agent settings (`/v1/settings/*`)
-
-Agents can declare their own user-facing settings and have sidekick render them generically in the **Settings → Agent** group. The agent owns both the catalog of options and the validation logic; the PWA just renders.
-
-Two endpoints, both optional:
-
-| Endpoint | Purpose |
+| Doc | What's in it |
 |---|---|
-| `GET /v1/settings/schema` | List of `SettingDef` the agent supports. 404 = "doesn't implement extension" — sidekick hides the agent group. |
-| `POST /v1/settings/{id}` | Update one setting (`{value: <new>}`). Returns the updated def. 400 propagates to a UI revert + error message. |
+| [Agent contract](docs/ABSTRACT_AGENT_PROTOCOL.md) | The `/v1/*` HTTP+SSE surface a backend MUST implement. Read before forking the proxy or implementing a new backend. |
+| [Audio bridge protocol](docs/SIDEKICK_AUDIO_PROTOCOL.md) | WebRTC data-channel events, dispatch path, listening / barge envelopes. Read before forking `audio-bridge/`. |
+| [Architecture](docs/ARCHITECTURE.md) | System diagram, module tree, endpoint inventory. |
+| [Canvas protocol](docs/CANVAS.md) | Inline card envelopes (link previews, YouTube embeds, image grids). |
+| [Capacitor plan](docs/CAPACITOR_PLAN.md) | iOS / Android native wrapper status. |
+| [Backend READMEs](backends/) | One per backend — install steps, contract pieces implemented. |
 
-`SettingDef` shape (full spec in `docs/ABSTRACT_AGENT_PROTOCOL.md`):
+## Contributing
 
-```json
-{
-  "id": "model",
-  "label": "Model",
-  "description": "LLM used for replies",
-  "category": "Agent",
-  "type": "enum",          // | "slider" | "toggle" | "text"
-  "value": "anthropic/claude-opus-4-6",
-  "options": [             // enum only
-    { "value": "anthropic/claude-opus-4-6", "label": "Claude Opus 4.6" }
-  ]
-}
-```
-
-The backends/hermes/plugin upstream declares the model picker as one entry that wraps `~/.hermes/config.yaml` + the openrouter catalog (filtered by `SIDEKICK_PREFERRED_MODELS` env). Adding more knobs (persona, default provider, max-tokens) is purely additive in `backends/hermes/plugin/__init__.py:_build_settings_schema`.
-
-The in-tree stub agent (`backends/stub/src/server.mjs`) declares one `model` enum reflecting the configured LLM — a minimal reference impl for forks. Settings the PWA owns (theme, hotkeys, mic, TTS voice) stay in their original groups; the schema is for **agent-owned** settings only.
-
-The settings panel re-fetches the schema on **open and close** so changes from parallel clients (CLI, sibling tab) surface without an explicit refresh.
-
-## Deepgram keyterm biasing
-
-Custom vocabulary — names, project codes, product terms — is stored **per user** in the browser's IndexedDB. Manage via **Settings → STT keyterms** in the UI (type-Enter chips). Changes take effect on the next mic-stream start.
-
-For multi-user / fork deployments, the seed list lives in `sidekick.config.yaml` under `stt.keyterms` (a YAML list). The PWA fetches it on first boot to seed each user's IDB; edits to the yaml affect future first-launches only — existing users keep whatever they've curated.
-
-## Architecture
-
-Sidekick is a **four-process system**: a browser PWA, a Node proxy,
-a Python audio bridge, and a separate agent upstream. The PWA, proxy,
-and bridge are sidekick code. The agent is whatever you point
-upstream at (backends/hermes/plugin, the in-tree stub, or any third-party
-`/v1/*`-speaking server).
-
-The PWA only ever talks to the proxy and the audio bridge — never to
-the agent directly. The bridge only ever talks to the proxy.
-
-```
-                    ┌─────────────────────────────────────────┐
-                    │ Browser (PWA)                            │
-                    │   src/                                   │
-                    │   - chat surface, drawer, composer       │
-                    │   - chat_id minted in IDB                │
-                    │   - one persistent SSE channel inbound   │
-                    │   - Listen mode + per-bubble TTS replay  │
-                    └────────────┬────────────────────┬────────┘
-                                 │                    │
-                         HTTP+SSE                  WebRTC
-                         /api/sidekick/*           (realtime mode only,
-                         /transcribe, /tts          audio bytes only)
-                                 │                    │
-                                 ▼                    ▼
-              ┌──────────────────────────┐    ┌────────────────────────────┐
-              │ Sidekick proxy           │    │ Audio bridge                │
-              │   (Node, server.ts)      │◀───│   (Python, aiortc)          │
-              │                          │    │                             │
-              │ - serves static assets   │    │ Realtime mode:              │
-              │ - serves /api/sidekick/* │    │ - terminates WebRTC peer    │
-              │ - /tts → Deepgram Aura   │    │ - live STT during speech    │
-              │ - /transcribe → bridge   │    │ - posts text to proxy at    │
-              │   /v1/transcribe         │    │   /api/sidekick/messages,   │
-              │ - translates             │    │   subscribes to             │
-              │   /api/sidekick/* ↔      │    │   /api/sidekick/stream,     │
-              │   /v1/*                  │    │   streams TTS over WebRTC   │
-              │ - SSE multiplexer (mem)  │    │                             │
-              │ - utility endpoints      │    │ Turn-based mode:            │
-              │   (/gen-image, /weather, │    │ - serves /v1/transcribe     │
-              │   /link-preview)         │    │   (HTTP, one-shot STT)      │
-              │ - injects auth tokens    │    │ - no WebRTC peer at all     │
-              │   for upstream calls     │    │                             │
-              │ Owns no durable state.   │    └─────────────────────────────┘
-              └────────────┬─────────────┘
-                           │
-                    HTTP+SSE
-                    /v1/responses
-                    /v1/conversations*
-                    /v1/events
-                           │
-                           ▼
-              ┌──────────────────────────┐
-              │ Upstream agent            │
-              │   any /v1/*-speaking      │
-              │   server, e.g. one of:    │
-              │   - backends/hermes/      │
-              │     (Python plugin into   │
-              │     hermes-agent)         │
-              │   - backends/stub/        │
-              │     (in-tree TS, echo /   │
-              │     gemini / ollama)      │
-              │   - any 3rd-party         │
-              │     OpenAI-compat         │
-              │                           │
-              │ Owns ALL agent state      │
-              │ (sessions, transcripts,   │
-              │ memory).                  │
-              └───────────────────────────┘
-```
-
-**Two voice modes**, both handsfree, picked by the user via the **Realtime** toggle in the mic menu (default off):
-
-- **Realtime** — full-duplex WebRTC peer to the bridge. Optimises for **latency**: live STT as the user speaks, TTS streamed back over the same peer. The bridge POSTs recognised text to `/api/sidekick/messages` and subscribes to `/api/sidekick/stream` on the user's behalf.
-- **Turn-based** — `MediaRecorder` writes one blob locally per utterance. Optimises for **fidelity**: the full audio uploads to `/transcribe`, the agent's reply text round-trips through `/tts` for an mp3, played in `<audio>`. No WebRTC peer; everything rides plain HTTP+SSE through the proxy. The PWA also caches the mp3 (LRU) so per-bubble replay chips and BT skip-fwd/back are instant.
-
-Both modes use the same handsfree commit triggers — silence timeout and a sendword (default "over"). Both ride the same agent contract (`POST /api/sidekick/messages`, `GET /api/sidekick/stream`); only audio in/out differ. See [`src/audio/README.md`](src/audio/README.md) for the PWA-side architecture (file layout, the `AudioMode` interface, and what gets shared between the two modes).
-
-**Wire contracts**:
-- `/api/sidekick/*` — the PWA-and-bridge-facing surface served by the
-  proxy. Fully agent-agnostic. POST messages, GET drawer rows, GET a
-  persistent SSE multiplexer, DELETE chats.
-- `/v1/*` — the upstream-facing surface the proxy speaks to whichever
-  agent it's wired to. OAI Responses-shaped, plus a sidekick-defined
-  `/v1/gateway/conversations` extension for cross-platform drawer.
-  See [`docs/ABSTRACT_AGENT_PROTOCOL.md`](docs/ABSTRACT_AGENT_PROTOCOL.md).
-
-### Endpoint inventory
-
-Every HTTP+SSE endpoint sidekick speaks, with a one-line purpose and a
-classification: **OAI-standard** (mirrors OpenAI's Conversations /
-Responses API, drop-in compatible), **sidekick-extension** (we
-invented), or **mixed** (OAI shape with sidekick-extension fields).
-
-**Upstream contract — `/v1/*` (proxy → agent)**
-
-| Method+Path | Class | Purpose |
-|---|---|---|
-| `POST /v1/responses` | mixed | Dispatch a turn. OAI Responses shape; sidekick adds optional body fields `attachments`, `voice`, `user_message_id`. Streams `response.output_text.delta` / `response.completed` SSE events. |
-| `GET /v1/conversations` | OAI-standard | Drawer list (channel-scoped). Returns `ConversationSummary[]`. |
-| `GET /v1/conversations/{id}/items` | OAI-standard | Transcript replay. Returns `ConversationItem[]` plus `first_id` / `has_more` cursor. |
-| `DELETE /v1/conversations/{id}` | OAI-standard | Cascade-delete a session (transcript + memory store). |
-| `PATCH /v1/conversations/{id}` | sidekick-ext | Rename a conversation. Server-side persistence so renames cross devices via `session_changed`. |
-| `GET /v1/events` | sidekick-ext | Persistent out-of-turn SSE channel: notifications, session_changed, tool events fired outside any active `/v1/responses` turn, **user_message broadcasts** for cross-device user-bubble propagation. Reconnect-aware via `Last-Event-ID`. |
-| `GET /v1/gateway/conversations` | sidekick-ext | Cross-platform drawer. Same shape as `/v1/conversations` plus `metadata.source` (telegram/slack/whatsapp/sidekick) + `chat_type`. 404 = agent doesn't implement; proxy falls back to channel-only view. |
-| `GET /v1/settings/schema` | sidekick-ext | Agent-declared user-facing settings catalog. 404 = unsupported, sidekick hides the Agent group. |
-| `POST /v1/settings/{id}` | sidekick-ext | Update one agent setting. 400 propagates as a UI revert + error message. |
-| `GET /v1/commands` | sidekick-ext | Slash-command catalog (composer autocomplete). 404 = unsupported. |
-| `GET /health` | sidekick-ext | Liveness probe used by the proxy's healthcheck poll. |
-
-**PWA-facing surface — `/api/sidekick/*` (browser → proxy)**
-
-| Method+Path | Class | Purpose |
-|---|---|---|
-| `POST /api/sidekick/messages` | sidekick-ext | Send a turn. Body `{chat_id, text, attachments?, voice?, user_message_id?}`. 202 fire-and-forget — replies arrive on the persistent SSE channel. |
-| `GET /api/sidekick/stream` | sidekick-ext | Persistent SSE multiplexer. Fans every upstream envelope (`reply_delta`, `reply_final`, `tool_call`, `tool_result`, `notification`, `session_changed`, `image`, `error`, `user_message`) to subscribed PWA tabs, tagged with `chat_id`. Reconnect-aware via `Last-Event-ID` / `?last_event_id=N`; `?live_only=1` opts out of replay (audio bridge). |
-| `GET /api/sidekick/sessions` | mixed | Drawer list. Wraps `/v1/gateway/conversations` (when available) or `/v1/conversations`. |
-| `GET /api/sidekick/sessions/{id}/messages` | mixed | Transcript replay. Wraps `/v1/conversations/{id}/items`. |
-| `DELETE /api/sidekick/sessions/{id}` | mixed | Cascade delete. |
-| `PATCH /api/sidekick/sessions/{id}` | sidekick-ext | Rename. Wraps `PATCH /v1/conversations/{id}`. |
-| `GET /api/sidekick/settings/schema` | sidekick-ext | Wraps `GET /v1/settings/schema`. |
-| `POST /api/sidekick/settings/{id}` | sidekick-ext | Wraps `POST /v1/settings/{id}`. |
-| `GET /api/sidekick/commands` | sidekick-ext | Wraps `GET /v1/commands`. |
-| `GET /api/sidekick/model-modalities` | sidekick-ext | Per-model input modalities (powers attach-button gating). |
-| `GET /api/sidekick/config` | sidekick-ext | PWA-frontend settings snapshot (yaml-backed). Distinct from `/v1/settings/*` — those are agent-owned. |
-| `POST /api/sidekick/config/{key}` | sidekick-ext | Write one frontend setting back to `sidekick.config.yaml`. |
-
-**Audio + utility — proxy-owned**
-
-| Method+Path | Class | Purpose |
-|---|---|---|
-| `POST /tts` | proxy-utility | Text → mp3 via Deepgram Aura. Used by turn-based mode + per-bubble replay chips. |
-| `POST /transcribe` | proxy-utility | Audio blob → transcript. Forwards to audio-bridge `POST /v1/transcribe`. Honors `?keyterms=` for per-user STT biasing. |
-| `/api/rtc/*` | proxy-passthrough | WebRTC signaling (offer / ICE / answer). Reverse-proxy onto the audio bridge's `/v1/rtc/*`. |
-| `POST /gen-image` | proxy-utility | Gemini image generation (`/gen-image` slash). |
-| `GET /weather` | proxy-utility | Open-Meteo proxy, ambient-clock card. |
-| `GET /link-preview` | proxy-utility | OG metadata for a URL (link cards). |
-| `GET /spotify-check` | proxy-utility | Spotify oEmbed validation before embed. |
-| `GET /screenshot` | proxy-utility | Persistent-Chromium screenshot for sites with no OG. |
-| `GET /render` | proxy-utility | DOM-after-JS HTML/text fetch for the `browser` agent skill. |
-| `POST /canvas/show` | proxy-utility | CanvasCard JSON broadcast → `/ws/canvas` clients. |
-| `GET /config` | proxy-utility | Runtime config (gateway token, app name, theme, model picker prefs). |
-| `GET /api/keyterms` | proxy-utility | First-boot STT keyterm seed list (yaml-backed). |
-| `GET /ws/canvas` | proxy-utility | Inline-card WebSocket fan-out. |
-| `GET /ws/zeroclaw` | proxy-utility | Optional zeroclaw gateway tunnel. |
-
-**Information flow for a typed turn:**
-
-1. PWA pre-mints a `user_message_id`, renders an optimistic user
-   bubble keyed on that id (idempotent in `renderedMessages`), then
-   sends `POST /api/sidekick/messages` with `{chat_id, text,
-   user_message_id}`.
-2. Proxy forwards `POST /v1/responses` (with `stream: true`) to upstream.
-3. Upstream emits a `user_message` envelope on `/v1/events` — fans
-   out to ALL connected PWA tabs via `/api/sidekick/stream`. The
-   originating tab dedups (the entry already exists); other devices
-   render the user bubble for the first time.
-4. Upstream streams `response.output_text.delta` events on the
-   per-turn /v1/responses SSE.
-5. Proxy fans those into the persistent `/api/sidekick/stream` SSE
-   channel as `reply_delta` envelopes.
-6. PWA renders the streaming reply bubble.
-7. Upstream emits `response.completed`; proxy emits `reply_final`.
-
-**Information flow for a realtime voice turn (WebRTC):**
-
-1. PWA opens a WebRTC peer connection to the audio bridge.
-2. Bridge streams mic audio to STT, gets transcripts.
-3. On end-of-utterance (silence-detect or commit-phrase), bridge POSTs
-   the recognized text to the proxy's `/api/sidekick/messages`.
-4. Bridge subscribes to `/api/sidekick/stream` (scoped to the same
-   `chat_id`) for the agent's reply.
-5. As `reply_delta` envelopes arrive, bridge synthesizes TTS audio
-   chunks and streams them back over the WebRTC connection.
-
-**Information flow for a turn-based voice turn (Listen mode):**
-
-1. PWA captures one utterance with `MediaRecorder`. End-of-turn fires
-   on local silence detection or sendword (e.g. "over").
-2. PWA `POST /transcribe` with the audio blob. Proxy forwards to the
-   bridge's `POST /v1/transcribe` (one HTTP round-trip — no WebRTC),
-   which runs the configured STT provider and returns `{transcript}`.
-3. PWA submits the transcript through the same canonical send path a
-   typed message uses: `POST /api/sidekick/messages`, then watch the
-   shared `/api/sidekick/stream` for `reply_final`.
-4. On `reply_final`, PWA `POST /tts` with the reply text. Proxy
-   forwards to Deepgram Aura (`POST /v1/speak`) and returns mp3.
-5. PWA caches the mp3 (`replyCache.ts` LRU) and plays it in the
-   shared `<audio id="player">` element. Per-bubble replay chips and
-   BT skip-fwd/back navigate this same cache.
-
-Turn-based mode adds **zero new wire endpoints** — `/transcribe`, `/tts`, `/api/sidekick/messages`, and `/api/sidekick/stream` already existed for typed turns and voice memos. The state machine, sendword detector, barge-in, per-bubble playback chips, and reply LRU live entirely in the PWA under `src/audio/turn-based/`. The realtime-mode peer-side state lives in `src/audio/realtime/` plus the Python `audio-bridge/`.
-
-**Drawer state**:
-
-- The PWA's drawer cache lives in IDB and is the immediate-render path.
-- The proxy queries the upstream's `GET /v1/conversations` to populate
-  the server-authoritative list. Reconciles into the IDB cache.
-- Deletes cascade end-to-end: PWA → proxy → upstream → upstream's
-  ancillary stores (transcript files, vector-store memory, etc.).
-
-**Why the audio bridge is a separate process:** WebRTC audio
-processing (aiortc + STT/TTS pipelines) lives on a long-lived Python
-process so it survives PWA reloads and isolates audio failure modes
-from the proxy. The bridge talks to the proxy via the same
-`/api/sidekick/*` HTTP surface the PWA uses — no special channel.
-
-**Why the proxy exists at all (vs. PWA → upstream direct):**
-
-- **Reusable contract.** Any `/v1/*`-speaking server fits the same
-  shape (hermes plugin, stub, future openclaw plugin, raw OAI
-  third-parties). A new backend just speaks the contract from
-  whatever language it's in.
-- **Decouples app server from agent runtime.** Hermes restarts (or
-  GIL stalls) don't take down the chat UI; static asset serving
-  keeps working. The proxy is single-purpose Node, fast to restart.
-- **Centralized auth.** The browser never holds the upstream bearer
-  token; the proxy injects it on every outbound call.
-- **Multiplexing.** PWA sees one persistent `/api/sidekick/stream`
-  even when there are N concurrent chats with reply streams in
-  flight. The proxy translates that to per-turn `/v1/responses`
-  streams against the upstream and fans envelopes back tagged with
-  `chat_id`. The PWA doesn't model per-request streams.
-- **Utility endpoints.** `/gen-image`, `/weather`, `/link-preview`,
-  `/transcribe` — none of these belong in an agent backend, but they
-  belong somewhere. The proxy is that somewhere.
-
-The proxy owns no durable state. That stays in the upstream.
-
-For the agent contract (what an upstream MUST implement to be a
-sidekick backend), see [`docs/ABSTRACT_AGENT_PROTOCOL.md`](docs/ABSTRACT_AGENT_PROTOCOL.md).
-For the refactor history that landed the current architecture, see
-[`docs/SIDEKICK_BACKEND_REFACTOR.md`](docs/SIDEKICK_BACKEND_REFACTOR.md).
-
-## Build + test
-
-Authoring is **TypeScript-only**, both for the PWA (`src/**/*.ts`)
-and for the proxy (`server.ts`, `proxy/**/*.ts`). There's no
-separate transpile step at runtime — the proxy runs under Node 22's
-`--experimental-strip-types` flag, which strips type annotations on
-the fly with zero overhead. The PWA needs a real bundle (browsers
-don't run TS), so `node scripts/build.mjs` runs esbuild over
-`src/**/*.ts` and emits `build/**/*.mjs`. `npm start` runs the build
-then starts the proxy.
-
-Tests come in two flavors:
-
-- **Unit (`npm test`)** — node:test against TS files, ~120 tests
-  across the proxy + small parsers + voice state machines. Mocked
-  external boundaries.
-- **Smoke (`npm run smoke`)** — Playwright against a real Chromium
-  pointed at the running proxy on `localhost:3001`. A `mock-backend`
-  layer sits between the proxy and an imaginary upstream so smoke
-  scenarios don't depend on hermes being up. About 25 scenarios
-  covering UX-level invariants (drawer rendering, chat-switch races,
-  empty-chat cleanup, SSE envelope routing, etc.).
-
-Playwright pulls double duty: smoke tests run on top of it, AND the
-proxy uses it for the `/screenshot` endpoint that powers link-preview
-cards. One headless Chromium binary, two consumers.
-
-## Where the code lives
-
-Per-area entry points — each links to the README closest to that
-code. Read these before non-trivial changes.
-
-| Area | Entry | Purpose |
-|---|---|---|
-| PWA frontend | [`src/README.md`](src/README.md) | Browser code — chat surface, drawer, composer, settings, audio modes. Adapter contract (BackendAdapter), capability flags, audio-mode interface. |
-| Node proxy | [`proxy/sidekick/README.md`](proxy/sidekick/README.md) | `/api/sidekick/*` PWA-facing routes + the `UpstreamAgent` adapter to whichever `/v1/*` agent is wired in. SSE multiplexer + replay ring. |
-| Hermes plugin | [`backends/hermes/plugin/README.md`](backends/hermes/plugin/README.md) | Python plugin loaded into hermes-agent. Owns sessions, transcript persistence, the `user_message` broadcast, agent-contract HTTP server. Module docstring at the top of `__init__.py` is the canonical envelope reference. |
-| Hermes backend | [`backends/hermes/README.md`](backends/hermes/README.md) | Install instructions, hermes-side config keys, which contract pieces this backend implements vs. delegates. |
-| Stub backend | [`backends/stub/README.md`](backends/stub/README.md) | In-tree TypeScript reference — echo / Gemini / Ollama LLM adapters. Drop-in `/v1/*` server for hermes-free demos. |
-| Audio bridge | [`audio-bridge/README.md`](audio-bridge/README.md) | Standalone Python aiortc service. WebRTC signaling, STT, TTS, barge detection. |
-| Mobile (Capacitor) | [`mobile/README.md`](mobile/README.md) | Native iOS/Android wrappers around the PWA. Xcode + Gradle projects. |
-| Agent contract | [`docs/ABSTRACT_AGENT_PROTOCOL.md`](docs/ABSTRACT_AGENT_PROTOCOL.md) | What an upstream MUST implement to be a sidekick backend. Read before forking the proxy or implementing a new backend. |
-| Audio protocol | [`docs/SIDEKICK_AUDIO_PROTOCOL.md`](docs/SIDEKICK_AUDIO_PROTOCOL.md) | Audio-bridge wire protocol — WebRTC data-channel events, dispatch path, listening / barge envelopes. |
-| Mac bootstrap | [`docs/MAC_BOOTSTRAP.md`](docs/MAC_BOOTSTRAP.md) | One-shot Mac install for sidekick + hermes (Capacitor + native shells). |
-| Frontend architecture | [`docs/FRONTEND_ARCHITECTURE.md`](docs/FRONTEND_ARCHITECTURE.md) | PWA module boundaries + why each one exists. |
-
-## Modules
-
-Top-level layout:
-
-```
-sidekick/
-├── server.ts                 proxy entry point
-├── proxy/                    proxy-side TS (handlers, upstream client)
-│   ├── sidekick/                /api/sidekick/* PWA-facing routes
-│   ├── preferred-models.ts       chip-list filter (yaml-backed)
-│   └── generic/                  shared utilities
-├── src/                      PWA (browser) code; see breakdown below
-├── audio-bridge/             Python WebRTC bridge (STT + TTS + barge-in)
-├── backends/                 each subdirectory = one /v1/*-speaking agent
-│   ├── README.md                "what's here, how to add a backend"
-│   ├── stub/                    in-tree TS reference impl (echo / gemini / ollama)
-│   └── hermes/
-│       ├── plugin/                Python plugin loaded into hermes-agent
-│       ├── README.md              install + which contract pieces it implements
-│       └── config.example.yaml    annotated subset of ~/.hermes/config.yaml
-├── scripts/                  build + smoke runner + start-all
-├── docs/                     ABSTRACT_AGENT_PROTOCOL, FRONTEND_ARCHITECTURE, ...
-├── styles/                   app.css + manifest
-├── sw.js                     service worker (PWA app-shell cache)
-├── install.sh                one-command Mac/Linux installer (curl-pipe-bash)
-└── example.sidekick.config.yaml   copy to sidekick.config.yaml + fill in
-```
-
-PWA breakdown:
-
-```
-src/
-├── main.ts              entry — boots modules, wires cross-module callbacks
-├── config.ts            runtime config loaded from /config, applies skinning
-├── backend.ts           adapter loader — single proxy-client path
-├── proxyClient.ts       calls /api/sidekick/* on the local Node proxy.
-│                        Fully agent-agnostic; the proxy translates to
-│                        /v1/* on its end.
-├── proxyClientTypes.ts  BackendAdapter contract types
-├── agentSettings.ts     generic SettingDef[] renderer for the agent's
-│                        /v1/settings/* contract (model picker etc.)
-├── chat.ts              transcript rendering + sessionStorage persistence
-├── sessionDrawer.ts     past-conversations list, rename/delete, IDB cache
-├── sessionCache.ts      IndexedDB cache for instant tap-to-resume
-├── settings.ts          persistent settings (localStorage), model picker
-├── draft.ts             unsent-voice-transcript block (live interim + commit)
-├── attachments.ts       composer image picker + chips + model-capability gate
-├── wakeLock.ts          ref-counted Screen Wake Lock (shared across owners)
-├── queue.ts             IndexedDB outbox (audio blobs + text messages)
-├── voiceMemos.ts        memo persistence (IndexedDB) + waveform extraction
-├── memoCard.ts          memo card rendering (play, waveform, transcript)
-├── ios/
-│   ├── fakeLock.ts          pocket-lock overlay (swipe-to-unlock, mic meter)
-│   └── audio-unlock.ts      AudioContext + gesture-unlock for iOS
-├── audio/                  voice I/O — see src/audio/README.md for the full picture
-│   ├── README.md               two-modes architecture + AudioMode contract
-│   ├── mode.ts                 AudioMode interface (turn-based + realtime implement it)
-│   ├── shared/                 mode-agnostic primitives (capture, session, memo,
-│   │                              micMeter, feedback, recorderBar, ios-specific, ...)
-│   ├── turn-based/             HTTP /transcribe + /tts mode (handsfree, fidelity)
-│   │   ├── turnbased.ts            state machine + barge detection
-│   │   ├── tts.ts                  /tts blob fetch + playback
-│   │   ├── replyNavigator.ts       per-bubble play/pause + BT skip-fwd/back
-│   │   ├── replyCache.ts           LRU for /tts blobs
-│   │   └── sendwordDetector.ts     Web Speech API "over" detector
-│   └── realtime/               WebRTC peer-to-bridge mode (handsfree, latency)
-│       ├── realtime.ts             peer setup + offer/ICE
-│       ├── controls.ts             openCall / closeIfOpen / mode swap
-│       ├── dictate.ts              live dictation variant
-│       ├── dictation.ts            per-call utterance state machine
-│       └── suppress.ts             user-transcript suppression during reply
-└── cards/                   inline cards — validates structured envelopes
-    │                         from the agent (link previews, YouTube/Spotify
-    │                         embeds, image grids, markdown tables, loading
-    │                         placeholders) and renders them as rich blocks
-    │                         inside agent bubbles. NOT a shared editing
-    │                         surface — that's the conventional "canvas" in
-    │                         other chat apps. The wire protocol still uses
-    │                         `canvas.show` event names (matching hermes
-    │                         core's existing tool naming); the dir name
-    │                         here is the more accurate one.
-    ├── attach.ts            inline attach helper — validate + render into agent bubbles
-    ├── registry.ts          card-kind registry
-    ├── validate.ts          envelope + kind-specific validation
-    ├── validators.ts        per-kind validator table the proxy reuses for
-    │                        the /canvas/show POST endpoint
-    └── kinds/               image, youtube, spotify, links, markdown, loading
-```
-
-## Caveats
-
-- **iOS PWA background audio**: installed PWAs get some lockscreen / headset-tap latitude via Media Session; they do **not** get microphone access while backgrounded. Pocket-lock is the workaround — keeps the tab foreground so mic/TTS/barge-in keep working under a fake lockscreen.
-- **Chrome desktop local TTS**: SpeechSynthesis has long-standing bugs around cancel+speak (crbug/521818) and 15s idle auto-pause. Works on iOS / macOS Safari; on Chrome use the server Deepgram Aura path.
-- **iOS premium voices**: Web Speech only exposes the built-in voice bank. Evan / Alison / other premium voices are reserved for native apps via AVSpeechSynthesizer.
-
-## Development
-
-```bash
-npm test           # node:test suite (~120 unit tests)
-npm run typecheck  # tsc --noEmit
-npm run build      # esbuild src/**/*.ts → build/**/*.mjs
-npm run smoke      # Playwright UX smoke (~25 scenarios; needs proxy running)
-```
-
-See **Build + test** above for what each step does and why.
-
-Enable diagnostic logs: `?debug=1` in the URL, or `localStorage.sidekick_debug = '1'` in devtools. High-frequency logs (mic peaks, audio route dumps, draft appends, lifecycle events) are silent by default.
-
-Keyboard shortcuts:
-- `Ctrl+Shift+D` — toggle the debug panel
-- triple-tap the header — same, on mobile
-- `Ctrl/Cmd+Enter` — send from the draft block
-- `Esc` — blur the draft (resume voice append) / cancel memo recording
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for dev setup, test commands, and code style. Contributors using AI coding assistants should also read [`AGENTS.md`](AGENTS.md).
 
 ## License
 
