@@ -235,42 +235,19 @@ export async function start(o: ListenOpts): Promise<boolean> {
     teardown();
     return false;
   }
-  // iOS BT input fix (Jonathan, 2026-05-05): cold-start standalone PWA
-  // picks the iPhone built-in mic by default even when a BT headset is
-  // connected. (Trace 2026-05-05: track.label === "iPhone Microphone"
-  // with BT engaged.) Workaround: enumerate inputs after the first
-  // acquire — iOS makes labels visible once mic permission is granted —
-  // and if a non-iPhone non-built-in input exists, release + re-acquire
-  // with that deviceId. Costs one extra getUserMedia round-trip on iOS,
-  // skipped entirely otherwise.
+  // Audio-session diag (kept for now — Jonathan, 2026-05-05). Confirms
+  // the prime ran (track label after prime should resemble BT when one
+  // is connected; iPhone Mic when not) and the route is settled.
+  // v0.444 enumerate-and-swap code was dropped: enumerateDevices on
+  // cold-start iOS PWA only returns iPhone Microphone — BT is not
+  // exposed at that point. The actual fix is the audio-session prime
+  // in ios-specific.ts:primeIOSAudioSession (called from
+  // prepareForCapture). Remove this log line once the prime is
+  // verified to eliminate call-1 routing flatlines.
   try {
-    const t0 = mediaStream?.getAudioTracks?.()[0];
-    const label0 = t0?.label || '';
-    log(`[audio-session-debug] listen track: label="${label0}" enabled=${t0?.enabled} muted=${t0?.muted} readyState=${t0?.readyState}`);
-    if (/iPhone Microphone/i.test(label0)) {
-      const devices = await navigator.mediaDevices.enumerateDevices();
-      const inputs = devices.filter(d => d.kind === 'audioinput');
-      log(`[audio-session-debug] enumerated inputs: ${inputs.map(d => `"${d.label}"|${d.deviceId.slice(0, 8)}`).join(', ')}`);
-      const alt = inputs.find(d =>
-        d.label
-        && !/iPhone Microphone/i.test(d.label)
-        && !/built-in/i.test(d.label)
-        && d.deviceId
-        && d.deviceId !== 'default',
-      );
-      if (alt) {
-        log(`[audio-session-debug] preferring "${alt.label}" — releasing + re-acquiring`);
-        try { mediaStream?.getTracks().forEach(tr => tr.stop()); } catch {}
-        audioPlatform.releaseMicStream('listen');
-        mediaStream = await audioPlatform.getMicStream('listen', {
-          deviceId: { exact: alt.deviceId } as any,
-          echoCancellation: true, noiseSuppression: false, autoGainControl: false,
-        });
-        const t1 = mediaStream?.getAudioTracks?.()[0];
-        log(`[audio-session-debug] after-swap track: label="${t1?.label || '?'}"`);
-      }
-    }
-  } catch (e: any) { log('[audio-session-debug] device-prefer threw:', e?.message); }
+    const t = mediaStream?.getAudioTracks?.()[0];
+    log(`[audio-session-debug] listen track: label="${t?.label || '?'}" enabled=${t?.enabled} muted=${t?.muted} readyState=${t?.readyState}`);
+  } catch (e: any) { log('[audio-session-debug] track inspect threw:', e?.message); }
   analyser = audioPlatform.getMicAnalyser(mediaStream, 256);
   if (!analyser) {
     log('listen: analyser unavailable — silence detection disabled');

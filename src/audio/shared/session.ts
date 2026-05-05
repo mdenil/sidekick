@@ -41,6 +41,7 @@ export {
   isStandalone,
   getKeepaliveEl,
   setListening,
+  ensureIOSAudioSessionPrimed,
 } from './ios-specific.ts';
 
 let mediaSessionInit = false;

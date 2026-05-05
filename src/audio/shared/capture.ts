@@ -59,6 +59,12 @@ export async function acquire(owner: string, constraints: MediaTrackConstraints)
     throw new Error(`capture: already held by ${activeOwner}; cannot acquire for ${owner}`);
   }
   audioSession.prepareForCapture();
+  // iOS PWA cold-start: the FIRST getUserMedia call returns iPhone Mic
+  // and BT inputs are hidden. Once-per-page-load throwaway prime cycle
+  // exercises the audio session so the real getUserMedia below inherits
+  // BT routing. No-op on non-iOS or if already primed. Cost: ~200 ms on
+  // the first capture of a fresh page load.
+  await audioSession.ensureIOSAudioSessionPrimed();
   activeStream = await navigator.mediaDevices.getUserMedia({ audio: constraints });
   activeOwner = owner;
   // Any active capture holds a wake-lock keyed on the owner tag. The user's

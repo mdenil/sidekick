@@ -68,6 +68,59 @@ function setSessionType(type: string) {
  *  before getUserMedia so any prior 'playback' hint (from TTS) is cleared. */
 export function prepareForCapture() { setSessionType('play-and-record'); }
 
+// ── iOS audio-session prime (Jonathan, 2026-05-05) ─────────────────────
+// On cold-start iOS PWA standalone, BT input devices are HIDDEN from
+// enumerateDevices() and from the system "default audio input" until at
+// least one getUserMedia cycle has activated the audio session. Diagnostic
+// trace 2026-05-05 confirmed: call #1 returns iPhone Microphone with
+// only iPhone Microphone in enumerateDevices(); call #2 returns BT directly
+// without any code-side device selection.
+//
+// Workaround: do a throwaway getUserMedia → release cycle ONCE per page
+// load to "exercise" the session. The next real capture inherits the
+// activated state and routes to BT (when connected) for both input AND
+// output. Cost: ~150-300 ms on the first capture of a page load. Skipped
+// entirely on non-iOS / non-standalone — desktop browsers don't have this
+// quirk.
+//
+// Why not use a brief RTCPeerConnection: that's the dictate-mode side
+// effect we're trying to avoid coupling to. The prime here is symmetric
+// across modes (memo / dictate / listen) and self-contained in the iOS
+// abstraction layer.
+let primeStarted = false;
+let primePromise: Promise<void> | null = null;
+async function _runPrime(): Promise<void> {
+  if (!isStandalone()) return;
+  if (!('mediaDevices' in navigator) || !navigator.mediaDevices.getUserMedia) return;
+  try {
+    setSessionType('play-and-record');
+    log('[audio-session-prime] starting throwaway getUserMedia…');
+    const t0 = performance.now();
+    const tmp = await navigator.mediaDevices.getUserMedia({ audio: true });
+    // Brief settle window so iOS commits the audio-session route policy
+    // before we tear down. 100 ms is enough in trace data; 200 is safe.
+    await new Promise(r => setTimeout(r, 200));
+    try { tmp.getTracks().forEach(t => t.stop()); } catch {}
+    log(`[audio-session-prime] complete in ${Math.round(performance.now() - t0)}ms`);
+  } catch (e: any) {
+    log('[audio-session-prime] failed:', e?.message);
+  }
+}
+
+/** Lazily prime the iOS audio session once per page load. Subsequent
+ *  callers await the same in-flight promise so concurrent capture paths
+ *  don't double-prime. No-op on non-iOS-standalone, fast-resolves after
+ *  the first run.
+ *
+ *  Called from `prepareForCapture()` so every capture path (memo,
+ *  dictate, listen) inherits the prime without each having to remember. */
+export async function ensureIOSAudioSessionPrimed(): Promise<void> {
+  if (primeStarted) return primePromise || Promise.resolve();
+  primeStarted = true;
+  primePromise = _runPrime();
+  return primePromise;
+}
+
 /** Hint 'playback' category — enables BT A2DP routing for TTS while
  *  keeping mic capture working (iOS permits both as long as the session
  *  started in play-and-record). Call at the start of TTS playback. */
