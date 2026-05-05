@@ -34,6 +34,39 @@ export function init(opts: {
   interimEl = opts.interim ?? null;
   if (opts.onChange) onChange = opts.onChange;
   if (opts.onSubmit) onSubmit = opts.onSubmit;
+
+  // Emacs-style Ctrl-K: cut from cursor to end of current line.
+  // Ctrl+K is reserved for this on Mac (Cmd+K opens search instead).
+  // On non-Mac platforms Ctrl+K still opens search (handled in
+  // cmdkPalette.ts), so this handler also gates on !metaKey.
+  if (inputEl) {
+    inputEl.addEventListener('keydown', (e) => {
+      if (e.ctrlKey && !e.metaKey && (e.key === 'k' || e.key === 'K')) {
+        e.preventDefault();
+        const el = inputEl!;
+        const val = el.value;
+        const start = el.selectionStart ?? 0;
+        // Find end of current line (next \n or end of value).
+        const lineEnd = val.indexOf('\n', start);
+        const end = lineEnd === -1 ? val.length : lineEnd;
+        // If at EOL with content after (newline immediately at cursor),
+        // delete the newline itself — joins the next line up. Matches
+        // Emacs/readline behaviour.
+        const cutEnd = (start === end && lineEnd !== -1) ? end + 1 : end;
+        const cut = val.slice(start, cutEnd);
+        if (!cut) return;
+        // Best-effort clipboard write (may be denied on non-secure
+        // contexts or by user agent). Either way, perform the cut.
+        if (navigator.clipboard?.writeText) {
+          navigator.clipboard.writeText(cut).catch(() => {});
+        }
+        el.value = val.slice(0, start) + val.slice(cutEnd);
+        el.setSelectionRange(start, start);
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        onChange();
+      }
+    });
+  }
 }
 
 /** Submit the composer's current content (same path as clicking send /

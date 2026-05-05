@@ -71,8 +71,17 @@ export function init(opts: {
   // Modal-open shortcut. Listen at document level so it works no matter
   // what's focused (including inside the composer textarea — cmd+K is
   // explicit enough that it should always win).
+  //
+  // Platform-aware: on Mac, only Cmd+K opens search. Ctrl+K is reserved
+  // for the Emacs-style cut-to-EOL binding in the composer (see
+  // composer.ts). On Windows/Linux, Ctrl+K is the standard convention
+  // for command palettes.
+  const isMac = /Mac|iPhone|iPad|iPod/i.test(navigator.platform || navigator.userAgent || '');
   document.addEventListener('keydown', (e) => {
-    if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) {
+    const palette = isMac
+      ? (e.metaKey && !e.ctrlKey)
+      : (e.ctrlKey && !e.metaKey);
+    if (palette && (e.key === 'k' || e.key === 'K')) {
       e.preventDefault();
       open();
     }
