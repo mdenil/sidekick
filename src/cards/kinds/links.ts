@@ -83,13 +83,43 @@ export default {
  * Detect Google Maps URLs and convert to Embed API format.
  * Returns embed URL or null if not a maps link.
  */
-function buildMapsEmbed(url) {
-  let cfg;
-  try { cfg = getConfig(); } catch { return null; }
-  const key = cfg.mapsEmbedKey;
+// Exported for the test suite — internal helper otherwise.
+// `keyOverride` lets tests pass a key directly without going through
+// the runtime config singleton.
+export function buildMapsEmbed(url, keyOverride?: string) {
+  let key = keyOverride;
+  if (!key) {
+    try { key = getConfig().mapsEmbedKey; } catch { return null; }
+  }
   if (!key) return null;
 
-  // Directions: google.com/maps/dir/ORIGIN/DESTINATION
+  // Directions — TWO accepted URL shapes (Google emits both, agents
+  // produce either, both should render the route inline):
+  //
+  //   1. Path-style:    /maps/dir/ORIGIN/DESTINATION
+  //                     (classic; what /maps/dir/ permalinks use)
+  //   2. Query-style:   /maps/dir/?api=1&origin=X&destination=Y
+  //                     (modern share format the Maps "Share" button emits;
+  //                     also what most LLM agents naturally produce)
+  //
+  // Try query-style first since it carries unambiguous origin / destination
+  // params; path-style is the fallback for permalinks.
+  try {
+    const u = new URL(url);
+    const isMapsHost = /(^|\.)google\.[a-z.]+$/i.test(u.hostname);
+    const isMapsPath = u.pathname === '/maps' || u.pathname.startsWith('/maps/');
+    if (isMapsHost && isMapsPath) {
+      const origin = u.searchParams.get('origin');
+      const destination = u.searchParams.get('destination');
+      if (origin && destination) {
+        const mode = u.searchParams.get('travelmode');
+        const modeParam = mode ? `&mode=${encodeURIComponent(mode)}` : '';
+        return `https://www.google.com/maps/embed/v1/directions?origin=${encodeURIComponent(origin)}&destination=${encodeURIComponent(destination)}${modeParam}&key=${key}`;
+      }
+    }
+  } catch { /* not a parseable URL — fall through to regex fallbacks */ }
+
+  // Path-style fallback: /maps/dir/ORIGIN/DESTINATION
   // Real URLs often trail with /@lat,lng,zoomz/data=!3m1!4b1!... — those
   // segments are NOT destinations and break the Embed API if passed through.
   const dirMatch = url.match(/google\.com\/maps\/dir\/([^?]+)/i);
