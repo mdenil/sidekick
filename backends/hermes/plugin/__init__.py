@@ -1611,14 +1611,41 @@ class SidekickAdapter(BasePlatformAdapter):
                     latest_sid = row[0]
                     # If another session already holds this title,
                     # the partial UNIQUE INDEX would reject the UPDATE.
-                    # Treat the no-op rename (current row already has
-                    # this title) as success rather than 500.
+                    # Two cases to distinguish (Jonathan, 2026-05-05):
+                    #
+                    #  1. The conflicting row is a STALE SIBLING for the
+                    #     SAME chat_id+source — i.e. a prior rotation
+                    #     where the user had set this title before
+                    #     hermes' session compression minted a new row.
+                    #     The drawer only ever shows the latest row, so
+                    #     the sibling's title is functionally orphaned.
+                    #     Clear it so the latest row can take the name —
+                    #     matches the user's mental model of "this CHAT
+                    #     is named X" (not "this session_id is named X").
+                    #
+                    #  2. The conflicting row belongs to a DIFFERENT
+                    #     chat — genuine cross-chat collision; reject
+                    #     and let the caller surface a toast.
+                    #
+                    # Filtering on `id != latest_sid` so the idempotent
+                    # case (latest row already has this title) falls
+                    # through to a no-op UPDATE without spurious clear.
                     existing = conn.execute(
-                        "SELECT id FROM sessions WHERE title = ?",
-                        (title,),
+                        "SELECT id, user_id, source FROM sessions "
+                        "WHERE title = ? AND id != ?",
+                        (title, latest_sid),
                     ).fetchone()
-                    if existing is not None and existing[0] != latest_sid:
-                        return "title_conflict"
+                    if existing is not None:
+                        other_id, other_user, other_source = existing
+                        if other_user == chat_id and other_source == source:
+                            # Stale sibling — release its grip on the title.
+                            conn.execute(
+                                "UPDATE sessions SET title = NULL "
+                                "WHERE id = ?",
+                                (other_id,),
+                            )
+                        else:
+                            return "title_conflict"
                     conn.execute(
                         "UPDATE sessions SET title = ? WHERE id = ?",
                         (title, latest_sid),

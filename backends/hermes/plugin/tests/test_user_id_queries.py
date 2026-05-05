@@ -575,6 +575,41 @@ def test_rename_conversation_sync_title_conflict(plugin, state_db):
     assert rows == [("a", "Series A"), ("b", "Series B")]
 
 
+def test_rename_conversation_sync_clears_stale_sibling_title(plugin, state_db):
+    """Same chat_id has a STALE sibling rotation row holding the requested
+    title — clear it and proceed. Models the hermes session-compression
+    case where the user renamed pre-rotation; the new latest row should
+    inherit the name without a 409. Drawer only ever surfaces the latest,
+    so the sibling losing its title is invisible to the user.
+    """
+    conn = sqlite3.connect(state_db)
+    conn.execute(
+        "CREATE UNIQUE INDEX idx_sessions_title_unique "
+        "ON sessions(title) WHERE title IS NOT NULL"
+    )
+    conn.commit()
+    conn.close()
+
+    chat = "chat-rotated"
+    # Pre-rotation row that holds the user's name.
+    _insert_session(state_db, "s_old", "sidekick", chat, 1000.0, title="[audio test]")
+    _insert_message(state_db, "s_old", "user", "hi", 1001.0)
+    # Post-rotation row, auto-titled to something else, currently latest.
+    _insert_session(state_db, "s_new", "sidekick", chat, 2000.0, title="Repeating the Number 38")
+    _insert_message(state_db, "s_new", "user", "hi", 2001.0)
+
+    adapter = _make_adapter(plugin, state_db)
+    result = adapter._rename_conversation_sync(chat, "sidekick", "[audio test]")
+    assert result == "ok"
+
+    conn = sqlite3.connect(state_db)
+    rows = dict(conn.execute("SELECT id, title FROM sessions").fetchall())
+    conn.close()
+    # Latest row took the name; old sibling cleared.
+    assert rows["s_new"] == "[audio test]"
+    assert rows["s_old"] is None
+
+
 def test_rename_conversation_sync_idempotent_same_title(plugin, state_db):
     """Renaming to the title the row already has is a no-op success,
     NOT a conflict — the latest row matches its own title."""
