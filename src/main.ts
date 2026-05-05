@@ -3348,6 +3348,36 @@ async function boot() {
 
   log('page loaded, UA:', navigator.userAgent);
 
+  // Console-typeable nuclear reset for when SW updates get stuck
+  // ("update ready" toast but reload doesn't pick up the new code,
+  // Jonathan, 2026-05-05). Type `__forceUpdate()` in DevTools console:
+  // unregisters every SW, deletes every Cache, then hard-reloads with
+  // a cache-bust query. Deterministic. The normal refresh flow above
+  // SHOULD handle this; this is the escape hatch for when it doesn't.
+  (window as any).__forceUpdate = async () => {
+    log('[__forceUpdate] starting nuclear SW + cache reset');
+    try {
+      if ('serviceWorker' in navigator) {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        for (const reg of regs) {
+          const ok = await reg.unregister();
+          log(`[__forceUpdate] unregister SW ${reg.scope}: ${ok}`);
+        }
+      }
+      if ('caches' in window) {
+        const keys = await caches.keys();
+        for (const k of keys) {
+          await caches.delete(k);
+          log(`[__forceUpdate] cache.delete ${k}`);
+        }
+      }
+    } catch (e: any) {
+      log(`[__forceUpdate] cleanup error: ${e?.message}`);
+    }
+    log('[__forceUpdate] reloading…');
+    location.replace(location.pathname + '?fresh=' + Date.now());
+  };
+
   // Background prefetch of the VAD assets so the first BargeDetector.start()
   // doesn't pay the ~14.7 MB download cost mid-tap.
   //

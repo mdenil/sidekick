@@ -336,6 +336,24 @@ export async function start(
       endListeners: new Set(),
     };
     phase('started (model=legacy)');
+    // Flush the [micvad-trace] buffer ALSO on success when the
+    // call took >2s — diagnostic for warm-cache slowness like the
+    // 13.6s success Jonathan saw. Skip the flush for fast cases
+    // to avoid log spam.
+    try {
+      const buf: string[] | undefined = (typeof window !== 'undefined') ? (window as any).__MICVAD_TRACE_BUF__ : undefined;
+      if (buf && buf.length) {
+        // Only flush if any phase took >500ms — read the last line's
+        // ms delta. Cheap heuristic; tighten later if needed.
+        const lastLine = buf[buf.length - 1] || '';
+        const m = lastLine.match(/\+(\d+)ms/);
+        const totalMs = m ? Number(m[1]) : 0;
+        if (totalMs > 2000) {
+          for (const line of buf) log(line);
+        }
+        (window as any).__MICVAD_TRACE_BUF__ = [];
+      }
+    } catch { /* noop */ }
     return true;
   } catch (e: any) {
     detachTrackListener();
