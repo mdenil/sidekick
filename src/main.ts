@@ -1168,15 +1168,24 @@ async function boot() {
   function enterComposerBarMount(): {
     container: HTMLElement;
     insertBefore: HTMLElement | null;
+    hide: () => void;
     restore: () => void;
   } | null {
     const composerEl = composerInput?.parentElement as HTMLElement | null;
     if (!composerEl) return null;
     const actionsEl = composerEl.querySelector('.composer-actions') as HTMLElement | null;
-    if (actionsEl) actionsEl.style.display = 'none';
+    // 2026-05-05: actions row no longer hidden synchronously here.
+    // Caller invokes hide() AFTER the audio path has actually opened
+    // (turnbased.start / memo.start succeeded). Reason: cold-start
+    // capture.acquire awaits the iOS audio-session prime which can take
+    // ~2s on first call. Hiding actions before the recorder bar mounts
+    // left an empty composer for the duration — app looked stuck. Now
+    // the actions row stays visible during the wait; the recorder bar
+    // takes over once it mounts (briefly both are visible, acceptable).
     return {
       container: composerEl,
       insertBefore: actionsEl || composerSend,
+      hide: () => { if (actionsEl) actionsEl.style.display = 'none'; },
       restore: () => { if (actionsEl) actionsEl.style.display = ''; },
     };
   }
@@ -2049,7 +2058,13 @@ async function boot() {
     if (!ok) {
       exitMemoMode();
       status.setStatus('Mic not available', 'err');
+      return;
     }
+    // Recorder bar is now mounted; hide the composer-actions row so
+    // they don't visually stack. Deferred from enterComposerBarMount
+    // until success so the cold-start audio-session prime delay
+    // (~2s) doesn't leave the user staring at an empty composer.
+    mount?.hide();
   }
 
   /** Start cursor-aware live dictation (call=true, autoSend=false).
@@ -2277,6 +2292,10 @@ async function boot() {
       return;
     }
     listenActive = true;
+    // Recorder bar is mounted; safe to hide the composer-actions row.
+    // Deferred from enterComposerBarMount to avoid the empty-composer
+    // window during the cold-start audio-session prime (~2s).
+    mount?.hide();
   }
 
   function stopListen(): void {
