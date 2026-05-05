@@ -3382,55 +3382,54 @@ async function boot() {
   // doesn't pay the ~14.7 MB download cost mid-tap.
   //
   // Tuning history:
-  //   v0.426 (2026-05-04): introduced; 5s delay, 5 fetches in PARALLEL.
-  //   v0.435 (2026-05-05): bumped delay to 30s + serialized to one-at-
-  //   a-time. Field repro 2026-05-05 (Jonathan, Mac Chrome): user
-  //   clicked Call ~1s after prefetch fired, the 5 concurrent fetches
-  //   saturated the Tailscale HTTP/2 connection, and his foreground
-  //   /api/rtc/offer + lib import + ONNX model-fetch all queued
-  //   behind the prefetch's bandwidth. Resulting WebRTC signal: 4.6s
-  //   (usually <300ms). isSupported() dynamic import: 4.9s. Model
-  //   fetch: still in flight at the 5s watchdog.
+  //   v0.426 (2026-05-04): 5s delay, 5 fetches in PARALLEL.
+  //   v0.435 (2026-05-05): 30s delay, serialized one-at-a-time.
+  //   v0.440 (2026-05-05): immediate fire + speechVad.start AWAITS the
+  //     prefetch promise. Field repro on hostile network (Mac Chrome
+  //     T-Mobile 5G ~78 KB/s effective): the 30s delay didn't help
+  //     because the user clicks Call within seconds of page load,
+  //     well before the prefetch starts. MicVAD.new fires its OWN
+  //     fetch which the 15s watchdog cancels mid-download — cache
+  //     never populates → every retry fails identically.
   //
-  //   30s delay gives the user a "first-click window" where a
-  //   user-initiated tap beats the prefetch. Serializing fetches keeps
-  //   peak bandwidth low — no single foreground request gets squeezed
-  //   below the network's serving rate. Cumulative time-to-warm-cache
-  //   is the same; perceived UX better.
+  //     New design: prefetch starts at page-ready and exposes its
+  //     completion promise on `window.__vadPrefetchPromise__`.
+  //     speechVad.start awaits that promise BEFORE constructing
+  //     MicVAD. On slow networks the user's first call waits for
+  //     the cache to populate (could be 30-60s on really bad links)
+  //     but subsequent calls hit the warm cache instantly. On fast
+  //     networks the prefetch is well done before any click, no
+  //     visible delay.
   //
-  //   The lib bundle (423KB) is fetched FIRST so isSupported() and the
-  //   first MicVAD construction can start as soon as it lands, even if
-  //   the wasm/onnx finish later (those load lazily on first inference).
-  setTimeout(() => {
-    const urls = [
-      '/build/vendor/vad-web.mjs',          // 423 KB — fetch FIRST so lib parses ASAP
-      '/assets/vad/silero_vad_legacy.onnx', // 1.8 MB
-      '/assets/vad/vad.worklet.bundle.min.js',
-      '/assets/vad/ort-wasm-simd-threaded.mjs',
-      '/assets/vad/ort-wasm-simd-threaded.wasm', // 12.8 MB — biggest, last
-    ];
-    void (async () => {
-      const t0 = performance.now();
-      for (const url of urls) {
-        try {
-          const r = await fetch(url);
-          await r.text();  // drain so the connection releases before next
-        } catch { /* best-effort warm */ }
-      }
-      log(`VAD prefetch: ${urls.length} assets sequentially warmed in ${Math.round(performance.now() - t0)}ms`);
-    })();
-    // After a tick, parse the lib by invoking isSupported(). Costs ~0
-    // network (fetched above) — just dynamic-import + module eval.
-    setTimeout(async () => {
+  //   Fetch order: lib bundle FIRST (smallest + needed first), then
+  //   model + worklet + ort runtime.
+  const prefetchUrls = [
+    '/build/vendor/vad-web.mjs',
+    '/assets/vad/silero_vad_legacy.onnx',
+    '/assets/vad/vad.worklet.bundle.min.js',
+    '/assets/vad/ort-wasm-simd-threaded.mjs',
+    '/assets/vad/ort-wasm-simd-threaded.wasm',
+  ];
+  (window as any).__vadPrefetchPromise__ = (async () => {
+    const t0 = performance.now();
+    for (const url of prefetchUrls) {
       try {
-        const speechVad = await import('./audio/shared/speechVad/index.ts');
-        const supported = await speechVad.isSupported();
-        log(`VAD prefetch: lib parsed, supported=${supported}`);
-      } catch (e: any) {
-        log(`VAD prefetch: lib import failed: ${e?.message}`);
-      }
-    }, 100);
-  }, 30_000);  // v0.435: 5s → 30s, see comment block above
+        const r = await fetch(url);
+        await r.text();
+      } catch { /* best-effort warm */ }
+    }
+    log(`VAD prefetch: ${prefetchUrls.length} assets sequentially warmed in ${Math.round(performance.now() - t0)}ms`);
+  })();
+  // Lib parse — small additional step after prefetch promise.
+  (window as any).__vadPrefetchPromise__.then(async () => {
+    try {
+      const speechVad = await import('./audio/shared/speechVad/index.ts');
+      const supported = await speechVad.isSupported();
+      log(`VAD prefetch: lib parsed, supported=${supported}`);
+    } catch (e: any) {
+      log(`VAD prefetch: lib import failed: ${e?.message}`);
+    }
+  });
 }
 
 /** Wait for a newly-detected SW to install + activate (signaled by a

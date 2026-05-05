@@ -234,7 +234,27 @@ export async function start(
       log('[speechVad] ctx.resume() threw:', e?.message);
     }
   }
-  phase(`ctx.state=${ctx.state} — calling MicVAD.new()`);
+  phase(`ctx.state=${ctx.state} — about to await prefetch then call MicVAD.new()`);
+
+  // Wait for the page-load prefetch to populate the SW cache before
+  // we let MicVAD.new fire its own fetch. On hostile networks (Jonathan
+  // 2026-05-05: T-Mobile 5G + WiFi at ~78 KB/s effective), the model
+  // fetch alone takes >30s — well past our 15s watchdog. Without this
+  // gate, MicVAD.new's fetch gets cancelled mid-download, the SW
+  // cache never populates, and every retry fails identically.
+  // With it, we block the FIRST call long enough for the cache to
+  // populate; every subsequent call is instant. On fast networks the
+  // prefetch finishes long before any user click, no perceptible delay.
+  try {
+    const pf: Promise<void> | undefined = (typeof window !== 'undefined') ? (window as any).__vadPrefetchPromise__ : undefined;
+    if (pf) {
+      phase('awaiting prefetch promise');
+      await pf;
+      phase('prefetch promise resolved');
+    }
+  } catch (e: any) {
+    log('[speechVad] prefetch promise rejected (proceeding anyway):', e?.message);
+  }
 
   try {
     // Watchdog: if MicVAD.new hangs we want a visible failure instead
