@@ -454,6 +454,31 @@ export function addLine(speaker: string, text: string, cls = '', opts: {
     if (attDiv.children.length > 0) div.appendChild(attDiv);
   }
 
+  // Long-bubble fold (Jonathan, 2026-05-05). Bubbles whose source text
+  // exceeds the threshold get clipped with a "Show more" toggle. Per-
+  // bubble state is in-memory only — resets on reload, by design.
+  // CSS in app.css controls the preview height (--bubble-fold-preview-lines)
+  // and fade. Threshold lives here so it scales with content type
+  // (markdown lines render shorter than user-typed lines).
+  // Streaming agent bubbles: this fires at addLine time on the initial
+  // text. If a streamed bubble grows past the threshold mid-stream, no
+  // fold (acceptable v1 limitation; most long bubbles are pasted/replayed).
+  const FOLD_THRESHOLD_CHARS = 1500;
+  const FOLD_THRESHOLD_LINES = 25;
+  const lineCount = (text.match(/\n/g) || []).length + 1;
+  if (text.length > FOLD_THRESHOLD_CHARS || lineCount > FOLD_THRESHOLD_LINES) {
+    div.classList.add('foldable');
+    const foldBtn = document.createElement('button');
+    foldBtn.className = 'bubble-fold-toggle';
+    foldBtn.textContent = 'Show more';
+    foldBtn.onclick = (e) => {
+      e.stopPropagation();
+      const expanded = div.classList.toggle('expanded');
+      foldBtn.textContent = expanded ? 'Show less' : 'Show more';
+    };
+    div.appendChild(foldBtn);
+  }
+
   if (opts.prepend) {
     transcriptEl.insertBefore(div, transcriptEl.firstChild);
   } else {

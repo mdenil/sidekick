@@ -1129,6 +1129,37 @@
     text-transform: uppercase; font-family: var(--font-mono);
   }
   .line .text { color: var(--fg); display: block; margin-top: 2px; font-size: var(--content-size); line-height: 1.5; }
+
+  /* Long-bubble fold (Jonathan, 2026-05-05). Bubbles with body length
+   * past the threshold get `.foldable`; tap "Show more" to add `.expanded`.
+   * Threshold + preview lines tunable via vars below. Per-bubble state is
+   * NOT persisted — resets on reload, by design (cheap, no IDB churn).
+   * Code blocks are excluded (they have their own scrollbar). */
+  :root {
+    --bubble-fold-threshold-chars: 1500;  /* chat.ts reads via getComputedStyle */
+    --bubble-fold-preview-lines: 8;
+  }
+  .line.foldable .text {
+    position: relative;
+    max-height: calc(var(--bubble-fold-preview-lines, 8) * 1.5em);
+    overflow: hidden;
+  }
+  .line.foldable .text::after {
+    content: ''; position: absolute; left: 0; right: 0; bottom: 0;
+    height: 2.5em; pointer-events: none;
+    background: linear-gradient(to bottom, transparent, var(--bg, #000) 95%);
+  }
+  .line.foldable.expanded .text { max-height: none; overflow: visible; }
+  .line.foldable.expanded .text::after { display: none; }
+  .bubble-fold-toggle {
+    display: none; margin-top: 4px; padding: 4px 10px;
+    background: transparent; color: var(--accent, currentColor);
+    border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
+    border-radius: 4px; font-size: 12px; font-family: var(--font-mono);
+    cursor: pointer; opacity: 0.85;
+  }
+  .bubble-fold-toggle:hover { opacity: 1; }
+  .line.foldable .bubble-fold-toggle { display: inline-block; }
   /* Agent reply: sage speaker label + sage accents, no bubble fill,
      no left gutter. Identity carried by the label + play-bar up top.
      Right-padding reserves a column for the top-right icon stack
