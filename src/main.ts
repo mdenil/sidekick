@@ -3348,34 +3348,47 @@ async function boot() {
 
   log('page loaded, UA:', navigator.userAgent);
 
-  // Background prefetch of EVERYTHING the first BargeDetector.start()
-  // would otherwise pull serially:
-  //   1. /build/vendor/vad-web.mjs (~423 KB) — the lib bundle that
-  //      isSupported() dynamically imports. WAS NOT prefetched until
-  //      v0.426 (Jonathan, 2026-05-04: "16s on Safari fresh load,
-  //      what happened to staged loading?"). Without this, even with
-  //      the wasm/onnx pre-cached, first call still parses the lib
-  //      synchronously after the dynamic import resolves.
-  //   2. The four /assets/vad/* files (~14.7 MB total) — wasm + onnx
-  //      + worklet + ort loader. Each one is served by the SW's
-  //      vad-assets cache (sw.js) which survives app version bumps,
-  //      so the 14.7 MB downloads exactly once per VAD lib upgrade.
-  //   3. speechVad.isSupported() — triggers the dynamic import +
-  //      module-eval, so by the time the user taps call the lib is
-  //      already parsed and ready (saves ~50-100ms on cold).
-  // Fire-and-forget; failures (offline, asset 404) are silent — first
-  // real call will retry the fetch path. 5s delay so it doesn't
-  // compete with the foreground boot sequence.
+  // Background prefetch of the VAD assets so the first BargeDetector.start()
+  // doesn't pay the ~14.7 MB download cost mid-tap.
+  //
+  // Tuning history:
+  //   v0.426 (2026-05-04): introduced; 5s delay, 5 fetches in PARALLEL.
+  //   v0.435 (2026-05-05): bumped delay to 30s + serialized to one-at-
+  //   a-time. Field repro 2026-05-05 (Jonathan, Mac Chrome): user
+  //   clicked Call ~1s after prefetch fired, the 5 concurrent fetches
+  //   saturated the Tailscale HTTP/2 connection, and his foreground
+  //   /api/rtc/offer + lib import + ONNX model-fetch all queued
+  //   behind the prefetch's bandwidth. Resulting WebRTC signal: 4.6s
+  //   (usually <300ms). isSupported() dynamic import: 4.9s. Model
+  //   fetch: still in flight at the 5s watchdog.
+  //
+  //   30s delay gives the user a "first-click window" where a
+  //   user-initiated tap beats the prefetch. Serializing fetches keeps
+  //   peak bandwidth low — no single foreground request gets squeezed
+  //   below the network's serving rate. Cumulative time-to-warm-cache
+  //   is the same; perceived UX better.
+  //
+  //   The lib bundle (423KB) is fetched FIRST so isSupported() and the
+  //   first MicVAD construction can start as soon as it lands, even if
+  //   the wasm/onnx finish later (those load lazily on first inference).
   setTimeout(() => {
     const urls = [
-      '/build/vendor/vad-web.mjs',
-      '/assets/vad/silero_vad_legacy.onnx',
+      '/build/vendor/vad-web.mjs',          // 423 KB — fetch FIRST so lib parses ASAP
+      '/assets/vad/silero_vad_legacy.onnx', // 1.8 MB
       '/assets/vad/vad.worklet.bundle.min.js',
       '/assets/vad/ort-wasm-simd-threaded.mjs',
-      '/assets/vad/ort-wasm-simd-threaded.wasm',
+      '/assets/vad/ort-wasm-simd-threaded.wasm', // 12.8 MB — biggest, last
     ];
-    for (const url of urls) fetch(url).catch(() => { /* best-effort warm */ });
-    log(`VAD prefetch: ${urls.length} assets kicked off`);
+    void (async () => {
+      const t0 = performance.now();
+      for (const url of urls) {
+        try {
+          const r = await fetch(url);
+          await r.text();  // drain so the connection releases before next
+        } catch { /* best-effort warm */ }
+      }
+      log(`VAD prefetch: ${urls.length} assets sequentially warmed in ${Math.round(performance.now() - t0)}ms`);
+    })();
     // After a tick, parse the lib by invoking isSupported(). Costs ~0
     // network (fetched above) — just dynamic-import + module eval.
     setTimeout(async () => {
@@ -3387,7 +3400,7 @@ async function boot() {
         log(`VAD prefetch: lib import failed: ${e?.message}`);
       }
     }, 100);
-  }, 5000);
+  }, 30_000);  // v0.435: 5s → 30s, see comment block above
 }
 
 /** Wait for a newly-detected SW to install + activate (signaled by a
