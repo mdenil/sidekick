@@ -1,6 +1,6 @@
 # Sidekick
 
-**A voice-first PWA agent portal — bring your own backend.**
+**A voice-first agent portal — bring your own backend.**
 
 Hands-free chat with any agent that speaks the OpenAI Responses API. Configurable STT + TTS (Deepgram, ElevenLabs, OpenAI Whisper — easy to add others), lockscreen-friendly background audio for in-pocket use, WhatsApp-style voice memos, streaming voice keyboard, and full hands-free calling via WebRTC. Installable PWA shell that runs on anything from a Raspberry Pi to a cloud server.
 
@@ -8,8 +8,6 @@ Hands-free chat with any agent that speaks the OpenAI Responses API. Configurabl
   <img src="docs/images/hero-desktop.png" alt="Sidekick on desktop — session drawer + agent reply with inline Google Maps directions card" width="640" />
   &nbsp;&nbsp;
   <img src="docs/images/hero-mobile.png" alt="Sidekick on iOS — same conversation in mobile portrait" width="200" />
-  <br/>
-  <em>Same conversation, two viewports.</em>
 </p>
 
 ## Install
@@ -35,6 +33,8 @@ npm install
 npm start
 ```
 
+### Agent self-install
+
 **Wiring up your own agent backend?** Sidekick ships with [`AGENTS.md`](AGENTS.md) — a short context file aimed at AI coding assistants (Claude Code, Cursor, Aider, ...). Open the cloned repo in your assistant of choice and say *"set sidekick up against my agent"*; the file gives it everything it needs (the contract, where to write the adapter, how to test).
 
 ## What's different
@@ -46,6 +46,14 @@ Most chat UIs treat voice as a bolt-on. Sidekick is voice-first:
 - **Barge-in** — interrupt the agent mid-sentence by speaking. Client-side Silero VAD + per-device tuning.
 - **Per-bubble TTS replay** — every agent reply has a play button. BT headset skip-fwd/back navigates between replies.
 - **Bring your own agent** — speaks the OpenAI Responses API (`/v1/responses`, `/v1/conversations/*`). Drop-in compatible with any server that does, plus richer plugins for Hermes (and openclaw, soon).
+
+## Frontends
+
+| Frontend | Status | Notes |
+|---|---|---|
+| **Desktop browser** | ✅ Stable | Full feature set. Chrome / Edge / Safari / Firefox. Open `http://localhost:3001` and go. |
+| **Mobile PWA** | ✅ Stable | Installable web app — "Add to Home Screen" on iOS / "Install app" on Android adds an icon that launches like a native app, no app-store install required. Fastest way to try Sidekick on a phone. Most features work; backgrounding is best-effort (browsers can suspend mic when the screen locks), and the browser re-asks for mic permission on each cold launch. |
+| **iOS / Android native** | 🚧 Coming soon | Capacitor wrapper to fix the mic-permission and background-audio gaps the PWA can't. See [`docs/CAPACITOR_PLAN.md`](docs/CAPACITOR_PLAN.md). |
 
 ## Backends
 
