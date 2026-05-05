@@ -2185,7 +2185,12 @@
      persistently in the corner without pulling focus. */
   .ambient-widget {
     position: fixed; bottom: 16px; right: 16px;
-    background: rgba(255, 255, 255, 0.55);
+    /* Theme-aware translucent surface — was hardcoded rgba(255,255,255,0.55)
+       which inverted to a washed-out gray on dark mode (Jonathan, 2026-05-05).
+       color-mix gives a translucent --surface that picks up theme tokens
+       in both dark and light, while preserving the glassmorphism backdrop-
+       filter effect. */
+    background: color-mix(in srgb, var(--surface) 75%, transparent);
     backdrop-filter: blur(12px);
     -webkit-backdrop-filter: blur(12px);
     border: 1px solid var(--border);

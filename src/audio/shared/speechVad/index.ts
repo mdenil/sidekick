@@ -331,6 +331,18 @@ export async function start(
   } catch (e: any) {
     detachTrackListener();
     phase(`MicVAD.new failed: ${e?.message}`);
+    // Flush the [micvad-trace] buffer through log() so the on-page
+    // debug panel captures the per-phase timing — bare console.log
+    // calls inside the patched vad-web bundle don't reach the panel.
+    // Bundle's _trace() pushes to window.__MICVAD_TRACE_BUF__; we
+    // read+clear here on watchdog fire.
+    try {
+      const buf: string[] | undefined = (typeof window !== 'undefined') ? (window as any).__MICVAD_TRACE_BUF__ : undefined;
+      if (buf && buf.length) {
+        for (const line of buf) log(line);
+        (window as any).__MICVAD_TRACE_BUF__ = [];
+      }
+    } catch { /* noop */ }
     return false;
   }
 }
