@@ -11,7 +11,7 @@
  * network-first, so first-load pulls anything missed and caches on the
  * way through.
  */
-const CACHE_NAME = 'v0.438';
+const CACHE_NAME = 'v0.439';
 
 // Dedicated cache for VAD assets. Key insight (Jonathan, 2026-05-04):
 // VAD assets are 14.7 MB and don't change with every app deploy — the
@@ -30,7 +30,8 @@ const CACHE_NAME = 'v0.438';
 // trace through window.__MICVAD_TRACE_BUF__ + speechVad's watchdog
 // flush so the on-page debug panel captures the lines. Once the
 // diagnosis is done and the trace removed, revert to v1.
-const VAD_CACHE = 'vad-assets-v3';
+// v4: silero_legacy.js patched with deeper inside-modelFactory trace
+const VAD_CACHE = 'vad-assets-v4';
 
 // Minimum viable shell for offline boot. Bundle JS modules used to be
 // listed here too — that was the source of the 2026-05-01 cache.addAll
