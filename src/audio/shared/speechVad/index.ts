@@ -237,14 +237,23 @@ export async function start(
   phase(`ctx.state=${ctx.state} — calling MicVAD.new()`);
 
   try {
-    // Watchdog: if MicVAD.new hangs (AudioWorklet attachment race,
-    // ONNX init stuck, etc.) we want a visible failure instead of a
-    // silent never-resolving promise. Was 10s; tightened to 5s now
-    // that phase logs let us see WHICH step hung — we don't need
-    // the headroom for a quiet pass any more. Real cold-start budget:
-    // ~3s on iPhone 15 with cold cache, well under 5s.
+    // Watchdog: if MicVAD.new hangs we want a visible failure instead
+    // of a silent never-resolving promise.
+    //
+    // History:
+    //   v0.422 (2026-05-04): 10s — generous to start
+    //   v0.426: tightened to 5s (assumed phase logs would localize
+    //           hangs; assumed warm cache was the common case)
+    //   v0.436 (2026-05-05): bumped back to 15s. Field repro: cold
+    //   first-call on Mac Chrome over Tailscale needs ~6s for the
+    //   /build/vendor/vad-web.mjs dynamic import alone (cold TLS +
+    //   HTTP/2 connection setup), then ~5-8s for model fetch + ORT
+    //   wasm init. 5s cut us off mid-fetch and the cache never
+    //   populated → every retry was equally slow. 15s gives the
+    //   cold-cache path room to actually succeed; subsequent calls
+    //   hit warm cache and resolve in <500ms regardless.
     const watchdog = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('MicVAD.new timeout after 5s')), 5_000);
+      setTimeout(() => reject(new Error('MicVAD.new timeout after 15s')), 15_000);
     });
     const inst = await Promise.race([watchdog, vadLib!.MicVAD.new({
       // Reuse the caller's mic stream — DO NOT open a second one. iOS
