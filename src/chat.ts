@@ -468,9 +468,15 @@ export function addLine(speaker: string, text: string, cls = '', opts: {
   const lineCount = (text.match(/\n/g) || []).length + 1;
   if (text.length > FOLD_THRESHOLD_CHARS || lineCount > FOLD_THRESHOLD_LINES) {
     div.classList.add('foldable');
+    // Default state: agent replies start EXPANDED (you usually want to read
+    // them in full); user bubbles start FOLDED (own messages are reference,
+    // collapse by default to save scroll real estate). Per Jonathan, 2026-
+    // 05-05. Either side can be toggled per-bubble.
+    const startExpanded = cls.includes('agent');
+    if (startExpanded) div.classList.add('expanded');
     const foldBtn = document.createElement('button');
     foldBtn.className = 'bubble-fold-toggle';
-    foldBtn.textContent = 'Show more';
+    foldBtn.textContent = startExpanded ? 'Show less' : 'Show more';
     foldBtn.onclick = (e) => {
       e.stopPropagation();
       const expanded = div.classList.toggle('expanded');
