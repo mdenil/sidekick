@@ -1124,8 +1124,45 @@ function ensureFilterInput(): HTMLInputElement | null {
   // Insert as the only child of the (now full-width) sessions header.
   header.appendChild(input);
 
+  // Inline clear-X button (Jonathan, 2026-05-05): tap to clear filter
+  // without needing keyboard/Esc. Mirrors the keydown Escape handler
+  // below — same teardown of value, currentFilter, IDB persistence,
+  // pending timers, then re-render unfiltered. Visible only while the
+  // input has content.
+  const clearBtn = document.createElement('button');
+  clearBtn.type = 'button';
+  clearBtn.id = 'sess-filter-clear';
+  clearBtn.className = 'sess-filter-clear';
+  clearBtn.setAttribute('aria-label', 'Clear filter');
+  clearBtn.title = 'Clear filter';
+  clearBtn.innerHTML = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><line x1="4" y1="4" x2="12" y2="12"/><line x1="12" y1="4" x2="4" y2="12"/></svg>`;
+  clearBtn.hidden = !input.value;
+  header.appendChild(clearBtn);
+  const updateClearVisibility = () => { clearBtn.hidden = !input!.value; };
+  const clearFilter = () => {
+    input!.value = '';
+    currentFilter = '';
+    if (filterRenderTimer != null) { clearTimeout(filterRenderTimer); filterRenderTimer = null; }
+    if (filterPersistTimer != null) { clearTimeout(filterPersistTimer); filterPersistTimer = null; }
+    if (filterServerTimer != null) { clearTimeout(filterServerTimer); filterServerTimer = null; }
+    clearStoredFilter();
+    const listEl = document.getElementById('sessions-list');
+    if (listEl) {
+      const active = optimisticActiveId || viewedSessionId || backend.getCurrentSessionId?.() || '';
+      renderListFiltered(listEl, active);
+    }
+    updateClearVisibility();
+  };
+  clearBtn.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    clearFilter();
+    input!.focus();
+  });
+
   input.addEventListener('input', () => {
     currentFilter = input!.value;
+    updateClearVisibility();
     if (filterRenderTimer != null) clearTimeout(filterRenderTimer);
     if (filterPersistTimer != null) clearTimeout(filterPersistTimer);
     if (filterServerTimer != null) clearTimeout(filterServerTimer);

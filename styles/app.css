@@ -549,11 +549,12 @@
    * Visually differentiated from the session-row "content" below:
    * --surface-2 fill + --border-strong border so it reads as a control,
    * not a free-floating text field. Focus brightens to --primary. */
+  .sb-sessions-header { position: relative; }
   .sess-filter {
     display: block;
     width: 100%;
     box-sizing: border-box;
-    padding: 6px 10px;
+    padding: 6px 28px 6px 10px;  /* room on right for the inline clear-X */
     background: var(--surface-2);
     color: var(--fg);
     border: 1px solid var(--border-strong);
@@ -564,9 +565,22 @@
   }
   .sess-filter::placeholder { color: var(--muted); }
   .sess-filter:focus { border-color: var(--primary); background: var(--surface); }
+  /* Inline clear-X button (Jonathan, 2026-05-05): only visible when the
+     filter has content. Overlays the right edge of the input. */
+  .sess-filter-clear {
+    position: absolute; top: 50%; right: 6px; transform: translateY(-50%);
+    width: 22px; height: 22px; padding: 3px;
+    background: transparent; border: none; border-radius: 4px;
+    color: var(--muted); cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .sess-filter-clear:hover { color: var(--fg); background: var(--surface); }
+  .sess-filter-clear svg { width: 14px; height: 14px; }
+  .sess-filter-clear[hidden] { display: none; }
   /* Hide the input when the sidebar is collapsed (mirrors .sessions-list
      hide rule above) so the rail stays clean. */
   #sidebar.collapsed .sess-filter { display: none; }
+  #sidebar.collapsed .sess-filter-clear { display: none; }
   #sidebar.collapsed .sb-sessions-header { display: none; }
 
   /* ── Cmd+K palette ── */
