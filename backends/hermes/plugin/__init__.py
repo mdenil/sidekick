@@ -2119,8 +2119,7 @@ class SidekickAdapter(BasePlatformAdapter):
                 "description": (
                     "Glob patterns that filter the model dropdown above "
                     "(e.g. anthropic/*, google/gemini-*). Empty = full "
-                    "openrouter catalog. Stored in ~/.hermes/config.yaml "
-                    "under sidekick.preferred_models."
+                    "openrouter catalog."
                 ),
                 "category": "Agent",
                 "type": "string-list",
