@@ -11,7 +11,7 @@
  * network-first, so first-load pulls anything missed and caches on the
  * way through.
  */
-const CACHE_NAME = 'v0.433';
+const CACHE_NAME = 'v0.434';
 
 // Dedicated cache for VAD assets. Key insight (Jonathan, 2026-05-04):
 // VAD assets are 14.7 MB and don't change with every app deploy — the
@@ -25,7 +25,11 @@ const CACHE_NAME = 'v0.433';
 // model changes, bump VAD_CACHE — the activate handler then prunes
 // the old VAD cache and the next call re-fetches. Dev workflow: this
 // is rare; ~once per quarter at most.
-const VAD_CACHE = 'vad-assets-v1';
+// Bumped 2026-05-05: vad-web.mjs patched with [micvad-trace] phase logs
+// for diagnosing the Mac Chrome 5s hang in MicVAD.new. Once the
+// diagnosis is done and the trace removed, can revert to v1 (the
+// underlying lib version is unchanged).
+const VAD_CACHE = 'vad-assets-v2';
 
 // Minimum viable shell for offline boot. Bundle JS modules used to be
 // listed here too — that was the source of the 2026-05-01 cache.addAll
