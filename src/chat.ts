@@ -148,20 +148,21 @@ export function forceScrollToBottom(): void {
   // (Jonathan): switching sessions occasionally left the chat scrolled
   // to top with content below the viewport; manual scroll revealed the
   // bubbles were rendered correctly, just not scrolled to.
-  //
-  // Scroll-bug instrumentation (Jonathan, 2026-05-05): iOS PWA repro
-  // where clicking the jump-to-bottom arrow shows black, and the next
-  // touch snaps back. Logging scrollTop / scrollHeight / clientHeight
-  // before + after each step so a paste of these lines from the on-page
-  // log reveals (a) is scrollTop matching the target, (b) is scrollHeight
-  // stable across the rAF window. Remove after the diagnosis is done.
-  const before = `top=${transcriptEl.scrollTop} h=${transcriptEl.scrollHeight} ch=${transcriptEl.clientHeight}`;
   doScroll();
-  const afterImmediate = `top=${transcriptEl.scrollTop} h=${transcriptEl.scrollHeight}`;
+  // iOS PWA fix (Jonathan, 2026-05-05): scrollTop reaches the correct
+  // value (verified via [scroll-debug] traces) but iOS doesn't paint —
+  // user sees black, and the next touch snaps back. WebKit render bug
+  // class. Anchor the scroll on a real DOM child via scrollIntoView so
+  // the renderer has a known target to commit to. Last-element seek
+  // works on every browser; on iOS it's the difference between paint
+  // and not-paint.
   requestAnimationFrame(() => {
+    if (!transcriptEl) return;
     doScroll();
-    const afterRaf = transcriptEl ? `top=${transcriptEl.scrollTop} h=${transcriptEl.scrollHeight}` : '<gone>';
-    log(`[scroll-debug] before=(${before}) afterImmediate=(${afterImmediate}) afterRaf=(${afterRaf})`);
+    const last = transcriptEl.lastElementChild as HTMLElement | null;
+    if (last && typeof last.scrollIntoView === 'function') {
+      try { last.scrollIntoView({ block: 'end', inline: 'nearest' }); } catch { /* noop */ }
+    }
   });
   pinnedToBottom = true;
   missedWhileScrolled = 0;
