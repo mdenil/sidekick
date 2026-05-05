@@ -12,8 +12,7 @@
  * Messages (bottom, network) — keyboard navigable as one flat list.
  *
  * Enter on either kind resumes the underlying session; we do NOT
- * scroll-to-specific-message for message hits — that's deferred. See the
- * cmdk follow-ups block in ~/your-agent-private/backlog.md.
+ * scroll-to-specific-message for message hits — that's a deferred follow-up.
  */
 
 import * as backend from './backend.ts';
@@ -414,8 +413,7 @@ async function activate(hit: Hit) {
   // Both kinds resume the session via backend.resumeSession + the
   // standard onResume callback (which is replaySessionMessages in
   // main.ts). For message hits we deliberately do NOT scroll to the
-  // specific message id — that's queued in the deferred-feature block
-  // in ~/your-agent-private/backlog.md (see "cmdk follow-ups").
+  // specific message id — deferred follow-up.
   const id = hit.kind === 'session' ? hit.id : hit.session_id;
   if (!id) return;
   close();

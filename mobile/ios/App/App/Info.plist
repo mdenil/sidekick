@@ -51,24 +51,13 @@
 	<string>Sidekick uses your microphone for voice messages and dictation.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Sidekick uses the camera for image attachments.</string>
-	<key>NSAppTransportSecurity</key>
-	<dict>
-		<key>NSAllowsArbitraryLoads</key>
-		<false/>
-		<key>NSExceptionDomains</key>
-		<dict>
-			<key>REDACTED-TAILNET.ts.net</key>
-			<dict>
-				<key>NSIncludesSubdomains</key>
-				<true/>
-				<key>NSExceptionAllowsInsecureHTTPLoads</key>
-				<false/>
-				<key>NSExceptionRequiresForwardSecrecy</key>
-				<false/>
-				<key>NSExceptionMinimumTLSVersion</key>
-				<string>TLSv1.2</string>
-			</dict>
-		</dict>
-	</dict>
+	<!--
+	  App Transport Security is left at the iOS defaults. Modern HTTPS with
+	  valid certs (Tailscale MagicDNS, Cloudflare Tunnel, real CA-signed
+	  certs) works out of the box. If your deployment uses a self-signed
+	  cert or a server that doesn't support forward secrecy, add an
+	  NSAppTransportSecurity / NSExceptionDomains block here for your
+	  hostname before `npx cap sync ios`.
+	-->
 </dict>
 </plist>

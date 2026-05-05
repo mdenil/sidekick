@@ -10,7 +10,7 @@
  *
  * Manual repro (smoke — not automated, requires a real bike or a hard
  * mechanical impulse near the mic):
- *   1. Open call mode at https://blueberry.REDACTED-TAILNET.ts.net:3001
+ *   1. Open call mode in a real device browser (https://&lt;your-host&gt;:3001)
  *   2. Slider at default (50%, mid-sensitivity).
  *   3. Begin a call, wait for the agent to start speaking.
  *   4. Clap hands once, sharply, near the mic. EXPECT: no barge fire

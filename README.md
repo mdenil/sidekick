@@ -53,7 +53,7 @@ Most chat UIs treat voice as a bolt-on. Sidekick is voice-first:
 |---|---|---|
 | **Desktop browser** | ✅ Stable | Full feature set. Chrome / Edge / Safari / Firefox. Open `http://localhost:3001` and go. |
 | **Mobile PWA** | ✅ Stable | Installable web app — "Add to Home Screen" on iOS / "Install app" on Android adds an icon that launches like a native app, no app-store install required. Fastest way to try Sidekick on a phone. Most features work; backgrounding is best-effort (browsers can suspend mic when the screen locks), and the browser re-asks for mic permission on each cold launch. |
-| **iOS / Android native** | 🚧 Coming soon | Capacitor wrapper to fix the mic-permission and background-audio gaps the PWA can't. See [`docs/CAPACITOR_PLAN.md`](docs/CAPACITOR_PLAN.md). |
+| **iOS / Android native** | 🚧 Coming soon | Capacitor wrapper to fix the mic-permission and background-audio gaps the PWA can't. |
 
 ## Backends
 
@@ -61,7 +61,7 @@ Most chat UIs treat voice as a bolt-on. Sidekick is voice-first:
 |---|---|---|
 | **stub** (in-tree) | ✅ Built-in default | First-clone demos, hermes-free dev, CI smoke runs. Echo / Gemini / Ollama LLM adapters. See [`backends/stub/README.md`](backends/stub/README.md). |
 | **Hermes** | ✅ Bundled plugin | Full-featured agent — sessions, multi-platform drawer (Telegram/Slack/WhatsApp surface alongside sidekick), tool-call activity rows, attachment auto-routing through auxiliary vision. See [`backends/hermes/README.md`](backends/hermes/README.md). |
-| **openclaw** | 🚧 Coming soon | Working sketch in [`docs/OPENCLAW_COMPATIBILITY.md`](docs/OPENCLAW_COMPATIBILITY.md). |
+| **openclaw** | 🚧 Coming soon | Adapter in flight. |
 | **Any `/v1/responses`-compatible server** | ✅ Point `SIDEKICK_PLATFORM_URL` at it | OpenRouter, LMStudio, your own — see [`docs/ABSTRACT_AGENT_PROTOCOL.md`](docs/ABSTRACT_AGENT_PROTOCOL.md) for what's required vs. optional. |
 
 ## Configure
@@ -81,7 +81,6 @@ The Settings panel inside the app handles per-user preferences (theme, mic devic
 | [Audio bridge protocol](docs/SIDEKICK_AUDIO_PROTOCOL.md) | WebRTC data-channel events, dispatch path, listening / barge envelopes. Read before forking `audio-bridge/`. |
 | [Architecture](docs/ARCHITECTURE.md) | System diagram, module tree, endpoint inventory. |
 | [Canvas protocol](docs/CANVAS.md) | Inline card envelopes (link previews, YouTube embeds, image grids). |
-| [Capacitor plan](docs/CAPACITOR_PLAN.md) | iOS / Android native wrapper status. |
 | [Backend READMEs](backends/) | One per backend — install steps, contract pieces implemented. |
 
 ## Contributing
