@@ -5,9 +5,11 @@
 Hands-free chat with any agent that speaks the OpenAI Responses API. Streaming voice in (Deepgram + Web Speech fallback), streaming voice out (Deepgram Aura TTS), lockscreen-friendly background audio for in-pocket use, push-to-talk and tap-to-talk modes, and an installable PWA shell that runs on a Raspberry Pi or any Linux/Mac host.
 
 <p align="center">
-  <img src="docs/images/hero-live.png" alt="Sidekick on iOS — directions reply with inline map card" width="320" />
-  &nbsp;&nbsp;
-  <img src="docs/images/hero-live-light.png" alt="Same conversation, light theme" width="320" />
+  <img src="docs/images/hero-desktop.png" alt="Sidekick on desktop — session drawer + agent reply with inline Google Maps directions card" width="640" />
+  <br/>
+  <em>Same conversation, mobile portrait:</em>
+  <br/>
+  <img src="docs/images/hero-mobile.png" alt="Sidekick on iOS — same conversation in mobile portrait" width="240" />
 </p>
 
 ## Install
@@ -42,14 +44,6 @@ Most chat UIs treat voice as a bolt-on. Sidekick is voice-first:
 - **Barge-in** — interrupt the agent mid-sentence by speaking. Silero VAD + per-device tuning.
 - **Per-bubble TTS replay** — every agent reply has a play button. BT headset skip-fwd/back navigates between replies.
 - **Bring your own agent** — speaks the OpenAI Responses API (`/v1/responses`, `/v1/conversations/*`). Drop-in compatible with any server that does, plus richer plugins for Hermes (and openclaw, soon).
-
-## Sessions
-
-Drawer view of past conversations — search, rename, delete, cross-platform if your backend exposes a gateway extension (Hermes does — Telegram / Slack / WhatsApp threads surface alongside Sidekick).
-
-<p align="center">
-  <img src="docs/images/desktop-sessions.png" alt="Sidekick desktop — session drawer" width="640" />
-</p>
 
 ## Backends
 
