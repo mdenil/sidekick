@@ -49,7 +49,7 @@ export async function handleSidekickMessage(req, res) {
     res.writeHead(503, { 'content-type': 'application/json' });
     res.end(JSON.stringify({
       error: 'sidekick_platform_unconfigured',
-      detail: 'SIDEKICK_PLATFORM_TOKEN not set on the proxy.',
+      detail: 'Upstream not initialized — proxy boot likely failed.',
     }));
     return;
   }

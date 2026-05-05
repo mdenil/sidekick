@@ -94,6 +94,35 @@ export interface SettingDef {
 }
 
 /** Single transcript item, OAI shape (with optional sidekick extension). */
+/** Cross-conversation FTS5 search hit, one per matching message. */
+export interface SearchMessageHit {
+  session_id: string;
+  message_id: number;
+  role: string;
+  snippet: string;
+  timestamp: number;
+  session_title?: string;
+  session_source?: string;
+}
+
+/** Session-grouped collapse over hits. Mirrors ConversationSummary so
+ *  renderers can share code, but distinguished as a separate shape
+ *  because search results carry no message_count / last_message_at by
+ *  default — the upstream sets them only when it has the data cheap. */
+export interface SearchSessionRow {
+  id: string;
+  source?: string | null;
+  title?: string | null;
+  snippet?: string | null;
+  messageCount?: number | null;
+  lastMessageAt?: number | null;
+}
+
+export interface SearchResult {
+  sessions: SearchSessionRow[];
+  hits: SearchMessageHit[];
+}
+
 export interface ConversationItem {
   id: number;
   object: 'message';
@@ -177,6 +206,13 @@ export interface UpstreamAgent {
    *  doesn't implement /v1/commands (404); the proxy surfaces 404 to
    *  the PWA so the autocomplete popover stays disabled. */
   listCommands(): Promise<CommandDef[] | null>;
+
+  /** Cross-conversation FTS5 search. Returns null when the upstream
+   *  doesn't implement /v1/conversations/search (404); the proxy
+   *  surfaces 404 so the PWA cmd+K palette knows search is unavailable.
+   *  Wire shape mirrored on the PWA side as `SearchResult` in
+   *  `src/proxyClientTypes.ts` — keep these in lockstep on schema changes. */
+  searchConversations(q: string, limit?: number): Promise<SearchResult | null>;
 }
 
 /** Error thrown by HTTPAgentUpstream when the upstream returns a 4xx
@@ -295,6 +331,20 @@ export class HTTPAgentUpstream implements UpstreamAgent {
     if (!r.ok) throw new Error(`upstream listCommands: HTTP ${r.status}`);
     const j: any = await r.json();
     return Array.isArray(j?.data) ? j.data : [];
+  }
+
+  async searchConversations(q: string, limit = 20): Promise<SearchResult | null> {
+    const params = new URLSearchParams({ q, limit: String(limit) });
+    const r = await fetch(`${this.url}/v1/conversations/search?${params}`, {
+      headers: this.headers(),
+    });
+    if (r.status === 404) return null;
+    if (!r.ok) throw new Error(`upstream searchConversations: HTTP ${r.status}`);
+    const j: any = await r.json();
+    return {
+      sessions: Array.isArray(j?.sessions) ? j.sessions as SearchSessionRow[] : [],
+      hits: Array.isArray(j?.hits) ? j.hits as SearchMessageHit[] : [],
+    };
   }
 
   async getSettingsSchema(): Promise<SettingDef[] | null> {

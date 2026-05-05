@@ -1107,6 +1107,25 @@
   /* ── Transcript ── */
   .transcript {
     flex: 1; overflow-y: auto; overflow-x: hidden; padding: 18px; scroll-behavior: smooth;
+    position: relative;
+  }
+  /* Drag-and-drop attach: dashed border + dim overlay + centered hint
+     when an image/pdf is being dragged over the transcript AND the
+     model gate allows it. The .drag-over class is toggled from main.ts;
+     ::before paints the hint without injecting DOM. */
+  .transcript.drag-over {
+    outline: 2px dashed var(--accent, #6c9);
+    outline-offset: -8px;
+    background: color-mix(in srgb, var(--accent, #6c9) 6%, transparent);
+  }
+  .transcript.drag-over::before {
+    content: 'Drop image or PDF to attach';
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-family: var(--font-mono); font-size: 14px; color: var(--accent, #6c9);
+    pointer-events: none;
+    z-index: 10;
+    background: color-mix(in srgb, var(--bg, #000) 50%, transparent);
   }
   .line { margin-bottom: 10px; max-width: 900px; }
 
@@ -1606,6 +1625,24 @@
     max-width: 280px; max-height: 200px;
     border-radius: 8px; border: 1px solid var(--border);
     display: block; background: #000;
+  }
+  .line .line-attachments .pdf-chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 6px 10px; border-radius: 8px;
+    border: 1px solid var(--border); background: var(--surface-2, var(--surface));
+    color: var(--fg); text-decoration: none;
+    font-family: var(--font-mono); font-size: 12px;
+    max-width: 240px;
+  }
+  .line .line-attachments .pdf-chip:hover {
+    border-color: var(--accent, #6c9);
+    color: var(--accent, #6c9);
+  }
+  .line .line-attachments .pdf-chip svg {
+    width: 14px; height: 14px; flex-shrink: 0;
+  }
+  .line .line-attachments .pdf-chip-label {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   /* Lightbox (tap thumbnail → full-screen) */
   #lightbox {
@@ -2402,6 +2439,12 @@
 .tool-row-details > .tool-row-summary::-webkit-details-marker { display: none; }
 .tool-row-details > .tool-row-summary::marker { content: ''; }
 .tool-row-details[open] > .tool-row-summary .ar-icon { opacity: 1; }
+.tool-row-summary .ar-icon-chevron {
+  transition: transform 120ms ease;
+}
+.tool-row-details[open] > .tool-row-summary .ar-icon-chevron {
+  transform: rotate(90deg);
+}
 .tool-row-summary .tool-name {
   color: var(--fg);
   font-weight: 500;

@@ -463,6 +463,20 @@ export function addLine(speaker: string, text: string, cls = '', opts: {
         vid.playsInline = true;
         vid.title = att.fileName || 'attachment';
         attDiv.appendChild(vid);
+      } else if (att.mimeType === 'application/pdf') {
+        // PDF preview: minimal label chip. Click opens the data: URL in
+        // a new tab so the user can sanity-check what they sent without
+        // pdf.js bulk. Local-only — the chip lives in DOM memory and
+        // disappears on hard refresh (Jonathan, 2026-05-05: "no need
+        // to push to backend, can just live locally").
+        const a = document.createElement('a');
+        a.href = att.dataUrl;
+        a.target = '_blank';
+        a.rel = 'noopener';
+        a.className = 'pdf-chip';
+        a.title = att.fileName || 'PDF attachment';
+        a.innerHTML = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 1.5h7L13 4.5V14a.5.5 0 0 1-.5.5h-9A.5.5 0 0 1 3 14V1.5z"/><path d="M9.5 1.5V4.5H13"/></svg><span class="pdf-chip-label">${escapeHtml(att.fileName || 'PDF')}</span>`;
+        attDiv.appendChild(a);
       }
     }
     if (attDiv.children.length > 0) div.appendChild(attDiv);

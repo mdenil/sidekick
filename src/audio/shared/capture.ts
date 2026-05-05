@@ -34,6 +34,12 @@ import * as wakeLock from '../../wakeLock.ts';
 
 let activeStream: MediaStream | null = null;
 let activeOwner: string | null = null;
+// Synchronous reservation slot so concurrent acquire() calls can't all
+// pass the activeStream gate during the long await chain (prime ~1.5s +
+// getUserMedia ~200ms). Field repro 2026-05-05: rapid btn-call taps spawned
+// 3 parallel acquires, each created its own MediaStream, only the last was
+// tracked in activeStream — leaking 2 mic-live tracks with no owner.
+let pendingOwner: string | null = null;
 
 /**
  * Acquire the shared MediaStream. Runs AVAudioSession prep + getUserMedia.
@@ -55,18 +61,26 @@ let activeOwner: string | null = null;
  *   that landed this policy.
  */
 export async function acquire(owner: string, constraints: MediaTrackConstraints): Promise<MediaStream> {
-  if (activeStream) {
-    throw new Error(`capture: already held by ${activeOwner}; cannot acquire for ${owner}`);
+  if (activeStream || pendingOwner) {
+    throw new Error(`capture: already held by ${activeOwner ?? pendingOwner}; cannot acquire for ${owner}`);
   }
-  audioSession.prepareForCapture();
-  // iOS PWA cold-start: the FIRST getUserMedia call returns iPhone Mic
-  // and BT inputs are hidden. Once-per-page-load throwaway prime cycle
-  // exercises the audio session so the real getUserMedia below inherits
-  // BT routing. No-op on non-iOS or if already primed. Cost: ~200 ms on
-  // the first capture of a fresh page load.
-  await audioSession.ensureIOSAudioSessionPrimed();
-  activeStream = await navigator.mediaDevices.getUserMedia({ audio: constraints });
-  activeOwner = owner;
+  // Reserve synchronously so concurrent callers hit the gate above
+  // before any MediaStream is created. Cleared in finally so a thrown
+  // error doesn't leave the slot stuck.
+  pendingOwner = owner;
+  try {
+    audioSession.prepareForCapture();
+    // iOS PWA cold-start: the FIRST getUserMedia call returns iPhone Mic
+    // and BT inputs are hidden. Once-per-page-load throwaway prime cycle
+    // exercises the audio session so the real getUserMedia below inherits
+    // BT routing. No-op on non-iOS or if already primed. Cost: ~200 ms on
+    // the first capture of a fresh page load.
+    await audioSession.ensureIOSAudioSessionPrimed();
+    activeStream = await navigator.mediaDevices.getUserMedia({ audio: constraints });
+    activeOwner = owner;
+  } finally {
+    pendingOwner = null;
+  }
   // Any active capture holds a wake-lock keyed on the owner tag. The user's
   // "Pocket Lock / Stay Awake" setting lives in a separate 'setting' key,
   // so capture-scoped holds layer on top without interfering: the OS

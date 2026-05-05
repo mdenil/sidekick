@@ -908,6 +908,9 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && /^\/api\/sidekick\/model-modalities(?:\?.*)?$/.test(req.url)) {
       return sidekick.handleSidekickModelModalities(req, res);
     }
+    if (req.method === 'GET' && /^\/api\/sidekick\/search(?:\?.*)?$/.test(req.url)) {
+      return sidekick.handleSidekickSearch(req, res);
+    }
     const sidekickSettingsUpdate = req.method === 'POST'
       && req.url.match(/^\/api\/sidekick\/settings\/([^/?]+)(?:\?.*)?$/);
     if (sidekickSettingsUpdate) {

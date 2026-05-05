@@ -1,4 +1,9 @@
-// Server-side cache + endpoint for OpenRouter input-modality lookups.
+// Server-side cache + endpoint for OpenRouter input-modality lookups
+// PLUS the hermes-side auxiliary-vision advertisement that lets the
+// PWA enable the attachment button when the primary is text-only but
+// hermes is configured to auto-route images through an auxiliary
+// vision model (`auxiliary.vision.model` in ~/.hermes/config.yaml,
+// surfaced via the plugin's /v1/sidekick/auxiliary-models endpoint).
 //
 // Why server-side: the previous design shipped an 800-LOC catalog
 // snapshot (`src/data/modelModalities.ts`) baked into the PWA bundle
@@ -16,6 +21,8 @@
 import http from 'node:http';
 
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/models';
+const UPSTREAM_URL = (process.env.UPSTREAM_URL || 'http://127.0.0.1:8645').replace(/\/+$/, '');
+const UPSTREAM_TOKEN = (process.env.UPSTREAM_TOKEN || process.env.SIDEKICK_PLATFORM_TOKEN || '').trim();
 
 // Refresh once a day. The catalog rarely shifts mid-day; a longer
 // stale window is fine — the cost of a stale "image-capable" claim
@@ -27,12 +34,53 @@ const REFRESH_MS = 24 * 60 * 60 * 1000;
 // site.
 type ModalityMap = Record<string, readonly string[]>;
 
-let cache: { fetchedAt: string; modalities: ModalityMap } = {
+let cache: {
+  fetchedAt: string;
+  modalities: ModalityMap;
+} = {
   fetchedAt: '',
   modalities: {},
 };
 let lastRefreshAt = 0;
 let refreshInFlight: Promise<void> | null = null;
+
+// Vision-fallback is fetched live (with a short memo) instead of folded
+// into the 24h openrouter cache. Why: the original combined-cache design
+// cached a transient null when hermes-gateway was still warming on
+// sidekick boot, then the 24h TTL locked the dead value in until the
+// next day. Localhost call is ~ms; 30s memo avoids hammering on rapid
+// modalities-endpoint hits while still recovering quickly from a
+// transient miss or a config edit.
+const VISION_MEMO_MS = 30 * 1000;
+let visionMemo: { value: string | null; at: number } | null = null;
+let visionInFlight: Promise<string | null> | null = null;
+
+async function fetchVisionFallbackModelLive(): Promise<string | null> {
+  if (!UPSTREAM_TOKEN) return null;
+  try {
+    const r = await fetch(`${UPSTREAM_URL}/v1/sidekick/auxiliary-models`, {
+      headers: { authorization: `Bearer ${UPSTREAM_TOKEN}` },
+    });
+    if (!r.ok) return null;
+    const j = await r.json() as { vision?: string | null };
+    return typeof j?.vision === 'string' && j.vision ? j.vision : null;
+  } catch {
+    return null;
+  }
+}
+
+async function getVisionFallbackModel(): Promise<string | null> {
+  if (visionMemo && Date.now() - visionMemo.at < VISION_MEMO_MS) {
+    return visionMemo.value;
+  }
+  if (visionInFlight) return visionInFlight;
+  visionInFlight = fetchVisionFallbackModelLive().finally(() => {
+    visionInFlight = null;
+  });
+  const value = await visionInFlight;
+  visionMemo = { value, at: Date.now() };
+  return value;
+}
 
 async function refresh(): Promise<void> {
   const res = await fetch(OPENROUTER_URL, {
@@ -89,14 +137,20 @@ export async function handleSidekickModelModalities(
   _req: http.IncomingMessage,
   res: http.ServerResponse,
 ): Promise<void> {
-  await ensureFresh();
+  const [, visionFallbackModel] = await Promise.all([
+    ensureFresh(),
+    getVisionFallbackModel(),
+  ]);
   res.statusCode = 200;
   res.setHeader('content-type', 'application/json');
-  // 1h browser-side cache (the PWA also does its own module-memory
-  // cache, but a refresh on hard-reload is cheap enough to allow).
-  res.setHeader('cache-control', 'private, max-age=3600');
+  // No browser-side cache — vision_fallback_model can change as soon as
+  // hermes-gateway reloads its config; a stale browser cache would make
+  // the PWA gate stale across deploys. Modalities map is module-memory
+  // cached on the PWA side (see ensureModalitiesFetched in main.ts).
+  res.setHeader('cache-control', 'no-store');
   res.end(JSON.stringify({
     fetched_at: cache.fetchedAt,
     modalities: cache.modalities,
+    vision_fallback_model: visionFallbackModel,
   }));
 }

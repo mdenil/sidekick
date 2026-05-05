@@ -36,29 +36,24 @@ export {
   handleSidekickSettingsUpdate,
 } from './settings.ts';
 export { handleSidekickCommands } from './commands.ts';
+export { handleSidekickSearch } from './search.ts';
 
 let upstream: UpstreamAgent | null = null;
 
 /** Wire env-derived config and construct the upstream singleton.
- *  Called once from server.ts at startup. If the token is empty, the
- *  /api/sidekick/* endpoints fail-fast with 503 — there's no point
- *  silently proxying nothing. */
+ *  Called once from server.ts at startup. The bearer token is OPTIONAL —
+ *  the bundled stub agent and any upstream that doesn't require auth
+ *  work without one. Hermes (and other auth-gated upstreams) will reject
+ *  unauthenticated calls and the user sees an upstream 401 in the UI. */
 export function init(opts: { token: string; url: string }): void {
-  if (!opts.token) {
-    console.warn(
-      '[sidekick] SIDEKICK_PLATFORM_TOKEN unset — /api/sidekick/* '
-      + 'endpoints will return 503 until configured.',
-    );
-  } else {
-    // Tolerate legacy SIDEKICK_PLATFORM_URL values that include the
-    // ws://…/ws form (the WS path is gone but old configs may still
-    // carry it). Normalize to the HTTP root.
-    const httpUrl = opts.url
-      .replace(/^ws:/, 'http:').replace(/^wss:/, 'https:')
-      .replace(/\/ws\/?$/, '');
-    upstream = new HTTPAgentUpstream({ url: httpUrl, token: opts.token });
-    console.log(`[sidekick] upstream ready (${httpUrl})`);
-  }
+  // Tolerate legacy SIDEKICK_PLATFORM_URL values that include the
+  // ws://…/ws form (the WS path is gone but old configs may still
+  // carry it). Normalize to the HTTP root.
+  const httpUrl = opts.url
+    .replace(/^ws:/, 'http:').replace(/^wss:/, 'https:')
+    .replace(/\/ws\/?$/, '');
+  upstream = new HTTPAgentUpstream({ url: httpUrl, token: opts.token });
+  console.log(`[sidekick] upstream ready (${httpUrl}${opts.token ? '' : ', no auth'})`);
   // Wire the stream fan-out so the /v1/events subscription is in place
   // BEFORE the first PWA tab attaches — we'd otherwise miss any
   // envelope that arrives during the startup window.

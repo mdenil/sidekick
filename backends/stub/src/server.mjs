@@ -112,6 +112,19 @@ export function createServer({ conversations, llm, bearerToken }) {
         if (!had) return json(res, 404, errorBody('invalid_request_error', 'conversation not found'));
         return json(res, 200, { ok: true });
       }
+      const renameMatch = url.pathname.match(/^\/v1\/conversations\/([^/]+)$/);
+      if (req.method === 'PATCH' && renameMatch) {
+        if (!checkAuth(req)) return json(res, 401, errorBody('authentication_error', 'invalid bearer token'));
+        const id = decodeURIComponent(renameMatch[1]);
+        const raw = await readBody(req);
+        let body;
+        try { body = JSON.parse(raw || '{}'); }
+        catch { return json(res, 400, errorBody('invalid_request_error', 'body is not valid JSON')); }
+        const title = typeof body?.title === 'string' ? body.title : '';
+        const ok = conversations.setTitle(id, title);
+        if (!ok) return json(res, 404, errorBody('invalid_request_error', 'conversation not found'));
+        return json(res, 200, { ok: true, title });
+      }
       // Out-of-turn SSE channel. Stub rarely emits but the contract
       // requires the endpoint so proxies can subscribe + reconnect.
       if (req.method === 'GET' && url.pathname === '/v1/events') {

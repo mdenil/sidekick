@@ -559,6 +559,25 @@ class SidekickAdapter(BasePlatformAdapter):
         self._app.router.add_get(
             "/v1/commands", self._handle_list_commands
         )
+        # Auxiliary-model advertisement. Hermes auto-routes media_urls
+        # through `_enrich_message_with_vision` → `vision_analyze_tool`
+        # → `auxiliary.vision` (see hermes-agent gateway/run.py:8275),
+        # so the primary model never has to support vision directly.
+        # Surface the configured auxiliary so the PWA can enable the
+        # attachment button when the primary is text-only — without
+        # this advertisement the button would stay disabled even though
+        # the upload would actually work end-to-end.
+        self._app.router.add_get(
+            "/v1/sidekick/auxiliary-models", self._handle_auxiliary_models
+        )
+        # Cross-conversation FTS5 search. Reads against the same
+        # messages_fts virtual table hermes_state.SessionDB maintains
+        # — the index is hermes-owned, we just SELECT against it.
+        # Returns the SearchResult shape (sessions+hits) the cmd+K
+        # palette already consumes.
+        self._app.router.add_get(
+            "/v1/conversations/search", self._handle_search_conversations
+        )
 
         self._runner = web.AppRunner(self._app)
         await self._runner.setup()
@@ -696,6 +715,15 @@ class SidekickAdapter(BasePlatformAdapter):
                 # Pi OS); single-user/single-host means stray PNGs are
                 # harmless until then.
 
+        # Pre-enrich images in parallel so a multi-page PDF (= N image
+        # paths after rasterization) doesn't pay N×serial-vision-call
+        # latency in the gateway's `_enrich_message_with_vision` loop.
+        # See _parallel_image_enrich docstring for the trade-off.
+        if media_urls:
+            text, media_urls, media_types, message_type = await self._parallel_image_enrich(
+                text, media_urls, media_types, message_type,
+            )
+
         event = MessageEvent(
             text=text or "",
             message_type=message_type,
@@ -705,6 +733,97 @@ class SidekickAdapter(BasePlatformAdapter):
             media_types=media_types,
         )
         await self.handle_message(event)
+
+    async def _parallel_image_enrich(
+        self,
+        text: str,
+        media_urls: List[str],
+        media_types: List[str],
+        message_type: "MessageType",
+    ) -> Tuple[str, List[str], List[str], "MessageType"]:
+        """Pre-enrich image attachments via auxiliary vision in parallel.
+
+        Why this lives in the sidekick plugin (and not in hermes core):
+        sidekick is the only platform that rasterizes PDFs to N image
+        pages — every other adapter (telegram, signal, slack, ...) sees
+        at most a handful of attached images per turn. The gateway's
+        ``_enrich_message_with_vision`` (gateway/run.py) iterates
+        ``image_paths`` SERIALLY by design — fine for 1-3 images, brutal
+        for a 21-page PDF (21 × ~5s = ~100s before the primary model
+        sees any text). Parallelizing in the plugin keeps the win where
+        the cost actually lands without forcing a hermes-core change.
+
+        Strategy: split image entries off ``media_urls``, run
+        ``vision_analyze_tool`` in parallel via ``asyncio.gather``, and
+        prepend the descriptions to ``text`` using the SAME format the
+        gateway's enrich loop produces — so agent behavior is identical
+        (the path-embedded follow-up hint lets the agent re-call
+        ``vision_analyze`` for a closer look at any specific page).
+
+        Non-image media (audio, video) is left in ``media_urls`` for the
+        gateway to handle through its own enrichers — those run once per
+        attachment and aren't a multi-page bottleneck.
+        """
+        from tools.vision_tools import vision_analyze_tool
+
+        image_indices = [
+            i for i, m in enumerate(media_types)
+            if m.startswith("image/") or message_type == MessageType.PHOTO
+        ]
+        if not image_indices:
+            return text, media_urls, media_types, message_type
+
+        image_paths = [media_urls[i] for i in image_indices]
+
+        analysis_prompt = (
+            "Describe everything visible in this image in thorough detail. "
+            "Include any text, code, data, objects, people, layout, colors, "
+            "and any other notable visual information."
+        )
+
+        async def _analyze_one(path: str) -> str:
+            try:
+                result_json = await vision_analyze_tool(
+                    image_url=path,
+                    user_prompt=analysis_prompt,
+                )
+                result = json.loads(result_json)
+                if result.get("success"):
+                    description = result.get("analysis", "")
+                    return (
+                        f"[The user sent an image~ Here's what I can see:\n{description}]\n"
+                        f"[If you need a closer look, use vision_analyze with "
+                        f"image_url: {path} ~]"
+                    )
+                return (
+                    "[The user sent an image but I couldn't quite see it "
+                    "this time (>_<) You can try looking at it yourself "
+                    f"with vision_analyze using image_url: {path}]"
+                )
+            except Exception as e:
+                logger.error("[sidekick] parallel vision enrich error: %s", e)
+                return (
+                    "[The user sent an image but something went wrong when I "
+                    "tried to look at it~ You can try examining it yourself "
+                    f"with vision_analyze using image_url: {path}]"
+                )
+
+        enriched_parts = await asyncio.gather(*(_analyze_one(p) for p in image_paths))
+
+        prefix = "\n\n".join(enriched_parts)
+        new_text = f"{prefix}\n\n{text}" if text else prefix
+
+        # Strip image entries from the media arrays so the gateway's
+        # serial enrich loop doesn't re-process them. Audio / video
+        # entries (if any) are preserved for the gateway to handle.
+        image_set = set(image_indices)
+        keep = [(media_urls[i], media_types[i]) for i in range(len(media_urls)) if i not in image_set]
+        if keep:
+            new_urls, new_types = map(list, zip(*keep))
+            new_kinds = [self._kind_for_mime(t) for t in new_types]
+        else:
+            new_urls, new_types, new_kinds = [], [], []
+        return new_text, new_urls, new_types, self._dominant_message_type(new_kinds)
 
     @staticmethod
     def _rasterize_pdf(path: Path) -> List[Path]:
@@ -894,19 +1013,25 @@ class SidekickAdapter(BasePlatformAdapter):
             kinds.append(self._kind_for_mime(mime))
         if not paths:
             return [], [], MessageType.TEXT
-        # Pick a dominant message_type. Sidekick almost always sends a
-        # single image; fall back to the first kind otherwise. Note:
-        # rasterized PDFs leave behind only "image" kinds, so they
-        # correctly resolve to PHOTO here.
-        dominant = MessageType.PHOTO
-        first = kinds[0] if kinds else "image"
+        return paths, mimes, self._dominant_message_type(kinds)
+
+    @staticmethod
+    def _dominant_message_type(kinds: List[str]) -> "MessageType":
+        """First-wins precedence over a kinds list ('image' | 'video' |
+        'audio' | 'document'). Empty list → TEXT. Used by both
+        _materialize_attachments (initial classification) and
+        _parallel_image_enrich (post-strip recompute) so the two paths
+        never drift on classification rules."""
+        if not kinds:
+            return MessageType.TEXT
+        first = kinds[0]
         if first == "video":
-            dominant = MessageType.VIDEO
-        elif first == "audio":
-            dominant = MessageType.AUDIO
-        elif first == "document":
-            dominant = MessageType.DOCUMENT
-        return paths, mimes, dominant
+            return MessageType.VIDEO
+        if first == "audio":
+            return MessageType.AUDIO
+        if first == "document":
+            return MessageType.DOCUMENT
+        return MessageType.PHOTO
 
     @staticmethod
     def _ext_for_mime(mime: str, file_name: Optional[str]) -> str:
@@ -2055,6 +2180,149 @@ class SidekickAdapter(BasePlatformAdapter):
                 status=500,
             )
         return web.json_response(updated)
+
+    async def _handle_auxiliary_models(self, request: "web.Request") -> "web.Response":
+        """GET /v1/sidekick/auxiliary-models — surface the auxiliary models
+        hermes is configured to route to. Today: just `vision`. The PWA's
+        attachment-button gate uses this to enable the + button when the
+        primary model is text-only but an auxiliary vision model is
+        configured (hermes auto-enriches media_urls via the auxiliary
+        vision pipeline; see hermes-agent gateway/run.py:_enrich_message_with_vision).
+        """
+        if not self._check_http_auth(request):
+            return web.Response(status=401, text="invalid token")
+        cfg = self._read_hermes_config()
+        aux = cfg.get("auxiliary") if isinstance(cfg.get("auxiliary"), dict) else {}
+        vision_cfg = aux.get("vision") if isinstance(aux.get("vision"), dict) else {}
+        vision_model = vision_cfg.get("model") if isinstance(vision_cfg.get("model"), str) else None
+        return web.json_response({"vision": vision_model or None})
+
+    async def _handle_search_conversations(self, request: "web.Request") -> "web.Response":
+        """GET /v1/conversations/search?q=&limit=20 — FTS5 cross-conversation search.
+
+        Reads against hermes' `messages_fts` index (maintained by
+        hermes_state.SessionDB) — we just SELECT, hermes owns the writes.
+        Filters to user/assistant roles by default (tool blobs would
+        dominate noise from JSON-heavy outputs). Returns the
+        `{sessions, hits}` shape `src/proxyClientTypes.ts:SearchResult`
+        defines, so the PWA cmd+K palette renders without translation.
+        """
+        if not self._check_http_auth(request):
+            return web.Response(status=401, text="invalid token")
+        q = (request.query.get("q") or "").strip()
+        try:
+            limit = max(1, min(50, int(request.query.get("limit") or "20")))
+        except (TypeError, ValueError):
+            limit = 20
+        if not q:
+            return web.json_response({"sessions": [], "hits": []})
+        if self._state_db_path is None or not self._state_db_path.exists():
+            return web.json_response({"sessions": [], "hits": []})
+        try:
+            sessions, hits = await asyncio.get_running_loop().run_in_executor(
+                None, self._search_conversations_sync, q, limit,
+            )
+        except Exception as e:
+            logger.exception("[sidekick] search failed")
+            return web.json_response(
+                {"sessions": [], "hits": [], "error": str(e)},
+                status=500,
+            )
+        return web.json_response({"sessions": sessions, "hits": hits})
+
+    def _search_conversations_sync(
+        self, q: str, limit: int,
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """Synchronous worker for `/v1/conversations/search`.
+
+        FTS5 query syntax: auto-prefix-wildcards on bare tokens (matches
+        hermes_cli/web_server.py:740's pattern — `nimb` → `nimb*` so
+        partial-word queries match). Quoted phrases and existing wildcards
+        pass through. Tokens with FTS5 operator chars are passed verbatim
+        for power users.
+        """
+        prefix_query = self._fts5_query_for(q)
+        sql = f"""
+            SELECT
+                m.id           AS message_id,
+                m.session_id   AS session_id,
+                m.role         AS role,
+                snippet(messages_fts, 0, '', '', '…', 32) AS snippet,
+                m.timestamp    AS timestamp,
+                s.user_id      AS chat_id,
+                s.source       AS source,
+                COALESCE(s.title, '') AS session_title
+            FROM messages_fts
+            JOIN messages m ON m.id = messages_fts.rowid
+            JOIN sessions s ON s.id = m.session_id
+            WHERE messages_fts MATCH ?
+              AND m.role IN ('user', 'assistant')
+              AND s.source IN ({",".join("?" for _ in GATEWAY_DRAWER_SOURCES)})
+            ORDER BY rank
+            LIMIT ?
+        """
+        params: List[Any] = [prefix_query, *GATEWAY_DRAWER_SOURCES, limit]
+        uri = f"file:{self._state_db_path}?mode=ro"
+        with contextlib.closing(
+            sqlite3.connect(uri, uri=True, timeout=2.0)
+        ) as conn:
+            try:
+                rows = conn.execute(sql, params).fetchall()
+            except sqlite3.OperationalError:
+                # FTS5 syntax error despite sanitization (e.g. user passed
+                # raw `OR` token without context). Empty rather than 500 —
+                # the cmd+K palette keeps showing the cached session-filter
+                # results above.
+                rows = []
+
+        # Group by (chat_id, source) for the sessions list. Best rank
+        # wins for ordering; preserve hit order in the flat list.
+        hits: List[Dict[str, Any]] = []
+        sessions_by_key: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        for (message_id, session_id, role, snippet, timestamp,
+             chat_id, source, session_title) in rows:
+            prefixed_id = _format_gateway_id(source, chat_id)
+            hits.append({
+                "session_id": prefixed_id,
+                "message_id": int(message_id),
+                "role": role or "",
+                "snippet": snippet or "",
+                "timestamp": float(timestamp or 0),
+                "session_title": session_title or "",
+                "session_source": source or "",
+            })
+            key = (chat_id, source)
+            if key not in sessions_by_key:
+                sessions_by_key[key] = {
+                    "id": prefixed_id,
+                    "source": source,
+                    "title": session_title or None,
+                    "snippet": None,
+                    "messageCount": None,
+                    "lastMessageAt": None,
+                }
+
+        return list(sessions_by_key.values()), hits
+
+    @staticmethod
+    def _fts5_query_for(q: str) -> str:
+        """Auto-add prefix wildcards on bare tokens so partial words match.
+
+        Mirrors hermes_cli/web_server.py:740. `"quoted phrases"` and
+        existing `wildcards*` pass through. Tokens containing FTS5
+        operator chars (parens, colons) pass through verbatim — power
+        users get raw FTS5 syntax; everyone else gets prefix matching.
+        """
+        import re
+        tokens = []
+        for token in re.findall(r'"[^"]*"|\S+', q.strip()):
+            if (token.startswith('"')
+                    or token.endswith("*")
+                    or any(c in token for c in '():')):
+                tokens.append(token)
+            else:
+                tokens.append(token + "*")
+        return " ".join(tokens) or q.strip()
 
     async def _handle_list_commands(self, request: "web.Request") -> "web.Response":
         """GET /v1/commands — slash-command catalog for the sidekick PWA.

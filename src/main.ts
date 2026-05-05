@@ -1459,6 +1459,63 @@ async function boot() {
     };
   }
 
+  // Drag-and-drop attach on the transcript area. Same gate as the +
+  // button: only accept when the model (or its vision fallback) can
+  // process attachments. attachments.add() validates each file's type
+  // + size internally and surfaces errors via the status line.
+  //
+  // Counter pattern for dragenter/dragleave: bare booleans flicker
+  // because dragleave fires every time the pointer crosses a child
+  // boundary. Tracking depth keeps the highlight steady until the
+  // pointer truly exits the transcript.
+  const transcriptDropZone = document.getElementById('transcript');
+  if (transcriptDropZone) {
+    let dragDepth = 0;
+    const hasFiles = (e: DragEvent): boolean => {
+      const types = e.dataTransfer?.types;
+      if (!types) return false;
+      // dataTransfer.types is a DOMStringList in older browsers; both
+      // forms support `.includes`-style checks via Array conversion.
+      for (const t of Array.from(types as any) as string[]) {
+        if (t === 'Files') return true;
+      }
+      return false;
+    };
+    transcriptDropZone.addEventListener('dragenter', (e: Event) => {
+      const dragEvent = e as DragEvent;
+      if (!hasFiles(dragEvent) || !canAttachFiles()) return;
+      dragEvent.preventDefault();
+      dragDepth += 1;
+      transcriptDropZone.classList.add('drag-over');
+    });
+    transcriptDropZone.addEventListener('dragover', (e: Event) => {
+      const dragEvent = e as DragEvent;
+      if (!hasFiles(dragEvent) || !canAttachFiles()) return;
+      // preventDefault is required for `drop` to fire on this element.
+      dragEvent.preventDefault();
+      if (dragEvent.dataTransfer) dragEvent.dataTransfer.dropEffect = 'copy';
+    });
+    transcriptDropZone.addEventListener('dragleave', (e: Event) => {
+      const dragEvent = e as DragEvent;
+      if (!hasFiles(dragEvent)) return;
+      dragDepth = Math.max(0, dragDepth - 1);
+      if (dragDepth === 0) transcriptDropZone.classList.remove('drag-over');
+    });
+    transcriptDropZone.addEventListener('drop', async (e: Event) => {
+      const dragEvent = e as DragEvent;
+      if (!hasFiles(dragEvent)) return;
+      dragEvent.preventDefault();
+      dragDepth = 0;
+      transcriptDropZone.classList.remove('drag-over');
+      if (!canAttachFiles()) {
+        status.setStatus('Drop ignored — selected model does not support attachments', 'err');
+        return;
+      }
+      const files = Array.from(dragEvent.dataTransfer?.files || []);
+      for (const f of files) await attachments.add(f);
+    });
+  }
+
   // Image-upload UI is gated on the selected model's vision capability.
   // The proxy serves an OpenRouter-derived modality map at
   // /api/sidekick/model-modalities (cached server-side, refreshed
@@ -1467,28 +1524,45 @@ async function boot() {
   // on hermes etc.) aren't in OpenRouter's catalog and fall through
   // to the regex below.
   let modelModalities: Record<string, readonly string[]> = {};
+  // Hermes auto-routes media_urls through `_enrich_message_with_vision`
+  // → `vision_analyze_tool` → `auxiliary.vision` (gateway/run.py:8275),
+  // so even text-only primaries can accept attachments end-to-end. The
+  // proxy advertises the configured fallback alongside the modality map;
+  // null when no auxiliary vision model is configured.
+  let visionFallbackModel: string | null = null;
   let modalitiesReady: Promise<void> | null = null;
+  // Single entry point: first call fetches; subsequent calls reuse the
+  // cached promise UNLESS visionFallbackModel is null — that's the
+  // boot-time-race recovery path (hermes was warming when the proxy
+  // first asked, so we got a null and want to retry as the user
+  // interacts). Proxy memos for 30s, so re-firing this on
+  // schema-loaded / visibilitychange is cheap.
   function ensureModalitiesFetched(): Promise<void> {
-    if (modalitiesReady) return modalitiesReady;
+    if (modalitiesReady && visionFallbackModel !== null) return modalitiesReady;
     modalitiesReady = (async () => {
       try {
-        const res = await fetch('/api/sidekick/model-modalities');
+        const res = await fetch('/api/sidekick/model-modalities', { cache: 'no-store' });
         if (!res.ok) return;
-        const body = await res.json() as { modalities?: Record<string, string[]> };
+        const body = await res.json() as {
+          modalities?: Record<string, string[]>;
+          vision_fallback_model?: string | null;
+        };
         if (body && typeof body.modalities === 'object') {
           modelModalities = body.modalities;
-          // Re-evaluate the gate now that we have data — the initial
-          // synchronous pass ran with an empty map.
-          updateAttachButtonsState();
         }
+        if (typeof body?.vision_fallback_model === 'string'
+            || body?.vision_fallback_model === null) {
+          visionFallbackModel = body.vision_fallback_model ?? null;
+        }
+        updateAttachButtonsState();
       } catch {
-        // Network blip or proxy unreachable. The regex fallback below
-        // is enough to keep the gate working for the common cases.
+        // Network blip or proxy unreachable. The regex fallback in
+        // primaryModelHasVision keeps the gate working in the meantime.
       }
     })();
     return modalitiesReady;
   }
-  function isVisionCapableModel(modelId: string): boolean {
+  function primaryModelHasVision(modelId: string): boolean {
     if (!modelId) return false;
     const cap = modelModalities[modelId];
     if (cap) return cap.includes('image');
@@ -1500,28 +1574,59 @@ async function boot() {
     return /^(gpt-(4o|4-turbo|4-vision|5)|claude-(3|sonnet|opus|haiku)|gemini-|gemma-(3|4)-|llava-|llama-3\.2-(11b|90b)-vision|pixtral-|qwen[23](\.\d+)?-?(vl-)?|qwen3-|internvl-|minimax-m[23]|mimo-)/i
       .test(id);
   }
+  function isVisionCapableModel(modelId: string): boolean {
+    return primaryModelHasVision(modelId) || !!visionFallbackModel;
+  }
+  // Single source of truth for "is the user allowed to attach files
+  // right now?" — read by both the +button gate and the transcript
+  // drag-drop handler. Future role checks / feature flags fold in here.
+  function canAttachFiles(): boolean {
+    const modelId = String(agentSettingsMod.getCurrentValue('model') ?? '');
+    return isVisionCapableModel(modelId);
+  }
   function updateAttachButtonsState(): void {
     const modelId = String(agentSettingsMod.getCurrentValue('model') ?? '');
-    const enabled = isVisionCapableModel(modelId);
+    const primaryVision = primaryModelHasVision(modelId);
+    const enabled = primaryVision || !!visionFallbackModel;
+    // Tooltip distinguishes the three states so the user knows which
+    // path their image is taking — direct multimodal vs. auxiliary
+    // enrichment vs. unsupported. Hermes routes via auxiliary when the
+    // primary doesn't support vision, see _enrich_message_with_vision.
+    let attachTitle: string;
+    let cameraTitle: string;
+    if (primaryVision) {
+      attachTitle = 'Attach image';
+      cameraTitle = 'Take photo';
+    } else if (visionFallbackModel) {
+      attachTitle = `Attach image — will route through ${visionFallbackModel}`;
+      cameraTitle = `Take photo — will route through ${visionFallbackModel}`;
+    } else {
+      attachTitle = `Image upload — selected model (${modelId || 'none'}) doesn't support vision and no auxiliary vision model is configured`;
+      cameraTitle = `Camera — selected model (${modelId || 'none'}) doesn't support vision and no auxiliary vision model is configured`;
+    }
     if (btnAttach) {
       btnAttach.disabled = !enabled;
-      btnAttach.title = enabled
-        ? 'Attach image'
-        : `Image upload — selected model (${modelId || 'none'}) doesn't support vision`;
+      btnAttach.title = attachTitle;
     }
     if (btnCamera) {
       btnCamera.disabled = !enabled;
-      btnCamera.title = enabled
-        ? 'Take photo'
-        : `Camera — selected model (${modelId || 'none'}) doesn't support vision`;
+      btnCamera.title = cameraTitle;
     }
   }
   // Run once whenever the schema loads + on every setting change. The
   // schema-loaded event fires from agentSettings.load after a successful
   // /v1/settings/schema response; the setting-changed event fires after
   // a successful POST /v1/settings/{id} round-trip.
-  window.addEventListener('agent-schema-loaded', updateAttachButtonsState);
+  window.addEventListener('agent-schema-loaded', () => {
+    ensureModalitiesFetched();
+    updateAttachButtonsState();
+  });
   window.addEventListener('agent-setting-changed', updateAttachButtonsState);
+  // Tab-visibility return is the other moment to retry — user may have
+  // edited hermes config while the PWA was backgrounded.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') ensureModalitiesFetched();
+  });
   // Initial pass — settings panel may already have populated by the
   // time main.ts wiring completes (race between async settings load
   // and this synchronous setup). No-op if schema hasn't loaded yet.
@@ -1569,11 +1674,6 @@ async function boot() {
         return;
       }
       diag('reset history: new-chat button');
-      // Capture the about-to-rotate-from session id so the drawer-cleanup
-      // pass below doesn't accidentally delete it (lastMessageAt is
-      // fresh, but messageCount may still be 0 in the cached list if the
-      // server's listSessions hasn't caught up to the just-sent turn).
-      const priorActive = backend.getCurrentSessionId?.() ?? null;
       // Intentionally do NOT stop streaming or cancel memo — new-chat is a
       // conversation rotation, not a full reset. Users expect to stay in
       // whatever audio mode they were in (streaming stays green, memo bar
@@ -1611,23 +1711,16 @@ async function boot() {
       // active highlight (new one isn't in response_store.db yet —
       // the optimistic placeholder row covers it).
       sessionDrawer.refresh();
-      // Background cleanup: drop any OTHER stale 0-msg chats in the
-      // drawer. These accumulated from old sidebar usage before the
-      // empty-chat no-op guard was added. Fire-and-forget so the
-      // rotation feels snappy; refresh again when the deletes settle
-      // so the drawer self-heals visibly.
-      const newActive = backend.getCurrentSessionId?.() ?? null;
-      const empties = sessionDrawer.getCachedSessions().filter(s =>
-        s.messageCount === 0 && s.id !== priorActive && s.id !== newActive,
-      );
-      if (empties.length > 0) {
-        diag(`new-chat: cleaning ${empties.length} stale empty chat(s) from drawer`);
-        Promise.all(
-          empties.map(s => (backend as any).deleteSession?.(s.id).catch((e: any) =>
-            diag(`new-chat cleanup: deleteSession(${s.id}) failed: ${e.message}`),
-          )),
-        ).then(() => sessionDrawer.scheduleRefresh());
-      }
+      // No auto-cleanup of empty drawer rows. Removed 2026-05-05 after
+      // confirmed data loss: at least 2 sidekick sessions
+      // (20260430_092241_ff0bada3 "Series A pitch deck init",
+      // 20260501_062917_89254e19 "YouTube investment memo") were wiped
+      // by this sweep when their messageCount transiently read 0 during
+      // hermes session-rotation/compression. Reaches into server state
+      // for "tidiness" — a backend-destructive optimization with no
+      // user signal. Hard rule (Jonathan): sidekick never auto-deletes
+      // server-side data. Stale empty rows live in the drawer until the
+      // user removes them via the row menu (which has a confirm dialog).
       // On mobile, collapse the sidebar so the user sees the fresh chat —
       // otherwise the expanded drawer hides the transition and the action
       // feels like it didn't land. Desktop keeps the drawer open (session
@@ -2382,12 +2475,29 @@ async function boot() {
    *  only when the user finishes speaking. Optimized for fidelity over
    *  latency; ideal when reply latency is dominated by the LLM
    *  round-trip. */
+  // Re-entrancy guard: rapid btn-call taps during the cold-start audio-
+  // session prime (~1.5s) used to spawn parallel startListen chains, each
+  // creating its own MediaStream — only the last was tracked. Field
+  // repro 2026-05-05: 3 taps → 3 "capture: acquired by listen" entries +
+  // visible duplicate recorder bars, mic held by extras after end. The
+  // capture.ts pendingOwner reservation now blocks the dupe streams
+  // defensively; this guard prevents the racing chains from being kicked
+  // off in the first place. Symmetric with controls.ts's btn-call disable
+  // for WebRTC's requesting-mic/connecting states (turn-based listen
+  // doesn't go through that state machine, hence this layer).
+  let callOpening = false;
   async function startCallMode(): Promise<void> {
-    const s = settings.get();
-    if ((s as any).realtime) {
-      await startCallStream();
-    } else {
-      await startListen();
+    if (callOpening) return;
+    callOpening = true;
+    try {
+      const s = settings.get();
+      if ((s as any).realtime) {
+        await startCallStream();
+      } else {
+        await startListen();
+      }
+    } finally {
+      callOpening = false;
     }
   }
 

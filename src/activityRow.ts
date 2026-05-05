@@ -91,7 +91,10 @@ function isViewedChat(chatId: string): boolean {
 
 const ICON_SPINNER = `<svg class="ar-icon ar-icon-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-6.2-8.55"/></svg>`;
 const ICON_CHECK = `<svg class="ar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 12 10 18 20 6"/></svg>`;
-const ICON_TOOL = `<svg class="ar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.7 6.3a4 4 0 0 1 5 5l-9 9-5 1 1-5z"/></svg>`;
+// Disclosure chevron — rotates 0°→90° via CSS when the parent
+// `<details>` is `[open]`. Was a pencil icon (read as "edit"); the
+// chevron is the universal "click to expand" vocabulary.
+const ICON_TOOL = `<svg class="ar-icon ar-icon-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 6 15 12 9 18"/></svg>`;
 
 function getOrCreateRow(chatId: string): ActivityRowState | null {
   // Drop events for non-viewed chats — the transcript only shows the

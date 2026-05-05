@@ -28,6 +28,8 @@ export class Conversations {
     this.filePath = filePath;
     /** @type {Map<string, Message[]>} */
     this.byId = new Map();
+    /** @type {Map<string, string>} */
+    this.titles = new Map();
     this._dirty = false;
     this._flushTimer = null;
   }
@@ -37,11 +39,16 @@ export class Conversations {
       const raw = await readFile(this.filePath, 'utf-8');
       const obj = JSON.parse(raw);
       for (const [k, v] of Object.entries(obj)) {
+        if (k === '__titles__' && v && typeof v === 'object' && !Array.isArray(v)) {
+          for (const [id, t] of Object.entries(v)) {
+            if (typeof t === 'string') this.titles.set(id, t);
+          }
+          continue;
+        }
         if (Array.isArray(v)) this.byId.set(k, v);
       }
     } catch (e) {
       if (e && /** @type {any} */ (e).code !== 'ENOENT') throw e;
-      // No file yet — fresh start.
     }
   }
 
@@ -74,7 +81,7 @@ export class Conversations {
         object: 'conversation',
         created_at: Math.floor(created),
         metadata: {
-          title: '',
+          title: this.titles.get(id) ?? '',
           message_count: msgs.length,
           last_active_at: Math.floor(lastActive),
           first_user_message: firstUser?.content?.slice(0, 80) ?? null,
@@ -122,8 +129,23 @@ export class Conversations {
    */
   delete(id) {
     const had = this.byId.delete(id);
+    this.titles.delete(id);
     if (had) this._scheduleFlush();
     return had;
+  }
+
+  /**
+   * Set or clear the user-facing title. Returns false when the
+   * conversation doesn't exist.
+   * @param {string} id
+   * @param {string} title  empty string clears.
+   */
+  setTitle(id, title) {
+    if (!this.byId.has(id)) return false;
+    if (title) this.titles.set(id, title);
+    else this.titles.delete(id);
+    this._scheduleFlush();
+    return true;
   }
 
   /**
@@ -154,9 +176,12 @@ export class Conversations {
     if (!this._dirty) return;
     this._dirty = false;
     await mkdir(dirname(this.filePath), { recursive: true });
-    /** @type {Record<string, Message[]>} */
+    /** @type {Record<string, any>} */
     const obj = {};
     for (const [k, v] of this.byId) obj[k] = v;
+    if (this.titles.size > 0) {
+      obj.__titles__ = Object.fromEntries(this.titles);
+    }
     const tmp = `${this.filePath}.tmp`;
     await writeFile(tmp, JSON.stringify(obj, null, 2), 'utf-8');
     await rename(tmp, this.filePath);
