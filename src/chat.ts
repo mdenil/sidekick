@@ -148,8 +148,21 @@ export function forceScrollToBottom(): void {
   // (Jonathan): switching sessions occasionally left the chat scrolled
   // to top with content below the viewport; manual scroll revealed the
   // bubbles were rendered correctly, just not scrolled to.
+  //
+  // Scroll-bug instrumentation (Jonathan, 2026-05-05): iOS PWA repro
+  // where clicking the jump-to-bottom arrow shows black, and the next
+  // touch snaps back. Logging scrollTop / scrollHeight / clientHeight
+  // before + after each step so a paste of these lines from the on-page
+  // log reveals (a) is scrollTop matching the target, (b) is scrollHeight
+  // stable across the rAF window. Remove after the diagnosis is done.
+  const before = `top=${transcriptEl.scrollTop} h=${transcriptEl.scrollHeight} ch=${transcriptEl.clientHeight}`;
   doScroll();
-  requestAnimationFrame(doScroll);
+  const afterImmediate = `top=${transcriptEl.scrollTop} h=${transcriptEl.scrollHeight}`;
+  requestAnimationFrame(() => {
+    doScroll();
+    const afterRaf = transcriptEl ? `top=${transcriptEl.scrollTop} h=${transcriptEl.scrollHeight}` : '<gone>';
+    log(`[scroll-debug] before=(${before}) afterImmediate=(${afterImmediate}) afterRaf=(${afterRaf})`);
+  });
   pinnedToBottom = true;
   missedWhileScrolled = 0;
   updateButton();

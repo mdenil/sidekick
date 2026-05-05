@@ -235,6 +235,26 @@ export async function start(o: ListenOpts): Promise<boolean> {
     teardown();
     return false;
   }
+  // Audio-session priming diag (Jonathan, 2026-05-05): cold-start
+  // turnbased on iOS BT shows "capture acquired" but no audio frames
+  // ever reach the analyser — running dictate first primes iOS
+  // RTCAudioSession and the next listen call works. Logging the track's
+  // settings so a "no audio" repro can confirm whether the track itself
+  // is dead vs receiving zero-amplitude frames. Remove after diagnosis.
+  try {
+    const t = mediaStream?.getAudioTracks?.()[0];
+    if (t) {
+      const s = t.getSettings?.() || {};
+      log(
+        `[audio-session-debug] listen track: enabled=${t.enabled} muted=${t.muted} ` +
+        `readyState=${t.readyState} label="${t.label || '?'}" ` +
+        `deviceId=${(s as any).deviceId || '?'} groupId=${(s as any).groupId || '?'} ` +
+        `sampleRate=${(s as any).sampleRate || '?'} channelCount=${(s as any).channelCount || '?'}`,
+      );
+    } else {
+      log('[audio-session-debug] listen: no audio track on stream!');
+    }
+  } catch (e: any) { log('[audio-session-debug] track inspect threw:', e?.message); }
   analyser = audioPlatform.getMicAnalyser(mediaStream, 256);
   if (!analyser) {
     log('listen: analyser unavailable — silence detection disabled');
