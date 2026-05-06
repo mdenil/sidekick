@@ -177,6 +177,10 @@ const DEFAULTS = {
   navNext: 'next chat',
   navPause: 'pause chat',
   autoAdvanceOnNew: false,
+  // Legacy RMS-amplitude threshold. No longer used by the barge VAD
+  // (slider now writes bargeVadThreshold below). Survives only as the
+  // turnbased mode's silence-end RMS gate falls back through
+  // voiceTuning.getBargeThreshold(); will retire alongside turnbased.
   bargeThreshold: 0.10,
   // Silero VAD's positiveSpeechThreshold (0..1). Lower = more
   // sensitive. Library default 0.3, our default 0.5 — slightly stricter
@@ -245,20 +249,10 @@ const PER_DEVICE_KEYS = new Set<string>(['micDevice', 'ttsVoiceLocal', 'listenSt
 
 let current = { ...DEFAULTS };
 
-// Barge-in sensitivity ↔ threshold mapping. The user-facing slider is a
-// "sensitivity %" (higher = more sensitive, matches the label). Under the
-// hood we store a peak threshold (0..1; higher = requires louder sound).
-// Linear mapping: 100% ↔ BARGE_MIN_THRESHOLD, 0% ↔ BARGE_MAX_THRESHOLD.
-//
-// v0.396: per-device slider scales via voiceTuning.getSliderScale().
-// iPhone speech peaks are roughly 1/3 of Mac no-AEC peaks (iOS Safari
-// built-in voice isolation can't be disabled), so a uniform Mac scale
-// compressed iPhone's useful range to the top 20-30% of the slider.
-// Per-device scale gives each platform a useful 0-100% range:
-//   ios:     0.010 (100%) ↔ 0.025 (0%)
-//   mac/etc: 0.012 (100%) ↔ 0.050 (0%)
-// Slider semantics stay constant ("60% = moderately sensitive") but
-// the underlying threshold differs per device.
+// Barge sensitivity slider ↔ Silero positiveSpeechThreshold mapping.
+// User-facing label is "sensitivity %" (higher = more sensitive,
+// matches intuition); under the hood the value passed to Silero is
+// inverse — lower threshold = fires more easily.
 /** Slider sensitivity (0..100%) → Silero `positiveSpeechThreshold` (0..1).
  *  Inverse mapping: higher sensitivity → lower threshold (fires easier).
  *

@@ -1,27 +1,21 @@
 /**
- * @fileoverview Device-class voice tuning defaults — initial values for
- * the BargeWindow threshold, keyed off coarse UA-derived device class.
+ * @fileoverview Device-class RMS-amplitude thresholds for the
+ * turnbased mode's silence-end detector (commits the recording when
+ * the mic peak drops below this for the configured silenceSec).
  *
- * Why per-device defaults: the analyser peaks the BargeWindow consumes
- * are floating-point [0,1] amplitudes that vary substantially with the
- * mic + capture path:
- *   - iOS (BT mic, ambient pickup is loud): floor ~0.12, speech ~0.25
- *   - macOS / Linux / Windows (clean USB / built-in): floor ~0.05, speech ~0.20
- *   - Android (moderate, varies by handset): floor ~0.08, speech ~0.20
+ * NOTE — was previously the slider's source of truth for barge
+ * sensitivity (back when BargeDetector had an RMS gate). The barge
+ * VAD slider is now Silero-domain via settings.bargeVadThreshold —
+ * this module's only remaining consumer is `turnbased.ts`'s silence-
+ * end RMS gate, which will retire when turnbased mode goes away.
  *
- * One global default would either fire on iOS BT ambient (too low) or
- * miss soft speech on a desktop USB mic (too high). The table here is
- * a starting point — Jonathan will tune the values from real devices,
- * and a future commit will add an IDB-backed local override store.
- *
- * The settings.bargeThreshold value still exists (slider in the
- * settings panel) and overrides the device default when explicitly
- * set. This module's getBargeThreshold() returns the effective value:
- * device default unless the user has nudged the slider away from the
- * legacy default of 0.10.
+ * Per-device because mic + capture paths produce substantially
+ * different baseline peaks:
+ *   - iOS Safari WebRTC: built-in voice isolation pulls peaks to
+ *     ~0.014-0.020 for normal speech (3x lower than Mac no-AEC)
+ *   - macOS / Linux / Windows (clean USB / built-in): speech ~0.05-0.08
+ *   - Android: moderate, varies by handset
  */
-
-import * as settings from './settings.ts';
 
 export type DeviceClass = 'ios' | 'android' | 'mac' | 'linux' | 'windows';
 
@@ -81,58 +75,9 @@ export const DEVICE_DEFAULTS: Record<DeviceClass, { bargeThreshold: number }> = 
   windows: { bargeThreshold: 0.025 },
 };
 
-/** Slider scale per device class — slider position 0-100% maps to
- *  threshold [BARGE_MAX, BARGE_MIN] for that device. Per-device
- *  because iPhone speech peaks are roughly 1/3 of Mac no-AEC peaks
- *  (iOS Safari built-in voice isolation can't be disabled). With a
- *  uniform Mac-tuned scale, the iPhone slider's useful range was
- *  compressed into the top 20-30% — most positions mapped to
- *  thresholds the user couldn't reach (v0.396 field test: 60%
- *  slider = threshold 0.027, normal speech peaked at 0.008-0.015).
- *  Per-device scales give each platform a slider where 50% is
- *  reliably "moderately sensitive." */
-export const SLIDER_SCALE: Record<DeviceClass, { min: number; max: number }> = {
-  // v0.397 iOS lowered to (0.009, 0.018) after field test showed even
-  // 80% slider (threshold 0.013) required Jonathan to say "okay"
-  // multiple times for fire — iOS Safari's voice-isolation keeps
-  // detectable peaks below 0.020 for normal-volume speech. New scale:
-  //   0% slider   → 0.018 (loud only)
-  //   50% slider  → 0.0135 (catches normal voice — most positions usable)
-  //   100% slider → 0.009 (just above quantization floor 0.008; whisper)
-  ios:     { min: 0.009, max: 0.018 },
-  android: { min: 0.010, max: 0.030 },
-  mac:     { min: 0.012, max: 0.050 },
-  linux:   { min: 0.012, max: 0.050 },
-  windows: { min: 0.012, max: 0.050 },
-};
-
-export function getSliderScale(): { min: number; max: number } {
-  return SLIDER_SCALE[detectDeviceClass()];
-}
-
-/** Sentinel for "settings.bargeThreshold has not been moved from the
- *  legacy global default." When the user nudges the slider, settings.ts
- *  writes a different value and getBargeThreshold returns that.
- *  Otherwise the device default wins. */
-const LEGACY_GLOBAL_DEFAULT = 0.10;
-
-/** Return the effective BargeWindow threshold for the current device.
- *
- *  Resolution order:
- *    1. If the caller's settings.get().bargeThreshold differs from the
- *       legacy global default 0.10, the user has explicitly set a
- *       value — return that.
- *    2. Else look up DEVICE_DEFAULTS by detectDeviceClass() and return
- *       its bargeThreshold.
- *
- *  Read-through (no caching): the device class can't change at runtime
- *  but settings.bargeThreshold can flip live, so we re-resolve on
- *  every call. Cheap — UA sniff + dictionary lookup. */
+/** Read-through accessor for the device-default RMS threshold used by
+ *  turnbased's silence-end detector. No caching: device class can't
+ *  change at runtime but the function is cheap (UA sniff + dict). */
 export function getBargeThreshold(): number {
-  const userVal = Number(settings.get().bargeThreshold);
-  if (Number.isFinite(userVal) && userVal !== LEGACY_GLOBAL_DEFAULT) {
-    return userVal;
-  }
-  const cls = detectDeviceClass();
-  return DEVICE_DEFAULTS[cls].bargeThreshold;
+  return DEVICE_DEFAULTS[detectDeviceClass()].bargeThreshold;
 }

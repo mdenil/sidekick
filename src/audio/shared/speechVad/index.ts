@@ -3,21 +3,11 @@
  * MicVAD into the surface the barge detectors need: start(stream), stop(),
  * onSpeechStart/End subscriptions, isSpeechActive(), isSupported().
  *
- * Why: the existing barge detectors use naked RMS peak detection over an
- * AnalyserNode. Single feature → can't tell speech from a hand-clap or a
- * gear-shift clunk. Silero is a tiny (1.8 MB) ONNX model trained as a
- * binary speech/non-speech classifier; it gives the barge loops a real
- * "is this speech?" signal layered on top of the existing RMS gate.
- *
- * Integration shape:
- *   - RMS still gates: the user's sensitivity slider (voiceTuning's
- *     SLIDER_SCALE) keeps controlling threshold. RMS-above-threshold
- *     remains a precondition for fire.
- *   - VAD discriminates: the new fire condition is RMS_HIT && VAD_SAYS_SPEECH.
- *     Both must be true. Mechanical transients (loud, brief, no pitch) clear
- *     the RMS gate but fail the VAD check → no false barge.
- *   - VAD is OPTIONAL: if WebAssembly fails to load (Firefox/old iOS/etc.),
- *     callers fall back to RMS-only — same behavior as before this lands.
+ * Silero is a tiny (1.8 MB) ONNX model trained as a binary speech /
+ * non-speech classifier. It's the SOLE discriminator for barge fires
+ * (RMS gate retired 2026-05-04). Sensitivity is controlled via
+ * `positiveSpeechThreshold` (0..1) which the user's slider drives via
+ * settings.bargeVadThreshold.
  *
  * Implementation notes:
  *   - The vad-web library is loaded LAZILY via dynamic import of the
