@@ -330,6 +330,18 @@ export async function open(
   //   context — no autoplay-policy issue. (An older iteration of this
   //   file ran into ctx-suspended at ontrack time and used <audio>
   //   exclusively as a workaround; the priming step fixes the timing.)
+  // Web Audio routing is iOS-only — see comment block above. On Mac
+  // Chrome we measured (2026-05-06) that connecting the WebRTC remote
+  // stream to audioContext.destination silenced the user's speakers
+  // entirely (Chrome's AEC consumed the destination as its reference
+  // channel without also routing to system audio). iOS PWA standalone
+  // is the platform that NEEDS the Web Audio path for AEC to engage;
+  // every other platform's <audio srcObject> already gets working AEC
+  // via the browser's WebRTC stack.
+  const ua = (typeof navigator !== 'undefined' && navigator.userAgent) || '';
+  const isIOS = /iPad|iPhone|iPod/.test(ua) ||
+    (/Macintosh/.test(ua) && (navigator as any).maxTouchPoints > 1);
+
   let remoteAudio: HTMLAudioElement | null = null;
   let remoteSourceNode: MediaStreamAudioSourceNode | null = null;
   pc.addEventListener('track', (ev: RTCTrackEvent) => {
@@ -339,24 +351,26 @@ export async function open(
       ? ev.streams[0]
       : (() => { const ms = new MediaStream(); ms.addTrack(ev.track); return ms; })();
 
-    // Try Web Audio destination first.
+    // Try Web Audio destination ONLY on iOS — see Mac regression note above.
     let webAudioOk = false;
-    try {
-      const ctx = audioPlatform.getSharedAudioCtx();
-      if (ctx && ctx.state === 'running') {
-        // Detach any prior source from a previous track flip.
-        try { remoteSourceNode?.disconnect(); } catch { /* ignore */ }
-        remoteSourceNode = ctx.createMediaStreamSource(stream);
-        remoteSourceNode.connect(ctx.destination);
-        if (active) active.remoteSourceNode = remoteSourceNode;
-        webAudioOk = true;
-        log('[webrtc] remote audio routed via Web Audio destination (AEC reference path)');
-      } else {
-        diag('[webrtc] shared audioCtx unavailable or not running, falling back to <audio>',
-          'state=' + (ctx?.state ?? 'null'));
+    if (isIOS) {
+      try {
+        const ctx = audioPlatform.getSharedAudioCtx();
+        if (ctx && ctx.state === 'running') {
+          // Detach any prior source from a previous track flip.
+          try { remoteSourceNode?.disconnect(); } catch { /* ignore */ }
+          remoteSourceNode = ctx.createMediaStreamSource(stream);
+          remoteSourceNode.connect(ctx.destination);
+          if (active) active.remoteSourceNode = remoteSourceNode;
+          webAudioOk = true;
+          log('[webrtc] remote audio routed via Web Audio destination (iOS AEC reference path)');
+        } else {
+          diag('[webrtc] shared audioCtx unavailable or not running, falling back to <audio>',
+            'state=' + (ctx?.state ?? 'null'));
+        }
+      } catch (e: any) {
+        diag('[webrtc] Web Audio routing failed, falling back to <audio>:', e?.message);
       }
-    } catch (e: any) {
-      diag('[webrtc] Web Audio routing failed, falling back to <audio>:', e?.message);
     }
 
     if (!webAudioOk) {
