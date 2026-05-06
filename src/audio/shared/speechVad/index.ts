@@ -57,6 +57,11 @@ export type SpeechVADOptions = {
   /** Minimum speech duration to fire onSpeechStart. Default 150 ms via
    *  minSpeechMs. Filters single-frame model jitter. */
   minSpeechMs?: number;
+  /** Optional gate for the [audio-state] vad-frame instrumentation
+   *  log. Returns true when frame logs should fire (e.g. only while
+   *  agent TTS is playing — that's when we care about residual). When
+   *  not provided, frames log unconditionally at the throttled cadence. */
+  shouldLogFrames?: () => boolean;
 };
 
 type Unsubscribe = () => void;
@@ -321,15 +326,17 @@ export async function start(
       },
       // [audio-state] per-frame instrumentation. Logs the audio energy
       // Silero is reading (peak + RMS of the 32ms frame's samples) and
-      // the model's speech-probability output. Throttled to one line
-      // every ~500ms (every 16th frame at 32ms/frame). Tells us:
-      //   - if peak is loud during agent TTS → AEC isn't suppressing
-      //   - if peak is quiet but p_speech is high → AEC works,
-      //     Silero is over-eager
+      // the model's speech-probability output. Throttled + gated:
+      //   - cadence: every 4th frame (~125 ms) — fine enough to see
+      //     post-AEC residual bursts that drive Silero misfire
+      //   - gate: only while shouldLogFrames() returns true (typically
+      //     bound to "is agent TTS currently playing" — that's when
+      //     we care; we don't need 8 logs/sec during silence/setup)
       // Remove once the iOS self-barge is closed out.
       onFrameProcessed: (probabilities: any, frame: Float32Array) => {
         frameCounter++;
-        if (frameCounter % 16 !== 0) return;
+        if (frameCounter % 4 !== 0) return;
+        if (opts.shouldLogFrames && !opts.shouldLogFrames()) return;
         let peak = 0;
         let sumSq = 0;
         for (let i = 0; i < frame.length; i++) {

@@ -178,10 +178,14 @@ export class BargeDetector {
     log('[audio-state] BargeDetector → MicVAD',
       `positiveSpeechThreshold=${this.opts.positiveSpeechThreshold}`,
       `minSpeechMs=${this.opts.minSpeechMs}`);
-    // Refcount-inc the shared VAD in the background.
+    // Refcount-inc the shared VAD in the background. Pass our
+    // isPlayingCb as the frame-log gate so the [audio-state] vad-frame
+    // instrumentation only fires while agent TTS is playing — that's
+    // when residual matters; pre-call silence isn't useful to log.
     speechVad.start(opts.micStream, {
       positiveSpeechThreshold: this.opts.positiveSpeechThreshold,
       minSpeechMs: this.opts.minSpeechMs,
+      shouldLogFrames: this.opts.isPlayingCb,
     }).then(ok => {
       log(ok ? '[barge-detector] VAD warm' : '[barge-detector] VAD failed to start — barge will not fire');
     }).catch((e: any) => {
