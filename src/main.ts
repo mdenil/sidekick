@@ -17,6 +17,7 @@ import * as backend from './backend.ts';
 import * as conversations from './conversations.ts';
 import * as sessionDrawer from './sessionDrawer.ts';
 import * as cmdkPalette from './cmdkPalette.ts';
+import { attachSliderTouchAll } from './sliderTouch.ts';
 import * as sidebarResize from './sidebarResize.ts';
 import * as multiSelect from './multiSelect.ts';
 import * as agentSettingsMod from './agentSettings.ts';
@@ -457,6 +458,16 @@ async function boot() {
   // the filter input.
   const sbSearch = document.getElementById('sb-search');
   if (sbSearch) sbSearch.onclick = (e) => { e.preventDefault(); cmdkPalette.open(); };
+
+  // Range-slider drag-from-track behavior (iOS thumb hit-test fix).
+  // Wires every <input type=range> currently in the DOM. Settings panel
+  // sliders are static; the call-mode menu's barge slider is also static
+  // by build time. Re-call after dynamic DOM additions if any new
+  // sliders show up later.
+  attachSliderTouchAll(document);
+  // Re-wire after agent-declared rows render (model picker, future
+  // schema-driven sliders). attachSliderTouchAll is idempotent.
+  window.addEventListener('agent-schema-loaded', () => attachSliderTouchAll(document));
 
   // Info popup — triggered from the sidebar-bottom button.
   const btnInfo = document.getElementById('sb-info');

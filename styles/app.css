@@ -1117,6 +1117,41 @@
     font-family: var(--font-mono); font-size: 11px; color: var(--muted);
   }
   #settings input[type=range] { flex: 1; min-width: 140px; accent-color: var(--primary); }
+  /* Range-slider thumb sized for finger hit-test on iOS. Native thumb is
+   * ~16px which is too small to grab without precise tap; users end up
+   * tapping the bar (jump-to-value) instead of grabbing+dragging. Bigger
+   * thumb here and on the call-mode barge slider. CSS in two vendor blocks
+   * because Safari and Firefox don't share a selector.
+   *
+   * Pairs with the pointer-capture wiring in src/sliderTouch.ts which
+   * lets a drag started anywhere on the track follow the finger (native
+   * <input type=range> on iOS only does this if touchstart lands ON the
+   * thumb itself). */
+  #settings input[type=range]::-webkit-slider-thumb,
+  .mic-mode-menu .mic-barge-row input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 24px; height: 24px;
+    border-radius: 50%;
+    background: var(--primary);
+    border: 2px solid var(--surface);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+    cursor: grab;
+  }
+  #settings input[type=range]::-webkit-slider-thumb:active,
+  .mic-mode-menu .mic-barge-row input[type="range"]::-webkit-slider-thumb:active {
+    cursor: grabbing;
+    transform: scale(1.1);
+  }
+  #settings input[type=range]::-moz-range-thumb,
+  .mic-mode-menu .mic-barge-row input[type="range"]::-moz-range-thumb {
+    width: 24px; height: 24px;
+    border-radius: 50%;
+    background: var(--primary);
+    border: 2px solid var(--surface);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+    cursor: grab;
+  }
   #settings .val { color: var(--muted); font-family: var(--font-mono); font-size: 12px; min-width: 48px; }
   /* iOS-style toggle pill. The native checkbox is still there (so JS +
      keyboard + screen-reader all keep working) — we just repaint it
