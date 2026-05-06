@@ -22,8 +22,8 @@ Sidekick has two voice modes; barge works the same way conceptually but routes t
 
 | Mode | When active | TTS playback | Barge halts via |
 |---|---|---|---|
-| **Turn-based** ("Listen") | Tap mic, record-then-send | Local `<audio>` element | `cancelReplyTts()` + caller's `onBarge` re-arms the listener |
-| **Realtime** (full-duplex WebRTC) | Tap call button | Remote audio track from bridge | Client sends `{type:'barge'}` envelope upstream over the data channel; bridge calls `tts_track.halt()` |
+| **Turn-based** | Call button with Realtime toggle OFF | Local `<audio>` element after each agent reply | `cancelReplyTts()` + caller's `onBarge` re-arms the listener |
+| **Realtime** | Call button with Realtime toggle ON | Remote audio track over the WebRTC peer | Client sends `{type:'barge'}` over the data channel; bridge calls `tts_track.halt()` |
 
 Both modes use the **same** detector (`src/audio/shared/bargeDetector.ts`) — that's the point of the unified module.
 
@@ -45,17 +45,9 @@ The detector reads from the live mic stream every 50 ms and asks one question:
 
 > Is the user speaking *right now*?
 
-Answered by **Silero VAD** (a small ONNX neural net wrapped via [@ricky0123/vad-web](https://github.com/ricky0123/vad-web)). Silero outputs per-frame "speech probability" and emits an `onSpeechStart` callback when probability exceeds a threshold for a minimum duration.
+Answered by **Silero VAD** (a small ONNX neural net wrapped via [@ricky0123/vad-web](https://github.com/ricky0123/vad-web)). Silero outputs per-frame "speech probability" and emits an `onSpeechStart` callback when probability exceeds a threshold for a minimum duration. The detector fires when Silero says "speech started" AND every gate above passes.
 
-There is **no RMS / loudness gate** — Silero is the sole discriminator. RMS was tried and removed (2026-05-04): in headphone scenarios where barge actually needs to work, RMS added nothing; in speaker-bleed scenarios neither RMS nor VAD save you — only AEC.
-
-The detector fires when Silero says "speech started" AND every gate above passes.
-
-### Why Silero (not Web Speech, not RMS)
-
-- **Web Speech API** would work but it's a wakeword/transcription tool; running it just to detect speech presence is overkill, requires network in some browsers, and adds 100-300 ms of latency.
-- **RMS thresholds** trigger on any loud transient — clapping, door-slam, BT-headset wind. Silero's neural model discriminates speech-shaped audio from non-speech-shaped audio.
-- **Bridge-side VAD** (Python, server-side) was the original design. Retired in favor of client-side detection: lower latency (no round trip), unified tuning across modes, single source of truth. The `client_owns_barge: true` flag in the WebRTC offer disables bridge-side VAD per-peer.
+Detection runs **client-side** in both modes. Bridge-side VAD is bypassed via the `client_owns_barge: true` flag in the WebRTC offer.
 
 ## Knobs
 
@@ -124,6 +116,7 @@ This table is updated as we ship fixes. The dates are when each value last chang
 
 ## Known issues being investigated
 
-- **Self-barge mid-call on mobile, regardless of slider position** (Jonathan, 2026-05-06 morning field repro). Pre-investigation; tracking. The slider being ineffective suggests either (a) the slider isn't wired to `positiveSpeechThreshold` end-to-end, (b) `minSpeechMs` is letting wind/transients through anyway, or (c) the detector arms at the wrong gate (e.g. before warmup completes). Awaiting instrumentation.
+- **Self-barge mid-call on mobile, regardless of slider position.** Reproduced on iPhone PWA standalone with the slider at both 90% and 15% — barge fires ~9 s into TTS playback, with VAD flipping from silent to speech as the agent speaks. Indicates the mic stream feeding Silero is hearing the agent's own voice (speaker-bleed not removed by AEC, or AEC not engaged for the path Silero reads from). Slider's lack of effect suggests either the threshold isn't reaching Silero, or the agent's voice exceeds even the highest threshold. Investigation in progress.
+- **Silero `MicVAD.new` 15 s timeout on Mac Chrome cold start.** Model fetch hangs; no VAD warm; barge silently disabled for the call. Likely network/cache flakiness on first-call asset load. Separate from the self-barge issue.
 
 (Add new entries here as they surface; remove when fixed and verified.)
