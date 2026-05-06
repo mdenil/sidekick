@@ -1226,6 +1226,15 @@ async function boot() {
       : false;
     composerInput.style.height = 'auto';
     composerInput.style.height = Math.min(composerInput.scrollHeight, cap) + 'px';
+    // Update --composer-height so the scroll-to-bottom button (which
+    // anchors `bottom: calc(var(--composer-height) + 64px)`) tracks
+    // the composer as it grows. Without this the button stays at the
+    // 64px default and ends up overlapping the wrapped textarea text.
+    const composerEl = composerInput.closest('.composer') as HTMLElement | null;
+    if (composerEl) {
+      const h = Math.round(composerEl.getBoundingClientRect().height);
+      document.documentElement.style.setProperty('--composer-height', `${h}px`);
+    }
     if (wasPinned && transcriptEl) {
       transcriptEl.scrollTop = transcriptEl.scrollHeight;
     }
