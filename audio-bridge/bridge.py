@@ -72,6 +72,32 @@ def main() -> None:
     backend = os.environ.get("SIDEKICK_BACKEND", "hermes")
 
     voice_config = VoiceConfig.defaults()
+    # Smoke-test overrides — let the rig swap providers via env without
+    # writing a config.yaml. Production deployments leave these unset
+    # and use the deepgram defaults. Both override blocks are
+    # self-contained: an unset env var → no change to defaults.
+    tts_provider_env = os.environ.get("SIDEKICK_AUDIO_TTS_PROVIDER")
+    if tts_provider_env:
+        from config import ProviderSpec
+        opts = {}
+        wav_path = os.environ.get("SIDEKICK_AUDIO_TTS_WAV_PATH")
+        if wav_path:
+            opts["wav_path"] = wav_path
+        voice_config = type(voice_config)(
+            stt=voice_config.stt,
+            tts=ProviderSpec(provider=tts_provider_env, options=opts),
+            bind_host=voice_config.bind_host,
+            enabled=voice_config.enabled,
+        )
+    stt_provider_env = os.environ.get("SIDEKICK_AUDIO_STT_PROVIDER")
+    if stt_provider_env:
+        from config import ProviderSpec
+        voice_config = type(voice_config)(
+            stt=ProviderSpec(provider=stt_provider_env, options={}),
+            tts=voice_config.tts,
+            bind_host=voice_config.bind_host,
+            enabled=voice_config.enabled,
+        )
 
     # aiohttp's default body limit is 1MB. /v1/transcribe receives raw
     # webm blobs from the PWA via the sidekick proxy — a 3-minute memo

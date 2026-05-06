@@ -30,6 +30,7 @@ from .tts import TTSProvider, get_tts_provider, register_tts_provider
 from . import deepgram as _deepgram_stt  # noqa: F401
 from . import deepgram_aura as _deepgram_tts  # noqa: F401
 from . import fixture as _fixture_tts  # noqa: F401  # smoke-test provider
+from . import noop_stt as _noop_stt  # noqa: F401  # smoke-test provider
 
 __all__ = [
     "STTProvider",
