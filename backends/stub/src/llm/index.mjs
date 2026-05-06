@@ -15,6 +15,7 @@
 import { EchoLLM } from './echo.mjs';
 import { GeminiLLM } from './gemini.mjs';
 import { OllamaLLM } from './ollama.mjs';
+import { FixedLLM } from './fixed.mjs';
 
 /**
  * @typedef {{ role: 'user' | 'assistant' | 'system', content: string }} ChatMessage
@@ -29,6 +30,9 @@ import { OllamaLLM } from './ollama.mjs';
 /** @returns {LLM} */
 export function pickAdapter(env = process.env) {
   const mode = (env.AGENT_LLM || '').toLowerCase();
+  if (mode === 'fixed') {
+    return new FixedLLM({ reply: env.AGENT_LLM_FIXED_REPLY });
+  }
   if (mode === 'gemini' || (!mode && env.GEMINI_API_KEY)) {
     return new GeminiLLM({
       apiKey: env.GEMINI_API_KEY ?? '',
