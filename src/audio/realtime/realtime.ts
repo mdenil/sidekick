@@ -216,6 +216,46 @@ export function sendBarge(): boolean {
   }
 }
 
+/** Warm the iOS AEC reference path with 1 s of silence so the WebRTC
+ *  adaptive filter converges before TTS arrives on the peer track.
+ *  Web Audio output (ctx.destination) is the AVAudioSession playback
+ *  channel that Apple's AEC samples for its reference signal — feeding
+ *  it actual frames (even silent ones) for ~1 s gives the filter the
+ *  stable-output epoch it needs to lock on. Without this, the first
+ *  ~500 ms of each call's TTS leaks into the mic at full level
+ *  (residual peak ~0.6 measured 2026-05-06) until AEC converges,
+ *  which is a self-barge trigger source.
+ *
+ *  Fire-and-forget — runs in parallel with ICE/signaling so the
+ *  silent buffer overlaps the ~500 ms-2 s SDP exchange. No-op on
+ *  non-iOS or when the audio context isn't running yet (primeAudio
+ *  in the user-gesture handler should have left it 'running'). */
+function warmAecReferencePathIOS(): void {
+  const ua = (typeof navigator !== 'undefined' && navigator.userAgent) || '';
+  const isIOS = /iPad|iPhone|iPod/.test(ua) ||
+    (/Macintosh/.test(ua) && (navigator as any).maxTouchPoints > 1);
+  if (!isIOS) return;
+  const ctx = audioPlatform.getSharedAudioCtx();
+  if (!ctx || ctx.state !== 'running') {
+    log('[webrtc] AEC warmup skipped — audio context not running');
+    return;
+  }
+  try {
+    const frameCount = Math.floor(ctx.sampleRate * 1.0);
+    const buffer = ctx.createBuffer(1, frameCount, ctx.sampleRate);
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+    source.connect(ctx.destination);
+    source.addEventListener('ended', () => {
+      try { source.disconnect(); } catch { /* noop */ }
+    });
+    source.start();
+    log('[webrtc] AEC warmup started — 1s silence to ctx.destination');
+  } catch (e: any) {
+    diag('[webrtc] AEC warmup failed', e?.message);
+  }
+}
+
 export async function open(
   mode: CallMode,
   opts?: { sessionId?: string | null; chatId?: string | null },
@@ -282,6 +322,10 @@ export async function open(
   } catch (e: any) { diag('[audio-state] track.getSettings threw', e?.message); }
   logAudioState('post-getUserMedia');
   phase('mic');
+
+  // T3 — warm AEC reference path with silence on iOS, talk mode only.
+  // Stream mode runs AEC=off so there's nothing to converge.
+  if (mode === 'talk') warmAecReferencePathIOS();
 
   setState('connecting');
 
