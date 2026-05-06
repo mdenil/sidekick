@@ -41,7 +41,8 @@ export function start(
     `bargeIn=true`,
     `bargeVadThreshold=${threshold}`,
     `warmupMs=${dev.bargeWarmupMs ?? 'default'}`,
-    `minSpeechMs=${dev.bargeMinSpeechMs ?? 'default'}`);
+    `minSpeechMs=${dev.bargeMinSpeechMs ?? 'default'}`,
+    `minPeak=${dev.bargeMinPeak ?? 'none'}`);
   detector = new BargeDetector();
   void detector.start({
     micStream,
@@ -51,6 +52,7 @@ export function start(
     positiveSpeechThreshold: threshold,
     warmupMs: dev.bargeWarmupMs,
     minSpeechMs: dev.bargeMinSpeechMs,
+    minPeak: dev.bargeMinPeak,
   });
   log('[realtime-barge] started');
 }

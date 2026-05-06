@@ -85,6 +85,14 @@ export interface BargeDetectorOpts {
   minSpeechMs?: number;
   /** Suppress the audible 'barge' chime on fire — useful for tests. */
   silentFire?: boolean;
+  /** Minimum mic peak amplitude (max abs sample 0..1 from the most-
+   *  recent VAD frame) required for fire. Filters out post-AEC residual
+   *  agent voice (Silero says "speech" because the spectrum is intact,
+   *  but peak amplitude is small) while still allowing real user
+   *  speech (loud at the device). iOS sets this from voiceTuning's
+   *  per-device default; other platforms leave it undefined and the
+   *  gate is skipped. */
+  minPeak?: number;
 }
 
 const DEFAULT_WARMUP_MS = 500;
@@ -103,14 +111,22 @@ const DEFAULT_MIN_SPEECH_MS = 400;
  *  function returning the synthetic speech-active state for the current
  *  tick. Production code never touches this. */
 let speechActiveOverride: (() => boolean) | null = null;
+let speechPeakOverride: (() => number) | null = null;
 
 /** @internal — test hook. Pass null to restore the production read. */
 export function setSpeechActiveOverrideForTests(fn: (() => boolean) | null): void {
   speechActiveOverride = fn;
 }
+/** @internal — test hook for the optional peak gate. */
+export function setSpeechPeakOverrideForTests(fn: (() => number) | null): void {
+  speechPeakOverride = fn;
+}
 
 function readSpeechActive(): boolean {
   return speechActiveOverride ? speechActiveOverride() : speechVad.isSpeechActive();
+}
+function readSpeechPeak(): number {
+  return speechPeakOverride ? speechPeakOverride() : speechVad.getRecentPeak();
 }
 
 export class BargeDetector {
@@ -163,6 +179,7 @@ export class BargeDetector {
       positiveSpeechThreshold: opts.positiveSpeechThreshold ?? 0.5,
       minSpeechMs: opts.minSpeechMs ?? DEFAULT_MIN_SPEECH_MS,
       silentFire: opts.silentFire ?? false,
+      minPeak: opts.minPeak,  // undefined = no peak gate (Mac/Linux); iOS sets a value
     };
     // Start the loop FIRST so ticks fire even if VAD never finishes
     // warming. tick() short-circuits (vad=silent) when speechVad isn't
@@ -177,7 +194,8 @@ export class BargeDetector {
     // OTHER end (what the slider says) so the gap is obvious.
     log('[audio-state] BargeDetector → MicVAD',
       `positiveSpeechThreshold=${this.opts.positiveSpeechThreshold}`,
-      `minSpeechMs=${this.opts.minSpeechMs}`);
+      `minSpeechMs=${this.opts.minSpeechMs}`,
+      `minPeak=${this.opts.minPeak ?? 'none'}`);
     // Refcount-inc the shared VAD in the background. Pass our
     // isPlayingCb as the frame-log gate so the [audio-state] vad-frame
     // instrumentation only fires while agent TTS is playing — that's
@@ -253,6 +271,18 @@ export class BargeDetector {
     if (inWarmup) return;
     if (inCooldown) return;
     if (!speechActive) return;
+    // Optional peak gate (iOS-only today). Filters out post-AEC residual
+    // agent voice — Silero says "speech" because the residual retains
+    // speech-shaped spectrum, but peak amplitude is 1/10th of real
+    // user speech. Real user "stop" peaks at 0.3+; residual at 0.05.
+    // Skip the gate when minPeak is undefined (Mac/Linux — full AEC).
+    if (typeof o.minPeak === 'number') {
+      const peak = readSpeechPeak();
+      if (peak < o.minPeak) {
+        log(`[barge-detector] suppressed — peak ${peak.toFixed(3)} < minPeak ${o.minPeak} (likely AEC residual)`);
+        return;
+      }
+    }
     // Fire — set cooldown FIRST so a re-entrant onFire (e.g. the
     // caller synchronously invokes something that loops back here)
     // can't double-fire.

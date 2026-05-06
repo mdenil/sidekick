@@ -76,6 +76,11 @@ export const DEVICE_DEFAULTS: Record<DeviceClass, {
   bargeThreshold: number;
   bargeWarmupMs?: number;
   bargeMinSpeechMs?: number;
+  /** Minimum mic peak amplitude (0..1) for fire. Filters AEC residual
+   *  agent voice (peak ~0.05 measured) without affecting real user
+   *  speech (peak 0.3+). iOS-only today — Mac/Linux AEC fully cancels
+   *  agent voice so peak stays at noise floor; no gate needed. */
+  bargeMinPeak?: number;
 }> = {
   // Recalibrated v0.389 for AEC-OFF mic (reverted from v0.387's AEC-on
   // experiment — Chrome AEC over-attenuated user voice during TTS to
@@ -97,6 +102,11 @@ export const DEVICE_DEFAULTS: Record<DeviceClass, {
     // Residual bursts post-warmup are ≤300 ms; real "stop"/"wait"
     // sustains 600+ ms easily.
     bargeMinSpeechMs: 600,
+    // Peak-amplitude gate. Field measurements 2026-05-06: AEC residual
+    // peaks ~0.05 (max burst 0.055); real user speech peaks 0.3+
+    // ("one" measured at 0.42). 0.10 sits well clear of both — no
+    // residual passes, all but the quietest real speech does.
+    bargeMinPeak: 0.10,
   },
   android: { bargeThreshold: 0.020 },  // assume similar processing
   mac: { bargeThreshold: 0.025 },     // ~half of measured speech, well above floor

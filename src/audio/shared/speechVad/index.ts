@@ -113,6 +113,14 @@ let startGen = 0;
 // Frame counter for throttled per-frame audio-state logging — see
 // onFrameProcessed below. Resets implicitly on JS context restart.
 let frameCounter = 0;
+// Most-recent frame's peak amplitude, exposed via getRecentPeak().
+// Used by BargeDetector's optional minPeak gate to distinguish real
+// user speech (peak 0.3+) from post-AEC residual agent voice
+// (peak 0.05 typical) when both produce high p_speech values.
+// Updated on EVERY frame (not throttled like the log) so the gate
+// has fresh data. Resets to 0 on speechVad.stop() so a stale read
+// from a closed call can't gate a new call's first fire.
+let recentPeak = 0;
 
 /** Has the vad-web library been loaded and reported usable in this browser?
  *  Probed on first call; subsequent calls return the cached answer. */
@@ -334,14 +342,19 @@ export async function start(
       //     we care; we don't need 8 logs/sec during silence/setup)
       // Remove once the iOS self-barge is closed out.
       onFrameProcessed: (probabilities: any, frame: Float32Array) => {
-        frameCounter++;
-        if (frameCounter % 4 !== 0) return;
-        if (opts.shouldLogFrames && !opts.shouldLogFrames()) return;
+        // Compute peak EVERY frame (cheap loop, used by getRecentPeak()
+        // for the BargeDetector minPeak gate). RMS + log are throttled.
         let peak = 0;
-        let sumSq = 0;
         for (let i = 0; i < frame.length; i++) {
           const a = Math.abs(frame[i]);
           if (a > peak) peak = a;
+        }
+        recentPeak = peak;
+        frameCounter++;
+        if (frameCounter % 4 !== 0) return;
+        if (opts.shouldLogFrames && !opts.shouldLogFrames()) return;
+        let sumSq = 0;
+        for (let i = 0; i < frame.length; i++) {
           sumSq += frame[i] * frame[i];
         }
         const rms = Math.sqrt(sumSq / frame.length);
@@ -426,6 +439,7 @@ export async function start(
  *  leaves the resolved inst orphaned (smoke caught this v0.424). */
 export async function stop(): Promise<void> {
   startGen++;
+  recentPeak = 0;  // see recentPeak declaration — reset so a closed call's last peak doesn't gate the next call's first fire
   if (!activeVad) return;
   const handle = activeVad;
   activeVad = null;
@@ -458,6 +472,16 @@ export function onSpeechEnd(cb: () => void): Unsubscribe {
  *  Boolean read, no model invocation. */
 export function isSpeechActive(): boolean {
   return !!activeVad?.speechActive;
+}
+
+/** Synchronous read of the most-recent processed frame's peak amplitude
+ *  (max abs sample, 0..1 range). Returns 0 when no frames have been
+ *  processed yet OR after speechVad.stop() resets the cache. Used by
+ *  BargeDetector's optional minPeak gate to filter out post-AEC residual
+ *  agent voice (peak 0.05 typical) from real user speech (peak 0.3+)
+ *  even when both produce high p_speech values from Silero. */
+export function getRecentPeak(): number {
+  return recentPeak;
 }
 
 // ── Test hooks ────────────────────────────────────────────────────────
