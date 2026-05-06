@@ -78,6 +78,56 @@ export function getRouting(): Routing {
   return current;
 }
 
+/** Snapshot of audio-session state for instrumentation. Returns the
+ *  full picture (routing + raw audioSession.type/outputType/mode) at
+ *  one moment in time. iOS-only fields are null on other platforms.
+ *  Used by the Phase-A barge investigation to correlate AEC engagement
+ *  with audio-session category transitions. Remove the call sites
+ *  once the bug is closed. */
+export function audioStateSnapshot(): {
+  routing: Routing;
+  audioSessionAvailable: boolean;
+  audioSessionType: string | null;
+  audioSessionOutputType: string | null;
+  audioSessionMode: string | null;
+} {
+  init();
+  if (typeof navigator === 'undefined' || !(navigator as any).audioSession) {
+    return {
+      routing: current,
+      audioSessionAvailable: false,
+      audioSessionType: null,
+      audioSessionOutputType: null,
+      audioSessionMode: null,
+    };
+  }
+  const s = (navigator as any).audioSession;
+  return {
+    routing: current,
+    audioSessionAvailable: true,
+    audioSessionType: s.type ?? null,
+    audioSessionOutputType: s.outputType ?? null,
+    audioSessionMode: s.mode ?? null,
+  };
+}
+
+/** One-shot diag dump — formats the snapshot as a single log line at
+ *  a named milestone. Use sparingly; prod calls these checkpoints to
+ *  build the timeline of audio-state transitions during call setup. */
+export function logAudioState(label: string): void {
+  const s = audioStateSnapshot();
+  const fields = [
+    `label=${label}`,
+    `routing=${s.routing}`,
+    `audioSessionAvailable=${s.audioSessionAvailable}`,
+    `type=${s.audioSessionType}`,
+    `outputType=${s.audioSessionOutputType}`,
+    `mode=${s.audioSessionMode}`,
+  ].join(' ');
+  // eslint-disable-next-line no-console
+  console.log('[dbg] [audio-state]', fields);
+}
+
 /** True only when we have positive confirmation we're on a same-device
  *  speaker setup (iOS reports 'speaker'). 'unknown' returns false —
  *  Mac demos / non-iOS callers default to "barge is allowed." */

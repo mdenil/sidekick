@@ -171,6 +171,14 @@ export class BargeDetector {
     this.loop = setInterval(() => this.tick(), this.opts.frameMs);
     this.vadStartCalled = true;  // see field docstring; flag flips on INVOKE, not resolve
     log('[barge-detector] started — loop running, VAD warming async');
+    // [audio-state] confirm the threshold value MicVAD is initialized
+    // with. Pre-fix: always 0.5 (silero default). Post-fix: tracks the
+    // user's slider. The slider trace in realtimeBarge.start logs the
+    // OTHER end (what the slider says) so the gap is obvious.
+    // eslint-disable-next-line no-console
+    console.log('[dbg] [audio-state] BargeDetector → MicVAD',
+      `positiveSpeechThreshold=${this.opts.positiveSpeechThreshold}`,
+      `minSpeechMs=${this.opts.minSpeechMs}`);
     // Refcount-inc the shared VAD in the background.
     speechVad.start(opts.micStream, {
       positiveSpeechThreshold: this.opts.positiveSpeechThreshold,

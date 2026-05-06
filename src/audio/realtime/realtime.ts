@@ -32,6 +32,7 @@
  */
 
 import { log, diag } from '../../util/log.ts';
+import { logAudioState } from '../shared/headphones.ts';
 import { playFeedback } from '../shared/feedback.ts';
 import * as audioPlatform from '../shared/platform.ts';
 import * as settings from '../../settings.ts';
@@ -242,6 +243,10 @@ export async function open(
     // This is the DSP triple Jonathan field-tested as "worked
     // perfectly first try" on v0.413 realtime talk mode.
     const useAec = (mode === 'talk');
+    // [audio-state] checkpoint before mic acquisition. iOS audio-
+    // session category SHOULD be playAndRecord by here for AEC to
+    // engage. If it's still 'playback' we'll see it in the trace.
+    logAudioState('pre-getUserMedia');
     micStream = await audioPlatform.getMicStream('webrtc', {
       echoCancellation: useAec,
       noiseSuppression: false,
@@ -252,6 +257,25 @@ export async function open(
     setState('failed');
     throw e;
   }
+  // [audio-state] post-acquisition. The track.getSettings() readout
+  // tells us whether the OS honored the echoCancellation constraint.
+  // iOS Safari can silently drop AEC if the audio-session category
+  // isn't right at acquisition time — we want to catch that here.
+  try {
+    const tracks = micStream.getAudioTracks();
+    if (tracks.length > 0) {
+      const s = tracks[0].getSettings ? tracks[0].getSettings() : {};
+      // eslint-disable-next-line no-console
+      console.log('[dbg] [audio-state] track.getSettings()',
+        `aec=${(s as any).echoCancellation}`,
+        `ns=${(s as any).noiseSuppression}`,
+        `agc=${(s as any).autoGainControl}`,
+        `rate=${(s as any).sampleRate}`,
+        `channelCount=${(s as any).channelCount}`,
+        `deviceId=${((s as any).deviceId || '').slice(0, 8)}`);
+    }
+  } catch (e: any) { diag('[audio-state] track.getSettings threw', e?.message); }
+  logAudioState('post-getUserMedia');
   phase('mic');
 
   setState('connecting');
