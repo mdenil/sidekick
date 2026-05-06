@@ -485,9 +485,9 @@ async def _dispatch_to_agent(peer, utterance: str, *, user_message_id: Optional[
         logger.error("[stt-bridge] aiohttp missing for agent dispatch")
         return
 
-    logger.debug(
-        "[stt-bridge] peer %s dispatching to %s (route=%s)",
-        peer.peer_id, url, route,
+    logger.info(
+        "[stt-bridge] peer %s dispatch start (route=%s utterance_len=%d)",
+        peer.peer_id, route, len(utterance),
     )
 
     text_queue: Optional[asyncio.Queue] = peer.extra.get("tts_text_queue")
@@ -557,6 +557,10 @@ async def _dispatch_to_agent(peer, utterance: str, *, user_message_id: Optional[
                 })
             return False
         if event_name == "response.completed":
+            logger.info(
+                "[stt-bridge] peer %s reply terminal (event=response.completed)",
+                peer.peer_id,
+            )
             return True
         if event_name == "reply_delta":
             cumulative = chunk.get("text") or ""
@@ -597,6 +601,10 @@ async def _dispatch_to_agent(peer, utterance: str, *, user_message_id: Optional[
             })
             return False
         if event_name == "reply_final":
+            logger.info(
+                "[stt-bridge] peer %s reply terminal (event=reply_final cumulative_len=%d)",
+                peer.peer_id, len(prev_cumulative),
+            )
             return True
         return False
 
@@ -656,6 +664,10 @@ async def _dispatch_to_agent(peer, utterance: str, *, user_message_id: Optional[
         except Exception as e:
             logger.warning("[stt-bridge] peer %s agent dispatch error: %s", peer.peer_id, e)
         finally:
+            logger.info(
+                "[stt-bridge] peer %s dispatch finally (route=%s cumulative_len=%d)",
+                peer.peer_id, route, len(prev_cumulative),
+            )
             # Tell the TTS bridge to flush any tail buffer.
             if text_queue is not None:
                 try:

@@ -130,6 +130,17 @@ async def _run_tts(peer, voice_config: VoiceConfig, text_queue, track) -> None:
 
             buf = bytearray()
             halted = False
+            # Diagnostic counters — frames_fed is the one signal that
+            # tells us whether synth() actually produced audio for this
+            # round, separate from whether the round was halted.
+            # Distinguishes "provider hung after prior halt" (frames=0
+            # on a new round) from "halted mid-stream" (frames>0, halted=True).
+            first_pcm_seen = False
+            frames_fed = 0
+            logger.info(
+                "[tts-bridge] peer %s reply round start (first_chunk_len=%d)",
+                peer.peer_id, len(first or ""),
+            )
             try:
                 async for pcm in tts.synth(_iter_with_first()):
                     # Halt signal — server-side barge or future
@@ -144,6 +155,12 @@ async def _run_tts(peer, voice_config: VoiceConfig, text_queue, track) -> None:
                         break
                     if not pcm:
                         continue
+                    if not first_pcm_seen:
+                        first_pcm_seen = True
+                        logger.info(
+                            "[tts-bridge] peer %s first PCM (size=%d)",
+                            peer.peer_id, len(pcm),
+                        )
                     buf.extend(pcm)
                     while len(buf) >= TTS_FRAME_BYTES:
                         frame_bytes = bytes(buf[:TTS_FRAME_BYTES])
@@ -158,6 +175,7 @@ async def _run_tts(peer, voice_config: VoiceConfig, text_queue, track) -> None:
                         # rushed/garbled audio on long replies.
                         try:
                             await track.feed_async(frame_bytes)
+                            frames_fed += 1
                         except Exception as e:  # pragma: no cover
                             logger.warning("[tts-bridge] track.feed_async failed: %s", e)
                 if halted:
@@ -178,8 +196,8 @@ async def _run_tts(peer, voice_config: VoiceConfig, text_queue, track) -> None:
                         if item is None:
                             break
                     logger.info(
-                        "[tts-bridge] peer %s halted; drained %d text-queue items",
-                        peer.peer_id, drained,
+                        "[tts-bridge] peer %s halted; drained %d text-queue items, frames_fed=%d first_pcm=%s",
+                        peer.peer_id, drained, frames_fed, first_pcm_seen,
                     )
                     track.halt_event.clear()
                     continue
@@ -194,12 +212,20 @@ async def _run_tts(peer, voice_config: VoiceConfig, text_queue, track) -> None:
                         del buf[:TTS_FRAME_BYTES]
                         try:
                             await track.feed_async(frame_bytes)
+                            frames_fed += 1
                         except Exception:  # pragma: no cover
                             pass
+                logger.info(
+                    "[tts-bridge] peer %s reply round complete (frames_fed=%d first_pcm=%s)",
+                    peer.peer_id, frames_fed, first_pcm_seen,
+                )
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                logger.warning("[tts-bridge] peer %s synth error: %s", peer.peer_id, e)
+                logger.warning(
+                    "[tts-bridge] peer %s synth error: %s (frames_fed=%d first_pcm=%s)",
+                    peer.peer_id, e, frames_fed, first_pcm_seen,
+                )
     except asyncio.CancelledError:
         raise
     except Exception as e:
