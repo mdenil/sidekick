@@ -107,12 +107,18 @@ export async function bootRig({ wavPath }) {
   // smoke-mode yaml and point the proxy at it.
   const smokeConfigPath = '/tmp/sidekick-smoke-barge-config.yaml';
   mkdirSync(dirname(smokeConfigPath), { recursive: true });
+  // Ports + provider come from env; the yaml carries the FRONTEND
+  // settings the smoke needs (realtime mode, TTS-on-call, default
+  // bargeVadThreshold which scenarios can override per-test).
   writeFileSync(smokeConfigPath,
     'frontend:\n' +
     '  composer:\n' +
     '    realtime: true\n' +
     '  streaming:\n' +
-    '    tts: true\n');
+    '    tts: true\n' +
+    '  interaction:\n' +
+    '    bargeIn: true\n' +
+    '    bargeVadThreshold: 0.5\n');
   spawnLogged('proxy', 'node',
     ['--experimental-strip-types', '--disable-warning=ExperimentalWarning', 'server.ts'],
     {

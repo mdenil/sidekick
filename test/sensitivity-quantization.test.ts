@@ -1,72 +1,55 @@
 /**
- * Unit tests for the sensitivity↔threshold mapping in settings.ts.
+ * Unit tests for the sensitivity↔VAD threshold mapping in settings.ts.
  *
- * Specifically covers the quantization fix Jonathan flagged 2026-05-04:
- * the slider on reload was showing values like "61%" because the
- * stored float threshold didn't round-trip cleanly through the
- * step-5 percentage display. The fix in v0.421 rounds
- * thresholdToSensitivity to nearest step-5 so all reloads land on a
- * clean integer and the slider's `step="5"` attribute matches the
- * display value.
+ * Slider position 0..100% maps inversely to Silero
+ * `positiveSpeechThreshold` 0..1. Round-trip must be stable on step-5
+ * values so the slider doesn't drift to "61%" on reload.
  */
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  thresholdToSensitivity,
-  sensitivityToThreshold,
+  vadThresholdToSensitivity,
+  sensitivityToVadThreshold,
 } from '../src/settings.ts';
 
-describe('sensitivity ↔ threshold mapping', () => {
-  it('thresholdToSensitivity always returns multiples of 5', () => {
-    // Sample many points across the slider range (default mac scale
-    // is 0.012-0.050; step-5 thresholds should land at 5/10/.../100).
-    const samples = [0.012, 0.015, 0.018, 0.020, 0.025, 0.030, 0.035, 0.040, 0.045, 0.050];
+describe('sensitivity ↔ VAD threshold mapping', () => {
+  it('vadThresholdToSensitivity always returns multiples of 5', () => {
+    const samples = [0.0, 0.1, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0];
     for (const t of samples) {
-      const s = thresholdToSensitivity(t);
+      const s = vadThresholdToSensitivity(t);
       assert.equal(s % 5, 0, `threshold=${t} → sensitivity=${s} not divisible by 5`);
     }
   });
 
-  it('thresholdToSensitivity clamps at 0 / 100', () => {
-    assert.equal(thresholdToSensitivity(0), 100);
-    assert.equal(thresholdToSensitivity(1), 0);
-    assert.equal(thresholdToSensitivity(-99), 100);
-    assert.equal(thresholdToSensitivity(99), 0);
+  it('vadThresholdToSensitivity clamps at 0 / 100', () => {
+    assert.equal(vadThresholdToSensitivity(0), 100);
+    assert.equal(vadThresholdToSensitivity(1), 0);
+    assert.equal(vadThresholdToSensitivity(-99), 100);
+    assert.equal(vadThresholdToSensitivity(99), 0);
   });
 
   it('round-trip is stable on canonical step-5 values', () => {
-    // Going from a step-5 sensitivity → threshold → back to sensitivity
-    // should land on the same step-5 value (no drift on reload).
-    for (let s = 0; s <= 100; s += 5) {
-      const t = sensitivityToThreshold(s);
-      const back = thresholdToSensitivity(t);
+    // Skip 0% — that's the kill-switch (bargeIn=false), not a threshold
+    // value. The mapping function clamps sens to ≥1 internally.
+    for (let s = 5; s <= 100; s += 5) {
+      const t = sensitivityToVadThreshold(s);
+      const back = vadThresholdToSensitivity(t);
       assert.equal(back, s, `s=${s}% → t=${t} → back=${back}% (drift)`);
     }
   });
 
-  it('non-step-5 stored thresholds snap to nearest step-5 on read', () => {
-    // The exact bug Jonathan saw: a stored threshold that maps to
-    // ~61% (not 60% or 65%). The fix rounds to nearest step-5 so the
-    // slider always shows a clean number.
-    // Pick a threshold that would map to ~61% on the default scale:
-    // sensitivity 61% means we want the threshold ~39% of the way
-    // from max toward min on the device's slider scale. Whatever the
-    // exact value, the rounded output must be in {0, 5, 10, …, 100}.
-    const fuzzedThresholds = [0.0123, 0.0287, 0.0314, 0.0419, 0.0488];
-    for (const t of fuzzedThresholds) {
-      const s = thresholdToSensitivity(t);
-      assert.equal(s % 5, 0, `non-aligned threshold=${t} → sensitivity=${s} should snap to step-5`);
-    }
+  it('100% sensitivity = threshold 0; 50% = 0.5; default 50% threshold = 50% sens', () => {
+    assert.equal(sensitivityToVadThreshold(100), 0);
+    assert.equal(sensitivityToVadThreshold(50), 0.5);
+    assert.equal(vadThresholdToSensitivity(0.5), 50);
   });
 
-  it('sensitivityToThreshold + thresholdToSensitivity are monotonic', () => {
-    // Higher sensitivity → lower threshold (more sensitive = fires
-    // on quieter audio). Inverse mapping should preserve order.
+  it('mapping is monotonic (higher sens = lower threshold)', () => {
     let prevThr = 1;
-    for (let s = 0; s <= 100; s += 5) {
-      const t = sensitivityToThreshold(s);
+    for (let s = 1; s <= 100; s += 5) {
+      const t = sensitivityToVadThreshold(s);
       assert.ok(t <= prevThr, `monotonicity broken at s=${s}: prev=${prevThr} now=${t}`);
       prevThr = t;
     }

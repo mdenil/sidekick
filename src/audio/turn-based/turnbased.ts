@@ -471,12 +471,19 @@ function stopSilenceLoop(): void {
 function startBargeLoop(): void {
   if (!mediaStream) return;
   stopBargeLoop();
+  const _settings: any = settings.get();
+  if (!_settings.bargeIn) {
+    log('[turnbased-barge] skipped — barge disabled');
+    return;
+  }
+  const threshold = typeof _settings.bargeVadThreshold === 'number' ? _settings.bargeVadThreshold : 0.5;
   bargeDetector = new BargeDetector();
   void bargeDetector.start({
     micStream: mediaStream,
     isPlayingCb: () => state === 'playing',
     isEnabledCb: () => !!(settings.get() as any).bargeIn,
     onFire: () => { try { opts?.onBarge?.(); } catch (e: any) { diag('listen: onBarge threw', e?.message); } },
+    positiveSpeechThreshold: threshold,
   });
   log('[turnbased-barge] started');
 }

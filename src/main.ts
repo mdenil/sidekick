@@ -3063,7 +3063,7 @@ async function boot() {
       if (!slider || !valEl) return;
       const s = settings.get() as any;
       const sens = s.bargeIn
-        ? settings.thresholdToSensitivity(s.bargeThreshold)
+        ? settings.vadThresholdToSensitivity(s.bargeVadThreshold)
         : 0;
       slider.value = String(sens);
       valEl.textContent = sens === 0 ? 'Off' : `${sens}%`;
@@ -3073,10 +3073,12 @@ async function boot() {
       const sens = Number(slider.value);
       valEl.textContent = sens === 0 ? 'Off' : `${sens}%`;
       if (sens === 0) {
+        // Kill switch — bargeIn=false skips detector creation AND
+        // VAD asset prefetch entirely (see prefetch site below).
         void settings.set('bargeIn', false);
       } else {
         void settings.set('bargeIn', true);
-        void settings.set('bargeThreshold', settings.sensitivityToThreshold(sens));
+        void settings.set('bargeVadThreshold' as any, settings.sensitivityToVadThreshold(sens));
       }
     }
     slider?.addEventListener('input', writeSliderToSettings);
@@ -3550,26 +3552,36 @@ async function boot() {
     '/assets/vad/ort-wasm-simd-threaded.mjs',
     '/assets/vad/ort-wasm-simd-threaded.wasm',
   ];
-  (window as any).__vadPrefetchPromise__ = (async () => {
-    const t0 = performance.now();
-    for (const url of prefetchUrls) {
+  // Skip the VAD prefetch entirely when barge is disabled. The slider
+  // 0% position sets bargeIn=false and means "I do not want barge to
+  // run at all" — no detector is constructed, so loading 14.7 MB of
+  // Silero assets is pure waste. Save bandwidth + parse time.
+  const bargeEnabled = !!(settings.get() as any).bargeIn;
+  if (!bargeEnabled) {
+    log('VAD prefetch: skipped — barge disabled (slider 0%)');
+    (window as any).__vadPrefetchPromise__ = Promise.resolve();
+  } else {
+    (window as any).__vadPrefetchPromise__ = (async () => {
+      const t0 = performance.now();
+      for (const url of prefetchUrls) {
+        try {
+          const r = await fetch(url);
+          await r.text();
+        } catch { /* best-effort warm */ }
+      }
+      log(`VAD prefetch: ${prefetchUrls.length} assets sequentially warmed in ${Math.round(performance.now() - t0)}ms`);
+    })();
+    // Lib parse — small additional step after prefetch promise.
+    (window as any).__vadPrefetchPromise__.then(async () => {
       try {
-        const r = await fetch(url);
-        await r.text();
-      } catch { /* best-effort warm */ }
-    }
-    log(`VAD prefetch: ${prefetchUrls.length} assets sequentially warmed in ${Math.round(performance.now() - t0)}ms`);
-  })();
-  // Lib parse — small additional step after prefetch promise.
-  (window as any).__vadPrefetchPromise__.then(async () => {
-    try {
-      const speechVad = await import('./audio/shared/speechVad/index.ts');
-      const supported = await speechVad.isSupported();
-      log(`VAD prefetch: lib parsed, supported=${supported}`);
-    } catch (e: any) {
-      log(`VAD prefetch: lib import failed: ${e?.message}`);
-    }
-  });
+        const speechVad = await import('./audio/shared/speechVad/index.ts');
+        const supported = await speechVad.isSupported();
+        log(`VAD prefetch: lib parsed, supported=${supported}`);
+      } catch (e: any) {
+        log(`VAD prefetch: lib import failed: ${e?.message}`);
+      }
+    });
+  }
 }
 
 /** Wait for a newly-detected SW to install + activate (signaled by a

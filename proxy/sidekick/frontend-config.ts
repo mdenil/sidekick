@@ -39,6 +39,10 @@ export const FRONTEND_SETTINGS = {
   // Interaction (mic-meter + barge + wake lock + audio feedback)
   bargeIn:                { category: 'interaction',     default: true },
   bargeThreshold:         { category: 'interaction',     default: 0.10 },
+  // Silero positiveSpeechThreshold (0..1). Replaces bargeThreshold for
+  // barge sensitivity now that the BargeDetector is VAD-only. Slider
+  // maps 0..100% to 1.0..0.0 inversely; 0% sets bargeIn=false (kill).
+  bargeVadThreshold:      { category: 'interaction',     default: 0.5 },
   wakeLock:               { category: 'interaction',     default: true },
   audioFeedbackVolume:    { category: 'interaction',     default: 0.5 },
   // Hotkeys (modifier+key strings). hotkeyToggleCall replaced

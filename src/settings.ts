@@ -178,6 +178,13 @@ const DEFAULTS = {
   navPause: 'pause chat',
   autoAdvanceOnNew: false,
   bargeThreshold: 0.10,
+  // Silero VAD's positiveSpeechThreshold (0..1). Lower = more
+  // sensitive. Library default 0.3, our default 0.5 — slightly stricter
+  // to absorb environmental noise. The call-mode slider maps 0..100%
+  // to 1.0..0.0 inversely (100% = most sensitive). Slider 0% sets
+  // bargeIn=false (kill switch); the threshold is only consulted when
+  // bargeIn=true. See sensitivityToVadThreshold() / vadThresholdToSensitivity().
+  bargeVadThreshold: 0.5,
   contentSize: 15,
   audioFeedbackVolume: 0.5,
   theme: 'dark',
@@ -252,19 +259,28 @@ let current = { ...DEFAULTS };
 //   mac/etc: 0.012 (100%) ↔ 0.050 (0%)
 // Slider semantics stay constant ("60% = moderately sensitive") but
 // the underlying threshold differs per device.
-import { getSliderScale as _getSliderScale } from './voiceTuning.ts';
-export function sensitivityToThreshold(sens: number): number {
-  const { min, max } = _getSliderScale();
-  const clamped = Math.max(0, Math.min(100, sens));
-  return +(min + (100 - clamped) / 100 * (max - min)).toFixed(3);
+/** Slider sensitivity (0..100%) → Silero `positiveSpeechThreshold` (0..1).
+ *  Inverse mapping: higher sensitivity → lower threshold (fires easier).
+ *
+ *    100% → 0.0 — fires on any frame the model can grade (max sensitivity)
+ *     50% → 0.5 — default; only confident speech fires
+ *      1% → 0.99 — almost nothing fires (degenerate; bargeIn=false is
+ *           the cleaner kill-switch and slider position 0 maps to that)
+ *      0% → handled separately as bargeIn=false; this function is only
+ *           called for sens > 0
+ *
+ *  Full [0..1] is exposed because Silero's validation only requires
+ *  the value be in that range; users can dial through the whole space. */
+export function sensitivityToVadThreshold(sens: number): number {
+  const clamped = Math.max(1, Math.min(100, sens));
+  return +((100 - clamped) / 100).toFixed(2);
 }
-export function thresholdToSensitivity(thr: number): number {
-  const { min, max } = _getSliderScale();
-  const clamped = Math.max(min, Math.min(max, thr));
-  // Round to nearest step-5 to match the call-mode slider's step
-  // resolution — fixes the "61% on reload" cosmetic quantization
-  // issue Jonathan flagged 2026-05-04.
-  const raw = (1 - (clamped - min) / (max - min)) * 100;
+
+/** Inverse: Silero threshold (0..1) → slider position (0..100%).
+ *  Rounded to nearest 5% to match the call-mode slider's step. */
+export function vadThresholdToSensitivity(thr: number): number {
+  const clamped = Math.max(0, Math.min(1, thr));
+  const raw = (1 - clamped) * 100;
   return Math.round(raw / 5) * 5;
 }
 
@@ -526,10 +542,12 @@ export function hydrate(handlers: {
     if (setNavPause) setNavPause.value = current.navPause;
     if (setListenStt) setListenStt.value = (current as any).listenSttEngine || 'local';
     if (setBarge) setBarge.checked = current.bargeIn;
-    // Sensitivity slider is the INVERSE of threshold. Map threshold 0..0.5 onto
-    // slider 100..0 so "100%" = fire on any sound, "0%" = basically never.
-    if (setBargeSens) setBargeSens.value = String(thresholdToSensitivity(current.bargeThreshold));
-    if (setBargeSensVal) setBargeSensVal.textContent = `${thresholdToSensitivity(current.bargeThreshold)}%`;
+    // Sensitivity slider is the INVERSE of Silero's positiveSpeechThreshold.
+    // Map threshold 0..1 onto slider 100..0 so "100%" = fire on any
+    // graded frame, "0%" = effectively off (bargeIn=false handles the
+    // cleaner kill-switch case in main.ts).
+    if (setBargeSens) setBargeSens.value = String(vadThresholdToSensitivity((current as any).bargeVadThreshold));
+    if (setBargeSensVal) setBargeSensVal.textContent = `${vadThresholdToSensitivity((current as any).bargeVadThreshold)}%`;
     if (setFontSize) setFontSize.value = String(current.contentSize);
     if (setFontSizeVal) setFontSizeVal.textContent = `${current.contentSize}px`;
     if (setTheme) setTheme.value = current.theme;
@@ -715,7 +733,7 @@ export function hydrate(handlers: {
   };
   if (setBargeSens) setBargeSens.oninput = () => {
     const sensitivity = parseInt(setBargeSens.value, 10);
-    set('bargeThreshold', sensitivityToThreshold(sensitivity));
+    set('bargeVadThreshold' as any, sensitivityToVadThreshold(sensitivity));
     if (setBargeSensVal) setBargeSensVal.textContent = `${sensitivity}%`;
   };
   if (setFontSize) setFontSize.oninput = () => {

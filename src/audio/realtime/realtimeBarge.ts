@@ -22,22 +22,26 @@ export function start(
   onFire: () => void,
 ): void {
   stop();
-  detector = new BargeDetector();
-  // [audio-state] slider trace — read what the user has configured
-  // and log it here. NOTE: we are NOT YET passing this through to
-  // BargeDetector — the plumbing fix lands in a follow-up commit so
-  // this instrumentation also confirms the bug before the fix.
   const s: any = settings.get();
+  // Slider position 0% set bargeIn=false — that's the kill switch. Skip
+  // detector creation entirely so we don't ref-inc Silero, don't run
+  // the per-frame loop, and don't waste CPU.
+  if (!s.bargeIn) {
+    log('[realtime-barge] skipped — barge disabled (slider 0% / bargeIn=false)');
+    return;
+  }
+  const threshold = typeof s.bargeVadThreshold === 'number' ? s.bargeVadThreshold : 0.5;
   // eslint-disable-next-line no-console
   console.log('[dbg] [audio-state] realtimeBarge.start',
-    `bargeIn=${!!s.bargeIn}`,
-    `bargeThreshold=${s.bargeThreshold}`,
-    `(NOT passed through — see realtimeBarge.ts)`);
+    `bargeIn=true`,
+    `bargeVadThreshold=${threshold}`);
+  detector = new BargeDetector();
   void detector.start({
     micStream,
     isPlayingCb: isPlaying,
     isEnabledCb: () => !!(settings.get() as any).bargeIn,
     onFire,
+    positiveSpeechThreshold: threshold,
   });
   log('[realtime-barge] started');
 }
