@@ -320,12 +320,42 @@ async function getAdapter(): Promise<any> {
   return mod.proxyClientAdapter;
 }
 
-/** Render the agent-settings rows into the "Agent" group. Idempotent:
- *  re-runs replace previously-injected rows without touching static
- *  markup (the group label, the Preferred-models chip input). */
+/** Map an agent-declared `category` string to a settings-section data-section
+ *  key (matches the `<div class="settings-group" data-section="...">` in
+ *  index.html). Unknown categories fall back to the Agent section so a
+ *  forked plugin that emits a novel category still surfaces SOMETHING
+ *  rather than silently dropping rows.
+ *
+ *  Hermes plugin emits "Agent" / "Plugins" / "Session" today; all three
+ *  are agent-internal concerns and slot into the Agent section. If a
+ *  future category genuinely belongs in Voice input (e.g. an STT-related
+ *  agent setting), add the mapping here. */
+function categoryToSection(category: string | undefined): string {
+  if (!category) return 'agent';
+  switch (category.toLowerCase()) {
+    case 'agent':
+    case 'plugins':
+    case 'session':
+      return 'agent';
+    case 'voice input':
+    case 'voice-input': return 'voice-input';
+    case 'voice output':
+    case 'voice-output': return 'voice-output';
+    case 'voice phrases':
+    case 'voice-phrases': return 'voice-phrases';
+    case 'interaction': return 'interaction';
+    case 'display': return 'display';
+    default: return 'agent';
+  }
+}
+
+/** Render agent-declared rows into the matching settings section by
+ *  category. Idempotent — re-runs replace previously-injected rows. */
 export async function load() {
-  const host = document.getElementById('settings-group-agent');
-  if (!host) return;
+  // The Agent section host is required (it carries the loading
+  // placeholder + is the fallback for unknown categories).
+  const agentHost = document.getElementById('settings-group-agent');
+  if (!agentHost) return;
   const adapter: any = await getAdapter();
   if (!adapter?.getSettingsSchema) {
     // Adapter doesn't implement the extension — leave placeholder +
@@ -347,22 +377,33 @@ export async function load() {
     // dedicated empty-state row; not worth the complexity yet.
     return;
   }
-  // Successful response → drop placeholder + previously-injected
-  // rows, then render fresh. Empty array is a valid success: it
-  // means "agent supports settings but currently exposes none."
-  clearPlaceholderRows(host);
-  clearInjectedRows(host);
+  // Successful response → drop placeholder + previously-injected rows
+  // from EVERY section host (rows could have been routed anywhere on a
+  // prior load), then render fresh.
+  clearPlaceholderRows(agentHost);
+  const allHosts = document.querySelectorAll<HTMLElement>('.settings-group[data-section]');
+  for (const host of Array.from(allHosts)) clearInjectedRows(host);
   if (schema.length === 0) {
     lastSchema = [];
     return;
   }
   lastSchema = schema;
-  // Insert AFTER the group label, BEFORE the static rows (preferred-
-  // models chip input). Group-label is the first child by convention.
-  const anchor = host.querySelector('.group-label') as HTMLElement | null;
+  // Resolve target host per row by category. Cache lookups so we don't
+  // re-querySelector the panel for every row.
+  const hostBySection = new Map<string, HTMLElement>();
+  for (const host of Array.from(allHosts)) {
+    const s = host.dataset.section;
+    if (s) hostBySection.set(s, host);
+  }
   for (const def of schema) {
+    const sectionKey = categoryToSection(def.category);
+    const host = hostBySection.get(sectionKey) || agentHost;
     const row = renderRow(def);
     if (!row) continue;
+    // Insert AFTER the group label so the section heading stays first.
+    // (Group label is hidden on desktop via CSS, but still drives the
+    // mobile-stacked label and the DOM-order convention.)
+    const anchor = host.querySelector('.group-label') as HTMLElement | null;
     if (anchor && anchor.nextSibling) {
       host.insertBefore(row, anchor.nextSibling);
     } else {

@@ -983,6 +983,27 @@
       margin-top: 2px;
       font-size: calc(var(--content-size) - 3px);
     }
+    /* Mobile: drop the two-column shell entirely. Nav hides, content
+     * column stretches full width, all groups become visible (override
+     * the desktop `[hidden]` attr selector). Restores the Phase 1
+     * stacked-scroll behavior. Group labels reappear so users still
+     * see section names while scrolling. */
+    #settings .settings-shell {
+      display: block;
+    }
+    #settings .settings-nav { display: none; }
+    #settings .settings-shell .settings-group[hidden] {
+      display: block !important;
+    }
+    #settings .settings-shell .settings-group {
+      padding-bottom: 10px; margin-bottom: 10px;
+      border-bottom: 1px solid var(--border);
+    }
+    #settings .settings-shell .settings-group:last-child {
+      border-bottom: none; margin-bottom: 0; padding-bottom: 0;
+    }
+    /* group-label visible by default — desktop @media wraps the
+     * suppression rule, so we don't need a re-show override here. */
   }
   .settings-title {
     margin: 0 0 14px; font-size: 20px; font-weight: 600;
@@ -997,6 +1018,61 @@
     letter-spacing: 0.1em; text-transform: uppercase;
     color: var(--primary); opacity: 0.7; padding: 4px 0 8px;
   }
+  /* ── Two-column shell (desktop only) ────────────────────────────────
+   * Left nav lists section names, clicking swaps which group is
+   * visible. Active group is the only one without [hidden]; the rest
+   * collapse to display:none via the attribute. Wrapped in a min-width
+   * media so the rules don't fight the mobile @media block — on mobile
+   * the shell gets default block layout, the nav defaults to flex but
+   * is hidden by the mobile rules below, and the [hidden] groups are
+   * un-hidden by `display: block !important` in the mobile block. */
+  @media (min-width: 700px) {
+    #settings .settings-shell {
+      display: grid;
+      grid-template-columns: 168px 1fr;
+      gap: 20px;
+      align-items: start;
+    }
+    /* Inside the desktop two-column shell, each section's group renders
+     * as the only thing in the content pane — no inter-group separator
+     * needed (the only-section-visible-at-a-time UX makes borders look
+     * like dead lines under nothing). */
+    #settings .settings-shell .settings-group {
+      border-bottom: none; padding-bottom: 0; margin-bottom: 0;
+    }
+    /* The desktop nav already shows the section name; suppress the
+     * in-group label to avoid duplication. Mobile keeps the label
+     * visible via the natural rule. */
+    #settings .settings-shell .group-label { display: none; }
+    #settings .settings-nav {
+      display: flex; flex-direction: column; gap: 2px;
+      position: sticky; top: 0;
+    }
+    #settings .settings-nav-btn {
+      text-align: left;
+      background: transparent;
+      color: var(--fg); opacity: 0.75;
+      border: none;
+      padding: 8px 12px;
+      border-radius: 8px;
+      font: inherit;
+      font-size: var(--content-size);
+      cursor: pointer;
+    }
+    #settings .settings-nav-btn:hover { background: var(--bg); opacity: 1; }
+    #settings .settings-nav-btn.active {
+      background: var(--bg);
+      color: var(--primary);
+      opacity: 1;
+      font-weight: 600;
+    }
+    #settings .settings-content { min-width: 0; }
+  }
+  /* Mobile-default for the nav buttons: they're hidden via the parent
+   * .settings-nav { display: none } in the mobile media block, so the
+   * button styles only need to apply at desktop sizes (above). Group
+   * label, group separators, and `[hidden]` reset all live in the
+   * mobile @media block above. */
   #settings .text-input {
     flex: 1; min-width: 200px; background: var(--bg); color: var(--fg);
     border: 1px solid var(--border); border-radius: 6px;

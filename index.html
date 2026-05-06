@@ -223,7 +223,26 @@
   <div class="settings-handle" id="settings-handle" aria-hidden="true"></div>
   <button class="info-close" id="settings-close" title="Close" aria-label="Close">×</button>
   <h2 class="settings-title">Settings</h2>
-  <div class="settings-group" id="settings-group-agent">
+  <!--
+    Two-column shell: left nav (desktop) shows section names + click
+    swaps which group is active; right side holds the groups, only the
+    active one visible (via [hidden] attribute). Mobile (<700px) collapses
+    the nav entirely and renders all groups stacked — see styles/app.css
+    `@media (max-width: 699px)` block. Section ↔ group binding is the
+    `data-section` attribute on each <div class="settings-group">; the
+    nav button's `data-target` matches.
+  -->
+  <div class="settings-shell">
+    <nav class="settings-nav" aria-label="Settings sections">
+      <button type="button" class="settings-nav-btn active" data-target="agent">Agent</button>
+      <button type="button" class="settings-nav-btn" data-target="voice-input">Voice input</button>
+      <button type="button" class="settings-nav-btn" data-target="voice-output">Voice output</button>
+      <button type="button" class="settings-nav-btn" data-target="voice-phrases">Voice phrases</button>
+      <button type="button" class="settings-nav-btn" data-target="interaction">Interaction</button>
+      <button type="button" class="settings-nav-btn" data-target="display">Display</button>
+    </nav>
+    <div class="settings-content">
+  <div class="settings-group" id="settings-group-agent" data-section="agent">
     <div class="group-label">Agent</div>
     <!--
       Agent-declared settings render here at runtime via
@@ -252,7 +271,7 @@
          and rendered by agentSettings.ts. -->
   </div>
 
-  <div class="settings-group">
+  <div class="settings-group" data-section="voice-input" hidden>
     <div class="group-label">Voice input</div>
     <div class="row">
       <label for="set-mic">Microphone</label>
@@ -294,7 +313,7 @@
     </div>
   </div>
 
-  <div class="settings-group">
+  <div class="settings-group" data-section="voice-output" hidden>
     <div class="group-label">Voice output</div>
     <div class="row">
       <label for="set-tts-engine">TTS engine</label>
@@ -325,7 +344,7 @@
     </div>
   </div>
 
-  <div class="settings-group">
+  <div class="settings-group" data-section="voice-phrases" hidden>
     <div class="group-label">Voice phrases</div>
     <div class="row">
       <label for="set-commit-phrase">Send word</label>
@@ -355,7 +374,7 @@
     </div>
   </div>
 
-  <div class="settings-group">
+  <div class="settings-group" data-section="interaction" hidden>
     <div class="group-label">Interaction</div>
     <!-- Barge moved to the call-mode menu (chevron next to btn-call).
          Slider 0 = OFF, 5-100 = ON + sensitivity. iOS speakerphone
@@ -391,7 +410,7 @@
     </div>
   </div>
 
-  <div class="settings-group">
+  <div class="settings-group" data-section="display" hidden>
     <div class="group-label">Display</div>
     <div class="row">
       <label for="set-fontsize">Text size</label>
@@ -407,6 +426,8 @@
       </select>
     </div>
   </div>
+    </div><!-- /.settings-content -->
+  </div><!-- /.settings-shell -->
   </div>
 </div>
 

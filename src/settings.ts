@@ -825,6 +825,33 @@ export function hydrate(handlers: {
     }
   };
   if (btnSet) btnSet.onclick = openPanel;
+
+  // Wire the section-nav buttons (desktop two-column shell). Click swaps
+  // which `.settings-group[data-section]` is visible; mobile breakpoint
+  // CSS overrides this and shows them all stacked. See index.html
+  // `.settings-shell` and styles/app.css `.settings-nav-btn`.
+  const navBtns = panel ? Array.from(panel.querySelectorAll<HTMLButtonElement>('.settings-nav-btn')) : [];
+  const groupsByTarget = new Map<string, HTMLElement>();
+  if (panel) {
+    for (const g of Array.from(panel.querySelectorAll<HTMLElement>('.settings-group[data-section]'))) {
+      groupsByTarget.set(g.dataset.section!, g);
+    }
+  }
+  const showSection = (target: string) => {
+    for (const btn of navBtns) {
+      btn.classList.toggle('active', btn.dataset.target === target);
+    }
+    for (const [name, group] of groupsByTarget) {
+      group.hidden = name !== target;
+    }
+  };
+  for (const btn of navBtns) {
+    btn.onclick = () => {
+      const t = btn.dataset.target;
+      if (t) showSection(t);
+    };
+  }
+
   const closeBtn = $any('settings-close');
   if (closeBtn) {
     // Multiple event paths so iOS Safari's occasional click-event drop
