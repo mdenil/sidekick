@@ -72,9 +72,17 @@ export function onChange(cb: Listener): () => void {
   return () => { listeners.delete(cb); };
 }
 
-/** Synchronous read of the most recent routing. */
+/** Synchronous LIVE read of routing — re-reads navigator.audioSession.type
+ *  every call rather than relying on the cache. We learned the hard way
+ *  (2026-05-06 instrumentation) that iOS's `audioSession.statechange`
+ *  event fires for active/inactive transitions, NOT for `type` changes,
+ *  so a cached value can stay stale when the OS flips the route. The
+ *  read is cheap (one property access). The cache (`current`) survives
+ *  only as a "previous value" for change-detection in the listener
+ *  fan-out path. */
 export function getRouting(): Routing {
   init();
+  current = readNow();
   return current;
 }
 
@@ -182,25 +190,41 @@ function init(): void {
   initialized = true;
   current = readNow();
   if (typeof navigator === 'undefined') return;
+
+  // Notify listeners + log when the cached routing diverges from a
+  // freshly-read value. Centralized so all the wakeup paths
+  // (audioSession.statechange, mediaDevices.devicechange) share the
+  // same diff-and-fan-out logic.
+  function poll(): void {
+    const next = readNow();
+    if (next === current) return;
+    log(`[headphones] routing change: ${current} → ${next}`);
+    current = next;
+    for (const cb of listeners) {
+      try { cb(current); } catch { /* noop */ }
+    }
+  }
+
+  // Wakeup #1: iOS audioSession.statechange. Fires for active/inactive
+  // transitions, NOT reliably for type changes — but useful when the
+  // session goes from inactive (no event yet) to active.
   const session = (navigator as any).audioSession;
+  if (session?.addEventListener) {
+    try { session.addEventListener('statechange', poll); }
+    catch (e: any) { log('[headphones] statechange listener failed:', e?.message); }
+  }
+  // Wakeup #2: navigator.mediaDevices.devicechange. iOS reliably fires
+  // this when the route flips between speaker / headphones / BT etc.
+  // Confirmed in field logs (2026-05-06): two devicechange events fire
+  // during call setup as iOS reshuffles routing, and the audioSession
+  // type updates synchronously with them. This is our actual hook.
+  if (navigator.mediaDevices?.addEventListener) {
+    try { navigator.mediaDevices.addEventListener('devicechange', poll); }
+    catch (e: any) { log('[headphones] devicechange listener failed:', e?.message); }
+  }
   if (!session) {
     log('[headphones] audioSession API unavailable (non-iOS); routing=unknown');
     return;
-  }
-  // iOS audioSession dispatches a statechange event when the route
-  // flips (e.g. user plugs headphones in mid-call). Re-read + fan out.
-  try {
-    session.addEventListener?.('statechange', () => {
-      const next = readNow();
-      if (next === current) return;
-      log(`[headphones] routing change: ${current} → ${next}`);
-      current = next;
-      for (const cb of listeners) {
-        try { cb(current); } catch { /* noop */ }
-      }
-    });
-  } catch (e: any) {
-    log('[headphones] failed to wire statechange listener:', e?.message);
   }
   log(`[headphones] initial routing=${current}`);
 }

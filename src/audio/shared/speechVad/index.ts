@@ -105,6 +105,9 @@ type MicVADHandle = {
 // MicVAD.new warmup race leaves the resolved inst un-tracked and
 // un-destroyed (the v0.424 smoke caught this).
 let startGen = 0;
+// Frame counter for throttled per-frame audio-state logging — see
+// onFrameProcessed below. Resets implicitly on JS context restart.
+let frameCounter = 0;
 
 /** Has the vad-web library been loaded and reported usable in this browser?
  *  Probed on first call; subsequent calls return the cached answer. */
@@ -316,8 +319,30 @@ export async function start(
         // speech, callers should not have already barged.
         if (activeVad) activeVad.speechActive = false;
       },
-      // Required by the type but unused — vad-web provides defaults.
-      onFrameProcessed: () => {},
+      // [audio-state] per-frame instrumentation. Logs the audio energy
+      // Silero is reading (peak + RMS of the 32ms frame's samples) and
+      // the model's speech-probability output. Throttled to one line
+      // every ~500ms (every 16th frame at 32ms/frame). Tells us:
+      //   - if peak is loud during agent TTS → AEC isn't suppressing
+      //   - if peak is quiet but p_speech is high → AEC works,
+      //     Silero is over-eager
+      // Remove once the iOS self-barge is closed out.
+      onFrameProcessed: (probabilities: any, frame: Float32Array) => {
+        frameCounter++;
+        if (frameCounter % 16 !== 0) return;
+        let peak = 0;
+        let sumSq = 0;
+        for (let i = 0; i < frame.length; i++) {
+          const a = Math.abs(frame[i]);
+          if (a > peak) peak = a;
+          sumSq += frame[i] * frame[i];
+        }
+        const rms = Math.sqrt(sumSq / frame.length);
+        log('[audio-state] vad-frame',
+          `peak=${peak.toFixed(4)}`,
+          `rms=${rms.toFixed(4)}`,
+          `p_speech=${(probabilities?.isSpeech ?? -1).toFixed(3)}`);
+      },
       onSpeechRealStart: () => {},
       preSpeechPadMs: 0,
       submitUserSpeechOnPause: false,
