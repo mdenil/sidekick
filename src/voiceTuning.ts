@@ -102,11 +102,15 @@ export const DEVICE_DEFAULTS: Record<DeviceClass, {
     // Residual bursts post-warmup are ≤300 ms; real "stop"/"wait"
     // sustains 600+ ms easily.
     bargeMinSpeechMs: 600,
-    // Peak-amplitude gate. Field measurements 2026-05-06: AEC residual
-    // peaks ~0.05 (max burst 0.055); real user speech peaks 0.3+
-    // ("one" measured at 0.42). 0.10 sits well clear of both — no
-    // residual passes, all but the quietest real speech does.
-    bargeMinPeak: 0.10,
+    // Peak-amplitude gate. Field data 2026-05-06:
+    //   - AEC residual peaks: typically ≤0.05, but occasional bursts
+    //     reach 0.10-0.13 (caught a self-barge through 0.10 gate).
+    //   - Real user speech ("One more time, please"): peaks 0.24,
+    //     mid-phrase frames 0.07-0.19 (the LOUDEST frame is what fires).
+    // 0.15 sits clear of typical residual bursts while still well
+    // below user-speech peak — fire requires at least one mid-phrase
+    // frame ≥0.15, which loud-speech easily clears.
+    bargeMinPeak: 0.15,
   },
   android: { bargeThreshold: 0.020 },  // assume similar processing
   mac: { bargeThreshold: 0.025 },     // ~half of measured speech, well above floor
