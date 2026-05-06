@@ -59,7 +59,24 @@ export function detectDeviceClass(): DeviceClass {
  *
  *  Tunable per-row; Jonathan will adjust from real devices.
  */
-export const DEVICE_DEFAULTS: Record<DeviceClass, { bargeThreshold: number }> = {
+/** Per-device tuning record. Two unrelated kinds of values riding
+ *  together — the only thing they share is "varies per device class":
+ *
+ *  - `bargeThreshold`: RMS amplitude — used by turnbased's silence-end
+ *    detector (when the user has stopped speaking). Retires when
+ *    turnbased mode goes away.
+ *
+ *  - `bargeWarmupMs`, `bargeMinSpeechMs`: passed to the realtime
+ *    BargeDetector. iOS bumps these because Apple's AEC takes a
+ *    moment to settle at TTS-start (so the first ~1 s of agent voice
+ *    leaks through as residual that Silero classifies as speech).
+ *    Mac/Linux leave defaults — their AEC is effective enough that
+ *    any reasonable settling is invisible. */
+export const DEVICE_DEFAULTS: Record<DeviceClass, {
+  bargeThreshold: number;
+  bargeWarmupMs?: number;
+  bargeMinSpeechMs?: number;
+}> = {
   // Recalibrated v0.389 for AEC-OFF mic (reverted from v0.387's AEC-on
   // experiment — Chrome AEC over-attenuated user voice during TTS to
   // the ambient floor, no fire possible). Back to v0.385 measurements:
@@ -68,7 +85,19 @@ export const DEVICE_DEFAULTS: Record<DeviceClass, { bargeThreshold: number }> = 
   // our echoCancellation:false flag and applies built-in voice
   // isolation; iPhone peaks for normal speech sit ~0.014-0.020 (3x
   // smaller than Mac no-AEC peaks of 0.05-0.08).
-  ios: { bargeThreshold: 0.018 },
+  ios: {
+    bargeThreshold: 0.018,
+    // Web Audio routing engages AEC (peak attenuated 6× — measured
+    // 2026-05-06) but residual still bursts above Silero threshold
+    // for ~500 ms while AEC settles at TTS-start. 1500 ms warmup
+    // skips that window. Trade: real user barge in first 1.5 s of
+    // agent reply gets ignored — acceptable, users typically wait.
+    bargeWarmupMs: 1500,
+    // Sustained 600 ms of speech-detected output before fire.
+    // Residual bursts post-warmup are ≤300 ms; real "stop"/"wait"
+    // sustains 600+ ms easily.
+    bargeMinSpeechMs: 600,
+  },
   android: { bargeThreshold: 0.020 },  // assume similar processing
   mac: { bargeThreshold: 0.025 },     // ~half of measured speech, well above floor
   linux: { bargeThreshold: 0.025 },
