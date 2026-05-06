@@ -253,7 +253,7 @@
   </div>
 
   <div class="settings-group">
-    <div class="group-label">Streaming</div>
+    <div class="group-label">Voice input</div>
     <div class="row">
       <label for="set-mic">Microphone</label>
       <select id="set-mic">
@@ -278,6 +278,24 @@
       <input type="text" id="set-stt-keyterms" placeholder="add a term + Enter" autocomplete="off" spellcheck="false">
       <span class="hint">type a term and press Enter (or comma) to add it; × on a chip to remove. Stored per-user in browser storage; takes effect on next mic-stream start.</span>
     </div>
+    <div class="row">
+      <label for="set-listen-stt">Sendword detector</label>
+      <select id="set-listen-stt" class="text-input">
+        <option value="local">On — Web Speech (this device)</option>
+        <option value="silence-only">Off — silence only</option>
+      </select>
+    </div>
+    <div class="row hint">
+      Watches the live mic stream for the configured "send word" phrase to
+      commit the recording early. Body transcription is controlled by the
+      STT engine setting above; this toggle only affects the
+      sendword detector. Set to Off to disable; the silence-driven
+      commit fallback still works either way.
+    </div>
+  </div>
+
+  <div class="settings-group">
+    <div class="group-label">Voice output</div>
     <div class="row">
       <label for="set-tts-engine">TTS engine</label>
       <select id="set-tts-engine">
@@ -305,6 +323,10 @@
         <option value="aura-2-perseus-en">Perseus (M, youthful)</option>
       </select>
     </div>
+  </div>
+
+  <div class="settings-group">
+    <div class="group-label">Voice phrases</div>
     <div class="row">
       <label for="set-commit-phrase">Send word</label>
       <input type="text" id="set-commit-phrase" class="text-input" placeholder='e.g. "over" (empty = off)'>
@@ -334,24 +356,6 @@
   </div>
 
   <div class="settings-group">
-    <div class="group-label">Listen mode</div>
-    <div class="row">
-      <label for="set-listen-stt">Sendword detector</label>
-      <select id="set-listen-stt" class="text-input">
-        <option value="local">On — Web Speech (this device)</option>
-        <option value="silence-only">Off — silence only</option>
-      </select>
-    </div>
-    <div class="row hint">
-      Watches the live mic stream for the configured "send word" phrase to
-      commit the recording early. Body transcription is controlled by the
-      Streaming → STT engine setting; this toggle only affects the
-      sendword detector. Set to Off to disable; the silence-driven
-      commit fallback still works either way.
-    </div>
-  </div>
-
-  <div class="settings-group">
     <div class="group-label">Interaction</div>
     <!-- Barge moved to the call-mode menu (chevron next to btn-call).
          Slider 0 = OFF, 5-100 = ON + sensitivity. iOS speakerphone
@@ -366,10 +370,6 @@
       <input type="range" id="set-audio-feedback" min="0" max="100" step="10" value="50">
       <span class="val" id="set-audio-feedback-val">50%</span>
     </div>
-  </div>
-
-  <div class="settings-group">
-    <div class="group-label">Hotkeys</div>
     <div class="row">
       <label for="set-hotkey-call">Toggle call mode</label>
       <input type="text" id="set-hotkey-call" class="hotkey-input" readonly placeholder="click + press keys">
@@ -380,10 +380,6 @@
       <input type="text" id="set-hotkey-mic" class="hotkey-input" readonly placeholder="click + press keys">
       <span class="hint">start / stop voice for whatever mode is active</span>
     </div>
-  </div>
-
-  <div class="settings-group">
-    <div class="group-label">Agent activity</div>
     <div class="row">
       <label for="set-agent-activity">Tool activity</label>
       <select id="set-agent-activity">
