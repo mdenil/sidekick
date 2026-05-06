@@ -51,9 +51,12 @@ Detection runs **client-side** in both modes. Bridge-side VAD is bypassed via th
 
 ## Knobs
 
-The user-facing slider in the call-mode chevron menu maps to **Silero `positiveSpeechThreshold`** (0..1). Lower threshold = more sensitive = fires earlier on quieter speech. The slider's leftmost position turns barge OFF entirely (no detector starts).
+The user-facing slider in the call-mode chevron menu maps to **Silero `positiveSpeechThreshold`** (0..1) — stored as `settings.bargeVadThreshold`. Slider 0..100% maps inversely to threshold 1.0..0.0: higher slider = more sensitive = lower threshold = fires more easily.
 
-Per-device floors live in `src/voiceTuning.ts` — different platforms have different baseline noise floors and AEC quality, so the slider's "50%" maps to slightly different absolute thresholds on iOS vs Mac vs Android.
+- **0% (off)** — sets `bargeIn=false`. The barge detector is never instantiated AND the 14.7 MB Silero asset prefetch is skipped on page load. Use this when you don't want barge at all.
+- **1-99%** — `positiveSpeechThreshold = (100 - slider) / 100`.
+- **50% (default)** — threshold 0.5 (slightly stricter than Silero library default 0.3; absorbs environmental noise).
+- **100%** — threshold 0.0 (max sensitivity; fires on any frame the model can grade).
 
 Other knobs (set in `bargeDetector.ts` defaults, override per-call via `BargeDetectorOpts`):
 
@@ -62,7 +65,7 @@ Other knobs (set in `bargeDetector.ts` defaults, override per-call via `BargeDet
 | `warmupMs` | 500 ms | Grace period after TTS starts before the detector arms. Absorbs the start-of-playback transient. |
 | `cooldownMs` | 2000 ms | Mute the detector for this long after firing. Prevents repeat-fires from one sustained utterance. |
 | `frameMs` | 50 ms | How often the detector polls Silero. Lower = snappier but more CPU. |
-| `positiveSpeechThreshold` | 0.5 | Silero confidence above which the frame counts as speech-active. |
+| `positiveSpeechThreshold` | 0.5 | Silero confidence above which the frame counts as speech-active. Driven by the slider (`settings.bargeVadThreshold`). |
 | `minSpeechMs` | 400 ms | How long speech must sustain before `onSpeechStart` fires. **Bumped from 150→400 ms (2026-05-05)** to suppress wind/breathing/road-rumble on bike rides. Trade: ~250 ms slower perceived response, false-fires gone. |
 
 The detector itself is initialised via `BargeDetector.start({ micStream, isPlayingCb, isEnabledCb, onFire, ... })`; cleanup is `await det.stop()`. Multiple detectors can coexist (e.g. a realtime call + a Listen session both armed); each holds one ref on the shared `speechVad` module.
@@ -78,7 +81,7 @@ The detector itself is initialised via `BargeDetector.start({ micStream, isPlayi
 | [`src/audio/realtime/realtimeBarge.ts`](../src/audio/realtime/realtimeBarge.ts) | Realtime-mode wiring of `BargeDetector` — `isPlayingCb` reads `suppress.isTtsPlaying()`. |
 | [`src/audio/realtime/suppress.ts`](../src/audio/realtime/suppress.ts) | Tracks whether agent audio is currently playing (driven by `assistant_delta` events + `listening` envelope from bridge). |
 | [`src/audio/turn-based/turnbased.ts`](../src/audio/turn-based/turnbased.ts) | Turn-based wiring of `BargeDetector` — `isPlayingCb` reads Listen state machine. |
-| [`src/voiceTuning.ts`](../src/voiceTuning.ts) | Per-device threshold floors. |
+| [`src/voiceTuning.ts`](../src/voiceTuning.ts) | Per-device RMS-amplitude defaults — used by turnbased's silence-end detector only; not the barge VAD slider. |
 | [`src/audio/shared/feedback.ts`](../src/audio/shared/feedback.ts) | The barge fire chime (and other system chimes). |
 
 ## Tests
@@ -94,6 +97,15 @@ The detector itself is initialised via `BargeDetector.start({ micStream, isPlayi
 | `scripts/smoke/realtime-barge-hangup-before-reply.mjs` | Hangup during MicVAD warmup doesn't leak refs. |
 | `scripts/smoke/vad-warm-after-prefetch.mjs` + `vad-init-real.mjs` | Silero asset prefetch + first-call latency budgets. |
 
+Heavier real-audio rig at `scripts/smoke-barge/` (run via `npm run smoke:barge`). Boots stub agent + audio-bridge with fixture TTS + sidekick proxy on isolated ports; chromium drives a real WebRTC call with mic-injected fixture WAVs. Catches end-to-end pipeline regressions:
+
+| Scenario | What it pins |
+|---|---|
+| `silence-no-self-fire` | Silent mic during agent TTS yields zero fires (regression baseline). |
+| `agent-voice-in-mic` | Agent's voice in mic (no AEC) DOES fire — pins the field-bug class on Pi5 until a fix flips this assertion. |
+| `user-speech-fires-barge` | Real user speech fires barge (catches over-correction where a fix goes too deaf). |
+| `threshold-affects-fires` | `bargeVadThreshold=1.0` produces 0 fires; `0.05` fires on agent voice. Pins the slider plumbing. |
+
 ---
 
 ## Current behaviour
@@ -106,7 +118,7 @@ This table is updated as we ship fixes. The dates are when each value last chang
 | Warmup window | 500 ms after TTS start | `DEFAULT_WARMUP_MS` | original |
 | Post-fire cooldown | 2000 ms | `DEFAULT_COOLDOWN_MS` | original |
 | Loop cadence | 50 ms | `DEFAULT_FRAME_MS` | original |
-| Silero `positiveSpeechThreshold` | 0.5 (mapped from user slider) | `bargeDetector.ts` | original |
+| Silero `positiveSpeechThreshold` | 0.5 default; user slider drives `settings.bargeVadThreshold`, mapped 0..100% → 1.0..0.0 inversely | `settings.ts:sensitivityToVadThreshold` | 2026-05-06 |
 | Silero `minSpeechMs` | 400 ms | `DEFAULT_MIN_SPEECH_MS` | 2026-05-05 (was 150) |
 | Silero MicVAD warmup watchdog | 15 s | `speechVad/index.ts` | 2026-05-04 (was 10) |
 | Realtime barge ownership | client (offer carries `client_owns_barge: true`) | `realtime.ts` | 2026-05-03 |
@@ -116,7 +128,7 @@ This table is updated as we ship fixes. The dates are when each value last chang
 
 ## Known issues being investigated
 
-- **Self-barge mid-call on mobile, regardless of slider position.** Reproduced on iPhone PWA standalone with the slider at both 90% and 15% — barge fires ~9 s into TTS playback, with VAD flipping from silent to speech as the agent speaks. Indicates the mic stream feeding Silero is hearing the agent's own voice (speaker-bleed not removed by AEC, or AEC not engaged for the path Silero reads from). Slider's lack of effect suggests either the threshold isn't reaching Silero, or the agent's voice exceeds even the highest threshold. Investigation in progress.
+- **Self-barge mid-call on mobile.** Reproduced on iPhone PWA standalone — barge fires within ~10 s of TTS playback as the agent speaks, with VAD flipping from silent to speech. Indicates the mic stream feeding Silero is hearing the agent's voice (speaker bleed not removed by AEC, or AEC not engaged for the path Silero reads from). Phase A audio-state instrumentation lands the data needed to confirm; the slider plumbing (separate bug, fixed 2026-05-06) is no longer a contributor.
 - **Silero `MicVAD.new` 15 s timeout on Mac Chrome cold start.** Model fetch hangs; no VAD warm; barge silently disabled for the call. Likely network/cache flakiness on first-call asset load. Separate from the self-barge issue.
 
 (Add new entries here as they surface; remove when fixed and verified.)
