@@ -57,10 +57,16 @@ interface CallSession {
   mode: CallMode;
   micStream: MediaStream;
   peerId: string | null;
-  /** Hidden <audio> element playing the remote (TTS) audio track.
-   *  Chrome's WebRTC autoplay-exception keeps it audible without
-   *  explicit user-gesture context resumption. */
+  /** Hidden <audio> element playing the remote (TTS) audio track —
+   *  fallback only. Used when Web Audio routing is unavailable. */
   remoteAudio: HTMLAudioElement | null;
+  /** MediaStreamAudioSourceNode → audioContext.destination — the
+   *  primary playback path. Routing remote audio through Web Audio's
+   *  destination puts it on the AVAudioSession playback channel that
+   *  iOS's WebRTC AEC samples for its reference signal, so AEC can
+   *  actually subtract the agent's voice from the mic capture.
+   *  Held on the session so close() can disconnect cleanly. */
+  remoteSourceNode: MediaStreamAudioSourceNode | null;
   /** Outbound data channel for transcript + reply text events. */
   dataChannel: RTCDataChannel | null;
   state: CallState;
@@ -298,38 +304,81 @@ export async function open(
   // Practically, aiortc's answer will include or omit a sending track
   // based on the mode parameter we POST, so we simply bind ontrack.
   //
-  // Playback path: standard <audio srcObject> element. This is
-  // Chrome's WebRTC-exception to its autoplay policy — peer-connection
-  // audio plays without an explicit user-gesture-tied AudioContext
-  // resume. Going via Web Audio destination requires ctx.resume() to
-  // land within the gesture window, which by ontrack time has expired,
-  // so the AudioContext stays suspended and no audio reaches the
-  // speakers.
+  // Playback path — TWO routes, audio-session-prime → Web Audio
+  // preferred:
+  //
+  //   PRIMARY (Web Audio destination): route the remote MediaStream
+  //   through MediaStreamAudioSourceNode → audioContext.destination.
+  //   Critical for iOS AEC: Apple's WebRTC AEC samples its reference
+  //   signal from the AVAudioSession's playback channel, which is the
+  //   path Web Audio destination uses. The plain <audio srcObject>
+  //   path bypasses this channel, so AEC has no reference signal and
+  //   can't subtract — agent voice arrives in the mic at full volume,
+  //   which is the iOS self-barge bug class (instrumented 2026-05-06,
+  //   peak 0.6 in mic during agent TTS confirms no attenuation).
+  //
+  //   FALLBACK (<audio srcObject>): if the shared AudioContext isn't
+  //   available, or MediaStreamAudioSourceNode construction throws,
+  //   fall back to <audio> playback. Keeps audio playing on platforms
+  //   where Web Audio routing fails for any reason; barge will still
+  //   be over-eager on those platforms but at least the user hears
+  //   the agent.
+  //
+  //   The audio-session-prime step (see top of openCall) already
+  //   resumed the shared AudioContext synchronously inside the call-
+  //   button click handler, so by ontrack time we have a `running`
+  //   context — no autoplay-policy issue. (An older iteration of this
+  //   file ran into ctx-suspended at ontrack time and used <audio>
+  //   exclusively as a workaround; the priming step fixes the timing.)
   let remoteAudio: HTMLAudioElement | null = null;
+  let remoteSourceNode: MediaStreamAudioSourceNode | null = null;
   pc.addEventListener('track', (ev: RTCTrackEvent) => {
     log('[webrtc] ontrack kind=', ev.track.kind);
     if (ev.track.kind !== 'audio') return;
     const stream = ev.streams && ev.streams[0]
       ? ev.streams[0]
       : (() => { const ms = new MediaStream(); ms.addTrack(ev.track); return ms; })();
-    if (!remoteAudio) {
-      remoteAudio = document.createElement('audio');
-      remoteAudio.autoplay = true;
-      remoteAudio.setAttribute('playsinline', '');
-      (remoteAudio as any).playsInline = true;
-      remoteAudio.style.position = 'absolute';
-      remoteAudio.style.left = '-9999px';
-      remoteAudio.style.width = '1px';
-      remoteAudio.style.height = '1px';
-      document.body.appendChild(remoteAudio);
-      if (active) {
-        active.remoteAudio = remoteAudio;
+
+    // Try Web Audio destination first.
+    let webAudioOk = false;
+    try {
+      const ctx = audioPlatform.getSharedAudioCtx();
+      if (ctx && ctx.state === 'running') {
+        // Detach any prior source from a previous track flip.
+        try { remoteSourceNode?.disconnect(); } catch { /* ignore */ }
+        remoteSourceNode = ctx.createMediaStreamSource(stream);
+        remoteSourceNode.connect(ctx.destination);
+        if (active) active.remoteSourceNode = remoteSourceNode;
+        webAudioOk = true;
+        log('[webrtc] remote audio routed via Web Audio destination (AEC reference path)');
       } else {
-        pendingRemoteAudio = remoteAudio;
+        diag('[webrtc] shared audioCtx unavailable or not running, falling back to <audio>',
+          'state=' + (ctx?.state ?? 'null'));
       }
+    } catch (e: any) {
+      diag('[webrtc] Web Audio routing failed, falling back to <audio>:', e?.message);
     }
-    remoteAudio.srcObject = stream;
-    remoteAudio.play().catch((e) => diag('[webrtc] remoteAudio.play err', e?.message));
+
+    if (!webAudioOk) {
+      if (!remoteAudio) {
+        remoteAudio = document.createElement('audio');
+        remoteAudio.autoplay = true;
+        remoteAudio.setAttribute('playsinline', '');
+        (remoteAudio as any).playsInline = true;
+        remoteAudio.style.position = 'absolute';
+        remoteAudio.style.left = '-9999px';
+        remoteAudio.style.width = '1px';
+        remoteAudio.style.height = '1px';
+        document.body.appendChild(remoteAudio);
+        if (active) {
+          active.remoteAudio = remoteAudio;
+        } else {
+          pendingRemoteAudio = remoteAudio;
+        }
+      }
+      remoteAudio.srcObject = stream;
+      remoteAudio.play().catch((e) => diag('[webrtc] remoteAudio.play err', e?.message));
+    }
   });
 
   // Open a data channel BEFORE createOffer so the SDP includes the
@@ -361,6 +410,7 @@ export async function open(
     micStream,
     peerId: null,
     remoteAudio: pendingRemoteAudio ?? remoteAudio,
+    remoteSourceNode,
     dataChannel,
     state: 'connecting',
     pendingCandidates: [],
@@ -542,6 +592,9 @@ export async function close(): Promise<void> {
     try { session.dataChannel.close(); } catch { /* ignore */ }
   }
   try { session.pc.close(); } catch { /* ignore */ }
+  if (session.remoteSourceNode) {
+    try { session.remoteSourceNode.disconnect(); } catch { /* ignore */ }
+  }
   if (session.remoteAudio) {
     try {
       session.remoteAudio.pause();
