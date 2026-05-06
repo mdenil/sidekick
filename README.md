@@ -81,6 +81,7 @@ The Settings panel inside the app handles per-user preferences (theme, mic devic
 | [Audio bridge protocol](docs/SIDEKICK_AUDIO_PROTOCOL.md) | WebRTC data-channel events, dispatch path, listening / barge envelopes. Read before forking `audio-bridge/`. |
 | [Architecture](docs/ARCHITECTURE.md) | System diagram, module tree, endpoint inventory. |
 | [Canvas protocol](docs/CANVAS.md) | Inline card envelopes (link previews, YouTube embeds, image grids). |
+| [Barge-in](docs/BARGE.md) | Detection algorithm, knobs, file map. Read before tuning sensitivity or debugging false-fires / missed-fires. |
 | [Backend READMEs](backends/) | One per backend — install steps, contract pieces implemented. |
 
 ## Contributing
