@@ -175,8 +175,7 @@ export class BargeDetector {
     // with. Pre-fix: always 0.5 (silero default). Post-fix: tracks the
     // user's slider. The slider trace in realtimeBarge.start logs the
     // OTHER end (what the slider says) so the gap is obvious.
-    // eslint-disable-next-line no-console
-    console.log('[dbg] [audio-state] BargeDetector → MicVAD',
+    log('[audio-state] BargeDetector → MicVAD',
       `positiveSpeechThreshold=${this.opts.positiveSpeechThreshold}`,
       `minSpeechMs=${this.opts.minSpeechMs}`);
     // Refcount-inc the shared VAD in the background.

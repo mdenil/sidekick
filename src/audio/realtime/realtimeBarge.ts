@@ -31,8 +31,7 @@ export function start(
     return;
   }
   const threshold = typeof s.bargeVadThreshold === 'number' ? s.bargeVadThreshold : 0.5;
-  // eslint-disable-next-line no-console
-  console.log('[dbg] [audio-state] realtimeBarge.start',
+  log('[audio-state] realtimeBarge.start',
     `bargeIn=true`,
     `bargeVadThreshold=${threshold}`);
   detector = new BargeDetector();

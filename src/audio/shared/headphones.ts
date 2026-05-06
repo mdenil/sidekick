@@ -113,19 +113,18 @@ export function audioStateSnapshot(): {
 
 /** One-shot diag dump — formats the snapshot as a single log line at
  *  a named milestone. Use sparingly; prod calls these checkpoints to
- *  build the timeline of audio-state transitions during call setup. */
+ *  build the timeline of audio-state transitions during call setup.
+ *  Uses log() (not console.log) so the line lands in the on-page debug
+ *  panel that's reachable from iOS PWA without an inspector. */
 export function logAudioState(label: string): void {
   const s = audioStateSnapshot();
-  const fields = [
+  log('[audio-state]',
     `label=${label}`,
     `routing=${s.routing}`,
     `audioSessionAvailable=${s.audioSessionAvailable}`,
     `type=${s.audioSessionType}`,
     `outputType=${s.audioSessionOutputType}`,
-    `mode=${s.audioSessionMode}`,
-  ].join(' ');
-  // eslint-disable-next-line no-console
-  console.log('[dbg] [audio-state]', fields);
+    `mode=${s.audioSessionMode}`);
 }
 
 /** True only when we have positive confirmation we're on a same-device

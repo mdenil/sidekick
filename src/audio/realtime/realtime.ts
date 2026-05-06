@@ -265,8 +265,7 @@ export async function open(
     const tracks = micStream.getAudioTracks();
     if (tracks.length > 0) {
       const s = tracks[0].getSettings ? tracks[0].getSettings() : {};
-      // eslint-disable-next-line no-console
-      console.log('[dbg] [audio-state] track.getSettings()',
+      log('[audio-state] track.getSettings()',
         `aec=${(s as any).echoCancellation}`,
         `ns=${(s as any).noiseSuppression}`,
         `agc=${(s as any).autoGainControl}`,
