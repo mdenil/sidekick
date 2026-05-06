@@ -18,7 +18,8 @@
     "start:dev": "node scripts/build.mjs --watch & node --experimental-strip-types --disable-warning=ExperimentalWarning --watch server.ts",
     "test": "node --test --experimental-strip-types --disable-warning=ExperimentalWarning 'test/**/*.test.ts' 'src/**/*.test.ts' 'proxy/**/*.test.ts'",
     "typecheck": "tsc --noEmit",
-    "smoke": "node scripts/run-smoke.mjs"
+    "smoke": "node scripts/run-smoke.mjs",
+    "smoke:barge": "node scripts/run-smoke-barge.mjs"
   },
   "dependencies": {
     "@capacitor/android": "^8.3.1",
