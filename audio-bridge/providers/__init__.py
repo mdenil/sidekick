@@ -29,6 +29,7 @@ from .tts import TTSProvider, get_tts_provider, register_tts_provider
 # purpose so that selecting them in config makes the cause obvious.
 from . import deepgram as _deepgram_stt  # noqa: F401
 from . import deepgram_aura as _deepgram_tts  # noqa: F401
+from . import fixture as _fixture_tts  # noqa: F401  # smoke-test provider
 
 __all__ = [
     "STTProvider",
