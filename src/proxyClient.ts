@@ -117,6 +117,13 @@ interface SessionsResponse {
     source?: string;            // 'sidekick' | 'telegram' | 'slack' | … (added 2026-04-29 for cross-platform drawer)
     title?: string | null;
     message_count?: number;
+    /** User-role message count ("turns"). Drawer renders as "N turns".
+     *  Optional — older backends only emit message_count and the drawer
+     *  falls back to that. */
+    turn_count?: number;
+    /** Tool-role message count. Pairs with turn_count for "N turns · M
+     *  tools" rendering. Optional for backwards compat. */
+    tool_count?: number;
     last_active_at?: string | number | null;
     created_at?: string | number | null;
     /** Snippet of the first user message in the session, truncated to
@@ -820,6 +827,10 @@ export const proxyClientAdapter = {
         snippet,
         lastMessageAt: lastActive,
         messageCount,
+        // Optional split — drawer renders "N turns · M tools" when both
+        // are present, falls back to "{messageCount} msgs" otherwise.
+        turnCount: e.turn_count,
+        toolCount: e.tool_count,
       };
     });
 
@@ -850,6 +861,8 @@ export const proxyClientAdapter = {
         snippet: '',
         lastMessageAt: Math.floor(conv.last_message_at / 1000),
         messageCount: 0,
+        turnCount: undefined,
+        toolCount: undefined,
       });
     }
     // Resort: server may already be sorted but the appended local-only
@@ -884,6 +897,8 @@ export const proxyClientAdapter = {
         snippet: '',
         lastMessageAt: Math.floor(Date.now() / 1000),
         messageCount: 0,
+        turnCount: undefined,
+        toolCount: undefined,
       });
     }
     return merged;

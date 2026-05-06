@@ -1109,11 +1109,14 @@ class SidekickAdapter(BasePlatformAdapter):
                 "metadata": {
                     "title": title or "",
                     "message_count": message_count,
+                    "turn_count": turn_count,
+                    "tool_count": tool_count,
                     "last_active_at": int(last_active_at),
                     "first_user_message": first_user_message,
                 },
             }
             for (chat_id, _source, _chat_type, title, message_count,
+                 turn_count, tool_count,
                  last_active_at, created_at, first_user_message) in rows
         ]
         return web.json_response({"object": "list", "data": data})
@@ -1237,6 +1240,8 @@ class SidekickAdapter(BasePlatformAdapter):
                 "metadata": {
                     "title": title or "",
                     "message_count": message_count,
+                    "turn_count": turn_count,
+                    "tool_count": tool_count,
                     "last_active_at": int(last_active_at),
                     "first_user_message": first_user_message,
                     "source": source,
@@ -1248,6 +1253,7 @@ class SidekickAdapter(BasePlatformAdapter):
                 },
             }
             for (chat_id, source, chat_type, title, message_count,
+                 turn_count, tool_count,
                  last_active_at, created_at, first_user_message) in rows
         ]
         return web.json_response({"object": "list", "data": data})
@@ -1424,8 +1430,17 @@ class SidekickAdapter(BasePlatformAdapter):
         """Drawer aggregation grouped by ``(user_id, source)``.
 
         Returns ``[(chat_id, source, chat_type, title, message_count,
-        last_active_at, created_at, first_user_message), …]`` sorted
-        most-recently-active first, bounded by ``limit``.
+        turn_count, tool_count, last_active_at, created_at,
+        first_user_message), …]`` sorted most-recently-active first,
+        bounded by ``limit``.
+
+        ``turn_count`` is user-role messages (the user's mental model of
+        "how many times have I said something"); ``tool_count`` is the
+        opaque count of tool-call/result rows hermes inserted along the
+        way. The drawer renders ``N turns · M tools`` when both are
+        present (vs the misleading ``message_count`` which used to read
+        as e.g. "39 msgs" when the user had only spoken twice and the
+        agent had run 35 tool calls under the hood).
 
         ``sources`` is the platform allow-list — any non-empty
         ``sessions.source`` is included if its value is in this tuple.
@@ -1473,6 +1488,14 @@ class SidekickAdapter(BasePlatformAdapter):
                     (SELECT COUNT(*) FROM messages m
                        WHERE m.session_id = s.id)
                 ) AS message_count,
+                SUM(
+                    (SELECT COUNT(*) FROM messages m
+                       WHERE m.session_id = s.id AND m.role = 'user')
+                ) AS turn_count,
+                SUM(
+                    (SELECT COUNT(*) FROM messages m
+                       WHERE m.session_id = s.id AND m.role = 'tool')
+                ) AS tool_count,
                 (SELECT COALESCE(s2.title, '')
                    FROM sessions s2
                    WHERE s2.user_id = s.user_id AND s2.source = s.source
@@ -1497,12 +1520,14 @@ class SidekickAdapter(BasePlatformAdapter):
         ) as conn:
             rows = conn.execute(sql, params).fetchall()
         out = []
-        for user_id, source, created_at, last_active_at, mcount, title, first_user in rows:
+        for (user_id, source, created_at, last_active_at, mcount,
+             turn_count, tool_count, title, first_user) in rows:
             if not user_id:
                 continue
             first_user_truncated = (first_user or "")[:80] or None
             out.append((
                 user_id, source, "dm", title or "", int(mcount or 0),
+                int(turn_count or 0), int(tool_count or 0),
                 float(last_active_at or 0), float(created_at or 0),
                 first_user_truncated,
             ))

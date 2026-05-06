@@ -767,9 +767,18 @@ function renderRow(s: any, activeId: string): HTMLLIElement {
   const sourceBadge = s.source && s.source !== 'sidekick' && s.source !== 'api_server'
     ? `<span style="text-transform:uppercase;font-size:10px;letter-spacing:0.05em;opacity:0.7">${s.source}</span>`
     : '';
+  // Prefer the turns/tools split when both fields are present (newer
+  // backends): user-perceived "turns" matches mental model far better
+  // than raw message_count, which inflates by tool-call rows. Fall
+  // back to "N msgs" for older backends that only emit message_count.
+  const tCount = (s as any).turnCount;
+  const toolCount = (s as any).toolCount;
+  const countLabel = (typeof tCount === 'number' && typeof toolCount === 'number')
+    ? (toolCount > 0 ? `${tCount} turns · ${toolCount} tools` : `${tCount} turns`)
+    : `${s.messageCount || 0} msgs`;
   meta.innerHTML =
     `<span>${fmtRelativeTime(s.lastMessageAt)}</span>` +
-    `<span>${s.messageCount || 0} msgs</span>` +
+    `<span>${countLabel}</span>` +
     sourceBadge;
 
   body.appendChild(snippet);
