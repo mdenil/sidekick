@@ -20,6 +20,7 @@ import * as sessionDrawer from './sessionDrawer.ts';
 import * as cmdkPalette from './cmdkPalette.ts';
 import { attachSliderTouchAll } from './sliderTouch.ts';
 import * as sidebarResize from './sidebarResize.ts';
+import * as sidebarSwipe from './sidebarSwipe.ts';
 import * as multiSelect from './multiSelect.ts';
 import * as agentSettingsMod from './agentSettings.ts';
 import { primeAudio, getSharedAudioCtx } from './audio/shared/platform.ts';
@@ -364,6 +365,15 @@ async function boot() {
       if (window.innerWidth >= 700) return;   // desktop: no-op
       setExpanded(false);
     }, true);
+
+    // Edge-swipe to open / drawer-swipe to close (mobile only). Shares
+    // the same setExpanded closure so persistence + body class flips
+    // route through one path; the swipe module owns the visual drag +
+    // snap animation and calls setExpanded() at the end of each gesture.
+    sidebarSwipe.init({
+      setExpanded,
+      isExpanded: () => sidebar.classList.contains('expanded'),
+    });
   }
 
   // Drop a chat we're navigating AWAY from if it's an empty placeholder
