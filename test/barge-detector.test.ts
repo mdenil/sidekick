@@ -16,6 +16,7 @@ import {
   BargeDetector,
   setSpeechActiveOverrideForTests,
 } from '../src/audio/shared/bargeDetector.ts';
+import { FakeVadSource } from '../src/audio/shared/vadSource.ts';
 import * as speechVad from '../src/audio/shared/speechVad/index.ts';
 
 // ─── Mocks ────────────────────────────────────────────────────────────
@@ -289,6 +290,61 @@ describe('BargeDetector', () => {
     assert.equal(det.isRunning(), true);
     await det.stop();
     assert.equal(det.isRunning(), false);
+  });
+
+  it('VadSource DI: fires when fake.setSpeechActive(true) and not before', async () => {
+    let fires = 0;
+    const fake = new FakeVadSource();
+    const det = new BargeDetector();
+    await det.start({
+      micStream: stubMicStream,
+      isPlayingCb: () => true,
+      isEnabledCb: () => true,
+      onFire: () => { fires++; },
+      warmupMs: 0,
+      frameMs: FRAME_MS,
+      cooldownMs: 200,
+      silentFire: true,
+      vadSource: fake,
+    });
+    // VadSource start() was awaited — fake reports started.
+    assert.equal(fake.isStarted(), true);
+    // No fire while speech is silent.
+    await sleep(20);
+    assert.equal(fires, 0);
+    // Drive synthetic speech.
+    fake.setSpeechActive(true);
+    await sleep(20);
+    assert.equal(fires, 1);
+    await det.stop();
+    // VadSource.stop() was called on detector teardown.
+    assert.equal(fake.isStarted(), false);
+  });
+
+  it('VadSource DI: peak gate suppresses fire when fake peak below minPeak', async () => {
+    let fires = 0;
+    const fake = new FakeVadSource();
+    const det = new BargeDetector();
+    fake.setSpeechActive(true);
+    fake.setPeak(0.05);  // below threshold
+    await det.start({
+      micStream: stubMicStream,
+      isPlayingCb: () => true,
+      isEnabledCb: () => true,
+      onFire: () => { fires++; },
+      warmupMs: 0,
+      frameMs: FRAME_MS,
+      cooldownMs: 200,
+      silentFire: true,
+      vadSource: fake,
+      minPeak: 0.15,
+    });
+    await sleep(30);
+    assert.equal(fires, 0, 'peak below minPeak should suppress');
+    fake.setPeak(0.4);  // above threshold
+    await sleep(30);
+    await det.stop();
+    assert.equal(fires, 1, 'peak above minPeak should allow fire');
   });
 
   it('multiple detectors share the speechVad refcount cleanly', async () => {

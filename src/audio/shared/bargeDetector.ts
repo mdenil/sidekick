@@ -40,16 +40,20 @@
  *   Multiple detectors can coexist (e.g. a realtime call AND a Listen
  *   session both armed) — each holds one ref on speechVad.
  *
- * Test seam: `setSpeechActiveOverrideForTests(fn)` swaps the
- * speechVad.isSpeechActive() call for a test-supplied function so unit
- * tests can drive synthetic speech/non-speech sequences without the
- * actual WASM model. The lifecycle hooks (speechVad.start / stop) are
- * mocked separately via `speechVad.setVadLibForTests`.
+ * Test seam: pass a `FakeVadSource` (from ./vadSource) via opts.vadSource.
+ * Tests drive synthetic speech sequences by calling fake.setSpeechActive()
+ * and fake.setPeak() directly — no module-level overrides needed.
+ *
+ * VAD source is pluggable: ClientSideVadSource is the production default
+ * (current Silero+vad-web behavior); BridgeVadSource consumes
+ * {type:'speech-active'} envelopes from the bridge for desktop Chrome
+ * (where ONNX Runtime Web cold-start fails per microsoft/onnxruntime#19177).
+ * Per-route policy in headphones.ts picks the source.
  */
 
 import { log } from '../../util/log.ts';
 import { playFeedback } from './feedback.ts';
-import * as speechVad from './speechVad/index.ts';
+import { ClientSideVadSource, type VadSource } from './vadSource.ts';
 
 export interface BargeDetectorOpts {
   /** The mic MediaStream feeding both the WebRTC peer (or MediaRecorder)
@@ -93,6 +97,11 @@ export interface BargeDetectorOpts {
    *  per-device default; other platforms leave it undefined and the
    *  gate is skipped. */
   minPeak?: number;
+  /** VAD source — defaults to a fresh ClientSideVadSource. Production
+   *  callers leave undefined (or pass ClientSideVadSource for iOS,
+   *  BridgeVadSource for desktop per per-route policy); tests pass a
+   *  FakeVadSource and drive speech-active state directly. */
+  vadSource?: VadSource;
 }
 
 const DEFAULT_WARMUP_MS = 500;
@@ -107,44 +116,39 @@ const DEFAULT_COOLDOWN_MS = 2000;
 // BargeDetectorOpts.minSpeechMs if a quieter env wants snappier UX.
 const DEFAULT_MIN_SPEECH_MS = 400;
 
-/** Test-only override of `speechVad.isSpeechActive`. Unit tests inject a
- *  function returning the synthetic speech-active state for the current
- *  tick. Production code never touches this. */
+// Module-level test override — kept for compatibility with the
+// pre-VadSource smoke-test pattern where the test-harness injects
+// `setSpeechActiveOverrideForTests(fn)` from outside the BargeDetector
+// instance (e.g. `realtime-barge-client-side.mjs`). When set, the
+// override takes precedence over `vadSource.isSpeechActive()` per tick.
+// New unit tests should prefer dependency injection via opts.vadSource
+// (FakeVadSource); this hook is for integration smoke tests that don't
+// have a handle on the detector.
 let speechActiveOverride: (() => boolean) | null = null;
 let speechPeakOverride: (() => number) | null = null;
 
-/** @internal — test hook. Pass null to restore the production read. */
+/** Test hook — when set, returns the override's value instead of the
+ *  bound VadSource's isSpeechActive(). Pass null to restore. */
 export function setSpeechActiveOverrideForTests(fn: (() => boolean) | null): void {
   speechActiveOverride = fn;
 }
-/** @internal — test hook for the optional peak gate. */
+/** Test hook — same idea, for the optional iOS peak gate. */
 export function setSpeechPeakOverrideForTests(fn: (() => number) | null): void {
   speechPeakOverride = fn;
 }
 
-function readSpeechActive(): boolean {
-  return speechActiveOverride ? speechActiveOverride() : speechVad.isSpeechActive();
-}
-function readSpeechPeak(): number {
-  return speechPeakOverride ? speechPeakOverride() : speechVad.getRecentPeak();
-}
-
 export class BargeDetector {
-  private opts: Required<Omit<BargeDetectorOpts, 'silentFire'>> & { silentFire: boolean } | null = null;
+  private opts: Required<Omit<BargeDetectorOpts, 'silentFire' | 'vadSource'>> & { silentFire: boolean } | null = null;
   private loop: ReturnType<typeof setInterval> | null = null;
   private warmupUntil = 0;     // ms timestamp; 0 means "armed on next isPlayingCb=true"
   private cooldownUntil = 0;   // ms timestamp; 0 means "no cooldown active"
-  // True from the moment we INVOKE speechVad.start, NOT from when it
-  // resolves successfully. Critical for v0.422 async-fire correctness:
-  // if a call ends before MicVAD.new() resolves, stop() must still
-  // call speechVad.stop() to drop the in-flight reference, otherwise
-  // activeVad gets bound to a dead micStream and the next call's
-  // refcount path returns an unusable detector (the v0.423 bug
-  // Jonathan caught — vad=silent forever on call #2 because MicVAD
-  // was reading from call #1's killed stream). v0.424: also added
-  // stream-identity check inside speechVad.start as a belt-and-
-  // braces — if both fixes hold, only the BargeDetector flag matters.
-  private vadStartCalled = false;
+  // The active VAD source — set in start() BEFORE the async vadSource.start()
+  // resolves, cleared in stop(). Critical for the v0.422-era async-fire
+  // race: if stop() runs while the VAD source is still warming, we still
+  // tear it down so the next call's source binds to a fresh micStream.
+  // Without this, vad=silent forever on call #2 because the in-flight
+  // start resolved into an orphan that nobody owns.
+  private vadSource: VadSource | null = null;
   // Diag tick counter — emit one line every 10 frames (~500ms at the
   // default cadence) so a "barge didn't fire" debugging session can see
   // exactly what the detector was deciding each tick. Distinguishes
@@ -181,12 +185,15 @@ export class BargeDetector {
       silentFire: opts.silentFire ?? false,
       minPeak: opts.minPeak,  // undefined = no peak gate (Mac/Linux); iOS sets a value
     };
+    // Bind the VAD source — caller-supplied or default to ClientSide.
+    // Set BEFORE awaiting start() so a concurrent stop() can still tear
+    // it down (handles the v0.422 hangup-during-warmup race).
+    this.vadSource = opts.vadSource ?? new ClientSideVadSource();
     // Start the loop FIRST so ticks fire even if VAD never finishes
-    // warming. tick() short-circuits (vad=silent) when speechVad isn't
+    // warming. tick() short-circuits (vad=silent) when the source isn't
     // ready, so this is safe — the only cost is wasted CPU on a few
     // no-op frames during cold start.
     this.loop = setInterval(() => this.tick(), this.opts.frameMs);
-    this.vadStartCalled = true;  // see field docstring; flag flips on INVOKE, not resolve
     log('[barge-detector] started — loop running, VAD warming async');
     // [audio-state] confirm the threshold value MicVAD is initialized
     // with. Pre-fix: always 0.5 (silero default). Post-fix: tracks the
@@ -196,18 +203,18 @@ export class BargeDetector {
       `positiveSpeechThreshold=${this.opts.positiveSpeechThreshold}`,
       `minSpeechMs=${this.opts.minSpeechMs}`,
       `minPeak=${this.opts.minPeak ?? 'none'}`);
-    // Refcount-inc the shared VAD in the background. Pass our
-    // isPlayingCb as the frame-log gate so the [audio-state] vad-frame
-    // instrumentation only fires while agent TTS is playing — that's
-    // when residual matters; pre-call silence isn't useful to log.
-    speechVad.start(opts.micStream, {
+    // Fire VAD warm in the background. Pass isPlayingCb as the frame-log
+    // gate so per-frame instrumentation only fires while agent TTS is
+    // playing — that's when residual matters; pre-call silence isn't
+    // useful to log.
+    this.vadSource.start(opts.micStream, {
       positiveSpeechThreshold: this.opts.positiveSpeechThreshold,
       minSpeechMs: this.opts.minSpeechMs,
       shouldLogFrames: this.opts.isPlayingCb,
     }).then(ok => {
       log(ok ? '[barge-detector] VAD warm' : '[barge-detector] VAD failed to start — barge will not fire');
     }).catch((e: any) => {
-      log('[barge-detector] speechVad.start threw:', e?.message);
+      log('[barge-detector] vadSource.start threw:', e?.message);
     });
   }
 
@@ -220,12 +227,13 @@ export class BargeDetector {
     this.warmupUntil = 0;
     this.cooldownUntil = 0;
     this.opts = null;
-    // Always tell speechVad we're done if we ever called start —
-    // even if MicVAD.new hasn't resolved yet. Otherwise we leak a
-    // ref + bind it to a dead micStream for the next caller.
-    if (this.vadStartCalled) {
-      this.vadStartCalled = false;
-      try { await speechVad.stop(); } catch { /* noop */ }
+    // Tear down the VAD source if we ever bound one, even if its start()
+    // hasn't resolved yet. Otherwise the next call's source binds to a
+    // dead micStream.
+    if (this.vadSource) {
+      const src = this.vadSource;
+      this.vadSource = null;
+      try { await src.stop(); } catch { /* noop */ }
     }
   }
 
@@ -256,7 +264,9 @@ export class BargeDetector {
     }
     const inWarmup = now < this.warmupUntil;
     const inCooldown = now < this.cooldownUntil;
-    const speechActive = readSpeechActive();
+    const speechActive = speechActiveOverride
+      ? speechActiveOverride()
+      : (this.vadSource?.isSpeechActive() ?? false);
     // Diag tick — every ~500ms during playback, log the decision state
     // so a "didn't fire" failure is debuggable from the chat log.
     this.diagTickCount++;
@@ -277,7 +287,9 @@ export class BargeDetector {
     // user speech. Real user "stop" peaks at 0.3+; residual at 0.05.
     // Skip the gate when minPeak is undefined (Mac/Linux — full AEC).
     if (typeof o.minPeak === 'number') {
-      const peak = readSpeechPeak();
+      const peak = speechPeakOverride
+        ? speechPeakOverride()
+        : (this.vadSource?.getRecentPeak() ?? 0);
       if (peak < o.minPeak) {
         log(`[barge-detector] suppressed — peak ${peak.toFixed(3)} < minPeak ${o.minPeak} (likely AEC residual)`);
         return;
