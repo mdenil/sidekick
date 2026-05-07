@@ -293,6 +293,9 @@ describe('BargeDetector', () => {
   });
 
   it('VadSource DI: fires when fake.setSpeechActive(true) and not before', async () => {
+    // beforeEach sets the speechActive override to () => false; clear it so
+    // the DI path actually consults vadSource.isSpeechActive().
+    setSpeechActiveOverrideForTests(null);
     let fires = 0;
     const fake = new FakeVadSource();
     const det = new BargeDetector();
@@ -322,6 +325,7 @@ describe('BargeDetector', () => {
   });
 
   it('VadSource DI: peak gate suppresses fire when fake peak below minPeak', async () => {
+    setSpeechActiveOverrideForTests(null);
     let fires = 0;
     const fake = new FakeVadSource();
     const det = new BargeDetector();
