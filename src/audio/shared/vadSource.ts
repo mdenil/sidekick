@@ -25,6 +25,8 @@
  */
 
 import * as speechVad from './speechVad/index.ts';
+import { tapEnvelopes } from '../realtime/realtime.ts';
+import { log } from '../../util/log.ts';
 
 export interface VadSourceOpts {
   /** Silero confidence above which a frame counts as speech-active. 0..1. */
@@ -74,6 +76,68 @@ export class ClientSideVadSource implements VadSource {
   getRecentPeak(): number {
     return speechVad.getRecentPeak();
   }
+}
+
+/**
+ * Bridge-side VAD source. Subscribes to {type:'speech-active', active}
+ * envelopes that the audio bridge fires from server-side Silero +
+ * (eventually) Deepgram interim cross-check. No client-side ONNX —
+ * the fix for desktop Chrome cold-start fragility.
+ *
+ * The bridge emits transitions only (one envelope per state change).
+ * BridgeVadSource latches the most recent value and exposes it via the
+ * synchronous isSpeechActive() that BargeDetector polls per tick.
+ *
+ * Note: subscribing before the data channel opens is required to catch
+ * the first envelope. start() registers the tap synchronously, so the
+ * subscription is live by the time the channel produces its first
+ * message — this matches BargeDetector's real lifecycle (start runs
+ * during call setup, before `connectionstatechange === 'connected'`).
+ *
+ * getRecentPeak() returns 0 — peak amplitude is a client-only concept.
+ * The bridge does discrimination via Silero+hysteresis, not amplitude
+ * gates, so feeding peak into the iOS minPeak gate would always read 0
+ * and (wrongly) suppress fires. BargeDetector's peak-gate path skips
+ * when the source returns 0; see bargeDetector.ts.
+ */
+export type EnvelopeSubscriber = (cb: (ev: any) => void) => () => void;
+
+export class BridgeVadSource implements VadSource {
+  private speechActive = false;
+  private unsubscribe: (() => void) | null = null;
+  private subscribe: EnvelopeSubscriber;
+
+  /** subscribe is injected for testability. Production callers pass
+   *  the realtime module's `tapEnvelopes`; tests pass a stub that
+   *  returns the listener so they can drive synthetic envelopes. */
+  constructor(subscribe: EnvelopeSubscriber = tapEnvelopes) {
+    this.subscribe = subscribe;
+  }
+
+  async start(_micStream: MediaStream, _opts: VadSourceOpts): Promise<boolean> {
+    if (this.unsubscribe) return true;
+    this.unsubscribe = this.subscribe((ev) => {
+      if (!ev || ev.type !== 'speech-active') return;
+      const next = !!ev.active;
+      if (next !== this.speechActive) {
+        this.speechActive = next;
+        log(`[bridge-vad] speech-active=${next}`);
+      }
+    });
+    return true;
+  }
+
+  async stop(): Promise<void> {
+    if (this.unsubscribe) {
+      this.unsubscribe();
+      this.unsubscribe = null;
+    }
+    this.speechActive = false;
+  }
+
+  isSpeechActive(): boolean { return this.speechActive; }
+
+  getRecentPeak(): number { return 0; }
 }
 
 /** In-process fake — for unit tests. The detector reads isSpeechActive()

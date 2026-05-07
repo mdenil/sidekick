@@ -101,9 +101,36 @@ interface BargeEvent {
 interface ListeningEvent {
   type: 'listening';
 }
-type DataChannelEvent = TranscriptEvent | BargeEvent | ListeningEvent;
+/**
+ * Bridge-side VAD fired a sustained speech-active state change. The
+ * client's BridgeVadSource consumes these to drive the unified
+ * BargeDetector when per-route policy selects bridge VAD. Transitions
+ * only — bridge sends one envelope per state change, not per frame.
+ */
+interface SpeechActiveEvent {
+  type: 'speech-active';
+  active: boolean;
+}
+type DataChannelEvent = TranscriptEvent | BargeEvent | ListeningEvent | SpeechActiveEvent;
 
 let onDataChannelEvent: ((ev: DataChannelEvent) => void) | null = null;
+
+/**
+ * Internal envelope tap for in-module subscribers (currently
+ * BridgeVadSource). Independent of the single-slot
+ * setDataChannelListener registry, which is reserved for app-level
+ * handlers that swap save-and-restore (dictate, STTProvider, main.ts).
+ *
+ * Multiple taps fan out concurrently. Each tap sees the full envelope
+ * stream after JSON parse; filtering by `type` is the tap's
+ * responsibility. Returns an unsubscribe.
+ */
+const internalEnvelopeTaps = new Set<(ev: any) => void>();
+
+export function tapEnvelopes(cb: (ev: any) => void): () => void {
+  internalEnvelopeTaps.add(cb);
+  return () => { internalEnvelopeTaps.delete(cb); };
+}
 
 /** Register a single global handler for data-channel events from the
  *  active peer connection.  Replaces any prior handler. */
@@ -456,6 +483,10 @@ export async function open(
     try { parsed = JSON.parse(ev.data); }
     catch (e: any) { diag('[webrtc] dc bad json:', e?.message); return; }
     if (!parsed || typeof parsed.type !== 'string') return;
+    for (const tap of internalEnvelopeTaps) {
+      try { tap(parsed); }
+      catch (e: any) { diag('[webrtc] dc tap threw:', e?.message); }
+    }
     if (onDataChannelEvent) {
       try { onDataChannelEvent(parsed as DataChannelEvent); }
       catch (e: any) { diag('[webrtc] dc listener threw:', e?.message); }
