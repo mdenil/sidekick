@@ -219,6 +219,14 @@ async def _run_stt(
 
     async def _pcm_iter() -> AsyncIterator[bytes]:
         tts_track = peer.extra.get("tts_track")
+        # Bridge-side BargePolicy — set in attach() if silero-vad is
+        # available. Fed every mic frame here BEFORE the half-duplex
+        # silence-swap so the policy sees real audio during tts_active
+        # windows. Falls through (None) when silero-vad isn't installed
+        # or attach() hasn't run for this peer; bridge-side barge is
+        # then a no-op and the client's BargeDetector remains the only
+        # source. See audio-bridge/barge_policy.py.
+        barge_policy = peer.extra.get("barge_policy")
         was_active = False
         # Whether we've already announced "STT pipe is hot" for this
         # turn boundary. Flips True on the first frame the bridge
@@ -234,6 +242,18 @@ async def _run_stt(
             if chunk is None:
                 return
             tts_active = tts_track is not None and tts_track.is_active()
+            # Feed the BargePolicy regardless of tts_active — the policy's
+            # own gate uses the flag to enable Silero only during the
+            # agent-speaking window AND to reset hysteresis cleanly when
+            # TTS ends. Cheap call when silero isn't loaded (None branch).
+            if barge_policy is not None:
+                try:
+                    barge_policy.feed_frame(chunk, tts_active)
+                except Exception as e:  # pragma: no cover
+                    logger.warning(
+                        "[stt-bridge] peer %s barge_policy.feed_frame raised: %s",
+                        peer.peer_id, e,
+                    )
             if tts_active:
                 if not was_active:
                     logger.info(

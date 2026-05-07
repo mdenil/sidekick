@@ -195,10 +195,17 @@ async def handle_offer(request: "web.Request") -> "web.Response":
     import stt_bridge
     import tts_bridge
     import dispatch_listener
+    import barge_policy
 
     stt_bridge.attach(peer, voice_config=_VOICE_CONFIG, api_server=_API_SERVER_REF)
     if mode == "talk":
         tts_bridge.attach(peer, voice_config=_VOICE_CONFIG, api_server=_API_SERVER_REF)
+        # Bridge-side BargePolicy emits {type:'speech-active'} envelopes
+        # consumed by the PWA's BridgeVadSource. No-op when silero-vad
+        # isn't installed (peer.extra['barge_policy'] = None and the
+        # stt_bridge feed_frame call falls through harmlessly). Stream
+        # mode skips this entirely — there's no TTS to barge against.
+        barge_policy.attach(peer, voice_config=_VOICE_CONFIG)
     dispatch_listener.attach(peer)
 
     # Lifecycle logging — useful for postmortems on the bike.
