@@ -477,9 +477,9 @@
                    reports speaker output in turnbased mode (barge is
                    acoustically impossible on Mac/iPhone built-in
                    speakers without WebRTC AEC; see audio/shared/headphones.ts). -->
-              <div id="call-mode-barge-row" class="mic-barge-row" role="group" aria-label="Barge sensitivity">
-                <span class="mic-barge-label">Barge</span>
-                <input type="range" id="call-mode-barge-slider" min="0" max="100" step="5" value="60" aria-label="Barge sensitivity (0 = off)">
+              <div id="call-mode-barge-row" class="mic-barge-row" role="group" aria-label="Barge sensitivity" title="How easily talking interrupts the reply. 0% = off; higher = more sensitive (more interruptions, more false fires).">
+                <span class="mic-barge-label">Barge sensitivity</span>
+                <input type="range" id="call-mode-barge-slider" min="0" max="100" step="5" value="60" aria-label="Barge sensitivity (0 = off, higher = more sensitive)" title="0% = off · higher = more sensitive">
                 <span class="mic-barge-val" id="call-mode-barge-val">60%</span>
               </div>
             </div>
