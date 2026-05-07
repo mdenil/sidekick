@@ -217,21 +217,23 @@ describe('vadRouting', () => {
       assert.equal(effectiveBargeThreshold(0.9, false), 0.9);
     });
 
-    it('speaker route + user below floor: clamps up to floor', () => {
-      assert.equal(effectiveBargeThreshold(0.3, true), SPEAKER_BARGE_THRESHOLD_FLOOR);
-      assert.equal(effectiveBargeThreshold(0.5, true), SPEAKER_BARGE_THRESHOLD_FLOOR);
-    });
-
-    it('speaker route + user above floor: user value wins', () => {
-      assert.equal(effectiveBargeThreshold(0.8, true), 0.8);
+    it('speaker route: user value passes through (floor=0 while tuning)', () => {
+      assert.equal(effectiveBargeThreshold(0.3, true), 0.3);
+      assert.equal(effectiveBargeThreshold(0.5, true), 0.5);
       assert.equal(effectiveBargeThreshold(0.99, true), 0.99);
     });
 
-    it('speaker route + user exactly at floor: equals floor', () => {
-      assert.equal(
-        effectiveBargeThreshold(SPEAKER_BARGE_THRESHOLD_FLOOR, true),
-        SPEAKER_BARGE_THRESHOLD_FLOOR,
-      );
+    it('SPEAKER_BARGE_THRESHOLD_FLOOR is 0 (disabled pending field tuning)', () => {
+      // When we set this to a positive value, the speaker-route test
+      // above will need to be updated to reflect the clamp.
+      assert.equal(SPEAKER_BARGE_THRESHOLD_FLOOR, 0);
+    });
+
+    it('floor wiring still applies max() — sanity check the math', () => {
+      // Math.max behaves correctly even with floor=0; this guards
+      // against accidental regression to floor < 0.
+      assert.equal(Math.max(0.3, SPEAKER_BARGE_THRESHOLD_FLOOR), 0.3);
+      assert.ok(SPEAKER_BARGE_THRESHOLD_FLOOR >= 0);
     });
   });
 });

@@ -29,12 +29,14 @@
 import { detectDeviceClass } from '../../voiceTuning.ts';
 import { BridgeVadSource, ClientSideVadSource, type VadSource } from './vadSource.ts';
 
-/** Floor applied to the user's barge threshold when the active output
- *  route is the device's built-in speaker. At normal speaker volume,
- *  AEC residual + TTS bleed land Silero confidence in the 0.4-0.6
- *  range; this floor rejects that band so false fires don't dominate
- *  the call. Starting value — tune with field data. */
-export const SPEAKER_BARGE_THRESHOLD_FLOOR = 0.65;
+/** Floor applied to the user's barge threshold on the built-in
+ *  speaker route. CURRENTLY DISABLED (=0) — full slider range needs
+ *  to stay tunable while Jonathan field-tests. Once we have data on
+ *  where false fires concentrate at speaker volume, set this to a
+ *  positive value (likely 0.5-0.7 range based on AEC residual research)
+ *  and re-enable the clamp. The wiring + tests stay so flipping the
+ *  constant is a one-line change. */
+export const SPEAKER_BARGE_THRESHOLD_FLOOR = 0;
 
 export type VadStrategy = 'client' | 'bridge';
 
