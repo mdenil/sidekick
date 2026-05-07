@@ -19,6 +19,8 @@
  * doesn't translate the sidebar; the rail is always visible.
  */
 
+import { log } from './util/log.ts';
+
 // 36px edge zone makes the open gesture forgiving for thumb landings
 // (24px was too narrow — finger needed near-perfect placement).
 const EDGE_ZONE_PX = 36;
@@ -45,6 +47,10 @@ export function init(opts: SwipeOptions): void {
   let startX = 0, startY = 0;
   let lastX = 0, lastT = 0;
   let widthPx = 280;
+  // Trace counter — suppress mid-drag pointermove spam to first 3 moves
+  // per gesture so we can see how iOS is dispatching events without
+  // flooding the log panel.
+  let moveCount = 0;
 
   const isMobile = () => window.innerWidth < MOBILE_BREAKPOINT_PX;
   const measureWidth = () => sidebar.getBoundingClientRect().width || 280;
@@ -87,6 +93,7 @@ export function init(opts: SwipeOptions): void {
     intent = null;
     committed = false;
     pointerId = -1;
+    moveCount = 0;
   };
 
   const onPointerDown = (e: PointerEvent) => {
@@ -96,9 +103,14 @@ export function init(opts: SwipeOptions): void {
 
     const expanded = opts.isExpanded();
     const x = e.clientX;
+    const y = e.clientY;
+    const ptType = e.pointerType;
 
     if (!expanded) {
-      if (x > EDGE_ZONE_PX) return;
+      if (x > EDGE_ZONE_PX) {
+        log(`[swipe-trace] pointerdown x=${x.toFixed(0)} y=${y.toFixed(0)} type=${ptType} REJECT (x > ${EDGE_ZONE_PX})`);
+        return;
+      }
       intent = 'opening';
     } else {
       if (!sidebar.contains(e.target as Node)) return;
@@ -107,10 +119,12 @@ export function init(opts: SwipeOptions): void {
 
     pointerId = e.pointerId;
     startX = x; lastX = x;
-    startY = e.clientY;
+    startY = y;
     lastT = e.timeStamp;
     widthPx = measureWidth() || 280;
     committed = false;
+    moveCount = 0;
+    log(`[swipe-trace] pointerdown ACCEPT intent=${intent} x=${x.toFixed(0)} y=${y.toFixed(0)} type=${ptType} pointerId=${pointerId}`);
     // Don't preventDefault yet — let normal taps inside the sidebar work
     // until horizontal motion confirms we're swiping.
   };
@@ -119,6 +133,7 @@ export function init(opts: SwipeOptions): void {
     if (!intent || e.pointerId !== pointerId) return;
     const dx = e.clientX - startX;
     const dy = e.clientY - startY;
+    moveCount++;
 
     if (!committed) {
       if (intent === 'opening') {
@@ -129,22 +144,31 @@ export function init(opts: SwipeOptions): void {
         // the "comes out a tiny bit and immediately hides" symptom).
         // Don't gate on horizontal vs. vertical dominance: the finger
         // is at the screen edge with no scrollable content under it.
-        if (dx === 0 && dy === 0) return;
+        if (dx === 0 && dy === 0) {
+          log(`[swipe-trace] move#${moveCount} no-op (dx=0 dy=0) cancelable=${e.cancelable}`);
+          return;
+        }
         widthPx = 280;
         // Apply inline transform first to avoid a one-frame flash of
         // the fully-open panel before the transform takes effect.
         setInlineTransform(-widthPx + Math.max(0, dx));
         opts.setExpanded(true);
+        log(`[swipe-trace] move#${moveCount} COMMIT opening dx=${dx.toFixed(0)} dy=${dy.toFixed(0)} cancelable=${e.cancelable}`);
       } else {
         // Closing: require horizontal dominance before stealing the
         // gesture from vertical scroll on the sessions list.
-        if (Math.abs(dx) < HORIZ_INTENT_PX) return;
+        if (Math.abs(dx) < HORIZ_INTENT_PX) {
+          if (moveCount <= 3) log(`[swipe-trace] move#${moveCount} closing-wait dx=${dx.toFixed(0)} dy=${dy.toFixed(0)} (need |dx|>=${HORIZ_INTENT_PX})`);
+          return;
+        }
         if (Math.abs(dy) > Math.abs(dx)) {
+          log(`[swipe-trace] move#${moveCount} closing-ABORT vertical-dominant dx=${dx.toFixed(0)} dy=${dy.toFixed(0)}`);
           reset();
           return;
         }
         widthPx = measureWidth() || 280;
         setInlineTransform(Math.min(0, dx));
+        log(`[swipe-trace] move#${moveCount} COMMIT closing dx=${dx.toFixed(0)} dy=${dy.toFixed(0)}`);
       }
       committed = true;
       sidebar.setPointerCapture?.(pointerId);
@@ -153,6 +177,9 @@ export function init(opts: SwipeOptions): void {
         ? Math.max(-widthPx, Math.min(0, -widthPx + dx))
         : Math.max(-widthPx, Math.min(0, dx));
       setInlineTransform(translatePx);
+      if (moveCount <= 5 || moveCount % 10 === 0) {
+        log(`[swipe-trace] move#${moveCount} drag dx=${dx.toFixed(0)} dy=${dy.toFixed(0)} translate=${translatePx.toFixed(0)} cancelable=${e.cancelable}`);
+      }
     }
 
     // Once committed, suppress browser scroll/click defaults along this
@@ -164,13 +191,20 @@ export function init(opts: SwipeOptions): void {
   };
 
   const onPointerEnd = (e: PointerEvent) => {
-    if (!intent || e.pointerId !== pointerId) return;
+    if (!intent || e.pointerId !== pointerId) {
+      log(`[swipe-trace] ${e.type} IGNORED (intent=${intent} eventPid=${e.pointerId} ours=${pointerId})`);
+      return;
+    }
     const wasCommitted = committed;
     const wasIntent = intent;
+    const totalMoves = moveCount;
     sidebar.releasePointerCapture?.(pointerId);
     reset();
 
-    if (!wasCommitted) return;     // never visually moved — leave as-is
+    if (!wasCommitted) {
+      log(`[swipe-trace] ${e.type} pre-commit (intent=${wasIntent} totalMoves=${totalMoves}) — leaving state untouched`);
+      return;
+    }
 
     const dx = e.clientX - startX;
     // Use last-segment velocity for snap decision — captures flicks even
@@ -188,6 +222,7 @@ export function init(opts: SwipeOptions): void {
       else if (velocity > VELOCITY_SNAP_PX_MS) openFinal = true;
       else openFinal = dx > -widthPx / 2;
     }
+    log(`[swipe-trace] ${e.type} intent=${wasIntent} dx=${dx.toFixed(0)} velocity=${velocity.toFixed(2)} totalMoves=${totalMoves} → snap=${openFinal ? 'OPEN' : 'CLOSE'}`);
     snap(openFinal);
   };
 
