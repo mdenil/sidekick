@@ -83,6 +83,10 @@ export function init(opts: SwipeOptions): void {
   let lastX = 0, lastT = 0;
   let widthPx = 280;
   let moveCount = 0;
+  // Most recent move's instantaneous velocity (px/ms). Used on
+  // pointercancel since the cancel event itself has bogus clientX
+  // and we can't compute velocity from it.
+  let lastVelocity = 0;
 
   const isMobile = () => window.innerWidth < MOBILE_BREAKPOINT_PX;
   const measureWidth = () => sidebar.getBoundingClientRect().width || 280;
@@ -139,6 +143,7 @@ export function init(opts: SwipeOptions): void {
     committed = false;
     pointerId = -1;
     moveCount = 0;
+    lastVelocity = 0;
     setSwipeLock(false);
   };
 
@@ -245,6 +250,8 @@ export function init(opts: SwipeOptions): void {
 
     if (committed && e.cancelable) e.preventDefault();
 
+    const dt = Math.max(1, e.timeStamp - lastT);
+    lastVelocity = (e.clientX - lastX) / dt;
     lastX = e.clientX;
     lastT = e.timeStamp;
   };
@@ -269,10 +276,25 @@ export function init(opts: SwipeOptions): void {
     const finalX = isCancel ? lastX : e.clientX;
     const dx = finalX - startX;
     const dt = Math.max(1, e.timeStamp - lastT);
-    const velocity = isCancel ? 0 : (e.clientX - lastX) / dt;
+    // Cancel event's clientX is bogus on iOS (often 0). Use the velocity
+    // tracked from the LAST real pointermove instead.
+    const velocity = isCancel ? lastVelocity : (e.clientX - lastX) / dt;
 
     let openFinal: boolean;
-    if (wasIntent === 'opening') {
+    if (isCancel) {
+      // iOS Safari standalone-PWA mode fires pointercancel mid-drag for
+      // system-level reasons we can't suppress (edge gestures, gesture
+      // arbiter takeovers — touch-action: none doesn't stop them). The
+      // user wasn't actually releasing; they were still dragging when
+      // iOS yanked the gesture. Honor the committed direction unless the
+      // last observed motion was clearly a reversal.
+      const reversing = wasIntent === 'opening'
+        ? velocity < -VELOCITY_SNAP_PX_MS
+        : velocity > VELOCITY_SNAP_PX_MS;
+      openFinal = reversing
+        ? wasIntent !== 'opening'
+        : wasIntent === 'opening';
+    } else if (wasIntent === 'opening') {
       if (velocity > VELOCITY_SNAP_PX_MS) openFinal = true;
       else if (velocity < -VELOCITY_SNAP_PX_MS) openFinal = false;
       else openFinal = dx > widthPx / 2;
