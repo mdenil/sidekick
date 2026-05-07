@@ -92,7 +92,15 @@ export function init(opts: SwipeOptions): void {
     sidebar.style.transform = `translateX(${translatePx}px)`;
   };
 
-  const setBodyTouchAction = (lock: boolean) => {
+  // Kill iOS's default scroll/zoom handling for the duration of a
+  // candidate swipe gesture. Applied at pointerdown — NOT at commit —
+  // because once iOS classifies the motion as a scroll (within the
+  // first few px), even later touch-action changes don't reverse it
+  // and pointercancel fires mid-drag. Lock both <html> and <body>;
+  // scrollable inner containers (chat content) have their own overflow
+  // context but inherit through the cascade.
+  const setSwipeLock = (lock: boolean) => {
+    document.documentElement.style.touchAction = lock ? 'none' : '';
     document.body.style.touchAction = lock ? 'none' : '';
   };
 
@@ -108,7 +116,7 @@ export function init(opts: SwipeOptions): void {
       sidebar.removeEventListener('transitionend', onEnd);
       sidebar.style.transform = '';
       sidebar.style.transition = '';
-      setBodyTouchAction(false);
+      setSwipeLock(false);
       opts.setExpanded(open);
     };
     const onEnd = (e: TransitionEvent) => {
@@ -123,6 +131,7 @@ export function init(opts: SwipeOptions): void {
     committed = false;
     pointerId = -1;
     moveCount = 0;
+    setSwipeLock(false);
   };
 
   const onPointerDown = (e: PointerEvent) => {
@@ -156,6 +165,9 @@ export function init(opts: SwipeOptions): void {
     widthPx = measureWidth() || 280;
     committed = false;
     moveCount = 0;
+    // Lock IMMEDIATELY — before iOS gets to classify the gesture as a
+    // scroll. If we abandon (vertical-dominant), reset() unlocks.
+    setSwipeLock(true);
     log(`[swipe-trace] pointerdown ACCEPT intent=${intent} x=${x.toFixed(0)} y=${y.toFixed(0)} type=${e.pointerType} pid=${pointerId}`);
   };
 
@@ -212,7 +224,7 @@ export function init(opts: SwipeOptions): void {
       }
       committed = true;
       sidebar.setPointerCapture?.(pointerId);
-      setBodyTouchAction(true);
+      // Lock is already on from pointerdown; nothing to add here.
     } else {
       const translatePx = intent === 'opening'
         ? Math.max(-widthPx, Math.min(0, -widthPx + dx))
