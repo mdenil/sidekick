@@ -2539,8 +2539,19 @@ async function boot() {
    *  data — dictate.ts will fall back gracefully. */
   function captureComposerCursor(): number | null {
     try {
-      const ss = composerInput.selectionStart;
-      return (typeof ss === 'number') ? ss : null;
+      // Live read first — works when the textarea is still focused at
+      // gesture time. On at least some browsers, button mousedown
+      // shifts focus before our pointerdown handler runs, so by the
+      // time we read selectionStart the textarea is blurred and the
+      // value can be stale (0, value.length, or null depending on
+      // browser). Fall back to composer.getLastCaret(), which is
+      // tracked via a global selectionchange listener and reflects the
+      // user's actual last-set caret position regardless of focus.
+      if (document.activeElement === composerInput) {
+        const ss = composerInput.selectionStart;
+        if (typeof ss === 'number') return ss;
+      }
+      return composer.getLastCaret();
     } catch {
       return null;
     }

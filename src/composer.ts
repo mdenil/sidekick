@@ -24,6 +24,21 @@ let interimEl: HTMLElement | null = null;
 let onChange = () => {};
 let onSubmit = () => {};
 
+/** Last cursor position the user explicitly set in the composer textarea
+ *  while it was focused. Updated by a global selectionchange listener
+ *  that fires only when the textarea is the active element — so it
+ *  captures every arrow-key / mouse / API-driven caret move WHILE the
+ *  textarea is engaged, and survives the inevitable focus shift to the
+ *  mic button at gesture time.
+ *
+ *  Why we need this: at mic-button pointerdown, captureComposerCursor()
+ *  in main.ts reads composerInput.selectionStart. On at least some
+ *  browser/state combinations (notably: button mousedown → focus shift
+ *  before our pointerdown handler runs), that read returns 0 or stale
+ *  values for the just-blurred textarea — even though the user can SEE
+ *  the cursor where they put it. The cache is the user's intent. */
+let lastKnownCaret: number | null = null;
+
 export function init(opts: {
   input: HTMLTextAreaElement | null,
   interim?: HTMLElement | null,
@@ -40,6 +55,16 @@ export function init(opts: {
   // On non-Mac platforms Ctrl+K still opens search (handled in
   // cmdkPalette.ts), so this handler also gates on !metaKey.
   if (inputEl) {
+    // Track caret position whenever the user moves it within the
+    // (focused) textarea. selectionchange fires on document; gate to
+    // our textarea via activeElement.
+    document.addEventListener('selectionchange', () => {
+      if (!inputEl) return;
+      if (document.activeElement !== inputEl) return;
+      const ss = inputEl.selectionStart;
+      if (typeof ss === 'number') lastKnownCaret = ss;
+    });
+
     inputEl.addEventListener('keydown', (e) => {
       if (e.ctrlKey && !e.metaKey && (e.key === 'k' || e.key === 'K')) {
         e.preventDefault();
@@ -73,6 +98,13 @@ export function init(opts: {
  *  pressing Enter). Wired by main.ts to sendTypedMessage so the voice
  *  pipeline's auto-submit-on-silence loop fires the single send codepath. */
 export function submit() { onSubmit(); }
+
+/** Last user-set caret position in the textarea, captured via a
+ *  selectionchange listener while the textarea was focused. Returns
+ *  null until the user has moved the caret at least once.  Used by
+ *  captureComposerCursor() at the mic-button gesture site as a robust
+ *  fallback for live selectionStart reads that go stale post-blur. */
+export function getLastCaret(): number | null { return lastKnownCaret; }
 
 /** Append dictation final at the cursor position. Adds a leading space if
  *  the cursor is right after a non-whitespace character, so words don't
