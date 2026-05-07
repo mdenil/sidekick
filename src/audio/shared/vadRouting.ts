@@ -1,7 +1,16 @@
 /**
- * @fileoverview Per-route VadSource selection for the unified
- * BargeDetector. Picks ClientSideVadSource on iOS and BridgeVadSource
- * elsewhere; URL param `?vad=client|bridge` overrides for A/B testing.
+ * @fileoverview Per-route barge policy: VadSource selection AND
+ * threshold floor for the unified BargeDetector.
+ *
+ * VadSource selection picks ClientSideVadSource on iOS and
+ * BridgeVadSource elsewhere; URL param `?vad=client|bridge` overrides
+ * for A/B testing.
+ *
+ * Threshold floor clamps the user's barge sensitivity setting up to
+ * a minimum value when the route is hostile (iOS speakerphone).
+ * Slider position still drives behavior, but the floor rejects the
+ * band where false fires concentrate against AEC residual + TTS
+ * bleed.
  *
  * RATIONALE (see notes_session_2026_05_06_barge.md):
  *   - iOS: client-side Silero+vad-web works at normal volume after
@@ -19,6 +28,13 @@
 
 import { detectDeviceClass } from '../../voiceTuning.ts';
 import { BridgeVadSource, ClientSideVadSource, type VadSource } from './vadSource.ts';
+
+/** Floor applied to the user's barge threshold when the active output
+ *  route is the device's built-in speaker. At normal speaker volume,
+ *  AEC residual + TTS bleed land Silero confidence in the 0.4-0.6
+ *  range; this floor rejects that band so false fires don't dominate
+ *  the call. Starting value — tune with field data. */
+export const SPEAKER_BARGE_THRESHOLD_FLOOR = 0.65;
 
 export type VadStrategy = 'client' | 'bridge';
 
@@ -47,4 +63,17 @@ export function chooseVadStrategy(): VadStrategy {
 export function makeVadSource(strategy?: VadStrategy): VadSource {
   const s = strategy ?? chooseVadStrategy();
   return s === 'bridge' ? new BridgeVadSource() : new ClientSideVadSource();
+}
+
+/** Compute the effective barge VAD threshold given the user's setting
+ *  and the active output route. On the built-in speaker the floor is
+ *  enforced (only sensitivities below the floor get clamped); on other
+ *  routes the user value passes through unchanged. Pure function for
+ *  testability. */
+export function effectiveBargeThreshold(
+  userThreshold: number,
+  onSpeaker: boolean,
+): number {
+  if (!onSpeaker) return userThreshold;
+  return Math.max(userThreshold, SPEAKER_BARGE_THRESHOLD_FLOOR);
 }

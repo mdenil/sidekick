@@ -8,8 +8,10 @@ import assert from 'node:assert/strict';
 
 import {
   chooseVadStrategy,
+  effectiveBargeThreshold,
   getVadStrategyOverride,
   makeVadSource,
+  SPEAKER_BARGE_THRESHOLD_FLOOR,
 } from '../src/audio/shared/vadRouting.ts';
 import {
   BridgeVadSource,
@@ -115,6 +117,31 @@ describe('vadRouting', () => {
       setEnv(MAC_UA, '');
       const src = makeVadSource();
       assert.ok(src instanceof BridgeVadSource);
+    });
+  });
+
+  describe('effectiveBargeThreshold', () => {
+    it('isolated route: user value passes through unchanged', () => {
+      assert.equal(effectiveBargeThreshold(0.3, false), 0.3);
+      assert.equal(effectiveBargeThreshold(0.5, false), 0.5);
+      assert.equal(effectiveBargeThreshold(0.9, false), 0.9);
+    });
+
+    it('speaker route + user below floor: clamps up to floor', () => {
+      assert.equal(effectiveBargeThreshold(0.3, true), SPEAKER_BARGE_THRESHOLD_FLOOR);
+      assert.equal(effectiveBargeThreshold(0.5, true), SPEAKER_BARGE_THRESHOLD_FLOOR);
+    });
+
+    it('speaker route + user above floor: user value wins', () => {
+      assert.equal(effectiveBargeThreshold(0.8, true), 0.8);
+      assert.equal(effectiveBargeThreshold(0.99, true), 0.99);
+    });
+
+    it('speaker route + user exactly at floor: equals floor', () => {
+      assert.equal(
+        effectiveBargeThreshold(SPEAKER_BARGE_THRESHOLD_FLOOR, true),
+        SPEAKER_BARGE_THRESHOLD_FLOOR,
+      );
     });
   });
 });
