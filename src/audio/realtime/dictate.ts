@@ -203,6 +203,17 @@ let onStateChangeCb: ((opening: boolean, error?: string) => void) | null = null;
  *  stale values, dropping voice text at the wrong location. */
 let initialCursor: number | null = null;
 
+/** Timestamp (ms) of the last user-driven reset (typing or cursor moved
+ *  outside the in-flight utterance). STT events arriving within
+ *  ABANDON_SUPPRESS_MS after this are suppressed: the in-flight interim
+ *  text the user accepted is already in the textarea at the abandoned
+ *  location, so a late final from the same utterance would land at the
+ *  user's NEW caret and produce a duplicate. Time-decay rather than
+ *  consume-on-first-drop because Deepgram emits multiple finals per
+ *  utterance (sentence boundaries) and we want all of them dropped. */
+let abandonedAt = 0;
+const ABANDON_SUPPRESS_MS = 1000;
+
 // ── Public API ─────────────────────────────────────────────────────────
 
 export function setStateListener(cb: (opening: boolean, error?: string) => void): void {
@@ -263,6 +274,7 @@ export async function start(opts: {
   // captures the cursor fresh; that's what we want at the top of every
   // dictation session.
   resetUtterance('start');
+  abandonedAt = 0;
   initialCursor = (typeof opts.initialCursor === 'number') ? opts.initialCursor : null;
   if (dictateDebugOn) log('[dictate] start initialCursor=', initialCursor);
 
@@ -311,6 +323,7 @@ export async function stop(): Promise<void> {
   }
   // Clear per-session state so a re-start() captures fresh.
   resetUtterance('stop');
+  abandonedAt = 0;
   initialCursor = null;
   notify(false);
 }
@@ -333,6 +346,14 @@ function transcriptHandler(ev: TranscriptEvent): void {
 function handleInterim(text: string): void {
   if (!composerInput) return;
   dlog('interim<-', { text: text.slice(0, 80) });
+  // Drop late events from an utterance the user moved on from. The
+  // interim version is already where they accepted it; re-anchoring
+  // at the new caret would duplicate the text. See abandonedAt docstring.
+  if (abandonedAt && Date.now() - abandonedAt < ABANDON_SUPPRESS_MS) {
+    dlog('interim drop (post-abandon)', { text });
+    return;
+  }
+  abandonedAt = 0;
   ensureAnchor();
   const stripped = stripCommittedPrefix(text);
   if (!stripped) {
@@ -346,6 +367,14 @@ function handleInterim(text: string): void {
 function handleContentFinal(text: string): void {
   if (!composerInput) return;
   dlog('final<-', { text: text.slice(0, 80) });
+  // Drop late finals from an utterance the user moved on from. See
+  // abandonedAt docstring for why this comes BEFORE the dup check
+  // (lastFinalText is cleared by resetUtterance).
+  if (abandonedAt && Date.now() - abandonedAt < ABANDON_SUPPRESS_MS) {
+    dlog('final drop (post-abandon)', { text });
+    return;
+  }
+  abandonedAt = 0;
   // Stale / duplicate final — same text as the last segment we baked.
   // STT providers occasionally re-emit a finalized segment; don't double-write.
   if (text === lastFinalText) {
@@ -527,6 +556,13 @@ function spliceFinal(text: string): void {
 // ── Reset helper ──────────────────────────────────────────────────────
 
 function resetUtterance(reason: string): void {
+  // User-driven resets mean the user accepted the in-flight interim
+  // where it sits and moved on. Mark the moment so handleInterim /
+  // handleContentFinal can drop the trailing late events from that
+  // utterance instead of re-pasting the text at the new caret.
+  if (reason === 'user-input' || reason === 'user-cursor-outside') {
+    abandonedAt = Date.now();
+  }
   anchor = null;
   committedLen = 0;
   interimLen = 0;
