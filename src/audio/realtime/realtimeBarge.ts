@@ -12,6 +12,7 @@
 
 import { log } from '../../util/log.ts';
 import { BargeDetector } from '../shared/bargeDetector.ts';
+import { chooseVadStrategy, makeVadSource } from '../shared/vadRouting.ts';
 import * as settings from '../../settings.ts';
 import { detectDeviceClass, DEVICE_DEFAULTS } from '../../voiceTuning.ts';
 
@@ -37,12 +38,14 @@ export function start(
   // otherwise fire on the residual. Other platforms get BargeDetector
   // defaults (500 ms / 400 ms).
   const dev = DEVICE_DEFAULTS[detectDeviceClass()];
+  const vadStrategy = chooseVadStrategy();
   log('[audio-state] realtimeBarge.start',
     `bargeIn=true`,
     `bargeVadThreshold=${threshold}`,
     `warmupMs=${dev.bargeWarmupMs ?? 'default'}`,
     `minSpeechMs=${dev.bargeMinSpeechMs ?? 'default'}`,
-    `minPeak=${dev.bargeMinPeak ?? 'none'}`);
+    `minPeak=${dev.bargeMinPeak ?? 'none'}`,
+    `vad=${vadStrategy}`);
   detector = new BargeDetector();
   void detector.start({
     micStream,
@@ -53,6 +56,7 @@ export function start(
     warmupMs: dev.bargeWarmupMs,
     minSpeechMs: dev.bargeMinSpeechMs,
     minPeak: dev.bargeMinPeak,
+    vadSource: makeVadSource(vadStrategy),
   });
   log('[realtime-barge] started');
 }
