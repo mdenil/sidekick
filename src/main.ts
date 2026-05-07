@@ -2547,11 +2547,24 @@ async function boot() {
       // browser). Fall back to composer.getLastCaret(), which is
       // tracked via a global selectionchange listener and reflects the
       // user's actual last-set caret position regardless of focus.
-      if (document.activeElement === composerInput) {
-        const ss = composerInput.selectionStart;
-        if (typeof ss === 'number') return ss;
-      }
-      return composer.getLastCaret();
+      const focused = document.activeElement === composerInput;
+      const liveSs = composerInput.selectionStart;
+      const cached = composer.getLastCaret();
+      const result = focused && typeof liveSs === 'number' ? liveSs : cached;
+      diag(
+        '[mic] captureComposerCursor',
+        JSON.stringify({
+          focused,
+          activeTag: (document.activeElement as any)?.tagName ?? null,
+          activeId: (document.activeElement as any)?.id ?? null,
+          liveSs,
+          liveSe: composerInput.selectionEnd,
+          valueLen: composerInput.value.length,
+          cached,
+          result,
+        }),
+      );
+      return result;
     } catch {
       return null;
     }
