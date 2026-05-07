@@ -96,12 +96,20 @@ export function init(opts: SwipeOptions): void {
   // candidate swipe gesture. Applied at pointerdown — NOT at commit —
   // because once iOS classifies the motion as a scroll (within the
   // first few px), even later touch-action changes don't reverse it
-  // and pointercancel fires mid-drag. Lock both <html> and <body>;
-  // scrollable inner containers (chat content) have their own overflow
-  // context but inherit through the cascade.
+  // and pointercancel fires mid-drag.
+  //
+  // Implementation: a `body.swipe-active` class with a high-specificity
+  // CSS rule (see app.css) that sets `touch-action: none !important` on
+  // body AND every descendant. This is required because:
+  //   1. Inner scrollable containers (.transcript, .sidebar-content)
+  //      have their own touch-action context — html/body settings don't
+  //      propagate through them.
+  //   2. Various inner elements (.play-bar, #btn-mic, .icon-btn) have
+  //      explicit `touch-action: manipulation` for tap-delay reasons,
+  //      which iOS reads instead of an ancestor rule.
+  // The `*` selector + `!important` is the only way to override both.
   const setSwipeLock = (lock: boolean) => {
-    document.documentElement.style.touchAction = lock ? 'none' : '';
-    document.body.style.touchAction = lock ? 'none' : '';
+    document.body.classList.toggle('swipe-active', lock);
   };
 
   const snap = (open: boolean) => {

@@ -121,6 +121,18 @@
     user-select: none !important;
     cursor: ew-resize !important;
   }
+  /* Active during a candidate sidebar-swipe gesture (sidebarSwipe.ts).
+   * Nuclear-strength touch-action lock: must override `touch-action:
+   * manipulation` rules on inner elements (.play-bar, #btn-mic,
+   * .toolbar-btn, .icon-btn, .memo-btn) AND the implicit `auto` of
+   * scrollable containers (.transcript, .sidebar-content), all of
+   * which iOS prefers over an html/body-level touch-action. Without
+   * this, iOS classifies any vertical drift on a committed swipe as
+   * scroll and fires pointercancel mid-drag. */
+  body.swipe-active,
+  body.swipe-active * {
+    touch-action: none !important;
+  }
   .sidebar-top { display: flex; flex-direction: column; padding: 10px 8px 6px; gap: 4px; }
   /* Top header row: hamburger left, search right (Gemini-style). When the
    * sidebar is collapsed (rail), the row collapses to just the hamburger
