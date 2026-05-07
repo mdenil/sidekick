@@ -1,30 +1,29 @@
 /**
- * @fileoverview Edge-swipe to open / drawer-swipe to close (mobile only).
+ * @fileoverview Swipe-to-open / swipe-to-close drawer (mobile only).
  *
- * Two gestures:
- *   • Open  — pointerdown within EDGE_ZONE_PX of the left edge while the
- *             sidebar is collapsed. Class flips to .expanded immediately
- *             (so width becomes 280px) and inline transform follows the
- *             finger from -widthPx to 0.
- *   • Close — pointerdown on the open sidebar; we wait for >HORIZ_INTENT_PX
- *             of horizontal-dominant motion before committing, so vertical
- *             scrolls inside the sessions list aren't hijacked.
+ * Gesture model (mimics ChatGPT iOS):
+ *   • Pointerdown anywhere on screen registers intent (opening when
+ *     drawer is collapsed, closing when expanded). Nothing else happens
+ *     until the gesture is classified.
+ *   • Once total displacement crosses MIN_DISTANCE_PX (~3-4 chars, the
+ *     minimum that feels intentional), classify as horizontal vs.
+ *     vertical: if |dy| >= |dx|, abandon and let the browser scroll;
+ *     otherwise commit as a drawer drag and ignore dy from then on.
+ *   • The 45° boundary is inclusive of vertical (ties go to vertical
+ *     scroll), making the gesture appropriately predisposed to scroll.
  *
- * On release, snap direction is decided by either velocity (>0.5 px/ms in
- * the corresponding direction) or position (past widthPx/2). The snap
- * itself is a CSS transition on the inline transform; once it ends we
- * clear the inline override and the existing class CSS holds the state.
+ * On release, snap direction is decided by velocity (>0.5 px/ms) or
+ * position (past widthPx/2). Snap is a CSS transition on the inline
+ * transform; once it ends we clear the inline override and class CSS
+ * holds the steady state.
  *
- * Desktop: no-op (window.innerWidth >= 700). The class CSS for desktop
- * doesn't translate the sidebar; the rail is always visible.
+ * Desktop: no-op (window.innerWidth >= 700).
  */
 
-// 36px edge zone makes the open gesture forgiving for thumb landings
-// (24px was too narrow — finger needed near-perfect placement).
-const EDGE_ZONE_PX = 36;
-// Closing requires horizontal-dominant motion before stealing the gesture
-// from vertical scroll on the sessions list.
-const HORIZ_INTENT_PX = 8;
+// ~3-4 character widths in chat font; the minimum motion that feels
+// like a deliberate drag rather than a tap or scroll wobble. Below
+// this we don't classify or commit, so taps/clicks pass through.
+const MIN_DISTANCE_PX = 30;
 const VELOCITY_SNAP_PX_MS = 0.5;
 const SNAP_DURATION_MS = 180;
 const MOBILE_BREAKPOINT_PX = 700;
@@ -41,7 +40,7 @@ export function init(opts: SwipeOptions): void {
   type Intent = 'opening' | 'closing';
   let intent: Intent | null = null;
   let pointerId = -1;
-  let committed = false;        // true once we've started tracking the finger visually
+  let committed = false;
   let startX = 0, startY = 0;
   let lastX = 0, lastT = 0;
   let widthPx = 280;
@@ -54,11 +53,10 @@ export function init(opts: SwipeOptions): void {
     sidebar.style.transform = `translateX(${translatePx}px)`;
   };
 
-  // While a swipe is being tracked, kill iOS's default scroll/zoom
-  // gesture handling on the whole document. Without this, iOS Safari
-  // intermittently decides the touch is a scroll and fires pointercancel
-  // with clientX reset to 0 — which both ends our gesture and produces
-  // bogus snap decisions.
+  // While a swipe is committed, kill iOS's default scroll/zoom gesture
+  // handling on the whole document — otherwise iOS Safari intermittently
+  // decides the touch is a scroll mid-drag and fires pointercancel with
+  // clientX reset to 0.
   const setBodyTouchAction = (lock: boolean) => {
     document.body.style.touchAction = lock ? 'none' : '';
   };
@@ -98,20 +96,21 @@ export function init(opts: SwipeOptions): void {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
 
     const expanded = opts.isExpanded();
-    const x = e.clientX;
-    const y = e.clientY;
 
     if (!expanded) {
-      if (x > EDGE_ZONE_PX) return;
+      // Anywhere on screen is a candidate; classification on first move
+      // decides whether this is a drawer-open or just a scroll.
       intent = 'opening';
     } else {
+      // When drawer is open, only swipes that start on the drawer body
+      // count — taps elsewhere should not be hijacked into close-drags.
       if (!sidebar.contains(e.target as Node)) return;
       intent = 'closing';
     }
 
     pointerId = e.pointerId;
-    startX = x; lastX = x;
-    startY = y;
+    startX = e.clientX; lastX = e.clientX;
+    startY = e.clientY;
     lastT = e.timeStamp;
     widthPx = measureWidth() || 280;
     committed = false;
@@ -123,19 +122,23 @@ export function init(opts: SwipeOptions): void {
     const dy = e.clientY - startY;
 
     if (!committed) {
+      // Wait for enough motion to classify direction.
+      if (dx * dx + dy * dy < MIN_DISTANCE_PX * MIN_DISTANCE_PX) return;
+
+      // Vertical-dominant (or 45°) — let the browser scroll.
+      if (Math.abs(dy) >= Math.abs(dx)) { reset(); return; }
+
+      // Horizontal but in the wrong direction for the current intent.
+      if (intent === 'opening' && dx <= 0) { reset(); return; }
+      if (intent === 'closing' && dx >= 0) { reset(); return; }
+
       if (intent === 'opening') {
-        // Edge-touch declares intent on its own; commit on the first
-        // real movement and preventDefault immediately so iOS doesn't
-        // claim the gesture for vertical scroll.
-        if (dx === 0 && dy === 0) return;
         widthPx = 280;
-        setInlineTransform(-widthPx + Math.max(0, dx));
+        setInlineTransform(Math.max(-widthPx, Math.min(0, -widthPx + dx)));
         opts.setExpanded(true);
       } else {
-        if (Math.abs(dx) < HORIZ_INTENT_PX) return;
-        if (Math.abs(dy) > Math.abs(dx)) { reset(); return; }
         widthPx = measureWidth() || 280;
-        setInlineTransform(Math.min(0, dx));
+        setInlineTransform(Math.max(-widthPx, Math.min(0, dx)));
       }
       committed = true;
       sidebar.setPointerCapture?.(pointerId);
@@ -184,9 +187,9 @@ export function init(opts: SwipeOptions): void {
     snap(openFinal);
   };
 
-  // Use window so we receive moves even after the pointer leaves the
-  // narrow edge zone or drifts beyond the sidebar. passive: false on
-  // pointermove so preventDefault works on iOS Safari.
+  // Use window so we receive moves even after the pointer drifts
+  // beyond the sidebar. passive: false on pointermove so preventDefault
+  // works on iOS Safari.
   window.addEventListener('pointerdown', onPointerDown, { passive: true });
   window.addEventListener('pointermove', onPointerMove, { passive: false });
   window.addEventListener('pointerup', onPointerEnd);
