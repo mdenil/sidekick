@@ -19,7 +19,11 @@
  * doesn't translate the sidebar; the rail is always visible.
  */
 
-const EDGE_ZONE_PX = 24;
+// 36px edge zone makes the open gesture forgiving for thumb landings
+// (24px was too narrow — finger needed near-perfect placement).
+const EDGE_ZONE_PX = 36;
+// Closing requires horizontal-dominant motion before stealing the gesture
+// from vertical scroll on the sessions list.
 const HORIZ_INTENT_PX = 8;
 const VELOCITY_SNAP_PX_MS = 0.5;
 const SNAP_DURATION_MS = 180;
@@ -118,24 +122,22 @@ export function init(opts: SwipeOptions): void {
 
     if (!committed) {
       if (intent === 'opening') {
-        // Edge-touch already declares intent; commit on any motion.
-        if (Math.abs(dx) < 4 && Math.abs(dy) < 4) return;
-        // If vertical motion dominates strongly, abandon — user is likely
-        // scrolling near the screen edge, not opening the drawer.
-        if (Math.abs(dy) > Math.abs(dx) * 1.5) {
-          reset();
-          return;
-        }
-        // Flip class to .expanded NOW so width is 280px while we drag,
-        // not 48px (the rail width). Inline transform overrides the class
-        // transform, so the panel still appears at the finger position.
+        // Edge-touch declares intent on its own; commit on the first
+        // real movement and preventDefault immediately so iOS doesn't
+        // claim the gesture for vertical scroll (which would fire
+        // pointercancel and snap the drawer closed mid-drag — this was
+        // the "comes out a tiny bit and immediately hides" symptom).
+        // Don't gate on horizontal vs. vertical dominance: the finger
+        // is at the screen edge with no scrollable content under it.
+        if (dx === 0 && dy === 0) return;
         widthPx = 280;
-        // Apply inline first to avoid a one-frame flash of the fully-open
-        // panel before the transform takes over.
-        setInlineTransform(-widthPx + dx);
+        // Apply inline transform first to avoid a one-frame flash of
+        // the fully-open panel before the transform takes effect.
+        setInlineTransform(-widthPx + Math.max(0, dx));
         opts.setExpanded(true);
       } else {
-        // Closing: require horizontal dominance before stealing scroll.
+        // Closing: require horizontal dominance before stealing the
+        // gesture from vertical scroll on the sessions list.
         if (Math.abs(dx) < HORIZ_INTENT_PX) return;
         if (Math.abs(dy) > Math.abs(dx)) {
           reset();
