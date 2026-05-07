@@ -326,7 +326,10 @@ export async function open(
       autoGainControl: false,
     });
   } catch (e: any) {
-    diag('[webrtc] getUserMedia failed', e?.message);
+    log('[webrtc] getUserMedia failed',
+      `name=${e?.name ?? 'Unknown'}`,
+      `message=${e?.message ?? '(none)'}`);
+    logAudioState('on-getUserMedia-failed');
     setState('failed');
     throw e;
   }
@@ -533,6 +536,7 @@ export async function open(
       // call-start with the bridge's first-frame envelope. See
       // docs/SIDEKICK_AUDIO_PROTOCOL.md.
     } else if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+      log(`[webrtc] connection state -> ${pc.connectionState}; treating as failed`);
       setState('failed');
       void close();
     }
@@ -544,7 +548,9 @@ export async function open(
     offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
   } catch (e: any) {
-    diag('[webrtc] createOffer/setLocalDescription failed', e?.message);
+    log('[webrtc] createOffer/setLocalDescription failed',
+      `name=${e?.name ?? 'Unknown'}`,
+      `message=${e?.message ?? '(none)'}`);
     setState('failed');
     await close();
     throw e;
@@ -613,7 +619,9 @@ export async function open(
     }
     answer = await res.json();
   } catch (e: any) {
-    diag('[webrtc] offer POST failed', e?.message);
+    log('[webrtc] offer POST failed',
+      `name=${e?.name ?? 'Unknown'}`,
+      `message=${e?.message ?? '(none)'}`);
     setState('failed');
     await close();
     throw e;
@@ -621,6 +629,7 @@ export async function open(
   phase('signal');
 
   if (!answer || !answer.peer_id) {
+    log('[webrtc] answer payload missing peer_id');
     setState('failed');
     await close();
     throw new Error('answer payload missing peer_id');
@@ -631,7 +640,9 @@ export async function open(
   try {
     await pc.setRemoteDescription({ sdp: answer.sdp, type: answer.type as RTCSdpType });
   } catch (e: any) {
-    diag('[webrtc] setRemoteDescription failed', e?.message);
+    log('[webrtc] setRemoteDescription failed',
+      `name=${e?.name ?? 'Unknown'}`,
+      `message=${e?.message ?? '(none)'}`);
     setState('failed');
     await close();
     throw e;
