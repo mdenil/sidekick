@@ -2490,12 +2490,19 @@ class SidekickAdapter(BasePlatformAdapter):
         # `:nitro`) — but those values always have a `/` BEFORE the
         # colon. Provider-slug prefixes never contain `/`. So: strip
         # the prefix only when the part before `:` has no slash.
+        #
+        # explicit_provider="openrouter" for bare values is load-bearing:
+        # without it switch_model defaults to current_provider, which
+        # rejects the model with "Model X not found in <current> listing"
+        # whenever current is a non-OpenRouter provider (e.g. an
+        # exhausted Codex credential blocking the user from switching
+        # away to gemma).
         if ":" in raw_value and "/" not in raw_value.split(":", 1)[0]:
             slug, _, mid = raw_value.partition(":")
             explicit_provider = slug.strip()
             new_model = mid.strip()
         else:
-            explicit_provider = ""
+            explicit_provider = "openrouter"
             new_model = raw_value
 
         # Read current state to feed switch_model.
@@ -2579,6 +2586,75 @@ class SidekickAdapter(BasePlatformAdapter):
         # normalized the model id to a canonical form).
         new_schema = self._build_settings_schema()
         return next((s for s in new_schema if s["id"] == "model"), schema[0])
+
+    # Pretty names for the auth-error enrichment below. Provider slugs
+    # come from hermes' credential pool; the user-facing reply uses
+    # these instead so "openai-codex" doesn't appear verbatim.
+    _PROVIDER_DISPLAY_NAMES = {
+        "openai-codex": "ChatGPT (Codex)",
+        "openrouter": "OpenRouter",
+        "copilot": "GitHub Copilot",
+        "anthropic": "Anthropic",
+    }
+
+    def _enrich_auth_error_text(self, original: str) -> Optional[str]:
+        """If `original` is the misleading "Provider authentication
+        failed: No <X> credentials stored" wrapper hermes core emits
+        when its resolver skips an `exhausted` credential (post-429),
+        return a richer replacement with reset time + UI hint.
+
+        Returns None when no exhausted credential matches — caller
+        keeps the original message unchanged.
+
+        Intercept point lives in `_safe_send_envelope` so both
+        blocking and streaming /v1/responses paths benefit from one
+        substitution. Reads ~/.hermes/auth.json directly because
+        hermes core has no read-only credential-status endpoint and
+        we don't want to import its private auth_store internals.
+        """
+        if "Provider authentication failed" not in original:
+            return None
+        auth_path = Path(os.environ.get("HERMES_HOME") or "~/.hermes").expanduser() / "auth.json"
+        try:
+            with open(auth_path, encoding="utf-8") as f:
+                store = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return None
+        active = (store.get("active_provider") or "").strip()
+        if not active:
+            return None
+        pool = store.get("credential_pool") or {}
+        creds = pool.get(active) or []
+        exhausted: Optional[Dict[str, Any]] = None
+        for cred in creds:
+            if isinstance(cred, dict) and cred.get("last_status") == "exhausted":
+                exhausted = cred
+                break
+        if exhausted is None:
+            return None
+        display = self._PROVIDER_DISPLAY_NAMES.get(active, active)
+        reset_at = exhausted.get("last_error_reset_at")
+        when = ""
+        if isinstance(reset_at, (int, float)) and reset_at > 0:
+            now = time.time()
+            remaining = max(0, int(reset_at - now))
+            hours, mins = divmod(remaining // 60, 60)
+            if hours >= 24:
+                days, hours = divmod(hours, 24)
+                relative = f"{days}d {hours}h"
+            elif hours:
+                relative = f"{hours}h {mins}m"
+            else:
+                relative = f"{mins}m"
+            try:
+                absolute = time.strftime("%a %-I:%M %p", time.localtime(reset_at))
+            except Exception:
+                absolute = time.strftime("%a %H:%M", time.localtime(reset_at))
+            when = f" Resets in {relative} ({absolute})."
+        return (
+            f"⚠️ {display} usage limit reached.{when}"
+            f" Switch to a different model in Settings → Agent → Model to continue."
+        )
 
     async def _handle_responses(self, request: "web.Request") -> "web.StreamResponse":
         """POST /v1/responses — turn dispatch with optional streaming."""
@@ -3007,6 +3083,18 @@ class SidekickAdapter(BasePlatformAdapter):
         chat_id = env.get("chat_id", "")
         in_turn_types = {"reply_delta", "reply_final", "tool_call",
                           "tool_result", "typing"}
+
+        # Replace hermes' misleading "No <provider> credentials stored"
+        # wrapper with a chat message that names the actual problem
+        # (quota exhausted, reset time) and points the user at the UI
+        # control. Single intercept point covers both /v1/responses
+        # paths + the out-of-turn channel.
+        if env_type == "reply_delta":
+            text = env.get("text")
+            if isinstance(text, str):
+                replacement = self._enrich_auth_error_text(text)
+                if replacement is not None:
+                    env = {**env, "text": replacement}
 
         if env_type in in_turn_types and chat_id:
             queue = self._turn_queues.get(chat_id)
