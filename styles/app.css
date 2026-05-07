@@ -179,12 +179,18 @@
     body { padding-left: 0; }  /* no rail reserved */
     /* Mobile: sidebar overlays content, so don't shift padding. */
     body.sidebar-expanded { padding-left: 0; }
+    /* Mobile: animate transform symmetrically in both directions. The
+     * base #sidebar rule only declares `transition: width`, so without
+     * this the open direction (collapsed→expanded) used to jump while
+     * close direction animated. The swipe-drawer module also needs this
+     * to govern the snap animation — it temporarily disables the
+     * transition during finger-tracking via inline style. */
+    #sidebar { transition: transform 0.18s ease, width 0.18s ease; }
     #sidebar.collapsed {
       /* Slide off-screen instead of drawing a rail. The element stays in the
        * DOM so the global click-outside handler still works — it just isn't
        * visible. Taps on main content register as clicks outside the sidebar. */
       transform: translateX(-100%);
-      transition: transform 0.18s ease, width 0.18s ease;
     }
     #sidebar.expanded {
       /* Cap at 280px on mobile so the sidebar doesn't take 85% of a
