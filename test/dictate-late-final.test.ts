@@ -228,6 +228,56 @@ describe('dictate — late final after user-driven reset', () => {
     assert.equal(textarea.value, before);
   });
 
+  it('strict cursor-match: cursor move WITHIN the utterance range still resets (bug 2026-05-07)', () => {
+    // Repro: utterance covers the whole textarea (anchor=0, content=
+    // "Hello world."). User arrows to mid-text. Old heuristic said
+    // "pos in [0, 12], no reset" → next utterance kept appending at
+    // end. New gate: pos !== lastSetCursor → reset.
+    userInterim(provider, 'Hello world.');
+    userFinal(provider, 'Hello world.');
+    assert.equal(textarea.value, 'Hello world.');
+    // setCursor() landed lastSetCursor at 12 (end of "Hello world.").
+    // Simulate user arrowing to position 5 — INSIDE the utterance.
+    activeElementRef = textarea;
+    textarea.selectionStart = 5;
+    textarea.selectionEnd = 5;
+    const list = docListeners['selectionchange'];
+    if (list) for (const fn of list) fn({});
+    // The old in-range heuristic would have ignored this. With the
+    // strict-match fix, anchor is now null and the next interim
+    // captures fresh at user's caret.
+    userInterim(provider, 'Inserted mid-text');
+    // Should have spliced "Inserted mid-text" starting at position 5,
+    // not at the end. Verify by checking the inserted text is
+    // BEFORE the original "world.".
+    const insertIdx = textarea.value.indexOf('Inserted');
+    const worldIdx = textarea.value.indexOf('world');
+    assert.ok(insertIdx >= 0, 'inserted text should appear in textarea');
+    assert.ok(insertIdx < worldIdx, 'insert should land before "world", not at end');
+  });
+
+  it('content-aware suppression lets new utterances through within the time window', async () => {
+    // Repro: user abandons utterance "Hello world", then within the
+    // 2500ms window says a NEW utterance "Goodbye now". Time-only
+    // suppression would drop "Goodbye now" too (same window). Content
+    // matching: prefix "Goodbye " differs from "Hello wo" → not dropped.
+    userInterim(provider, 'Hello world');
+    activeElementRef = textarea;
+    textarea.value += '\n[click outside]';
+    textarea.selectionStart = textarea.value.length;
+    textarea.selectionEnd = textarea.selectionStart;
+    const list = docListeners['selectionchange'];
+    if (list) for (const fn of list) fn({});
+
+    // Within 500ms of the reset — well inside the 2500ms window.
+    userInterim(provider, 'Goodbye now');
+    userFinal(provider, 'Goodbye now');
+    assert.ok(
+      textarea.value.includes('Goodbye now'),
+      'genuinely-new utterance within the window should NOT be suppressed',
+    );
+  });
+
   it('does not interfere with happy-path dictation (no resets)', async () => {
     userInterim(provider, 'Hello');
     userInterim(provider, 'Hello world');
@@ -250,9 +300,9 @@ describe('dictate — late final after user-driven reset', () => {
     const list = docListeners['selectionchange'];
     if (list) for (const fn of list) fn({});
 
-    // Wait past the suppression window (1000ms) — use 1100ms to avoid
+    // Wait past the suppression window (2500ms) — use 2600ms to avoid
     // flakiness on slow CI.
-    await new Promise((r) => setTimeout(r, 1100));
+    await new Promise((r) => setTimeout(r, 2600));
 
     // A fresh utterance should now land normally at the current caret.
     const cursorBefore = textarea.selectionStart;

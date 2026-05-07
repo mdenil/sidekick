@@ -205,14 +205,36 @@ let initialCursor: number | null = null;
 
 /** Timestamp (ms) of the last user-driven reset (typing or cursor moved
  *  outside the in-flight utterance). STT events arriving within
- *  ABANDON_SUPPRESS_MS after this are suppressed: the in-flight interim
- *  text the user accepted is already in the textarea at the abandoned
- *  location, so a late final from the same utterance would land at the
- *  user's NEW caret and produce a duplicate. Time-decay rather than
- *  consume-on-first-drop because Deepgram emits multiple finals per
- *  utterance (sentence boundaries) and we want all of them dropped. */
+ *  ABANDON_SUPPRESS_MS after this and matching the abandoned interim
+ *  text by content-prefix are suppressed: the in-flight interim is
+ *  already in the textarea at the abandoned location, so a late final
+ *  from the same utterance would land at the user's NEW caret and
+ *  produce a duplicate.
+ *
+ *  Why content-aware (added 2026-05-07 after time-only false-positives
+ *  on quick "click-then-respeak" workflow): a fixed time window large
+ *  enough to catch slow bridge tails (~2s) ALSO swallows the first
+ *  interim of a genuinely-new utterance. Comparing first-N-chars
+ *  distinguishes "Deepgram refining the abandoned utterance" from "a
+ *  brand new utterance with different words." */
 let abandonedAt = 0;
-const ABANDON_SUPPRESS_MS = 1000;
+let abandonedText = '';
+const ABANDON_SUPPRESS_MS = 2500;
+const ABANDON_PREFIX_MIN = 8;
+
+/** Most-recent interim text — captured at handleInterim time so that
+ *  resetUtterance() can stash it as `abandonedText` for the post-abandon
+ *  content-prefix suppression check. Cleared on reset. */
+let lastInterimText = '';
+
+/** Cursor position WE last placed via setCursor(). Used by
+ *  onUserSelectionChange to detect user-driven caret moves with a
+ *  strict equality check — the previous "is pos inside the utterance
+ *  range" heuristic was too lenient when the utterance covered the
+ *  whole textarea (ANY click inside existing content was tolerated,
+ *  never resetting, and voice kept appending at the end). Field bug
+ *  2026-05-07. */
+let lastSetCursor = -1;
 
 // ── Public API ─────────────────────────────────────────────────────────
 
@@ -275,6 +297,9 @@ export async function start(opts: {
   // dictation session.
   resetUtterance('start');
   abandonedAt = 0;
+  abandonedText = '';
+  lastInterimText = '';
+  lastSetCursor = -1;
   initialCursor = (typeof opts.initialCursor === 'number') ? opts.initialCursor : null;
   if (dictateDebugOn) log('[dictate] start initialCursor=', initialCursor);
 
@@ -324,6 +349,9 @@ export async function stop(): Promise<void> {
   // Clear per-session state so a re-start() captures fresh.
   resetUtterance('stop');
   abandonedAt = 0;
+  abandonedText = '';
+  lastInterimText = '';
+  lastSetCursor = -1;
   initialCursor = null;
   notify(false);
 }
@@ -346,14 +374,10 @@ function transcriptHandler(ev: TranscriptEvent): void {
 function handleInterim(text: string): void {
   if (!composerInput) return;
   dlog('interim<-', { text: text.slice(0, 80) });
-  // Drop late events from an utterance the user moved on from. The
-  // interim version is already where they accepted it; re-anchoring
-  // at the new caret would duplicate the text. See abandonedAt docstring.
-  if (abandonedAt && Date.now() - abandonedAt < ABANDON_SUPPRESS_MS) {
+  if (isLateEventFromAbandoned(text)) {
     dlog('interim drop (post-abandon)', { text });
     return;
   }
-  abandonedAt = 0;
   ensureAnchor();
   const stripped = stripCommittedPrefix(text);
   if (!stripped) {
@@ -361,20 +385,17 @@ function handleInterim(text: string): void {
     return;
   }
   spliceInterim(stripped);
+  lastInterimText = text;
   dlog('interim->', { text: stripped.slice(0, 80) });
 }
 
 function handleContentFinal(text: string): void {
   if (!composerInput) return;
   dlog('final<-', { text: text.slice(0, 80) });
-  // Drop late finals from an utterance the user moved on from. See
-  // abandonedAt docstring for why this comes BEFORE the dup check
-  // (lastFinalText is cleared by resetUtterance).
-  if (abandonedAt && Date.now() - abandonedAt < ABANDON_SUPPRESS_MS) {
+  if (isLateEventFromAbandoned(text)) {
     dlog('final drop (post-abandon)', { text });
     return;
   }
-  abandonedAt = 0;
   // Stale / duplicate final — same text as the last segment we baked.
   // STT providers occasionally re-emit a finalized segment; don't double-write.
   if (text === lastFinalText) {
@@ -557,17 +578,40 @@ function spliceFinal(text: string): void {
 
 function resetUtterance(reason: string): void {
   // User-driven resets mean the user accepted the in-flight interim
-  // where it sits and moved on. Mark the moment so handleInterim /
-  // handleContentFinal can drop the trailing late events from that
-  // utterance instead of re-pasting the text at the new caret.
-  if (reason === 'user-input' || reason === 'user-cursor-outside') {
+  // where it sits and moved on. Stash the abandoned interim's text +
+  // timestamp so handleInterim / handleContentFinal can drop late
+  // events refining the same utterance (which would otherwise re-paste
+  // at the new caret and duplicate). New utterances with different
+  // content pass the prefix check and process normally.
+  if ((reason === 'user-input' || reason === 'user-cursor-outside') && lastInterimText) {
     abandonedAt = Date.now();
+    abandonedText = lastInterimText;
   }
   anchor = null;
   committedLen = 0;
   interimLen = 0;
   lastFinalText = '';
+  lastInterimText = '';
   if (dictateDebugOn) dlog('reset', { reason });
+}
+
+/** True if `text` is a late event from the just-abandoned utterance:
+ *  the timestamp is inside the suppression window AND the first N
+ *  characters match the abandoned interim's prefix (case-insensitive).
+ *  Auto-clears the marker once the time window expires. */
+function isLateEventFromAbandoned(text: string): boolean {
+  if (!abandonedAt) return false;
+  if (Date.now() - abandonedAt > ABANDON_SUPPRESS_MS) {
+    abandonedAt = 0;
+    abandonedText = '';
+    return false;
+  }
+  if (!abandonedText) return false;
+  const t = (text || '').trim();
+  if (!t) return false;
+  const min = Math.min(ABANDON_PREFIX_MIN, abandonedText.length, t.length);
+  if (min < 3) return false;
+  return abandonedText.slice(0, min).toLowerCase() === t.slice(0, min).toLowerCase();
 }
 
 // ── Textarea writes (with re-entrancy guard) ──────────────────────────
@@ -607,6 +651,7 @@ function setCursor(pos: number): void {
   } finally {
     updating = false;
   }
+  lastSetCursor = pos;
 }
 
 // ── User events — typing, paste, cursor moves ─────────────────────────
@@ -632,10 +677,12 @@ function onUserSelectionChange(_ev: Event): void {
   // chat bubbles, settings, etc. shouldn't affect the dictation state.
   if (document.activeElement !== composerInput) return;
   const pos = composerInput.selectionStart ?? 0;
-  // Tolerate caret moves WITHIN the in-flight utterance range.
-  const utteranceEnd = anchor + committedLen + interimLen;
-  if (pos >= anchor && pos <= utteranceEnd) return;
-  // User navigated outside the utterance. Reset.
-  diag('[dictate] user moved cursor outside utterance — committing in place');
+  // Strict equality with the cursor we last placed. The previous
+  // "is pos inside [anchor, utteranceEnd]" heuristic was too lenient
+  // when the utterance covered the whole textarea — ANY click inside
+  // existing content was tolerated, no reset, and voice kept
+  // appending at the end. Field bug 2026-05-07.
+  if (pos === lastSetCursor) return;
+  diag('[dictate] user moved cursor — committing in place');
   resetUtterance('user-cursor-outside');
 }
