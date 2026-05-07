@@ -99,6 +99,17 @@ export function init(opts: SwipeOptions): void {
     sidebar.style.transform = `translateX(${translatePx}px)`;
   };
 
+  // While a swipe is being tracked, kill iOS's default scroll/zoom
+  // gesture handling on the whole document. Without this, iOS Safari
+  // intermittently decides the touch is a scroll (because the finger
+  // sits over the still-mostly-hidden chat content during the early
+  // part of the drag) and fires pointercancel with clientX reset to
+  // 0 — which both ends our gesture and produces bogus snap decisions
+  // (field-confirmed 2026-05-07).
+  const setBodyTouchAction = (lock: boolean) => {
+    document.body.style.touchAction = lock ? 'none' : '';
+  };
+
   const snap = (open: boolean) => {
     const target = open ? 0 : -widthPx;
     // Re-enable transition so the inline transform interpolates from
@@ -115,6 +126,9 @@ export function init(opts: SwipeOptions): void {
       // and class CSS agree on the value, so no visual jump.
       sidebar.style.transform = '';
       sidebar.style.transition = '';
+      // Restore default touch handling on body — re-enables vertical
+      // scroll on chat content + sessions list.
+      setBodyTouchAction(false);
       // Toggle class last — body padding/sidebar-expanded class flips,
       // sessionDrawer.refresh() runs only on open. Acceptable to defer
       // until snap completes; the visual state is already correct.
@@ -215,6 +229,9 @@ export function init(opts: SwipeOptions): void {
       }
       committed = true;
       sidebar.setPointerCapture?.(pointerId);
+      // Lock body touch-action to none so iOS doesn't interpret the
+      // ongoing drag as a scroll and fire pointercancel.
+      setBodyTouchAction(true);
     } else {
       const translatePx = intent === 'opening'
         ? Math.max(-widthPx, Math.min(0, -widthPx + dx))
@@ -245,15 +262,22 @@ export function init(opts: SwipeOptions): void {
     reset();
 
     if (!wasCommitted) {
+      // No commit means we never set body touch-action either, so
+      // nothing to undo here.
       log(`[swipe-trace] ${e.type} pre-commit (intent=${wasIntent} totalMoves=${totalMoves}) — leaving state untouched`);
       return;
     }
 
-    const dx = e.clientX - startX;
-    // Use last-segment velocity for snap decision — captures flicks even
-    // when the user pauses mid-drag.
+    // iOS Safari fires pointercancel with clientX/Y RESET TO 0 even
+    // mid-drag (field-confirmed 2026-05-07: a successful 200-move drag
+    // to a fully-open drawer produced `pointercancel dx=-16` because
+    // e.clientX was 0). Trust the last good move coordinates instead;
+    // velocity is unreliable on cancel so fall back to position-only.
+    const isCancel = e.type === 'pointercancel';
+    const finalX = isCancel ? lastX : e.clientX;
+    const dx = finalX - startX;
     const dt = Math.max(1, e.timeStamp - lastT);
-    const velocity = (e.clientX - lastX) / dt;  // px/ms, signed
+    const velocity = isCancel ? 0 : (e.clientX - lastX) / dt;  // px/ms
 
     let openFinal: boolean;
     if (wasIntent === 'opening') {
@@ -265,7 +289,7 @@ export function init(opts: SwipeOptions): void {
       else if (velocity > VELOCITY_SNAP_PX_MS) openFinal = true;
       else openFinal = dx > -widthPx / 2;
     }
-    log(`[swipe-trace] ${e.type} intent=${wasIntent} dx=${dx.toFixed(0)} velocity=${velocity.toFixed(2)} totalMoves=${totalMoves} → snap=${openFinal ? 'OPEN' : 'CLOSE'}`);
+    log(`[swipe-trace] ${e.type} intent=${wasIntent} dx=${dx.toFixed(0)} (finalX=${finalX.toFixed(0)} ${isCancel ? 'from lastX' : 'from event'}) velocity=${velocity.toFixed(2)} totalMoves=${totalMoves} → snap=${openFinal ? 'OPEN' : 'CLOSE'}`);
     snap(openFinal);
   };
 
