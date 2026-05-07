@@ -21,6 +21,45 @@
 
 import { log } from './util/log.ts';
 
+/**
+ * Floating button that copies the debug-panel contents to clipboard.
+ * Created on-demand the first time a [swipe-trace] line lands so it
+ * doesn't pollute non-debug sessions. Bottom-right, fixed position;
+ * far from the left-edge swipe zone so tapping it doesn't trigger
+ * the gesture handler.
+ *
+ * Removable along with the rest of the [swipe-trace] instrumentation
+ * once the diagnosis is done.
+ */
+function ensureCopyButton(): void {
+  if (document.getElementById('swipe-trace-copy')) return;
+  const btn = document.createElement('button');
+  btn.id = 'swipe-trace-copy';
+  btn.type = 'button';
+  btn.textContent = 'Copy log';
+  btn.style.cssText = [
+    'position:fixed', 'right:12px', 'bottom:12px', 'z-index:9999',
+    'padding:10px 14px', 'border-radius:8px', 'border:1px solid var(--border, #333)',
+    'background:var(--surface, #222)', 'color:var(--fg, #eee)',
+    'font:13px/1.2 system-ui, sans-serif', 'box-shadow:0 4px 12px rgba(0,0,0,0.35)',
+    'touch-action:manipulation',
+  ].join(';');
+  btn.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    const dbg = document.getElementById('debug');
+    const text = dbg?.textContent ?? '';
+    try {
+      await navigator.clipboard.writeText(text);
+      btn.textContent = 'Copied ✓';
+      setTimeout(() => { btn.textContent = 'Copy log'; }, 1500);
+    } catch (err) {
+      btn.textContent = 'Copy failed';
+      console.error('[swipe-trace-copy]', err);
+    }
+  });
+  document.body.appendChild(btn);
+}
+
 // 36px edge zone makes the open gesture forgiving for thumb landings
 // (24px was too narrow — finger needed near-perfect placement).
 const EDGE_ZONE_PX = 36;
@@ -100,6 +139,10 @@ export function init(opts: SwipeOptions): void {
     if (intent) return;             // gesture already in flight
     if (!isMobile()) return;
     if (e.pointerType === 'mouse' && e.button !== 0) return;
+    // Mount the trace-copy button on the first pointerdown that reaches us
+    // — by then we know the trace lines are flowing and the user might
+    // want to grab a snapshot.
+    ensureCopyButton();
 
     const expanded = opts.isExpanded();
     const x = e.clientX;
