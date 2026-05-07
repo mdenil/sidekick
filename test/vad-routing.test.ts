@@ -10,7 +10,9 @@ import {
   chooseVadStrategy,
   effectiveBargeThreshold,
   getVadStrategyOverride,
+  getVadStrategyOverrideSetting,
   makeVadSource,
+  setVadStrategyOverrideSetting,
   SPEAKER_BARGE_THRESHOLD_FLOOR,
 } from '../src/audio/shared/vadRouting.ts';
 import {
@@ -25,10 +27,12 @@ const MAC_UA =
 
 let savedNavigator: PropertyDescriptor | undefined;
 let savedWindow: PropertyDescriptor | undefined;
+let savedLocalStorage: PropertyDescriptor | undefined;
 
 beforeEach(() => {
   savedNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
   savedWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  savedLocalStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
 });
 
 afterEach(() => {
@@ -36,6 +40,8 @@ afterEach(() => {
   else delete (globalThis as any).navigator;
   if (savedWindow) Object.defineProperty(globalThis, 'window', savedWindow);
   else delete (globalThis as any).window;
+  if (savedLocalStorage) Object.defineProperty(globalThis, 'localStorage', savedLocalStorage);
+  else delete (globalThis as any).localStorage;
 });
 
 function setEnv(ua: string, search: string): void {
@@ -49,6 +55,24 @@ function setEnv(ua: string, search: string): void {
     configurable: true,
     writable: true,
   });
+}
+
+/** In-memory localStorage stub. Install by calling installLocalStorage()
+ *  inside a test; afterEach restores the original (or deletes if none). */
+function installLocalStorage(): { store: Record<string, string> } {
+  const store: Record<string, string> = {};
+  const ls = {
+    getItem: (k: string) => (k in store ? store[k] : null),
+    setItem: (k: string, v: string) => { store[k] = String(v); },
+    removeItem: (k: string) => { delete store[k]; },
+    clear: () => { for (const k of Object.keys(store)) delete store[k]; },
+    key: (i: number) => Object.keys(store)[i] ?? null,
+    get length() { return Object.keys(store).length; },
+  };
+  Object.defineProperty(globalThis, 'localStorage', {
+    value: ls, configurable: true, writable: true,
+  });
+  return { store };
 }
 
 describe('vadRouting', () => {
@@ -93,6 +117,72 @@ describe('vadRouting', () => {
     it('Mac with ?vad=client → client (override beats per-route default)', () => {
       setEnv(MAC_UA, '?vad=client');
       assert.equal(chooseVadStrategy(), 'client');
+    });
+
+    it('Mac with localStorage override "client" → client (setting beats per-route default)', () => {
+      setEnv(MAC_UA, '');
+      installLocalStorage();
+      setVadStrategyOverrideSetting('client');
+      assert.equal(chooseVadStrategy(), 'client');
+    });
+
+    it('iOS with localStorage override "bridge" → bridge (setting beats per-route default)', () => {
+      setEnv(IOS_UA, '');
+      installLocalStorage();
+      setVadStrategyOverrideSetting('bridge');
+      assert.equal(chooseVadStrategy(), 'bridge');
+    });
+
+    it('localStorage "auto" → falls through to per-route default', () => {
+      setEnv(IOS_UA, '');
+      installLocalStorage();
+      setVadStrategyOverrideSetting('auto');
+      assert.equal(chooseVadStrategy(), 'client'); // iOS default
+    });
+
+    it('URL param beats localStorage (URL=bridge wins over setting=client on iOS)', () => {
+      setEnv(IOS_UA, '?vad=bridge');
+      installLocalStorage();
+      setVadStrategyOverrideSetting('client');
+      assert.equal(chooseVadStrategy(), 'bridge');
+    });
+  });
+
+  describe('vadStrategyOverrideSetting', () => {
+    it('returns "auto" when localStorage is unavailable', () => {
+      // No installLocalStorage — globalThis.localStorage stays undefined.
+      assert.equal(getVadStrategyOverrideSetting(), 'auto');
+    });
+
+    it('returns "auto" when key is missing', () => {
+      installLocalStorage();
+      assert.equal(getVadStrategyOverrideSetting(), 'auto');
+    });
+
+    it('round-trips "client"', () => {
+      installLocalStorage();
+      setVadStrategyOverrideSetting('client');
+      assert.equal(getVadStrategyOverrideSetting(), 'client');
+    });
+
+    it('round-trips "bridge"', () => {
+      installLocalStorage();
+      setVadStrategyOverrideSetting('bridge');
+      assert.equal(getVadStrategyOverrideSetting(), 'bridge');
+    });
+
+    it('"auto" clears the key', () => {
+      const { store } = installLocalStorage();
+      setVadStrategyOverrideSetting('client');
+      assert.ok('sidekick_vad_override' in store);
+      setVadStrategyOverrideSetting('auto');
+      assert.ok(!('sidekick_vad_override' in store));
+    });
+
+    it('ignores corrupt values', () => {
+      installLocalStorage();
+      localStorage.setItem('sidekick_vad_override', 'banana');
+      assert.equal(getVadStrategyOverrideSetting(), 'auto');
     });
   });
 

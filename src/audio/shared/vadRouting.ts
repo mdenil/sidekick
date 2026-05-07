@@ -38,6 +38,15 @@ export const SPEAKER_BARGE_THRESHOLD_FLOOR = 0.65;
 
 export type VadStrategy = 'client' | 'bridge';
 
+/** UI-facing setting value: 'auto' means defer to per-route default. */
+export type VadStrategySetting = 'auto' | VadStrategy;
+
+/** localStorage key for the user-facing VAD override. Underscore-style
+ *  matches sidekick_bg_trace / sidekick_debug — the convention for
+ *  testing-scaffold flags that get deleted on a deadline. KILL:
+ *  2026-06-03 along with the route policy lock-in. */
+const VAD_OVERRIDE_STORAGE_KEY = 'sidekick_vad_override';
+
 /** Returns the URL-param override if present and valid, else null. */
 export function getVadStrategyOverride(): VadStrategy | null {
   if (typeof window === 'undefined') return null;
@@ -51,10 +60,38 @@ export function getVadStrategyOverride(): VadStrategy | null {
   return null;
 }
 
-/** Resolve the active strategy: override > per-route default. */
+/** Read the user-facing VAD-strategy override from localStorage.
+ *  Returns 'auto' on missing key / invalid value / read error. */
+export function getVadStrategyOverrideSetting(): VadStrategySetting {
+  if (typeof localStorage === 'undefined') return 'auto';
+  try {
+    const v = localStorage.getItem(VAD_OVERRIDE_STORAGE_KEY);
+    if (v === 'client' || v === 'bridge') return v;
+  } catch { /* deny / SSR */ }
+  return 'auto';
+}
+
+/** Persist the user-facing VAD-strategy override. 'auto' clears the
+ *  override entirely (key removed) so chooseVadStrategy() falls back
+ *  to the per-route default. */
+export function setVadStrategyOverrideSetting(s: VadStrategySetting): void {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    if (s === 'auto') localStorage.removeItem(VAD_OVERRIDE_STORAGE_KEY);
+    else localStorage.setItem(VAD_OVERRIDE_STORAGE_KEY, s);
+  } catch { /* deny / SSR */ }
+}
+
+/** Resolve the active strategy.
+ *
+ *  Precedence: URL `?vad=` (one-off dev/CI testing) > localStorage
+ *  setting (PWA-installed user testing) > per-route default
+ *  (iOS=client, others=bridge). */
 export function chooseVadStrategy(): VadStrategy {
-  const override = getVadStrategyOverride();
-  if (override) return override;
+  const urlOverride = getVadStrategyOverride();
+  if (urlOverride) return urlOverride;
+  const settingOverride = getVadStrategyOverrideSetting();
+  if (settingOverride !== 'auto') return settingOverride;
   return detectDeviceClass() === 'ios' ? 'client' : 'bridge';
 }
 

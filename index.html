@@ -482,6 +482,18 @@
                 <input type="range" id="call-mode-barge-slider" min="0" max="100" step="5" value="60" aria-label="Barge sensitivity (0 = off, higher = more sensitive)" title="0% = off · higher = more sensitive">
                 <span class="mic-barge-val" id="call-mode-barge-val">60%</span>
               </div>
+              <!-- VAD source override — testing scaffolding for the
+                   bridge-VAD migration. Auto defers to the per-route
+                   default (iOS=client, others=bridge). KILL: 2026-06-03
+                   when route policy locks in. See src/audio/shared/vadRouting.ts. -->
+              <div id="call-mode-vad-row" class="mic-vad-row" role="group" aria-label="VAD source" title="Where speech detection runs. Auto picks per device (iOS=client, others=bridge). Pin one to A/B test.">
+                <span class="mic-vad-label">VAD source</span>
+                <div class="mic-vad-options" role="radiogroup">
+                  <button type="button" class="mic-vad-option" data-vad-option="auto" role="radio" aria-checked="true">Auto</button>
+                  <button type="button" class="mic-vad-option" data-vad-option="client" role="radio" aria-checked="false">Client</button>
+                  <button type="button" class="mic-vad-option" data-vad-option="bridge" role="radio" aria-checked="false">Bridge</button>
+                </div>
+              </div>
             </div>
           </div>
         </div>

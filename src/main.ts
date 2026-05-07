@@ -9,6 +9,7 @@ import { fetchWithTimeout, TimeoutError } from './util/fetchWithTimeout.ts';
 import * as status from './status.ts';
 import * as settings from './settings.ts';
 import * as headphones from './audio/shared/headphones.ts';
+import * as vadRouting from './audio/shared/vadRouting.ts';
 import * as theme from './theme.ts';
 import * as wakeLock from './wakeLock.ts';
 import * as chat from './chat.ts';
@@ -3109,6 +3110,38 @@ async function boot() {
       applyBargeRowVisibility();
     });
     applyBargeRowVisibility();
+  }
+
+  // ── VAD source override (call-mode menu) ────────────────────────────
+  // Three buttons (Auto / Client / Bridge) that pin the VAD strategy
+  // for the bridge-VAD migration A/B. Auto defers to chooseVadStrategy()'s
+  // per-route default. Backed by localStorage (sidekick_vad_override) so
+  // it survives PWA reloads — the URL ?vad= override is unreachable
+  // inside an installed PWA (browser caches the entry URL). KILL on
+  // 2026-06-03 along with the route policy lock-in (see vadRouting.ts).
+  {
+    const buttons = Array.from(
+      document.querySelectorAll<HTMLButtonElement>('.mic-vad-option'),
+    );
+    function refresh(): void {
+      const cur = vadRouting.getVadStrategyOverrideSetting();
+      for (const btn of buttons) {
+        const opt = btn.dataset.vadOption;
+        btn.setAttribute('aria-checked', String(opt === cur));
+      }
+    }
+    for (const btn of buttons) {
+      btn.addEventListener('click', () => {
+        const opt = btn.dataset.vadOption as 'auto' | 'client' | 'bridge';
+        vadRouting.setVadStrategyOverrideSetting(opt);
+        refresh();
+        // Note: takes effect on the NEXT call open. Active calls keep
+        // their VadSource — cycling the call (close + reopen) picks up
+        // the new strategy. We don't hot-swap here because BargeDetector
+        // owns its source's lifecycle and a mid-call swap would race.
+      });
+    }
+    refresh();
   }
 
   // Mirror static composer aria-label → title for hover devices. iOS
