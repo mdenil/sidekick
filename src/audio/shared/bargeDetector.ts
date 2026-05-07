@@ -285,8 +285,14 @@ export class BargeDetector {
     // agent voice — Silero says "speech" because the residual retains
     // speech-shaped spectrum, but peak amplitude is 1/10th of real
     // user speech. Real user "stop" peaks at 0.3+; residual at 0.05.
-    // Skip the gate when minPeak is undefined (Mac/Linux — full AEC).
-    if (typeof o.minPeak === 'number') {
+    //
+    // Skipped when:
+    //   - minPeak undefined (Mac/Linux — full AEC, no residual concern)
+    //   - vadSource.appliesPeakGate() === false (BridgeVadSource — its
+    //     fires are post-AEC + hysteresis-filtered upstream; client-side
+    //     peak isn't driven for bridge fires so peak reads 0 and would
+    //     suppress 100% of fires. Field-confirmed 2026-05-07).
+    if (typeof o.minPeak === 'number' && this.vadSource?.appliesPeakGate()) {
       const peak = speechPeakOverride
         ? speechPeakOverride()
         : (this.vadSource?.getRecentPeak() ?? 0);

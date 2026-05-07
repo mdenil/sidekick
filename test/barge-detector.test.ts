@@ -351,6 +351,39 @@ describe('BargeDetector', () => {
     assert.equal(fires, 1, 'peak above minPeak should allow fire');
   });
 
+  it('VadSource DI: peak gate is skipped when source.appliesPeakGate()=false (bridge regression)', async () => {
+    // Regression: BridgeVadSource returns 0 from getRecentPeak() because
+    // peak isn't sourced for bridge fires. Pre-fix, the BargeDetector
+    // applied the iOS minPeak gate uniformly, suppressing 100% of bridge
+    // fires (field-confirmed 2026-05-07). Post-fix, sources can declare
+    // appliesPeakGate()=false and bypass the gate entirely.
+    let fires = 0;
+    setSpeechActiveOverrideForTests(null);
+    // Inline subclass of FakeVadSource that says "don't gate me on peak".
+    class BridgeLikeFake extends FakeVadSource {
+      override appliesPeakGate(): boolean { return false; }
+    }
+    const fake = new BridgeLikeFake();
+    fake.setSpeechActive(true);
+    fake.setPeak(0);  // bridge always reads 0 here
+    const det = new BargeDetector();
+    await det.start({
+      micStream: stubMicStream,
+      isPlayingCb: () => true,
+      isEnabledCb: () => true,
+      onFire: () => { fires++; },
+      warmupMs: 0,
+      frameMs: FRAME_MS,
+      cooldownMs: 200,
+      silentFire: true,
+      vadSource: fake,
+      minPeak: 0.15,  // iOS-style gate is set, but the source opts out
+    });
+    await sleep(30);
+    await det.stop();
+    assert.equal(fires, 1, 'bridge-like source should fire despite peak=0');
+  });
+
   it('multiple detectors share the speechVad refcount cleanly', async () => {
     const det1 = new BargeDetector();
     const det2 = new BargeDetector();

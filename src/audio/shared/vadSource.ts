@@ -56,6 +56,20 @@ export interface VadSource {
    *  0..1). Returns 0 when no peak is available (BridgeVadSource has no
    *  concept of "peak" — the bridge does discrimination differently). */
   getRecentPeak(): number;
+
+  /** Whether BargeDetector should apply its iOS minPeak gate to fires
+   *  from this source. The minPeak gate is a client-side AEC-residual
+   *  filter: Silero says "speech" because spectrum is intact, but peak
+   *  amplitude is 1/10th of real user speech.
+   *
+   *  ClientSideVadSource returns true — Silero runs on raw mic, peak is
+   *  measured locally, the gate is the right tool.
+   *  BridgeVadSource returns false — bridge runs Silero on POST-AEC PCM
+   *  with hysteresis (7 sustained 32ms frames). The signal it emits is
+   *  already filtered; layering a client peak gate on top has nothing to
+   *  meaningfully gate against (peak isn't sourced for bridge fires)
+   *  and 100% of fires get suppressed (field-confirmed 2026-05-07). */
+  appliesPeakGate(): boolean;
 }
 
 /** Production client-side VAD. Thin wrapper over the existing speechVad
@@ -76,6 +90,8 @@ export class ClientSideVadSource implements VadSource {
   getRecentPeak(): number {
     return speechVad.getRecentPeak();
   }
+
+  appliesPeakGate(): boolean { return true; }
 }
 
 /**
@@ -95,10 +111,11 @@ export class ClientSideVadSource implements VadSource {
  * during call setup, before `connectionstatechange === 'connected'`).
  *
  * getRecentPeak() returns 0 — peak amplitude is a client-only concept.
- * The bridge does discrimination via Silero+hysteresis, not amplitude
- * gates, so feeding peak into the iOS minPeak gate would always read 0
- * and (wrongly) suppress fires. BargeDetector's peak-gate path skips
- * when the source returns 0; see bargeDetector.ts.
+ * appliesPeakGate() returns false so BargeDetector skips the iOS minPeak
+ * gate entirely. Without this skip, the gate (designed against client-
+ * side post-AEC residual) suppresses 100% of bridge fires on iOS because
+ * peak is sourced locally and the bridge path doesn't drive it (field-
+ * confirmed 2026-05-07).
  */
 export type EnvelopeSubscriber = (cb: (ev: any) => void) => () => void;
 
@@ -138,6 +155,8 @@ export class BridgeVadSource implements VadSource {
   isSpeechActive(): boolean { return this.speechActive; }
 
   getRecentPeak(): number { return 0; }
+
+  appliesPeakGate(): boolean { return false; }
 }
 
 /** In-process fake — for unit tests. The detector reads isSpeechActive()
@@ -169,4 +188,5 @@ export class FakeVadSource implements VadSource {
 
   isSpeechActive(): boolean { return this.speechActive; }
   getRecentPeak(): number { return this.peak; }
+  appliesPeakGate(): boolean { return true; }
 }
