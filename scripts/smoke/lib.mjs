@@ -13,7 +13,10 @@
 
 import { chromium } from 'playwright-core';
 
-export const CHROMIUM = '/usr/bin/chromium';
+// Default to the OS-installed chromium (apt install chromium). Hosts
+// without it can set SMOKE_CHROMIUM to a Playwright-bundled binary,
+// e.g. ~/.cache/ms-playwright/chromium-*/chrome-linux64/chrome
+export const CHROMIUM = process.env.SMOKE_CHROMIUM || '/usr/bin/chromium';
 export const DEFAULT_URL = process.env.SMOKE_URL || 'http://127.0.0.1:3001';
 
 /** Launch a single Chromium process for the entire smoke run. Returns
