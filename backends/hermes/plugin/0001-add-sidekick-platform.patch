@@ -1,13 +1,13 @@
-From d014a2ed28934b6963ef354e970a73524cc76961 Mon Sep 17 00:00:00 2001
+From cc022e86d9ac91a8c9b8fd86c23eb868050f5e4a Mon Sep 17 00:00:00 2001
 From: Sidekick <noreply@example.invalid>
-Date: Tue, 28 Apr 2026 09:50:24 -0400
+Date: Fri, 8 May 2026 18:05:43 +0100
 Subject: [PATCH] local: register Platform.SIDEKICK + adapter factory branch
 
 Adds Platform.SIDEKICK enum + _create_adapter factory branch that imports
 SidekickAdapter from the hermes-agent plugin namespace
 (hermes_plugins.sidekick). Plugin source lives in the sidekick repo at
-hermes-plugin/sidekick_platform.py and is installed by the user into
-~/.hermes/plugins/sidekick/.
+backends/hermes/plugin/__init__.py and is installed by the user as a
+symlink to ~/.hermes/plugins/sidekick.
 
 Also adds:
 - _apply_env_overrides reads SIDEKICK_PLATFORM_TOKEN to enable the
@@ -15,6 +15,12 @@ Also adds:
 - platform_env_map / platform_allow_all_map entries for the standard
   allowlist plumbing (SIDEKICK_PLATFORM_ALLOWED_USERS /
   SIDEKICK_PLATFORM_ALLOW_ALL_USERS).
+- hermes_cli/platforms.py registry entry.
+
+Adapted from sidekick repo's 0001-add-sidekick-platform.patch with two
+manual fix-ups for context drift in upstream main:
+- platform_env_map gained TELEGRAM/QQBOT entries
+- hermes_cli platforms list gained ("cron", ...) entry
 ---
  gateway/config.py       | 10 ++++++++++
  gateway/run.py          | 16 ++++++++++++++++
@@ -22,7 +28,7 @@ Also adds:
  3 files changed, 27 insertions(+)
 
 diff --git a/gateway/config.py b/gateway/config.py
-index 67ebf734..a047ee5a 100644
+index a156e79c..0a204eed 100644
 --- a/gateway/config.py
 +++ b/gateway/config.py
 @@ -67,6 +67,7 @@ class Platform(Enum):
@@ -33,7 +39,7 @@ index 67ebf734..a047ee5a 100644
  
  
  @dataclass
-@@ -1271,6 +1272,15 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
+@@ -1276,6 +1277,15 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                  name=os.getenv("QQBOT_HOME_CHANNEL_NAME") or os.getenv(qq_home_name_env, "Home"),
              )
  
@@ -50,10 +56,10 @@ index 67ebf734..a047ee5a 100644
      idle_minutes = os.getenv("SESSION_IDLE_MINUTES")
      if idle_minutes:
 diff --git a/gateway/run.py b/gateway/run.py
-index c59ca6fc..9a4f224c 100644
+index a1e4c0c5..cf5450ee 100644
 --- a/gateway/run.py
 +++ b/gateway/run.py
-@@ -2938,6 +2938,19 @@ class GatewayRunner:
+@@ -2959,6 +2959,19 @@ class GatewayRunner:
                  return None
              return QQAdapter(config)
  
@@ -73,15 +79,15 @@ index c59ca6fc..9a4f224c 100644
          return None
  
      def _is_user_authorized(self, source: SessionSource) -> bool:
-@@ -2980,6 +2993,7 @@ class GatewayRunner:
+@@ -3001,6 +3014,7 @@ class GatewayRunner:
              Platform.WEIXIN: "WEIXIN_ALLOWED_USERS",
              Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
              Platform.QQBOT: "QQ_ALLOWED_USERS",
 +            Platform.SIDEKICK: "SIDEKICK_PLATFORM_ALLOWED_USERS",
          }
          platform_group_env_map = {
-             Platform.QQBOT: "QQ_GROUP_ALLOWED_USERS",
-@@ -3001,6 +3015,7 @@ class GatewayRunner:
+             Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_USERS",
+@@ -3023,6 +3037,7 @@ class GatewayRunner:
              Platform.WEIXIN: "WEIXIN_ALLOW_ALL_USERS",
              Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOW_ALL_USERS",
              Platform.QQBOT: "QQ_ALLOW_ALL_USERS",
@@ -89,7 +95,7 @@ index c59ca6fc..9a4f224c 100644
          }
  
          # Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
-@@ -3132,6 +3147,7 @@ class GatewayRunner:
+@@ -3154,6 +3169,7 @@ class GatewayRunner:
                  Platform.WEIXIN:   "WEIXIN_ALLOWED_USERS",
                  Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
                  Platform.QQBOT:    "QQ_ALLOWED_USERS",
@@ -98,17 +104,17 @@ index c59ca6fc..9a4f224c 100644
              if os.getenv(platform_env_map.get(platform, ""), "").strip():
                  return "ignore"
 diff --git a/hermes_cli/platforms.py b/hermes_cli/platforms.py
-index 1fc3a3a8..521ff89d 100644
+index 05507eac..60651e78 100644
 --- a/hermes_cli/platforms.py
 +++ b/hermes_cli/platforms.py
-@@ -38,6 +38,7 @@ PLATFORMS: OrderedDict[str, PlatformInfo] = OrderedDict([
-     ("qqbot",          PlatformInfo(label="💬 QQBot",           default_toolset="hermes-qqbot")),
+@@ -39,6 +39,7 @@ PLATFORMS: OrderedDict[str, PlatformInfo] = OrderedDict([
      ("webhook",        PlatformInfo(label="🔗 Webhook",         default_toolset="hermes-webhook")),
      ("api_server",     PlatformInfo(label="🌐 API Server",      default_toolset="hermes-api-server")),
+     ("cron",           PlatformInfo(label="⏰ Cron",            default_toolset="hermes-cron")),
 +    ("sidekick",       PlatformInfo(label="🎙️ Sidekick",        default_toolset="hermes-cli")),
  ])
  
  
 -- 
-2.47.3
+2.43.0
 
