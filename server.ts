@@ -770,6 +770,114 @@ async function handleSidekickConfigSet(req, res, key: string) {
   res.end(JSON.stringify({ key, value }));
 }
 
+// ── Debug-relay: PWA logs → on-disk files ────────────────────────────────
+//
+// When the PWA has `?debug-relay=1` (or `localStorage.debug_relay=1`), it
+// POSTs batches of log lines here every 250ms. We append to a per-session
+// file under `.debug/` and update a `latest.log` symlink to the most
+// recent file. AI agents and developers can `cat .debug/latest.log` to
+// see live diagnostic output without copy-pasting from the browser
+// console.
+//
+// Smokes / playwright runs do NOT enable the relay flag, so `.debug/`
+// only accumulates from real interactive sessions.
+
+const DEBUG_LOG_DIR = path.resolve(process.cwd(), '.debug');
+const DEBUG_LOG_KEEP = 20;
+const DEBUG_LOG_MAX_BODY = 256 * 1024;       // 256 KB per POST
+const DEBUG_LOG_SID_RE = /^[A-Za-z0-9._-]{1,80}$/;
+
+function ensureDebugDir(): void {
+  try { fsSync.mkdirSync(DEBUG_LOG_DIR, { recursive: true }); }
+  catch (e: any) { console.error('[debug-relay] mkdir failed:', e?.message); }
+}
+
+/** Prune old per-session log files. Run once on server boot. Keeps
+ *  the N most-recently-modified .log files; deletes the rest. */
+function pruneDebugLogs(): void {
+  try {
+    if (!fsSync.existsSync(DEBUG_LOG_DIR)) return;
+    const entries = fsSync.readdirSync(DEBUG_LOG_DIR)
+      .filter(f => f.endsWith('.log') && f !== 'latest.log')
+      .map(f => {
+        const p = path.join(DEBUG_LOG_DIR, f);
+        try { return { p, mtime: fsSync.statSync(p).mtimeMs }; }
+        catch { return null; }
+      })
+      .filter((e): e is { p: string; mtime: number } => e !== null)
+      .sort((a, b) => b.mtime - a.mtime);
+    for (const e of entries.slice(DEBUG_LOG_KEEP)) {
+      try { fsSync.unlinkSync(e.p); }
+      catch (err: any) { console.error('[debug-relay] unlink failed:', err?.message); }
+    }
+  } catch (e: any) {
+    console.error('[debug-relay] prune failed:', e?.message);
+  }
+}
+
+ensureDebugDir();
+pruneDebugLogs();
+
+async function handleDebugLogs(req, res) {
+  if (req.method !== 'POST') {
+    res.writeHead(405); res.end('method not allowed'); return;
+  }
+  // Read body with a hard size cap so a misbehaving client can't
+  // fill the disk. 256KB is ~3000 typical log lines per POST.
+  const chunks: Buffer[] = [];
+  let total = 0;
+  let aborted = false;
+  await new Promise<void>((resolve) => {
+    req.on('data', (chunk: Buffer) => {
+      total += chunk.length;
+      if (total > DEBUG_LOG_MAX_BODY) {
+        aborted = true;
+        try { req.destroy(); } catch { /* noop */ }
+        resolve();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => resolve());
+    req.on('error', () => resolve());
+  });
+  if (aborted) {
+    res.writeHead(413); res.end('payload too large'); return;
+  }
+  let parsed: { sid?: string; lines?: string[] };
+  try {
+    parsed = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  } catch {
+    res.writeHead(400); res.end('invalid json'); return;
+  }
+  const sid = String(parsed.sid || '');
+  if (!DEBUG_LOG_SID_RE.test(sid)) {
+    res.writeHead(400); res.end('invalid sid'); return;
+  }
+  const lines = Array.isArray(parsed.lines) ? parsed.lines : [];
+  if (lines.length === 0) {
+    res.writeHead(204); res.end(); return;
+  }
+  const filePath = path.join(DEBUG_LOG_DIR, `${sid}.log`);
+  const symlinkPath = path.join(DEBUG_LOG_DIR, 'latest.log');
+  try {
+    // Append all lines in one write — node's appendFile call is
+    // atomic at the OS level for typical line sizes.
+    await fs.appendFile(filePath, lines.join(''), 'utf8');
+    // Update the latest.log symlink to point at this file. Best-
+    // effort: if symlink update fails (Windows, mount permissions),
+    // the per-session file still grows fine.
+    try {
+      await fs.rm(symlinkPath, { force: true });
+      await fs.symlink(`${sid}.log`, symlinkPath);
+    } catch { /* noop */ }
+  } catch (e: any) {
+    console.error('[debug-relay] append failed:', e?.message);
+    res.writeHead(500); res.end('append failed'); return;
+  }
+  res.writeHead(204); res.end();
+}
+
 function handleConfig(_req, res) {
   res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' });
   res.end(JSON.stringify({
@@ -929,6 +1037,7 @@ const server = http.createServer(async (req, res) => {
       return handleSidekickConfigSet(req, res, sidekickConfigSet[1]);
     }
   }
+  if (req.method === 'POST' && req.url === '/api/debug/logs') return handleDebugLogs(req, res);
   if (req.method === 'GET' && req.url === '/config') return handleConfig(req, res);
   if (req.method === 'GET' && req.url === '/api/keyterms') return handleKeytermsGet(req, res);
   if (req.method === 'POST' && req.url.startsWith('/tts')) return handleTts(req, res);

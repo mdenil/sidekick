@@ -3,6 +3,8 @@ build/
 .env
 .env.local
 *.log
+# Debug-relay session logs — populated only when ?debug-relay=1 is on.
+.debug/
 # Stub-agent runtime persistence (jsonl transcripts).
 agent/data/
 backends/stub/data/

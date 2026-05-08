@@ -12,6 +12,20 @@
  * Enable diag:
  *   • URL ?debug=1             (one-off, any page load)
  *   • localStorage.sidekick_debug = '1'  (persistent across sessions)
+ *
+ * ── Disk relay ────────────────────────────────────────────────────────
+ *
+ * When `?debug-relay=1` (or `localStorage.debug_relay='1'`), every log
+ * line is ALSO POSTed in batches to `/api/debug/logs`, which appends to
+ * a per-session file under `.debug/`. Removes the copy-paste friction
+ * when an AI agent (or another developer) needs to read the log
+ * without the user manually selecting + sharing console output.
+ *
+ * Session ID is minted at module init and persisted in `sessionStorage`
+ * so a refresh keeps the same file but a new tab gets a new file.
+ *
+ * Smokes / playwright runs deliberately don't set the relay flag, so
+ * `.debug/` files only accumulate during real interactive sessions.
  */
 
 /** @type {HTMLElement|null} */
@@ -25,6 +39,31 @@ const debugOn = (() => {
   } catch { return false; }
 })();
 
+const relayOn = (() => {
+  try {
+    const qs = new URLSearchParams(location.search);
+    if (qs.get('debug-relay') === '1') return true;
+    return localStorage.getItem('debug_relay') === '1';
+  } catch { return false; }
+})();
+
+/** Mint or recover a session id for the relay. sessionStorage scopes
+ *  it per-tab — refreshes share, new tabs split. */
+const relaySessionId: string = (() => {
+  if (!relayOn) return '';
+  try {
+    const KEY = 'sidekick_debug_relay_sid';
+    let sid = sessionStorage.getItem(KEY);
+    if (!sid) {
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      const rand = Math.random().toString(36).slice(2, 10);
+      sid = `${stamp}-${rand}`;
+      sessionStorage.setItem(KEY, sid);
+    }
+    return sid;
+  } catch { return ''; }
+})();
+
 /** Set the on-page element that receives log lines. */
 export function setDebugElement(el) {
   debugEl = el;
@@ -32,6 +71,11 @@ export function setDebugElement(el) {
 
 /** True when diag output is enabled (?debug=1 or localStorage flag). */
 export function isDebugEnabled() { return debugOn; }
+
+/** Returns the relay session id when ?debug-relay=1 is on, else ''.
+ *  Useful for surfacing the on-disk log path to the user (e.g. via a
+ *  one-time console.info on first log emission). */
+export function getRelaySessionId(): string { return relaySessionId; }
 
 /** Local-time HH:MM:SS so debug log timestamps match the chat bubble
  *  timestamps (which use .getHours()). Previously used toISOString()
@@ -53,9 +97,64 @@ export function log(...args) {
     debugEl.scrollTop = debugEl.scrollHeight;
   }
   console.log('[dbg]', ...args);
+  if (relayOn && relaySessionId) relayQueue.push(line);
 }
 
 /** High-frequency diagnostic log. No-op unless the debug flag is on. */
 export function diag(...args) {
   if (debugOn) log(...args);
+}
+
+// ── Disk relay batching ───────────────────────────────────────────────
+
+const relayQueue: string[] = [];
+let relayBootAnnounced = false;
+
+/** Flush queued lines to the relay endpoint. Best-effort: drops the
+ *  batch silently on network failure (next batch retries). */
+async function flushRelay(useBeacon = false): Promise<void> {
+  if (!relayOn || !relaySessionId) return;
+  if (relayQueue.length === 0) return;
+  // Splice out the in-flight batch BEFORE the await so concurrent
+  // log() calls during the fetch don't get dropped on POST failure.
+  const batch = relayQueue.splice(0, relayQueue.length);
+  const body = JSON.stringify({ sid: relaySessionId, lines: batch });
+  try {
+    if (useBeacon && typeof navigator !== 'undefined' && navigator.sendBeacon) {
+      // For pagehide / beforeunload — keepalive: true on fetch is
+      // unreliable on iOS Safari; sendBeacon is the spec-blessed path.
+      const blob = new Blob([body], { type: 'application/json' });
+      navigator.sendBeacon('/api/debug/logs', blob);
+    } else {
+      await fetch('/api/debug/logs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+        keepalive: true,
+      });
+    }
+  } catch {
+    // Re-queue is intentionally NOT done — endless growth on a broken
+    // relay would OOM the page. Best-effort delivery is the contract.
+  }
+}
+
+if (relayOn && relaySessionId && typeof window !== 'undefined') {
+  // Announce the relay path once on first log so devs know where the
+  // file is (and AI agents reading the page console can extract it
+  // without grepping HTML/storage).
+  Promise.resolve().then(() => {
+    if (relayBootAnnounced) return;
+    relayBootAnnounced = true;
+    log(`[debug-relay] enabled — logs streaming to .debug/${relaySessionId}.log (latest.log → same)`);
+  });
+  // 250ms cadence is the sweet spot: tight enough that a crashed page
+  // loses <1 line on average, loose enough to coalesce burst log
+  // sequences (barge ticks, dictate splices) into one POST per ~5
+  // events instead of one POST per event.
+  setInterval(() => { void flushRelay(false); }, 250);
+  // Flush remaining lines on page unload via Beacon — fetch with
+  // keepalive can drop on Safari; sendBeacon is reliable cross-browser.
+  window.addEventListener('pagehide', () => { void flushRelay(true); });
+  window.addEventListener('beforeunload', () => { void flushRelay(true); });
 }
