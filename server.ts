@@ -1041,6 +1041,15 @@ const server = http.createServer(async (req, res) => {
     }
   }
   if (req.method === 'POST' && req.url === '/api/debug/logs') return handleDebugLogs(req, res);
+  // /dev: convenience redirect that flips on the dev-mode URL flags.
+  // Bookmark `…/dev` instead of typing the full ?-string. URL is the
+  // transparent source of truth — see DEV_INSTRUMENTATION_PATCHES.md
+  // and the deliberate revert of hidden-localStorage stickiness.
+  if (req.method === 'GET' && (req.url === '/dev' || req.url === '/dev/')) {
+    res.writeHead(302, { Location: '/?debug=1&debug-relay=1&dictate-debug=1' });
+    res.end();
+    return;
+  }
   if (req.method === 'GET' && req.url === '/config') return handleConfig(req, res);
   if (req.method === 'GET' && req.url === '/api/keyterms') return handleKeytermsGet(req, res);
   if (req.method === 'POST' && req.url.startsWith('/tts')) return handleTts(req, res);
