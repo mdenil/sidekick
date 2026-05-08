@@ -27,6 +27,12 @@
  * label, invisible to normal users (e.g. on Mom's Pi5 ADHD assistant).
  */
 
+// Note: log.ts imports isDevMode from this module. ES modules handle
+// the resulting circular import — log() is a live binding, only
+// resolved when called inside event handlers (after both modules
+// finish loading).
+import { log } from './log.ts';
+
 /** True when dev mode is active. Computed at module load — refresh
  *  via hard reload after toggling, the same as URL flags. */
 export function isDevMode(): boolean {
@@ -104,13 +110,27 @@ export function mountDevPill(): void {
       pill.className = 'dev-pill';
       pill.textContent = 'DEV';
       pill.title = 'Dev mode on — full diagnostics + log relay. Tap to mark, long-press version to toggle off.';
-      pill.addEventListener('click', () => {
+      // iOS standalone PWA can swallow click events on dynamically-
+      // added elements; pointerup is more reliable. Listen to both
+      // and dedupe with a short timestamp guard so a single tap
+      // doesn't double-fire.
+      let lastTapAt = 0;
+      const onTap = (ev: Event) => {
+        const now = Date.now();
+        if (now - lastTapAt < 250) return;  // dedupe click+pointerup
+        lastTapAt = now;
         markCounter++;
+        // Log via the standard log() too — gives a clear pre-relay
+        // signal that the handler fired, so if emitMark's fetch fails
+        // for any reason we can still see the tap was registered.
+        log(`[dev-pill] tap → mark #${markCounter} (event=${ev.type})`);
         emitMark(`mark #${markCounter}`);
         const flash = pill.style.background;
         pill.style.background = '#fff';
         setTimeout(() => { pill.style.background = flash; }, 120);
-      });
+      };
+      pill.addEventListener('click', onTap);
+      pill.addEventListener('pointerup', onTap);
       versionEl!.insertAdjacentElement('afterend', pill);
     } else if (existing) {
       existing.remove();
@@ -128,9 +148,11 @@ export function mountDevPill(): void {
   versionEl.style.cursor = 'pointer';
   versionEl.addEventListener('pointerdown', () => {
     cancel();
+    log('[dev-mode] version pointerdown — hold timer armed');
     holdTimer = setTimeout(() => {
       holdTimer = null;
       const next = !isDevMode();
+      log(`[dev-mode] long-press fired → setDevMode(${next})`);
       setDevMode(next);
       // The runtime flags in log.ts / dictate.ts are computed at module
       // load, so a reload is needed for them to pick up the change.
