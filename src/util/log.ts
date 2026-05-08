@@ -17,7 +17,8 @@
  *
  * When `?debug-relay=1` (or `localStorage.debug_relay='1'`), every log
  * line is ALSO POSTed in batches to `/api/debug/logs`, which appends to
- * a per-session file under `.debug/`. Removes the copy-paste friction
+ * a per-session file under `${tmpdir}/sidekick-debug/` (e.g.
+ * `/tmp/sidekick-debug/<sid>.log`). Removes the copy-paste friction
  * when an AI agent (or another developer) needs to read the log
  * without the user manually selecting + sharing console output.
  *
@@ -146,7 +147,7 @@ if (relayOn && relaySessionId && typeof window !== 'undefined') {
   Promise.resolve().then(() => {
     if (relayBootAnnounced) return;
     relayBootAnnounced = true;
-    log(`[debug-relay] enabled — logs streaming to .debug/${relaySessionId}.log (latest.log → same)`);
+    log(`[debug-relay] enabled — logs streaming to /tmp/sidekick-debug/${relaySessionId}.log (latest.log → same)`);
   });
   // 250ms cadence is the sweet spot: tight enough that a crashed page
   // loses <1 line on average, loose enough to coalesce burst log

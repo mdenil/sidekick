@@ -3730,7 +3730,8 @@ function markUpdateAvailable(): void {
 function replaySessionMessages(
   id: string,
   messages: any[],
-  pagination?: { firstId: number | null; hasMore: boolean }
+  pagination?: { firstId: number | null; hasMore: boolean },
+  targetMessageId?: string,
 ) {
   const viewed = sessionDrawer.getViewed();
   const sameSession = viewed === id;
@@ -3791,6 +3792,28 @@ function replaySessionMessages(
   // Register pagination state AFTER messages land so the scroll listener
   // doesn't fire mid-render. hasMore=false (or missing) disables lazy-load.
   chat.setPaginationState(pagination?.firstId ?? null, !!pagination?.hasMore);
+  // If the resume was driven by a message-search hit, find the matching
+  // bubble and scroll it into view + flash. Best-effort: if the hit
+  // predates the initial replay window (older than the first ~200
+  // messages), the bubble isn't in the DOM and we fall back to the
+  // standard scroll-to-bottom. Drill-to-message via load-earlier is
+  // a separate backlog item — see backlog.md.
+  if (targetMessageId) {
+    const transcriptEl = document.getElementById('transcript');
+    const target = transcriptEl?.querySelector(
+      `.line[data-message-id="${CSS.escape(targetMessageId)}"]`,
+    ) as HTMLElement | null;
+    if (target) {
+      target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      target.classList.add('search-target-flash');
+      setTimeout(() => target.classList.remove('search-target-flash'), 1500);
+      return;
+    }
+    // Fallthrough to scroll-to-bottom if not found — don't leave the
+    // user stranded on a random scroll position. A future backlog
+    // item drives load-earlier until the target is located.
+    log(`[cmdk] target message ${targetMessageId} not in initial replay; load-earlier drill not yet implemented`);
+  }
   chat.forceScrollToBottom();
 }
 

@@ -1238,6 +1238,17 @@
     flex: 1; overflow-y: auto; overflow-x: hidden; padding: 18px; scroll-behavior: smooth;
     position: relative;
   }
+  /* cmd+K message-search flash: when the user activates a message hit,
+     replaySessionMessages scrolls to the matching bubble and toggles
+     this class for 1.5s to draw the eye. Removed by setTimeout in
+     main.ts so we don't permanently pin the highlight. */
+  .line.search-target-flash {
+    animation: search-target-flash 1.5s ease-out;
+  }
+  @keyframes search-target-flash {
+    from { background-color: color-mix(in srgb, var(--accent, #6c9) 22%, transparent); }
+    to { background-color: transparent; }
+  }
   /* Drag-and-drop attach: dashed border + dim overlay + centered hint
      when an image/pdf is being dragged over the transcript AND the
      model gate allows it. The .drag-over class is toggled from main.ts;

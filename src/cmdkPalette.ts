@@ -55,11 +55,11 @@ let messagesAbortCtl: AbortController | null = null;
 /** Resume callback supplied by main.ts. Both session + message hits
  *  funnel through it so we don't have to re-implement replaySessionMessages
  *  here. (Backend.resumeSession returns the messages payload.) */
-let onResumeCb: ((id: string, messages: any[], pagination?: any) => void) | null = null;
+let onResumeCb: ((id: string, messages: any[], pagination?: any, targetMessageId?: string) => void) | null = null;
 let onBeforeSwitchCb: ((leavingId: string | null) => void) | null = null;
 
 export function init(opts: {
-  onResume: (id: string, messages: any[], pagination?: any) => void;
+  onResume: (id: string, messages: any[], pagination?: any, targetMessageId?: string) => void;
   /** Same hook as sessionDrawer.init's onBeforeSwitch — fires with the
    *  chat being navigated AWAY from at the moment a palette hit
    *  activates. Lets the shell drop empty/abandoned chats. */
@@ -412,10 +412,15 @@ function setActiveByElement(el: HTMLLIElement) {
 async function activate(hit: Hit) {
   // Both kinds resume the session via backend.resumeSession + the
   // standard onResume callback (which is replaySessionMessages in
-  // main.ts). For message hits we deliberately do NOT scroll to the
-  // specific message id — deferred follow-up.
+  // main.ts). For message hits the message_id is forwarded so the
+  // resume path can scrollIntoView + flash the matching bubble.
+  // Best-effort: if the hit predates the initial replay window the
+  // bubble won't exist in the DOM and we silently land at top of
+  // chat. Drill-to-message via load-earlier is a separate backlog
+  // item.
   const id = hit.kind === 'session' ? hit.id : hit.session_id;
   if (!id) return;
+  const targetMessageId = hit.kind === 'message' ? String(hit.message_id) : undefined;
   close();
   // Fire onBeforeSwitch with the chat we're navigating AWAY from
   // BEFORE backend.resumeSession flips the active pointer. Lets the
@@ -430,7 +435,7 @@ async function activate(hit: Hit) {
     const result: any = await backend.resumeSession(id);
     const messages = result.messages || [];
     const pagination = { firstId: result.firstId ?? null, hasMore: !!result.hasMore };
-    onResumeCb?.(id, messages, pagination);
+    onResumeCb?.(id, messages, pagination, targetMessageId);
   } catch (e: any) {
     diag(`cmdk: resume ${id} failed: ${e?.message || e}`);
   }
