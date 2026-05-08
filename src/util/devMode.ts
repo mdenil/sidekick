@@ -52,6 +52,25 @@ export function setDevMode(on: boolean): void {
   } catch {}
 }
 
+/** Emit a single annotation line through the log relay. Used by the
+ *  DEV-pill tap handler AND exposed as `window.__mark__(label)` so
+ *  desktop console can call it with custom labels. Marker lines
+ *  follow the `[test-matrix] ===== <label> =====` convention so
+ *  log readers (humans + AI) can grep them as run boundaries. */
+export function emitMark(label: string): void {
+  try {
+    const sid = sessionStorage.getItem('sidekick_debug_relay_sid') || 'unknown';
+    const line = `[${new Date().toTimeString().slice(0, 8)}] [test-matrix] ===== ${label} =====\n`;
+    fetch('/api/debug/logs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sid, lines: [line] }),
+      keepalive: true,
+    }).catch(() => {});
+    try { console.log(line); } catch {}
+  } catch { /* noop */ }
+}
+
 /** Mount the DEV pill in the header AND wire the long-press toggle on
  *  the app version label. Call once at boot from main.ts. Idempotent —
  *  safe to call multiple times (won't double-mount).
@@ -65,8 +84,17 @@ export function mountDevPill(): void {
   if (versionEl.dataset.devPillMounted === '1') return;
   versionEl.dataset.devPillMounted = '1';
 
+  // Expose emitMark on window so desktop console can annotate logs
+  // with custom labels (e.g. test-matrix runs). PWA users tap the
+  // DEV pill instead — both paths converge on the same emitMark().
+  try { (window as any).__mark__ = emitMark; } catch {}
+
   // Render the pill if currently in dev mode. Pill lives next to the
   // version label so anyone looking at "v0.473" sees "v0.473 DEV".
+  // Tap the pill to emit a [mark #N] line in the log relay — this is
+  // the on-the-go annotation surface ("this is the moment I hit the
+  // bug"). Long-press the VERSION label to toggle dev mode off.
+  let markCounter = 0;
   function renderPill(): void {
     const existing = document.getElementById('dev-pill');
     if (isDevMode()) {
@@ -75,7 +103,14 @@ export function mountDevPill(): void {
       pill.id = 'dev-pill';
       pill.className = 'dev-pill';
       pill.textContent = 'DEV';
-      pill.title = 'Dev mode on — full diagnostics + log relay. Long-press version to toggle off.';
+      pill.title = 'Dev mode on — full diagnostics + log relay. Tap to mark, long-press version to toggle off.';
+      pill.addEventListener('click', () => {
+        markCounter++;
+        emitMark(`mark #${markCounter}`);
+        const flash = pill.style.background;
+        pill.style.background = '#fff';
+        setTimeout(() => { pill.style.background = flash; }, 120);
+      });
       versionEl!.insertAdjacentElement('afterend', pill);
     } else if (existing) {
       existing.remove();

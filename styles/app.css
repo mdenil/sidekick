@@ -285,11 +285,18 @@
     color: var(--muted); opacity: 0.6; letter-spacing: 0.03em;
     padding-left: 6px; padding-bottom: 2px;
     align-self: end;
+    /* Long-press toggles dev mode (devMode.ts). Without these, iOS
+       intercepts the press as a text-selection / callout gesture and
+       our pointerdown handler never fires the timer to completion. */
+    user-select: none; -webkit-user-select: none;
+    -webkit-touch-callout: none;
   }
   /* DEV-mode pill — visible substitute for URL bar transparency in
      standalone PWA mode. When this is showing, log()/diag() are
      emitting and the relay is streaming to /tmp/sidekick-debug/. See
-     src/util/devMode.ts. Long-press version label to toggle. */
+     src/util/devMode.ts. Long-press version label to toggle.
+     Tap the pill itself to emit a [mark #N] line in the log
+     (useful for "this is the moment I hit the bug" annotations). */
   .header .dev-pill {
     grid-column: 3; grid-row: 1;
     font-family: var(--font-mono); font-size: 9.5px; font-weight: 700;
@@ -300,8 +307,11 @@
     padding: 1px 5px;
     margin-left: 6px;
     align-self: end;
-    user-select: none;
+    cursor: pointer;
+    user-select: none; -webkit-user-select: none;
+    -webkit-touch-callout: none;
   }
+  .header .dev-pill:active { opacity: 0.6; }
   .header .subtitle {
     grid-column: 2 / span 2; grid-row: 2;
     /* Pull A toward the "i" in idekick — but not so far that it overlaps
