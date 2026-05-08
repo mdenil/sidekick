@@ -543,10 +543,20 @@ export async function open(
   });
 
   // Build offer + signal.
+  // Per-step timing inside `signal` — added 2026-05-08 to localize the
+  // 4-6s cold-start hang on Mac Chrome. The aggregate `phase('signal')`
+  // line still fires below; these sub-phases just split it.
   let offer: RTCSessionDescriptionInit;
   try {
+    const tCreateOffer = performance.now();
     offer = await pc.createOffer();
+    const tCreateOfferDone = performance.now();
     await pc.setLocalDescription(offer);
+    const tSetLocalDone = performance.now();
+    log(
+      `[webrtc-signal] createOffer +${Math.round(tCreateOfferDone - tCreateOffer)}ms ` +
+      `setLocalDescription +${Math.round(tSetLocalDone - tCreateOfferDone)}ms`,
+    );
   } catch (e: any) {
     log('[webrtc] createOffer/setLocalDescription failed',
       `name=${e?.name ?? 'Unknown'}`,
@@ -608,16 +618,24 @@ export async function open(
 
   let answer: { peer_id: string; sdp: string; type: string } | null = null;
   try {
+    const tPostStart = performance.now();
     const res = await fetch('/api/rtc/offer', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(offerPayload),
     });
+    const tPostHeaders = performance.now();
     if (!res.ok) {
       const txt = await res.text().catch(() => '');
       throw new Error(`offer ${res.status}: ${txt.slice(0, 200)}`);
     }
     answer = await res.json();
+    const tPostJson = performance.now();
+    log(
+      `[webrtc-signal] POST-offer headers +${Math.round(tPostHeaders - tPostStart)}ms ` +
+      `json +${Math.round(tPostJson - tPostHeaders)}ms ` +
+      `status=${res.status}`,
+    );
   } catch (e: any) {
     log('[webrtc] offer POST failed',
       `name=${e?.name ?? 'Unknown'}`,
@@ -638,7 +656,10 @@ export async function open(
   if (active) active.peerId = answer.peer_id;
 
   try {
+    const tSetRemote = performance.now();
     await pc.setRemoteDescription({ sdp: answer.sdp, type: answer.type as RTCSdpType });
+    const tSetRemoteDone = performance.now();
+    log(`[webrtc-signal] setRemoteDescription +${Math.round(tSetRemoteDone - tSetRemote)}ms`);
   } catch (e: any) {
     log('[webrtc] setRemoteDescription failed',
       `name=${e?.name ?? 'Unknown'}`,
@@ -687,11 +708,20 @@ export async function close(): Promise<void> {
   setState('closing');
   const session = active;
   active = null;
+  // Per-step timing inside `local` — added 2026-05-08 to investigate
+  // the 5s call-3 hangup that correlated with a failed VAD on Mac
+  // Chrome. If any sync close step is mysteriously slow (dataChannel.
+  // close, pc.close racing with a dead audio worklet, etc.) this will
+  // surface it.
+  const tStart = performance.now();
   try { audioPlatform.releaseMicStream('webrtc'); } catch { /* ignore */ }
+  const tMicReleased = performance.now();
   if (session.dataChannel) {
     try { session.dataChannel.close(); } catch { /* ignore */ }
   }
+  const tDataChClose = performance.now();
   try { session.pc.close(); } catch { /* ignore */ }
+  const tPcClose = performance.now();
   if (session.remoteSourceNode) {
     try { session.remoteSourceNode.disconnect(); } catch { /* ignore */ }
   }
@@ -703,13 +733,22 @@ export async function close(): Promise<void> {
     } catch { /* ignore */ }
   }
   const tLocalClose = performance.now();
+  log(
+    `[webrtc-close] local-steps mic=${Math.round(tMicReleased - tStart)}ms ` +
+    `dc=${Math.round(tDataChClose - tMicReleased)}ms ` +
+    `pc=${Math.round(tPcClose - tDataChClose)}ms ` +
+    `audio=${Math.round(tLocalClose - tPcClose)}ms`,
+  );
   if (session.peerId) {
     try {
-      await fetch('/api/rtc/close', {
+      const tPostStart = performance.now();
+      const res = await fetch('/api/rtc/close', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ peer_id: session.peerId }),
       });
+      const tPostDone = performance.now();
+      log(`[webrtc-close] POST-close +${Math.round(tPostDone - tPostStart)}ms status=${res.status}`);
     } catch (e: any) {
       diag('[webrtc] close POST err', e?.message);
     }
