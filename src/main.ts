@@ -5,6 +5,7 @@
 
 import { loadConfig, getConfig, gwWsUrl, getAgentLabel, getAppName, applySkinning } from './config.ts';
 import { log, diag, setDebugElement } from './util/log.ts';
+import { mountDevPill } from './util/devMode.ts';
 import { fetchWithTimeout, TimeoutError } from './util/fetchWithTimeout.ts';
 import * as status from './status.ts';
 import * as settings from './settings.ts';
@@ -178,6 +179,11 @@ async function boot() {
 
   // Debug panel — Ctrl+Shift+D on desktop, triple-tap header on mobile
   setDebugElement(document.getElementById('debug'));
+  // Dev-mode pill + long-press toggle on the version label. Renders
+  // a "DEV" badge next to "v0.473" when localStorage.dev_mode='1'.
+  // See src/util/devMode.ts for the rationale (Jonathan's on-the-go
+  // phone-bug-report workflow needs unmissable transparency).
+  mountDevPill();
   document.addEventListener('keydown', (e) => {
     if (e.ctrlKey && e.shiftKey && e.key === 'D') {
       document.getElementById('debug').classList.toggle('on');

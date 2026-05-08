@@ -139,12 +139,17 @@ import type { STTProvider, TranscriptEvent, Unsubscribe } from '../shared/stt-pr
 // ── Diagnostic flag ────────────────────────────────────────────────────
 
 const dictateDebugOn = (() => {
+  // isDevMode() subsumes all three diag flags when on (Jonathan's
+  // on-the-go phone-bug-report workflow). Dynamic import to avoid a
+  // hot-import cycle through main.ts (boot order).
   try {
     const qs = new URLSearchParams(location.search);
     if (qs.get('dictate-debug') === '1') return true;
     if (qs.get('debug') === '1') return true;
+    if (qs.get('debug-relay') === '1') return true;
     if (localStorage.getItem('dictate_debug') === '1') return true;
     if (localStorage.getItem('sidekick_debug') === '1') return true;
+    if (localStorage.getItem('dev_mode') === '1') return true;
   } catch { /* ignore */ }
   return false;
 })();

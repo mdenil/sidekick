@@ -32,7 +32,15 @@
 /** @type {HTMLElement|null} */
 let debugEl = null;
 
+// Dev-mode is the single source of truth for "user wants diagnostics
+// fully on" (mainly for Jonathan's on-the-go phone-bug-report workflow).
+// When dev mode is on, both debugOn and relayOn become true regardless
+// of their individual URL/localStorage flags. URL flags still work for
+// surgical desktop debugging (one-shot ?debug=1 without dev mode).
+import { isDevMode } from './devMode.ts';
+
 const debugOn = (() => {
+  if (isDevMode()) return true;
   try {
     const qs = new URLSearchParams(location.search);
     if (qs.get('debug') === '1') return true;
@@ -41,6 +49,7 @@ const debugOn = (() => {
 })();
 
 const relayOn = (() => {
+  if (isDevMode()) return true;
   try {
     const qs = new URLSearchParams(location.search);
     if (qs.get('debug-relay') === '1') return true;
