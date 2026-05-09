@@ -134,15 +134,8 @@
     touch-action: none !important;
   }
   .sidebar-top { display: flex; flex-direction: column; padding: 10px 8px 6px; gap: 4px; }
-  /* Capacitor (edge-to-edge): the sidebar's top edge overlaps the iOS
-   * status bar / Dynamic Island when the drawer is open, clipping the
-   * "Menu" label + sb-toggle button. Mirror the header's -20px shift
-   * into the safe-area zone so the menu sits adjacent to the system
-   * clock without colliding. PWA-standalone doesn't have viewport-fit=
-   * cover, so env() returns 0 there → no-op. */
-  .capacitor-app .sidebar-top {
-    padding-top: max(10px, calc(env(safe-area-inset-top) - 20px));
-  }
+  /* Cap-specific .capacitor-app .sidebar-top safe-area rule lives in
+   * mobile/ios/App/App/WebViewDelegate.swift (capOverlayScript). */
   /* Top header row: hamburger left, search right (Gemini-style). When the
    * sidebar is collapsed (rail), the row collapses to just the hamburger
    * — see #sidebar.collapsed .sb-search-btn rule below. justify-content
@@ -242,26 +235,12 @@
     background: linear-gradient(180deg, var(--header-grad-top) 0%, var(--header-grad-bot) 100%);
     border-bottom: 1px solid var(--border);
   }
-  /* Capacitor only: pad header by the system safe-area inset so the
-   * brand clears the iOS status bar / notch / Dynamic Island. Cap's
-   * WKWebView extends edge-to-edge, so without this the brand draws
-   * under the system clock. Pairs with the Cap-only viewport-fit=
-   * cover injection in index.html — that's what makes
-   * env(safe-area-inset-*) return real values.
-   *
-   * The -20px subtraction pulls the brand up into the unused lower
-   * portion of the safe-area zone (status bar text lives in the
-   * upper portion), so the brand sits adjacent to the system clock
-   * without colliding. max() floor of 4px keeps non-notch sane.
-   *
-   * NOT applied to PWA standalone — iOS Safari has a different
-   * layout-viewport behavior under viewport-fit=cover that breaks
-   * composer positioning, so we leave PWA standalone in the default
-   * "WebView in safe area" mode. The brand naturally sits below the
-   * status bar there with no env padding required. */
-  .capacitor-app .header {
-    padding: max(4px, calc(env(safe-area-inset-top) - 20px)) 18px 4px;
-  }
+  /* Cap-specific safe-area rules for .header / .sidebar-top live in
+   * mobile/ios/App/App/WebViewDelegate.swift's capOverlayScript and
+   * are injected via WKUserScript at document_start. Architectural
+   * rule (Jonathan, 2026-05-09): Cap-specific behavior stays inside
+   * mobile/ios/ so the Cap shell could be ripped out by deleting
+   * that directory without touching this file. */
   /* Brand layout: [S]  [subtitle top-right / idekick bottom-right] [version]
    * The S-mark spans both rows vertically so its bottom visually aligns
    * with idekick's baseline; subtitle sits top-right of the S, shifted
