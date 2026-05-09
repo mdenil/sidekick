@@ -310,7 +310,14 @@
     grid-column: 3; grid-row: 1;
     font-family: var(--font-mono); font-size: 10.5px; font-weight: 400;
     color: var(--muted); opacity: 0.6; letter-spacing: 0.03em;
-    padding-left: 6px; padding-bottom: 2px;
+    /* Generous tappable padding around the small visible text — the
+     * label itself is only ~30px wide, way under iOS's 44px minimum
+     * recommended touch target, so long-press would miss without
+     * this. The padding-left/right + padding-block make the actual
+     * pointer-event surface ~40x24px without affecting visual layout
+     * (negative margin claws the visual back). */
+    padding: 8px 10px;
+    margin: -8px -10px;
     align-self: end;
     /* Long-press toggles dev mode (devMode.ts). Without these, iOS
        intercepts the press as a text-selection / callout gesture and
@@ -343,13 +350,18 @@
    * rendered when dev mode is on. Tap = SW + Cache API nuke + reload.
    * Long-press = also wipe IDB. */
   .header .dev-reload-btn {
-    font-size: 16px; line-height: 1;
+    font-size: 18px; line-height: 1;
     color: var(--accent, #6c9);
     background: transparent;
     border: 1px solid var(--accent, #6c9);
-    border-radius: 4px;
-    padding: 2px 8px;
-    margin-left: 8px;
+    border-radius: 6px;
+    /* Keep the visible button modest but ensure the tappable surface
+     * meets iOS's 44px guidance — without this it's ~24px tall and
+     * gets fat-fingered on phone. */
+    padding: 8px 12px;
+    margin-left: 10px;
+    min-width: 44px; min-height: 44px;
+    display: inline-flex; align-items: center; justify-content: center;
     cursor: pointer;
     user-select: none; -webkit-user-select: none;
     -webkit-touch-callout: none;
@@ -1887,16 +1899,29 @@
   @media (hover: none) and (pointer: coarse) {
     .composer { margin-bottom: 25px; }
   }
-  /* PWA installed via Add-to-Home-Screen runs inside the iOS WebKit
-   * "homescreen" mode: body shortens to exclude the home-indicator
-   * safe-area zone, so the 25px above ends up ~25 + 34 = 59px above
-   * the actual screen bottom — composer visibly floats. Capacitor's
-   * WebView treats body as full screen height, so 25px sits flush.
-   * Override the touch rule for PWA-standalone only. Cap stays at
-   * 25px because Jonathan says it looks right there. */
+  /* PWA installed via Add-to-Home-Screen + Capacitor both render edge-
+   * to-edge, but iOS interprets `body { height: 100% }` relative to
+   * the safe area in standalone mode — body ends ~34px above screen
+   * bottom (where home-indicator lives). With margin-bottom on the
+   * composer adding to *that*, the composer floats well above the
+   * home indicator with daylight between.
+   *
+   * Fix: pin body to 100dvh (full viewport including the safe area)
+   * AND bind composer margin-bottom to safe-area-inset-bottom + 8px
+   * so the composer sits 8px above the home indicator zone — flush
+   * but not under the gesture area.
+   *
+   * dvh (dynamic viewport units, 2022+) handles the iOS URL-bar-
+   * collapse case correctly; vh has the same value here for
+   * standalone display modes (URL bar isn't there). */
   @media (display-mode: standalone) {
-    .composer { margin-bottom: 4px; }
+    html, body { height: 100dvh; }
+    .composer { margin-bottom: max(8px, calc(env(safe-area-inset-bottom) + 8px)); }
   }
+  /* Capacitor's body is already full-screen (Jonathan confirmed Cap
+   * composer position is correct at the default 25px), so we DON'T
+   * apply the dvh/safe-area-bottom rule there. If Cap composer ever
+   * needs to move, mirror these rules under .capacitor-app. */
   .composer textarea {
     /* Auto-grows up to --composer-textarea-max (set per breakpoint below).
      * JS in main.ts:autoResize() sets the inline height, reading this same
