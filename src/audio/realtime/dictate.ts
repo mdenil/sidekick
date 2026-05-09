@@ -509,14 +509,30 @@ function ensureAnchor(): void {
   // moved focus to the button; setSelectionRange on a non-focused
   // textarea silently updates the selection but the caret doesn't
   // render. Re-focusing here brings the cursor back where we want it.
-  try {
-    if (document.activeElement !== composerInput) {
-      // preventScroll keeps the page from jumping when refocusing
-      // mid-stream (e.g. inside a long composer).
-      (composerInput as any).focus({ preventScroll: true });
-    }
-  } catch { /* not all browsers support focus options; ignore */ }
-  dlog('anchor-capture', { at: start });
+  //
+  // Skip on Cap (iOS native shell): focus on a textarea pops the iOS
+  // soft keyboard, which obscures composer controls and isn't needed
+  // for voice dictation. Cap users who want to co-edit during
+  // dictation tap the composer themselves — that's a real user
+  // gesture and pops the keyboard naturally. Tradeoff: caret isn't
+  // visible during the streaming on Cap, but the streaming text
+  // itself is plenty visible. Detection via the .capacitor-app class
+  // on documentElement (set by the Cap WKUserScript at boot); shared
+  // code stays Cap-agnostic — it's just reading a CSS class hint.
+  // (Jonathan, 2026-05-09 Cap field bug: keyboard pops on dictate
+  // entry, hides composer controls, doesn't push app up.)
+  const isCap = typeof document !== 'undefined' &&
+                document.documentElement.classList.contains('capacitor-app');
+  if (!isCap) {
+    try {
+      if (document.activeElement !== composerInput) {
+        // preventScroll keeps the page from jumping when refocusing
+        // mid-stream (e.g. inside a long composer).
+        (composerInput as any).focus({ preventScroll: true });
+      }
+    } catch { /* not all browsers support focus options; ignore */ }
+  }
+  dlog('anchor-capture', { at: start, capSkippedFocus: isCap });
 }
 
 /** If `text` starts with a suffix of the already-committed text, strip

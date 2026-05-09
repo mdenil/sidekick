@@ -101,8 +101,19 @@ async function clearSnapshot(): Promise<void> {
 /** Pixels from bottom within which the user is considered "pinned" to the
  *  live edge — new messages auto-scroll. Past this threshold (they've
  *  scrolled up to read earlier content), auto-scroll is suspended and the
- *  jump-to-bottom button appears. */
-const PINNED_THRESHOLD_PX = 80;
+ *  jump-to-bottom button appears.
+ *
+ *  Bumped 80→300 2026-05-09: 80 was too tight for streaming. During a
+ *  realtime call with a fast assistant reply, scrollHeight could grow
+ *  by 100px in a single delta — exceeding the 80px window in one frame
+ *  before autoScroll could catch up, flipping pinnedToBottom=false on
+ *  the next scroll event, and subsequent autoScroll calls no-opping.
+ *  Net symptom (Jonathan field-reported): chat bubble streams fresh
+ *  text but the transcript stops following — user has to scroll
+ *  manually to see what's being said. 300px gives ~5-6 lines of
+ *  bubble growth tolerance; user must intentionally scroll past that
+ *  much content to disable auto-scroll. */
+const PINNED_THRESHOLD_PX = 300;
 
 let pinnedToBottom = true;
 let missedWhileScrolled = 0;
