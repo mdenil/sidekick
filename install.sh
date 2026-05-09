@@ -4,13 +4,19 @@
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/jscholz/sidekick/master/install.sh | bash
 #
-# Clones to ./sidekick in your CURRENT directory (cd into where you
-# want it before running). Override with SIDEKICK_INSTALL_DIR=/abs/path.
+#   ...or, if you've already cloned the repo, just run it in place:
+#       cd sidekick && ./install.sh
+#
+# When piped through curl, clones to ./sidekick in your CURRENT
+# directory (cd into where you want it first). When run as a file from
+# inside an existing checkout, uses that checkout in place. Override
+# the target either way with SIDEKICK_INSTALL_DIR=/abs/path.
 #
 # What it does:
 #   1. Verifies node >= 22 (sidekick uses node 22's
 #      --experimental-strip-types flag at runtime).
-#   2. Clones the repo to ./sidekick (or pulls latest if already there).
+#   2. Clones the repo to ./sidekick (or, if run from inside an existing
+#      checkout, uses it in place — no pull, no branch surprises).
 #   3. Runs `npm install` at root + under `backends/stub/`.
 #   4. Copies `.env.example` to `.env` (idempotent).
 #   5. Starts the proxy + the in-tree stub agent (echo LLM) — no API
@@ -23,6 +29,21 @@ set -euo pipefail
 
 INSTALL_DIR="${SIDEKICK_INSTALL_DIR:-$(pwd)/sidekick}"
 REPO_URL="https://github.com/jscholz/sidekick.git"
+USE_EXISTING_CHECKOUT=0
+
+# If invoked from inside an existing sidekick checkout (./install.sh
+# rather than `curl | bash`), use that checkout as the target instead
+# of cloning a sibling. The user is presumably driving their own
+# branch, so we skip the auto-pull too. Env override still wins.
+if [ -z "${SIDEKICK_INSTALL_DIR:-}" ] && [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  if [ -d "$SCRIPT_DIR/.git" ] \
+     && [ -f "$SCRIPT_DIR/package.json" ] \
+     && grep -q '"name": *"sidekick"' "$SCRIPT_DIR/package.json"; then
+    INSTALL_DIR="$SCRIPT_DIR"
+    USE_EXISTING_CHECKOUT=1
+  fi
+fi
 
 echo "==> sidekick install — target: $INSTALL_DIR"
 
@@ -42,7 +63,9 @@ fi
 echo "==> node $(node -v) ✓"
 
 # 2. Clone or pull
-if [ -d "$INSTALL_DIR/.git" ]; then
+if [ "$USE_EXISTING_CHECKOUT" = "1" ]; then
+  echo "==> running in place inside existing checkout (no pull)"
+elif [ -d "$INSTALL_DIR/.git" ]; then
   echo "==> existing checkout — pulling latest"
   git -C "$INSTALL_DIR" pull --ff-only origin master
 else
