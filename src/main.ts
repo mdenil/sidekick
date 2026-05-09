@@ -3146,12 +3146,11 @@ async function boot() {
   }
 
   // ── VAD source override (call-mode menu) ────────────────────────────
-  // Three buttons (Auto / Client / Bridge) that pin the VAD strategy
-  // for the bridge-VAD migration A/B. Auto defers to chooseVadStrategy()'s
-  // per-route default. Backed by localStorage (sidekick_vad_override) so
-  // it survives PWA reloads — the URL ?vad= override is unreachable
-  // inside an installed PWA (browser caches the entry URL). KILL on
-  // 2026-06-03 along with the route policy lock-in (see vadRouting.ts).
+  // Three buttons (Auto / Client / Bridge) that pin the VAD strategy.
+  // Auto defers to chooseVadStrategy() (default: bridge). Backed by
+  // localStorage (sidekick_vad_override) so it survives PWA reloads —
+  // the URL ?vad= override is unreachable inside an installed PWA
+  // (browser caches the entry URL).
   {
     const buttons = Array.from(
       document.querySelectorAll<HTMLButtonElement>('.mic-vad-option'),

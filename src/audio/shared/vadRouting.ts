@@ -1,29 +1,23 @@
 /**
- * @fileoverview Per-route barge policy: VadSource selection AND
- * threshold floor for the unified BargeDetector.
+ * @fileoverview VadSource selection for the unified BargeDetector.
  *
- * VadSource selection picks ClientSideVadSource on iOS and
- * BridgeVadSource elsewhere; URL param `?vad=client|bridge` overrides
- * for A/B testing.
+ * `chooseVadStrategy()` returns 'bridge' by default everywhere, with
+ * per-user / per-call overrides via URL param `?vad=client|bridge` and
+ * the localStorage-backed call-mode-menu setting (Auto / Client / Bridge).
  *
- * Threshold floor clamps the user's barge sensitivity setting up to
- * a minimum value when the route is hostile (iOS speakerphone).
- * Slider position still drives behavior, but the floor rejects the
- * band where false fires concentrate against AEC residual + TTS
- * bleed.
- *
- * RATIONALE (see notes_session_2026_05_06_barge.md):
- *   - iOS: client-side Silero+vad-web works at normal volume after
- *     Phase-0 tacticals + halt-event fix. Speakerphone max-volume is
- *     a known hardware-coupling limit no software fully closes.
- *   - Mac/desktop: client-side ONNX Runtime Web cold-start is
- *     structurally broken (microsoft/onnxruntime#19177 — InferenceSession
- *     load times out >15s). Bridge-side Silero (Python torch) loads
- *     once at process start, works regardless of client device.
- *
- * KILL CRITERION (2026-06-03): collapse optionality based on field
- * data. Single winner → delete loser implementation; per-route splits
- * stay → delete the override flag, lock routing policy.
+ * History:
+ *   - Pre-2026-05-09 the default was per-device (iOS=client, others=
+ *     bridge). The split was driven by client-side Silero working on
+ *     iOS at normal volume + Mac client-side ONNX cold-start being
+ *     structurally broken (microsoft/onnxruntime#19177). After
+ *     2026-05-09 iPhone speakerphone field test confirmed bridge
+ *     fires correctly on real speech without false-firing on AEC
+ *     residual at normal volume, the default flipped to bridge
+ *     everywhere. ClientSideVadSource stays compiled in as the
+ *     escape hatch for max-volume / bike conditions where bridge's
+ *     single-signal Silero hasn't been verified yet.
+ *   - The override row in the call-mode menu is keep-don't-kill —
+ *     it lets us A/B compare in real use without redeploying.
  */
 
 import { detectDeviceClass } from '../../voiceTuning.ts';
@@ -43,10 +37,10 @@ export type VadStrategy = 'client' | 'bridge';
 /** UI-facing setting value: 'auto' means defer to per-route default. */
 export type VadStrategySetting = 'auto' | VadStrategy;
 
-/** localStorage key for the user-facing VAD override. Underscore-style
- *  matches sidekick_bg_trace / sidekick_debug — the convention for
- *  testing-scaffold flags that get deleted on a deadline. KILL:
- *  2026-06-03 along with the route policy lock-in. */
+/** localStorage key for the user-facing VAD override (call-mode menu's
+ *  Auto / Client / Bridge row). Persistent so iOS-installed PWAs survive
+ *  reloads — the URL ?vad= override is unreachable inside an installed
+ *  PWA because the browser caches the entry URL. */
 const VAD_OVERRIDE_STORAGE_KEY = 'sidekick_vad_override';
 
 /** Returns the URL-param override if present and valid, else null. */
@@ -87,14 +81,22 @@ export function setVadStrategyOverrideSetting(s: VadStrategySetting): void {
 /** Resolve the active strategy.
  *
  *  Precedence: URL `?vad=` (one-off dev/CI testing) > localStorage
- *  setting (PWA-installed user testing) > per-route default
- *  (iOS=client, others=bridge). */
+ *  setting (PWA-installed user testing) > default (`bridge` everywhere).
+ *
+ *  Flipped 2026-05-09 from per-device split (iOS=client, others=bridge)
+ *  to bridge-default after iPhone speakerphone field test confirmed
+ *  bridge-side Silero correctly fires on real speech and doesn't
+ *  false-fire on AEC residual at normal volume. Client path stays
+ *  reachable via `?vad=client` for max-volume / bike conditions where
+ *  bridge multi-signal validation isn't shipped yet. Toggleable
+ *  abstraction means the client code remains compiled in; deletion
+ *  is a separate cleanup gated on a week of bridge-default field use. */
 export function chooseVadStrategy(): VadStrategy {
   const urlOverride = getVadStrategyOverride();
   if (urlOverride) return urlOverride;
   const settingOverride = getVadStrategyOverrideSetting();
   if (settingOverride !== 'auto') return settingOverride;
-  return detectDeviceClass() === 'ios' ? 'client' : 'bridge';
+  return 'bridge';
 }
 
 /** Construct a VadSource for the active strategy. Optionally pass an

@@ -2060,7 +2060,10 @@
     border: 1px solid var(--border);
     border-radius: 8px;
     padding: 6px;
-    min-width: 200px;
+    /* 240px fits "VAD source" label + Auto/Client/Bridge segmented row
+       without the Bridge button overflowing the right edge. Was 200px;
+       Bridge wrapped at the narrower width. */
+    min-width: 240px;
     box-shadow: 0 6px 16px rgba(0,0,0,0.32);
     display: flex; flex-direction: column; gap: 2px;
   }
@@ -2135,8 +2138,9 @@
   }
   .mic-mode-menu .mic-barge-row[hidden] { display: none; }
 
-  /* VAD source override — segmented Auto/Client/Bridge buttons.
-     Testing scaffolding (delete by 2026-06-03 with the override flag). */
+  /* VAD source override — segmented Auto/Client/Bridge buttons. Lets
+     the user pin the VAD strategy at runtime without redeploying;
+     useful for A/B comparing in unusual conditions (max volume, bike). */
   .mic-mode-menu .mic-vad-row {
     display: flex; align-items: center; gap: 8px;
     padding: 8px 10px; border-radius: 6px;
