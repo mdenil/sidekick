@@ -1058,8 +1058,17 @@
       width: 36px; height: 4px; border-radius: 2px;
       background: var(--border-strong, var(--border));
       margin: 4px auto 10px;
-      /* Slightly wider hit area than visual width, no extra DOM. */
-      padding: 8px 24px; box-sizing: content-box;
+      /* Visual bar stays 36×4px; the actual hit area is much larger
+       * so the swipe-down-to-close gesture is discoverable without
+       * having to land precisely on the bar. background-clip: content-box
+       * confines the background paint to the original 36×4 size. The
+       * negative margin claws the visual layout back so the panel
+       * spacing is unchanged.
+       *
+       * Was 8px 24px (~52×20px hit) — too small; users were reaching
+       * for the X button instead. Now ~80% of viewport-width × ~44px. */
+      padding: 20px 40vw; box-sizing: content-box;
+      margin: -16px auto -6px;
       background-clip: content-box;
       cursor: grab;
       touch-action: none; /* the swipe handler manages this gesture */

@@ -319,6 +319,15 @@ async function boot() {
   });
   const btnLock = document.getElementById('btn-lock');
   if (btnLock) btnLock.onclick = () => {
+    // Pocket-lock only makes sense when audio is actually live —
+    // otherwise the user is staring at a locked screen with nothing
+    // happening, and the unlock-swipe affordance is just confusing.
+    // Gate on voiceActive() (memo || dictate || webrtc || listen);
+    // surface a status hint so the button doesn't feel broken.
+    if (!voiceActive()) {
+      try { status.setStatus('Start a call or recording first', 'err'); } catch {}
+      return;
+    }
     // iOS pocketlock waveform fix (2026-05-01): force the audio prime
     // INSIDE the lock-button click gesture so the shared AudioContext
     // is created + resumed while the gesture is still live. fakeLock's
