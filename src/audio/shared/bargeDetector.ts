@@ -155,6 +155,9 @@ export class BargeDetector {
   // VAD-says-no, in-warmup, in-cooldown, isPlayingCb-false, and
   // isEnabledCb-false reasons.
   private diagTickCount = 0;
+  /** Last `enabled|warmup|cooldown|speech` state key emitted to the log
+   *  relay. Used to suppress per-tick spam — only emit on transitions. */
+  private lastDiagState = '';
 
   /** Start the detector. Returns IMMEDIATELY after the per-frame loop is
    *  running; speechVad.start is fired in the background so a slow
@@ -267,12 +270,16 @@ export class BargeDetector {
     const speechActive = speechActiveOverride
       ? speechActiveOverride()
       : (this.vadSource?.isSpeechActive() ?? false);
-    // Diag tick — every ~500ms during playback, log the decision state
-    // so a "didn't fire" failure is debuggable from the chat log.
-    this.diagTickCount++;
-    if (this.diagTickCount % 10 === 0) {
+    // Diag — log on STATE CHANGES only (was every 10 ticks ≈ 200ms,
+    // which spammed the log relay during long calls — Jonathan flagged
+    // 2026-05-09 in a 5-min field test). Pre-firing field repros are
+    // still debuggable: warmup→OK, cooldown→OK, vad silent→speech all
+    // emit a line. Steady-state idle is silent.
+    const stateKey = `${enabled}|${inWarmup}|${inCooldown}|${speechActive}`;
+    if (stateKey !== this.lastDiagState) {
+      this.lastDiagState = stateKey;
       log(
-        `[barge-detector] tick playing=${playing} enabled=${enabled} ` +
+        `[barge-detector] state playing=${playing} enabled=${enabled} ` +
         `warmup=${inWarmup ? 'IN' : 'OK'} cooldown=${inCooldown ? 'IN' : 'OK'} ` +
         `vad=${speechActive ? 'speech' : 'silent'}`,
       );
