@@ -7,11 +7,27 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
     var window: UIWindow?
 
+    /// Silent-audio keepalive engine. iOS suspends apps that aren't actively
+    /// producing audio buffers, even with UIBackgroundModes=[audio] — within
+    /// 3-5 minutes of idle, the WebView's mic capture path gets torn down
+    /// while AVAudioSession + TTS playback survive (Jonathan's 2026-05-09
+    /// field test: long tool call → chimes played late, mic was dead).
+    /// Solution: keep an AVAudioEngine running with a silent looping buffer
+    /// the whole app lifetime. iOS sees continuous audio output → never
+    /// suspends → mic capture stays alive. Same pattern Spotify, NRC Run
+    /// Club, and most VoIP apps use.
+    private var keepaliveEngine: AVAudioEngine?
+    private var keepalivePlayer: AVAudioPlayerNode?
+
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
         // Configure the shared AVAudioSession early so dictation/listen
         // can survive the app being backgrounded:
         //   - .playAndRecord: needed because the PWA also plays back TTS
         //     replies; .record alone would block playback.
+        //   - .voiceChat mode: optimizes for voice (echo cancellation +
+        //     noise suppression beyond the .default baseline). The "what
+        //     iOS expects from a voice app" hint also encourages iOS to
+        //     keep the audio path alive longer when backgrounded.
         //   - .allowBluetooth + .allowBluetoothA2DP: route through paired
         //     headsets (the bike-ride use case — AirPods, Shokz, etc.).
         //   - .defaultToSpeaker: when no headset is attached, output goes
@@ -27,15 +43,106 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             let session = AVAudioSession.sharedInstance()
             try session.setCategory(
                 .playAndRecord,
-                mode: .default,
+                mode: .voiceChat,
                 options: [.allowBluetooth, .allowBluetoothA2DP, .defaultToSpeaker, .mixWithOthers]
             )
             try session.setActive(true)
-            NSLog("[Sidekick] AVAudioSession configured: playAndRecord, BT+speaker+mix")
+            NSLog("[Sidekick] AVAudioSession configured: playAndRecord/voiceChat, BT+speaker+mix")
         } catch {
             NSLog("[Sidekick] AVAudioSession setup failed: \(error.localizedDescription)")
         }
+
+        // Subscribe to interruption + route-change notifications. iOS fires
+        // these on phone calls, headphone unplug, BT (dis)connect, Siri
+        // invocation, etc. On `.ended` interruption we re-activate the
+        // session and restart the keepalive — without this, the mic stays
+        // dead after the interruption clears.
+        let nc = NotificationCenter.default
+        nc.addObserver(self, selector: #selector(handleAudioInterruption(_:)),
+                       name: AVAudioSession.interruptionNotification, object: nil)
+        nc.addObserver(self, selector: #selector(handleAudioRouteChange(_:)),
+                       name: AVAudioSession.routeChangeNotification, object: nil)
+
+        startSilentKeepalive()
         return true
+    }
+
+    /// Start the silent-audio keepalive. Builds a 1-second silent PCM
+    /// buffer in memory, schedules it to loop forever on an
+    /// AVAudioPlayerNode connected to the main mixer. Output is silent
+    /// (zeros), but iOS sees the audio engine rendering buffers and keeps
+    /// the app alive in the background indefinitely. Negligible CPU/battery
+    /// cost (silent buffer = no actual sound output, just a render tick).
+    private func startSilentKeepalive() {
+        let engine = AVAudioEngine()
+        let player = AVAudioPlayerNode()
+        engine.attach(player)
+        guard let format = AVAudioFormat(standardFormatWithSampleRate: 44100, channels: 1) else {
+            NSLog("[Sidekick] keepalive: failed to create audio format")
+            return
+        }
+        engine.connect(player, to: engine.mainMixerNode, format: format)
+
+        let frameCount: AVAudioFrameCount = 44100  // 1 second @ 44.1kHz
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else {
+            NSLog("[Sidekick] keepalive: failed to allocate silent buffer")
+            return
+        }
+        buffer.frameLength = frameCount
+        // PCM buffer is zero-initialized by default — that's our silence.
+
+        do {
+            try engine.start()
+            player.scheduleBuffer(buffer, at: nil, options: [.loops], completionHandler: nil)
+            player.play()
+            self.keepaliveEngine = engine
+            self.keepalivePlayer = player
+            NSLog("[Sidekick] silent keepalive started (44.1kHz mono, looping)")
+        } catch {
+            NSLog("[Sidekick] keepalive engine start failed: \(error.localizedDescription)")
+        }
+    }
+
+    @objc private func handleAudioInterruption(_ notif: Notification) {
+        guard let info = notif.userInfo,
+              let typeRaw = info[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: typeRaw) else { return }
+        switch type {
+        case .began:
+            NSLog("[Sidekick] audio interruption began (phone call / Siri / etc.)")
+        case .ended:
+            NSLog("[Sidekick] audio interruption ended — reactivating session + keepalive")
+            do {
+                try AVAudioSession.sharedInstance().setActive(true)
+            } catch {
+                NSLog("[Sidekick] session reactivate failed: \(error.localizedDescription)")
+            }
+            // Restart keepalive playback if it stopped during the interruption.
+            if let player = keepalivePlayer, !player.isPlaying {
+                player.play()
+            }
+        @unknown default:
+            break
+        }
+    }
+
+    @objc private func handleAudioRouteChange(_ notif: Notification) {
+        guard let info = notif.userInfo,
+              let reasonRaw = info[AVAudioSessionRouteChangeReasonKey] as? UInt,
+              let reason = AVAudioSession.RouteChangeReason(rawValue: reasonRaw) else { return }
+        NSLog("[Sidekick] audio route changed (reason: \(reason.rawValue))")
+        // Headphone unplug = .oldDeviceUnavailable — iOS may auto-pause us.
+        // BT (dis)connect = .newDeviceAvailable / .oldDeviceUnavailable.
+        // Re-activate the session + nudge keepalive so we don't end up
+        // silently dead after a route flip.
+        do {
+            try AVAudioSession.sharedInstance().setActive(true)
+        } catch {
+            NSLog("[Sidekick] session reactivate failed (route change): \(error.localizedDescription)")
+        }
+        if let player = keepalivePlayer, !player.isPlaying {
+            player.play()
+        }
     }
 
     func applicationWillResignActive(_ application: UIApplication) {
