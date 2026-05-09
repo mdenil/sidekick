@@ -2265,7 +2265,10 @@
     content: 'RELEASE TO DISCARD';
     color: var(--danger, #c0504a);
   }
-  @keyframes memo-fade-in { from { opacity: 0; transform: scaleX(0.95); } to { opacity: 1; transform: scaleX(1); } }
+  /* opacity-only fade — was scaleX(0.95→1), but combined with the
+   * synchronous-hide of composer-actions the scaleX implied a size
+   * change that visually reinforced the (now-fixed) "extra row" jump. */
+  @keyframes memo-fade-in { from { opacity: 0; } to { opacity: 1; } }
   .memo-btn {
     background: none; border: none; color: var(--muted); cursor: pointer;
     padding: 4px; border-radius: 6px; display: flex; align-items: center;
@@ -2293,6 +2296,20 @@
     -webkit-user-select: none; user-select: none;
     -webkit-touch-callout: none;
   }
+  /* Same pattern, scoped to PTT press: the mic-button hit area is 22x22
+   * so a finger landing a few px outside hits the textarea or composer
+   * area where iOS's long-press selection-loupe fires and creates a
+   * text selection. Disabling selection globally for the press keeps
+   * the gesture on the PTT path regardless of where the finger landed.
+   * main.ts pointerdown adds this class; pointerup/pointercancel
+   * remove it. composerInput → pointer-events:none so iOS can't
+   * resolve the textarea as the gesture target during the press. */
+  body.ptt-pressing,
+  body.ptt-pressing * {
+    -webkit-user-select: none; user-select: none;
+    -webkit-touch-callout: none;
+  }
+  body.ptt-pressing #composer-input { pointer-events: none; }
   .memo-btn:hover { color: var(--fg); }
   .memo-btn svg { width: 18px; height: 18px; }
   .memo-trash:hover { color: var(--danger); }

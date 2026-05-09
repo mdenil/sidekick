@@ -2179,6 +2179,14 @@ async function boot() {
       }
     };
     const mount = enterComposerBarMount();
+    // Hide composer-actions synchronously alongside the bar mount so
+    // there's no frame where both stack in the flex column (the brief
+    // "extra row" composer jump). The bar itself mounts inside
+    // memo.start() before any await — see memo.ts:67 — so the user
+    // never sees an empty composer; the bar's empty-waveform shows
+    // until the analyser attaches. (Reverts the deferred-hide rationale
+    // from 2026-05-05.) exitMemoMode restores it on failure.
+    mount?.hide();
     const ok = await memo.start({
       container: mount?.container,
       insertBefore: mount?.insertBefore || composerSend,
@@ -2196,11 +2204,6 @@ async function boot() {
       status.setStatus('Mic not available', 'err');
       return;
     }
-    // Recorder bar is now mounted; hide the composer-actions row so
-    // they don't visually stack. Deferred from enterComposerBarMount
-    // until success so the cold-start audio-session prime delay
-    // (~2s) doesn't leave the user staring at an empty composer.
-    mount?.hide();
   }
 
   /** Start cursor-aware live dictation (call=true, autoSend=false).
@@ -2313,6 +2316,12 @@ async function boot() {
     // uses, identical hide/restore semantics for the composer-actions
     // row. Reuses recorderBar.mount under the hood for visual parity.
     const mount = enterComposerBarMount();
+    // Hide composer-actions synchronously alongside the bar mount so
+    // there's no frame where both stack in the flex column. Same
+    // rationale as startMemo — the bar's recorderBar.mount runs before
+    // any await so the user sees the bar (with empty waveform) rather
+    // than an empty composer.
+    mount?.hide();
     // Move btn-mic into the bar's right-end slot so the user has a
     // visible "end call" affordance (mirrors how memo embeds the send
     // button). The btn-mic's existing pointer handlers in main.ts
@@ -2428,10 +2437,6 @@ async function boot() {
       return;
     }
     listenActive = true;
-    // Recorder bar is mounted; safe to hide the composer-actions row.
-    // Deferred from enterComposerBarMount to avoid the empty-composer
-    // window during the cold-start audio-session prime (~2s).
-    mount?.hide();
   }
 
   function stopListen(): void {
@@ -2717,6 +2722,17 @@ async function boot() {
      *  decides whether to keep recording or stop. */
     btnMic.addEventListener('pointerdown', (e: PointerEvent) => {
       diagMicState('pointerdown ENTRY');
+      // preventDefault + body.ptt-pressing as the very first acts of
+      // the handler — kills iOS's native long-press selection-loupe
+      // timer before it has a chance to fire (the loupe was leaking
+      // text-selection from the textarea/composer area when the finger
+      // landed a few px outside btn-mic's 22x22 hit zone). The
+      // body.ptt-pressing class drives a global selection-disable rule
+      // mirroring body.fake-lock-engaged, so even if iOS resolves the
+      // gesture target to a sibling, no text gets selected. Cleared in
+      // the pointerup/pointercancel handlers below.
+      try { e.preventDefault(); } catch {}
+      try { document.body.classList.add('ptt-pressing'); } catch {}
       if (holdActivationTimer) { clearTimeout(holdActivationTimer); holdActivationTimer = null; }
       // Stale-state guard: if the gesture machine thinks we're in
       // recording_toggle but no voice path is actually running, the
@@ -2896,6 +2912,15 @@ async function boot() {
     };
     btnMic.addEventListener('pointerup', cancelHoldTimer);
     btnMic.addEventListener('pointercancel', cancelHoldTimer);
+    // Clear body.ptt-pressing on every press release path so the
+    // global selection-disable doesn't outlive the press. iOS PWA can
+    // skip pointerup if the finger leaves the screen out of bounds —
+    // pointercancel fires for that case, which is why both are wired.
+    const clearPttPressing = () => {
+      try { document.body.classList.remove('ptt-pressing'); } catch {}
+    };
+    btnMic.addEventListener('pointerup', clearPttPressing);
+    btnMic.addEventListener('pointercancel', clearPttPressing);
 
     // The btnMic.onclick handler is intentionally absent: gestures are
     // dispatched entirely by the pointerdown / pointerup state machine
