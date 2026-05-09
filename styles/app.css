@@ -1924,22 +1924,35 @@
    * collapse case correctly; vh has the same value here for
    * standalone display modes (URL bar isn't there). */
   @media (display-mode: standalone) {
-    /* Pin body to full viewport (was treating `height: 100%` relative
-     * to the safe area in standalone — body ended ~34px above screen
-     * bottom and composer floated above empty WebView space). */
-    html, body { height: 100dvh; }
-    /* Match Cap's 25px exactly. Earlier attempt at env(safe-area-
-     * inset-bottom) + 8 = 42px sat 8px above the home-indicator zone
-     * (HIG-correct) but visually read as floating because the home-
-     * indicator pill is tiny and centered low in the 34px zone. 25px
-     * lands the composer just into the zone above the pill — same as
-     * how iOS Messages / WhatsApp / Telegram place their composers,
-     * and exactly where Cap was already showing it. */
-    .composer { margin-bottom: 25px; }
+    /* iOS Safari PWA standalone caps the layout viewport (and `100vh`/
+     * `100dvh`) at "screen height − safe-area insets" — body fills
+     * that, but the WebView itself extends to physical screen edges
+     * (because viewport-fit=cover). Result: empty WebView space below
+     * body, and the composer's "25px from body bottom" sits 25 + 34
+     * (safe-area-inset-bottom) ≈ 59px above the actual screen bottom.
+     *
+     * `-webkit-fill-available` is iOS Safari's special height value
+     * that means "fill the actual available space including safe
+     * areas" — body genuinely covers the full screen. The 100vh
+     * fallback handles non-iOS browsers in standalone mode (Android
+     * Chrome PWA, desktop). Order matters: -webkit-fill-available
+     * second so iOS overrides 100vh. */
+    html, body {
+      height: 100vh;
+      height: -webkit-fill-available;
+    }
+    /* Composer lands env(safe-area-inset-bottom) above body.bottom so
+     * it clears the home-indicator zone. ~34px on iPhones with home
+     * indicator, 0 on devices without — max() floor of 16px keeps a
+     * sensible cushion either way. Matches iOS Messages / WhatsApp
+     * placement (composer flush above home-indicator zone). */
+    .composer {
+      margin-bottom: max(16px, env(safe-area-inset-bottom));
+    }
   }
-  /* Capacitor stays at 25px via the existing touch-coarse rule above —
-   * its WebView already runs body at full screen height so the rule
-   * lands the composer in the right place without further help. */
+  /* Capacitor's WebView treats body as full screen height already
+   * (no safe-area subtraction), so the default touch-coarse 25px rule
+   * lands the composer correctly there. No standalone override needed. */
   .composer textarea {
     /* Auto-grows up to --composer-textarea-max (set per breakpoint below).
      * JS in main.ts:autoResize() sets the inline height, reading this same
