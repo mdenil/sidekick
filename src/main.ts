@@ -3794,6 +3794,14 @@ function replaySessionMessages(
 ) {
   const viewed = sessionDrawer.getViewed();
   const sameSession = viewed === id;
+  diag(
+    `[render-dupe] replaySessionMessages enter chat_id=${id} ` +
+    `viewed=${viewed ?? ''} sameSession=${sameSession} ` +
+    `msgCount=${messages.length} ` +
+    `mode=${sameSession ? 'merge-existing' : 'clear-and-repopulate'} ` +
+    `targetMessageId=${targetMessageId ?? ''} ` +
+    `firstId=${pagination?.firstId ?? ''} hasMore=${pagination?.hasMore ?? ''}`,
+  );
   if (!sameSession) {
     renderedMessages.clear();
     // Activity rows belong to the previous chat's transcript; only

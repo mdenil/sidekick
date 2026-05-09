@@ -28,6 +28,7 @@
 
 import * as chat from './chat.ts';
 import { miniMarkdown } from './util/markdown.ts';
+import { diag } from './util/log.ts';
 
 export type Role = 'user' | 'assistant';
 export type Status = 'streaming' | 'finalized';
@@ -79,6 +80,13 @@ const entries = new Map<string, Entry>();
  *  with monotonically growing cumulative text. */
 export function upsert(messageId: string, partial: UpsertPartial): HTMLElement | null {
   const existing = entries.get(messageId);
+  const decision = existing ? 'update-existing' : 'create-new';
+  const preview = (partial.text || '').slice(0, 40).replace(/\s+/g, ' ');
+  diag(
+    `[render-dupe] upsert messageId=${messageId} role=${partial.role} ` +
+    `status=${partial.status} decision=${decision} mapSize=${entries.size} ` +
+    `replyId=${partial.replyId ?? ''} preview="${preview}"`,
+  );
   if (existing) {
     return updateExisting(existing, partial);
   }
@@ -142,6 +150,10 @@ function escapeText(s: string): string {
 
 /** Wipe both the in-memory map and the transcript DOM children. */
 export function clear(): void {
+  diag(
+    `[render-dupe] clear mapSize=${entries.size} ` +
+    `stack=${new Error().stack?.split('\n').slice(1, 4).join(' | ') ?? ''}`,
+  );
   entries.clear();
   // chat.clear() owns DOM wipe + snapshot purge + viewedSessionIdRef
   // reset; route through it so we don't have two independent wipe
