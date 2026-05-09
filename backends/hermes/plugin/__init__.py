@@ -295,15 +295,36 @@ class _SettingsNotFoundError(KeyError):
     Maps to HTTP 404 in _handle_settings_update."""
 
 
+_SIDEKICK_HIDDEN_COMMANDS = frozenset({
+    # Genuinely terminal-coupled commands — sidekick has its own
+    # surfaces for these, OR they're nonsense outside a TUI.
+    "clear",      # terminal screen wipe; sidekick scrollback differs
+    "redraw",     # TUI repaint
+    "skin",       # display theme; TUI-specific
+    "indicator",  # TUI busy-indicator style (kaomoji/emoji/...)
+    "statusbar",  # TUI status bar toggle
+    "copy",       # terminal clipboard via OSC52
+    "paste",      # terminal paste of system clipboard
+    "image",      # terminal image attach; sidekick has its own attach UI
+    "quit",       # close TUI; sidekick tabs close differently
+})
+
+
 def _serialize_command_registry() -> List[Dict[str, Any]]:
     """Build the JSON payload served by ``GET /v1/commands``.
 
     Pulls from the central ``hermes_cli.commands.COMMAND_REGISTRY`` and
     any plugin-registered commands (via the existing
-    ``_iter_plugin_command_entries`` helper). Filtering mirrors the
-    other gateway surfaces (telegram BotCommands, Slack subcommand
-    mapping) — drop ``cli_only`` entries unless their
-    ``gateway_config_gate`` is truthy.
+    ``_iter_plugin_command_entries`` helper).
+
+    Sidekick is a first-class chat surface, not a "messaging platform"
+    adapter (telegram/slack), so the hermes-side ``cli_only`` filter —
+    which hides TUI-only entries from those gateways — is
+    over-conservative here. Most ``cli_only=True`` commands (busy,
+    tools, skills, cron, snapshot, config, plugins, ...) route fine
+    through the gateway and work in sidekick when typed manually; this
+    just makes them discoverable in the slash menu. We only drop the
+    explicitly TUI-coupled set in ``_SIDEKICK_HIDDEN_COMMANDS``.
 
     Aliases stay on the canonical row (the PWA matches both names
     against the same entry — no separate row per alias). Returns an
@@ -313,23 +334,13 @@ def _serialize_command_registry() -> List[Dict[str, Any]]:
     try:
         from hermes_cli.commands import (
             COMMAND_REGISTRY,
-            _is_gateway_available,
             _iter_plugin_command_entries,
-            _resolve_config_gates,
         )
     except Exception:
         return []
-    try:
-        overrides = _resolve_config_gates()
-    except Exception:
-        overrides = set()
     out: List[Dict[str, Any]] = []
     for cmd in COMMAND_REGISTRY:
-        try:
-            available = _is_gateway_available(cmd, overrides)
-        except Exception:
-            available = not getattr(cmd, "cli_only", False)
-        if not available:
+        if cmd.name in _SIDEKICK_HIDDEN_COMMANDS:
             continue
         out.append({
             "name": cmd.name,
