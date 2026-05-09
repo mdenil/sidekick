@@ -1,5 +1,6 @@
 import UIKit
 import Capacitor
+import AVFoundation
 
 @UIApplicationMain
 class AppDelegate: UIResponder, UIApplicationDelegate {
@@ -7,7 +8,33 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     var window: UIWindow?
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
-        // Override point for customization after application launch.
+        // Configure the shared AVAudioSession early so dictation/listen
+        // can survive the app being backgrounded:
+        //   - .playAndRecord: needed because the PWA also plays back TTS
+        //     replies; .record alone would block playback.
+        //   - .allowBluetooth + .allowBluetoothA2DP: route through paired
+        //     headsets (the bike-ride use case — AirPods, Shokz, etc.).
+        //   - .defaultToSpeaker: when no headset is attached, output goes
+        //     to the loudspeaker rather than the earpiece. Without this,
+        //     iPhone defaults to the earpiece for .playAndRecord, which
+        //     surprises users who expect speakerphone.
+        //   - .mixWithOthers: don't kill other apps' audio (Spotify,
+        //     podcast app, navigation). Sidekick coexists.
+        // Pairs with the UIBackgroundModes=[audio] entry in Info.plist —
+        // without that, iOS suspends the AVAudioSession on backgrounding
+        // regardless of the category we set.
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(
+                .playAndRecord,
+                mode: .default,
+                options: [.allowBluetooth, .allowBluetoothA2DP, .defaultToSpeaker, .mixWithOthers]
+            )
+            try session.setActive(true)
+            NSLog("[Sidekick] AVAudioSession configured: playAndRecord, BT+speaker+mix")
+        } catch {
+            NSLog("[Sidekick] AVAudioSession setup failed: \(error.localizedDescription)")
+        }
         return true
     }
 

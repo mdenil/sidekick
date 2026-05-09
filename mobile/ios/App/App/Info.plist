@@ -52,6 +52,19 @@
 	<key>NSCameraUsageDescription</key>
 	<string>Sidekick uses the camera for image attachments.</string>
 	<!--
+	  Audio background mode keeps the AVAudioSession (and the WebView's
+	  JavaScript) alive while the app is backgrounded — required for
+	  dictation/listen modes to continue capturing when the user
+	  switches apps or locks the screen briefly. iOS still suspends
+	  eventually if no audio is actually flowing; full lock-screen-grade
+	  dictation requires additional MPNowPlayingInfoCenter registration
+	  (deferred — see backlog).
+	-->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+	</array>
+	<!--
 	  App Transport Security is left at the iOS defaults. Modern HTTPS with
 	  valid certs (Tailscale MagicDNS, Cloudflare Tunnel, real CA-signed
 	  certs) works out of the box. If your deployment uses a self-signed

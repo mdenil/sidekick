@@ -226,13 +226,16 @@
   /* ── Header ── */
   .header {
     display: flex; align-items: center; gap: 12px;
-    /* Top padding adds the device safe-area inset so the header
-     * sits below the iOS status bar / notch / Dynamic Island in
-     * the Capacitor native shell. In Safari/desktop the inset is 0
-     * so this is a no-op there. Pairs with viewport-fit=cover in
-     * index.html — without that meta, env(safe-area-inset-*) all
-     * resolve to 0 even on a notch device. */
-    padding: calc(14px + env(safe-area-inset-top)) 18px 14px;
+    /* Top padding equals the device safe-area inset (no extra) so
+     * the brand sits flush against the bottom of the iOS status bar
+     * with no gap in the native shell. Pairs with viewport-fit=cover
+     * in index.html — without that meta, env(safe-area-inset-*) all
+     * resolve to 0 even on a notch device. In Safari/desktop the
+     * inset is 0; the max() floor keeps a 2px breath there so the
+     * brand isn't kissing the URL-bar boundary. Bottom padding
+     * tightened to 4px to claw the same height back below the
+     * brand — the original 14/14 was overall too generous. */
+    padding: max(2px, env(safe-area-inset-top)) 18px 4px;
     background: linear-gradient(180deg, var(--header-grad-top) 0%, var(--header-grad-bot) 100%);
     border-bottom: 1px solid var(--border);
   }
