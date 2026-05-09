@@ -25,10 +25,13 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         // can survive the app being backgrounded:
         //   - .playAndRecord: needed because the PWA also plays back TTS
         //     replies; .record alone would block playback.
-        //   - .voiceChat mode: optimizes for voice (echo cancellation +
-        //     noise suppression beyond the .default baseline). The "what
-        //     iOS expects from a voice app" hint also encourages iOS to
-        //     keep the audio path alive longer when backgrounded.
+        //   - .default mode (NOT .voiceChat): tried .voiceChat earlier
+        //     today but it killed TTS reply playback after the first
+        //     call — voiceChat optimizes for VoIP-style call audio
+        //     (HFP routing, output de-priority) and conflicts with
+        //     WebKit's HTMLAudioElement playback path. Reverted.
+        //     .default keeps the WebView's TTS reliable while still
+        //     supporting both record + playback.
         //   - .allowBluetooth + .allowBluetoothA2DP: route through paired
         //     headsets (the bike-ride use case — AirPods, Shokz, etc.).
         //   - .defaultToSpeaker: when no headset is attached, output goes
@@ -44,11 +47,11 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             let session = AVAudioSession.sharedInstance()
             try session.setCategory(
                 .playAndRecord,
-                mode: .voiceChat,
+                mode: .default,
                 options: [.allowBluetooth, .allowBluetoothA2DP, .defaultToSpeaker, .mixWithOthers]
             )
             try session.setActive(true)
-            NSLog("[Sidekick] AVAudioSession configured: playAndRecord/voiceChat, BT+speaker+mix")
+            NSLog("[Sidekick] AVAudioSession configured: playAndRecord/default, BT+speaker+mix")
         } catch {
             NSLog("[Sidekick] AVAudioSession setup failed: \(error.localizedDescription)")
         }
