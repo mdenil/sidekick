@@ -233,27 +233,23 @@
     background: linear-gradient(180deg, var(--header-grad-top) 0%, var(--header-grad-bot) 100%);
     border-bottom: 1px solid var(--border);
   }
-  /* Edge-to-edge contexts — pad by the system safe-area inset so the
-   * brand clears the iOS status bar / notch / Dynamic Island but sits
-   * flush against its bottom edge. Two triggers:
-   *   - @media (display-mode: standalone): PWA installed via Add to
-   *     Home Screen (also Android Chrome's PWA mode).
-   *   - .capacitor-app on <html>: Capacitor's WKWebView. Set by the
-   *     inline script in index.html — Cap does NOT report standalone
-   *     to matchMedia despite rendering edge-to-edge.
-   * Pairs with viewport-fit=cover in index.html — without that meta,
-   * env(safe-area-inset-*) all resolve to 0 even on a notch device. */
-  @media (display-mode: standalone) {
-    .header {
-      /* Pull the brand up into the unused part of the iOS safe-area
-       * zone by subtracting 20px from the inset (was 30px — too tight,
-       * brand was nudging the system clock). Leaves ~42px of padding
-       * (62px inset − 20px) so the brand sits adjacent to the status-
-       * bar text without colliding. max() floor of 4px keeps non-notch
-       * devices sane. */
-      padding: max(4px, calc(env(safe-area-inset-top) - 20px)) 18px 4px;
-    }
-  }
+  /* Capacitor only: pad header by the system safe-area inset so the
+   * brand clears the iOS status bar / notch / Dynamic Island. Cap's
+   * WKWebView extends edge-to-edge, so without this the brand draws
+   * under the system clock. Pairs with the Cap-only viewport-fit=
+   * cover injection in index.html — that's what makes
+   * env(safe-area-inset-*) return real values.
+   *
+   * The -20px subtraction pulls the brand up into the unused lower
+   * portion of the safe-area zone (status bar text lives in the
+   * upper portion), so the brand sits adjacent to the system clock
+   * without colliding. max() floor of 4px keeps non-notch sane.
+   *
+   * NOT applied to PWA standalone — iOS Safari has a different
+   * layout-viewport behavior under viewport-fit=cover that breaks
+   * composer positioning, so we leave PWA standalone in the default
+   * "WebView in safe area" mode. The brand naturally sits below the
+   * status bar there with no env padding required. */
   .capacitor-app .header {
     padding: max(4px, calc(env(safe-area-inset-top) - 20px)) 18px 4px;
   }
@@ -1923,38 +1919,11 @@
    * dvh (dynamic viewport units, 2022+) handles the iOS URL-bar-
    * collapse case correctly; vh has the same value here for
    * standalone display modes (URL bar isn't there). */
-  /* iOS PWA standalone: position composer with `position: fixed`
-   * pinned to the physical screen bottom. Decouples composer placement
-   * from body height entirely — bypasses the iOS Safari quirk where
-   * body's `height: 100%` is capped at the layout viewport (which
-   * stops 34px above the physical screen bottom under viewport-fit=
-   * cover) and the composer ends up "floating" above empty WebView.
-   *
-   * This is the canonical pattern iOS Messages, WhatsApp, and
-   * Telegram use for chat composers. Side-effect: the chat content
-   * needs padding-bottom so its scroll area doesn't disappear under
-   * the fixed composer. */
-  @media (display-mode: standalone) {
-    .composer {
-      position: fixed;
-      left: 14px; right: 14px; bottom: 0;
-      padding-bottom: env(safe-area-inset-bottom);
-      margin-bottom: 0;  /* override the touch-coarse 25px above */
-      /* Match the original 14px horizontal margin via left/right; .composer's
-       * own .composer { margin: 10px 14px } gives 10px above + 14px sides
-       * — fixed positioning replaces that, so re-establish via left/right. */
-    }
-    /* Reserve space at the bottom of the chat scroll area so the last
-     * messages don't disappear under the fixed composer. ~140px covers
-     * a typical composer height (textarea + actions row) plus the
-     * safe-area cushion. */
-    .chat-column {
-      padding-bottom: calc(140px + env(safe-area-inset-bottom));
-    }
-  }
-  /* Capacitor stays in normal flow (touch-coarse 25px rule) — its
-   * WebView treats body as full screen so it doesn't have the iOS
-   * Safari standalone problem. */
+  /* No standalone-specific composer override — viewport-fit=cover is
+   * Cap-only now, so PWA standalone uses the default "WebView in
+   * safe area" mode where the touch-coarse 25px rule lands the
+   * composer correctly. Cap also uses the 25px rule and looks right
+   * because Cap's WebView treats body as full screen. */
   .composer textarea {
     /* Auto-grows up to --composer-textarea-max (set per breakpoint below).
      * JS in main.ts:autoResize() sets the inline height, reading this same

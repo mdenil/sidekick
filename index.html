@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover"/>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1"/>
 <meta name="theme-color" content="#0a0a0a" id="meta-theme-color"/>
 <title>SideKick</title>
 <link rel="icon" type="image/svg+xml" href="/assets/icon.svg"/>
@@ -13,13 +13,23 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
 <link rel="stylesheet" href="/styles/app.css"/>
 <script>
-  // Tag the body when running inside Capacitor (native iOS/Android shell)
-  // so CSS can apply edge-to-edge safe-area padding. Capacitor's WKWebView
-  // does NOT report `display-mode: standalone` (despite rendering full-
-  // screen with no browser chrome), so the @media query alone misses it.
-  // Inline + pre-body so the class is on <body> before first paint.
+  // Tag the documentElement when running inside Capacitor (native iOS/
+  // Android shell) so CSS can apply edge-to-edge safe-area padding.
+  // Capacitor's WKWebView does NOT report `display-mode: standalone`
+  // despite rendering full-screen with no browser chrome.
+  //
+  // Cap-only: dynamically add viewport-fit=cover to the viewport meta
+  // so env(safe-area-inset-*) returns real values. We can't put cover
+  // in the static meta because iOS Safari PWA standalone interprets it
+  // differently from Cap WKWebView — Safari caps the layout viewport
+  // at "screen − safe-area" under cover, which makes any composer in
+  // normal flow float in unreachable empty WebView space below body.
+  // Cap doesn't have that quirk; its WebView treats body as full screen.
+  // Different requirements → conditional enablement.
   if (typeof window !== 'undefined' && window.Capacitor) {
     document.documentElement.classList.add('capacitor-app');
+    var vp = document.querySelector('meta[name=viewport]');
+    if (vp) vp.setAttribute('content', vp.getAttribute('content') + ', viewport-fit=cover');
   }
 </script>
 </head>
