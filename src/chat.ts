@@ -103,17 +103,20 @@ async function clearSnapshot(): Promise<void> {
  *  scrolled up to read earlier content), auto-scroll is suspended and the
  *  jump-to-bottom button appears.
  *
- *  Bumped 80→300 2026-05-09: 80 was too tight for streaming. During a
- *  realtime call with a fast assistant reply, scrollHeight could grow
- *  by 100px in a single delta — exceeding the 80px window in one frame
- *  before autoScroll could catch up, flipping pinnedToBottom=false on
- *  the next scroll event, and subsequent autoScroll calls no-opping.
- *  Net symptom (Jonathan field-reported): chat bubble streams fresh
- *  text but the transcript stops following — user has to scroll
- *  manually to see what's being said. 300px gives ~5-6 lines of
- *  bubble growth tolerance; user must intentionally scroll past that
- *  much content to disable auto-scroll. */
+ *  Generous threshold (300) plus user-vs-JS scroll distinction (see
+ *  USER_SCROLL_GRACE_MS) — 300 alone wasn't enough on a fast realtime
+ *  reply because scrollHeight kept outpacing autoScroll. The real fix
+ *  is only re-evaluating pinnedToBottom on USER-initiated scrolls
+ *  (touchmove / wheel), not the scroll events fired by our own
+ *  scrollTop assignments. */
 const PINNED_THRESHOLD_PX = 300;
+/** Window after a user touchmove / wheel event during which subsequent
+ *  scroll events are attributed to that user gesture. Outside the window
+ *  scroll events are assumed JS-initiated and don't update pinnedToBottom.
+ *  iOS momentum scrolling can fire scroll events for ~500ms after the
+ *  finger lifts, so we need a generous grace window. */
+const USER_SCROLL_GRACE_MS = 800;
+let lastUserScrollAt = 0;
 
 let pinnedToBottom = true;
 let missedWhileScrolled = 0;
@@ -223,13 +226,25 @@ export async function init(el: HTMLElement | null): Promise<boolean> {
     scrollToBottomBtn.addEventListener('click', () => forceScrollToBottom());
   }
   if (transcriptEl) {
+    // Mark user-initiated scrolls. iOS fires scroll events both during
+    // user touch and during JS scrollTop= assignments — we can't tell
+    // them apart from inside the scroll handler. Track the last time
+    // a user gesture (touch / wheel) fired and only re-evaluate
+    // pinnedToBottom when the scroll event lands within the grace
+    // window after a user gesture. JS-initiated scrolls outside that
+    // window leave pinnedToBottom alone.
+    transcriptEl.addEventListener('touchmove', () => { lastUserScrollAt = Date.now(); }, { passive: true });
+    transcriptEl.addEventListener('wheel', () => { lastUserScrollAt = Date.now(); }, { passive: true });
     transcriptEl.addEventListener('scroll', () => {
+      const userInitiated = (Date.now() - lastUserScrollAt) < USER_SCROLL_GRACE_MS;
+      // Lazy-load older history runs regardless — it cares about
+      // scroll-near-top, not user vs JS.
+      maybeLoadEarlier();
+      if (!userInitiated) return;
       const wasPinned = pinnedToBottom;
       pinnedToBottom = isPinned();
       if (pinnedToBottom && !wasPinned) missedWhileScrolled = 0;
       updateButton();
-      // Lazy-load older history when the user scrolls near the top.
-      maybeLoadEarlier();
     }, { passive: true });
   }
 

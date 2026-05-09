@@ -70,7 +70,13 @@ class SidekickBridgeViewController: CAPBridgeViewController, WKUIDelegate {
           s.id = 'cap-overlay-style';
           s.textContent = [
             '.capacitor-app .header {',
-            '  padding: max(4px, calc(env(safe-area-inset-top) - 20px)) 18px 4px;',
+            '  /* -8px (was -20px) — Jonathan 2026-05-09: -20 was OK',
+            '   * but the brand still crowded the iOS clock. -8 shifts',
+            '   * down ~12px more, about the height of the "A" in the',
+            '   * "AGENT PORTAL" subtitle. Brand sits below the clock',
+            '   * with a comfortable gap, no overlap. max() floor of',
+            '   * 4px keeps non-notch sane (env returns 0 there). */',
+            '  padding: max(4px, calc(env(safe-area-inset-top) - 8px)) 18px 4px;',
             '}',
             '.capacitor-app .sidebar-top {',
             '  /* Buttons inside (sb-toggle, sb-search) must be tappable —',

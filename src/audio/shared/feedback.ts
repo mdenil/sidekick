@@ -293,8 +293,19 @@ export function playFeedback(name: ChimeName): void {
   } catch { /* best-effort */ }
 
   const volume = settings.get().audioFeedbackVolume ?? 0.5;
-  if (volume <= 0) return;
+  if (volume <= 0) {
+    // Volume slider zeroed — log the suppression so a "no chime fired"
+    // report can be ruled out as a config issue rather than a bug.
+    diag(`[feedback] suppressed (${name}): user volume = 0`);
+    return;
+  }
   const userVolume = Math.max(0, Math.min(1, volume));
+  // Per-fire log so Jonathan's "missing/quiet chime" field reports can
+  // be cross-referenced against intended fires. Catches three classes:
+  //   - chime never fired (no log line at all)
+  //   - chime fired but volume was low (vol field shows it)
+  //   - chime fired + play failed (the play().catch below logs that)
+  diag(`[feedback] play (${name}) vol=${userVolume.toFixed(2)}`);
 
   // Fire-and-forget. First-call render is async; subsequent calls resolve
   // synchronously off the cache. Errors logged (not swallowed silently)
