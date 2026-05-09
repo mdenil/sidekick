@@ -30,6 +30,48 @@ const MIN_DISTANCE_PX = 30;
 const VELOCITY_SNAP_PX_MS = 0.5;
 const SNAP_DURATION_MS = 180;
 const MOBILE_BREAKPOINT_PX = 700;
+// Only initiate the open-drawer gesture from the left edge of the
+// viewport — same affordance as iOS system back-swipe. Without this,
+// any rightward drag anywhere on screen (text selection in the
+// composer, a slider drag, horizontal scroll in a code block) gets
+// hijacked because we'd already have applied `body.swipe-active`
+// before the direction was classified.
+const OPEN_EDGE_PX = 24;
+
+/** Bail the gesture entirely if the touch landed on something that
+ *  owns horizontal motion natively. Two cases:
+ *    1. Text inputs (textarea / input / contenteditable) — drag = caret
+ *       /selection range; iOS's text selection requires touch-action to
+ *       stay default, but body.swipe-active sets touch-action:none.
+ *    2. Range sliders — drag = value. Same touch-action conflict.
+ *    3. Anything inside a horizontal-scrollable container (pre/code,
+ *       wide tables) — drag = scrollLeft.
+ *  Faster to short-circuit at pointerdown than to detect the conflict
+ *  mid-gesture. */
+function targetOwnsHorizontalMotion(target: EventTarget | null): boolean {
+  let el = target as Element | null;
+  if (!el) return false;
+  while (el && el !== document.body) {
+    if (el instanceof HTMLTextAreaElement) return true;
+    if (el instanceof HTMLInputElement) {
+      // Range sliders use horizontal drag for value; text/url/search/etc.
+      // use it for caret. checkbox/radio/button are point-only — fine.
+      const t = el.type;
+      if (t === 'range' || t === 'text' || t === 'search'
+          || t === 'url' || t === 'email' || t === 'tel'
+          || t === 'password' || t === 'number') return true;
+    }
+    if (el instanceof HTMLElement && el.isContentEditable) return true;
+    // Horizontal-scrollable container — pre/code blocks (app.css:1488),
+    // wide tables. Cheap check: computed overflow-x.
+    if (el instanceof HTMLElement) {
+      const ox = getComputedStyle(el).overflowX;
+      if ((ox === 'auto' || ox === 'scroll') && el.scrollWidth > el.clientWidth) return true;
+    }
+    el = el.parentElement;
+  }
+  return false;
+}
 
 interface SwipeOptions {
   setExpanded: (exp: boolean) => void;
@@ -106,9 +148,21 @@ export function init(opts: SwipeOptions): void {
     if (!isMobile()) return;
     if (e.pointerType === 'mouse' && e.button !== 0) return;
 
+    // Bail on inputs / sliders / horizontal-scrollables BEFORE applying
+    // the swipe-lock CSS class. Otherwise the lock disables iOS's
+    // native text-selection / range-drag / horizontal-scroll, even if
+    // the gesture later gets rejected on direction (the user has
+    // already missed the first frames of selection / drag / scroll).
+    if (targetOwnsHorizontalMotion(e.target)) return;
+
     const expanded = opts.isExpanded();
 
     if (!expanded) {
+      // Open-from-left gesture: only engage when the touch lands in
+      // the left edge zone. Matches iOS system back-swipe affordance,
+      // and frees the rest of the viewport for content interactions
+      // (text selection in composer, taps on bubbles, etc.).
+      if (e.clientX > OPEN_EDGE_PX) return;
       intent = 'opening';
     } else {
       if (!sidebar.contains(e.target as Node)) return;
