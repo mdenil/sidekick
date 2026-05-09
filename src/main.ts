@@ -5,7 +5,7 @@
 
 import { loadConfig, getConfig, gwWsUrl, getAgentLabel, getAppName, applySkinning } from './config.ts';
 import { log, diag, setDebugElement } from './util/log.ts';
-import { mountDevPill } from './util/devMode.ts';
+import { mountDevPill, isDevMode } from './util/devMode.ts';
 import { fetchWithTimeout, TimeoutError } from './util/fetchWithTimeout.ts';
 import * as status from './status.ts';
 import * as settings from './settings.ts';
@@ -3199,7 +3199,17 @@ async function boot() {
   // localStorage (sidekick_vad_override) so it survives PWA reloads —
   // the URL ?vad= override is unreachable inside an installed PWA
   // (browser caches the entry URL).
+  //
+  // Dev-mode-only (Jonathan, 2026-05-09): the row is testing
+  // scaffolding for VAD experiments, not user-facing config. Hide
+  // unless dev mode is on so non-dev users don't see a confusing
+  // "VAD source: Auto / Client / Bridge" toggle in the call menu.
   {
+    const vadRow = document.getElementById('call-mode-vad-row');
+    if (vadRow) {
+      const showVadRow = isDevMode();
+      vadRow.hidden = !showVadRow;
+    }
     const buttons = Array.from(
       document.querySelectorAll<HTMLButtonElement>('.mic-vad-option'),
     );
