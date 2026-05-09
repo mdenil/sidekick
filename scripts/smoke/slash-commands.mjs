@@ -1,23 +1,27 @@
 // Scenario: slash-command popover renders from the agent's
 // /v1/commands catalog, filters as the user types, and dispatches
-// the highlighted command on Enter — firing the local-clear callback
+// the highlighted command on Enter — firing the local reset-signal
 // for reset-shaped commands (/new, /reset, /clear).
 //
+// Reset-signal semantics changed 2026-05-04 (main.ts:1428-1450):
+// it NO LONGER wipes renderedMessages/transcript. Doing so caused
+// a "lost history!" panic — server-side session_reset mints a fresh
+// session_id but keeps the chat_id, so history is still visible
+// post-reset. Right behavior: leave rendered scroll alone, drop a
+// "— context reset, agent forgot prior turns —" system delimiter
+// so the user sees where the boundary is. This test was inverted to
+// match: assert the system delimiter line appears, NOT that the
+// transcript is wiped.
+//
 // Test plan (mocked):
-//   1. Configure mock.setCommandsCatalog([...]) with three entries
-//      (/new, /clear, /voice) so we can exercise filter + alias
-//      + dispatch.
-//   2. Wait for ready; the PWA's onStatus(connected) handler fires
-//      slashCommands.refresh() which GETs /api/sidekick/commands.
-//   3. Type `/` into the composer. Assert .slash-popover renders +
-//      contains at least 1 row (the catalog items).
-//   4. Type `cle` (so composer reads `/cle`). Assert filter narrows
-//      to /clear only.
-//   5. Press Enter. Assert:
+//   1. Configure mock.setCommandsCatalog([...]) with three entries.
+//   2. Wait for ready (catalog GET fires on connect).
+//   3. Type `/` → assert popover with rows.
+//   4. Type `/cle` → assert filter narrows to /clear.
+//   5. Enter → assert:
 //      - composer cleared,
-//      - reset-signal fired (renderedMessages cleared as the local
-//        side-effect — verified by seeding a fake bubble before
-//        Enter and asserting it's gone after).
+//      - popover closed,
+//      - "context reset" system line appears in transcript.
 
 import { waitForReady, SEL, assert } from './lib.mjs';
 
@@ -75,26 +79,11 @@ export default async function run({ page, log }) {
   assert(rowCount1 === 1, `expected 1 row after filter, got ${rowCount1}`);
   log('filter narrowed to /clear');
 
-  // Seed a fake chat line so we can verify renderedMessages.clear()
-  // is invoked by the reset-signal callback.
-  await page.evaluate(() => {
-    const t = document.getElementById('transcript');
-    if (t) {
-      const fake = document.createElement('div');
-      fake.className = 'line agent test-fake-bubble';
-      fake.textContent = 'pre-clear marker';
-      t.appendChild(fake);
-    }
-  });
-  const linesBefore = await page.locator('.test-fake-bubble').count();
-  assert(linesBefore === 1, `seed: expected 1 fake bubble, got ${linesBefore}`);
-
   // Press Enter on /clear. Should:
-  //  - Dispatch via slashCommands (POST /api/sidekick/messages with
-  //    text=/clear),
-  //  - Fire onResetSignal which clears renderedMessages — the fake
-  //    bubble in #transcript SHOULD be wiped.
-  //  - Close the popover, clear the composer.
+  //  - Dispatch via slashCommands (POST /api/sidekick/messages with text=/clear).
+  //  - Fire onResetSignal → adds the "context reset" system delimiter
+  //    line (NOT a renderedMessages.clear — see file header).
+  //  - Close the popover + clear the composer.
   await page.focus(SEL.composer);
   await page.keyboard.press('Enter');
 
@@ -114,14 +103,16 @@ export default async function run({ page, log }) {
   assert(composerVal === '', `composer should be empty post-dispatch, got ${JSON.stringify(composerVal)}`);
   log('composer cleared');
 
-  // Local-clear fired — fake bubble gone. (renderedMessages.clear
-  // wipes #transcript children including our seed.)
+  // Reset-signal fired — the "— context reset, agent forgot prior
+  // turns —" delimiter line should appear in the transcript. Used to
+  // verify by checking renderedMessages.clear wiped a seeded bubble;
+  // that semantics was retired (see file header), and the delimiter
+  // line is the right post-2026-05-04 signal.
   await page.waitForFunction(
-    () => document.querySelectorAll('.test-fake-bubble').length === 0,
+    () => Array.from(document.querySelectorAll('#transcript .line.system'))
+      .some(el => /context reset/i.test(el.textContent || '')),
     null,
-    { timeout: 2_000 },
+    { timeout: 3_000 },
   );
-  const linesAfter = await page.locator('.test-fake-bubble').count();
-  assert(linesAfter === 0, `expected fake bubble cleared, still ${linesAfter}`);
-  log('reset-signal fired: fake bubble cleared ✓');
+  log('reset-signal fired: "context reset" delimiter line rendered ✓');
 }

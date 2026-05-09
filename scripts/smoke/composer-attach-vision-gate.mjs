@@ -56,6 +56,30 @@ async function attachDisabled(page) {
 }
 
 export default async function run({ page, log }) {
+  // Mock /api/sidekick/model-modalities so the test runs in isolation
+  // from the live proxy's catalog. CRITICAL: vision_fallback_model is
+  // null here — the live proxy advertises a fallback, which makes
+  // isVisionCapableModel true for EVERY model regardless of primary
+  // capability (the fallback routes images through an auxiliary vision
+  // model). We need fallback=null so the gate reflects the primary
+  // model's own modality.
+  await page.route('**/api/sidekick/model-modalities', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        fetched_at: '2026-05-01T00:00:00Z',
+        modalities: {
+          'google/gemma-3-27b-it': ['text', 'image'],
+          'google/gemma-2-9b-it': ['text'],
+          'anthropic/claude-sonnet-4': ['text', 'image'],
+          'mistralai/mistral-7b-instruct': ['text'],
+        },
+        vision_fallback_model: null,
+      }),
+    });
+  });
+
   await waitForReady(page);
 
   // Schema fetch happens on boot now (settings module pulls

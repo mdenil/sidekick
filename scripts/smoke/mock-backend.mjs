@@ -258,8 +258,12 @@ export async function installMockBackend(page) {
     await route.continue({ url: target });
   });
 
-  // GET /config — minimal config so the PWA doesn't 404.
-  await page.route('**/config', async (route) => {
+  // GET /config — minimal config so the PWA doesn't 404. Anchor to
+  // origin-root with a regex; a glob like `**/config` also matches
+  // `/api/sidekick/config`, which silently turned settings.load() into
+  // a no-op (the runtime-config payload has no `settings` field) — every
+  // mocked-backend test was reading DEFAULTS for every yaml-backed key.
+  await page.route(/^https?:\/\/[^/]+\/config(\?.*)?$/, async (route) => {
     if (route.request().method() !== 'GET') return route.fallback();
     await route.fulfill({
       status: 200,

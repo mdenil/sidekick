@@ -10,14 +10,19 @@
 //   2. Setting listenSttEngine="silence-only" persists in settings.get()
 //      (per-device key — survives a full page reload).
 
+import { waitForReady } from './lib.mjs';
+
 export const NAME = 'listen-settings';
 export const DESCRIPTION = 'Listen settings panel rows round-trip values';
 export const STATUS = 'implemented';
 export const BACKEND = 'mocked';
 
 export default async function run({ page, log, fail, url }) {
-  await page.goto(`${url}/`, { waitUntil: 'domcontentloaded' });
-  await page.waitForSelector('#composer-input', { timeout: 15_000 });
+  // waitForReady (vs bare goto+waitForSelector) holds until the body
+  // shows "Connected", which rides past the cold-SW-activation reload
+  // that boot does on first install. Without it, change-event handlers
+  // for #set-listen-stt aren't wired yet when the test fires the event.
+  await waitForReady(page, url);
 
   // Open settings panel — find the gear button.
   await page.evaluate(() => {

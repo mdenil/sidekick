@@ -1,26 +1,30 @@
-// Scenario: clicking new-chat from a chat with content should clean
-// stale 0-msg chats from the drawer. Reported by Jonathan 2026-04-29
-// after the first cleanup attempt didn't visibly remove old "New chat /
-// 0 msgs" entries from his real PWA.
+// Scenario: New-chat rotation must NOT auto-delete empty drawer rows.
 //
-// The first attempt (commit 0fd7009) called `backend.deleteSession`
-// fire-and-forget on each empty chat. This test runs that flow and
-// verifies the drawer actually self-cleans.
+// Inverted from its original form 2026-05-09: the prior version asserted
+// rotation cleaned up stale 0-msg chats. That auto-cleanup behavior was
+// removed 2026-05-05 (main.ts:1751 comment) after confirmed data loss —
+// at least two real sidekick sessions ("Series A pitch deck init",
+// "YouTube investment memo") were wiped because their messageCount
+// transiently read 0 during hermes session-rotation/compression. Hard
+// rule per Jonathan: sidekick never auto-deletes server-side data; stale
+// empty rows stay until the user removes them via the row menu.
+//
+// This test now LOCKS IN that invariant — a regression to "rotation
+// auto-deletes empty rows" would re-introduce the data-loss bug.
 //
 // Test plan (mocked):
 //   1. Pre-populate 1 chat with content (chat A) + 3 empty 0-msg chats.
-//   2. Click chat A; verify A is active.
-//   3. Send "hi" in chat A so hasContent guard passes on next new-chat.
-//      (mock auto-replies, so chat A ends up with at least 2 msgs.)
-//   4. Click new-chat (rotation).
-//   5. Wait for the rotation's background cleanup + refresh.
-//   6. Assert: drawer no longer contains the 3 stale 0-msg chats; only
-//      chat A (with content) and the newly-minted chat remain.
+//   2. Click chat A; send "hi" so hasContent guard passes for new-chat.
+//   3. Click new-chat (rotation).
+//   4. Assert: all 3 stale 0-msg chats are STILL in the drawer.
+//      Chat A (with content) is still there. The newly-minted chat may
+//      or may not appear depending on server-confirm timing — we don't
+//      assert on it.
 
 import { waitForReady, openSidebar, clickNewChat, send, assert } from './lib.mjs';
 
 export const NAME = 'empty-chat-rotation-cleanup';
-export const DESCRIPTION = 'New-chat rotation drops stale 0-msg chats from drawer';
+export const DESCRIPTION = 'New-chat rotation preserves stale 0-msg drawer rows (no auto-delete invariant)';
 export const STATUS = 'implemented';
 export const BACKEND = 'mocked';
 
@@ -88,44 +92,29 @@ export default async function run({ page, log, mock }) {
     { timeout: 5_000 },
   );
 
-  // 4. Rotate via new-chat. Cleanup is fire-and-forget; give it a
-  //    generous window to delete + refresh.
+  // 4. Rotate via new-chat. If a regression re-introduced auto-cleanup,
+  //    the stale rows would disappear here within a few hundred ms.
   await clickNewChat(page);
-  log('clicked new-chat — rotation should trigger cleanup');
+  log('clicked new-chat — stale rows should remain (no auto-delete invariant)');
 
-  // 5. Wait for the stale chats to disappear OR timeout.
-  try {
-    await page.waitForFunction(
-      (staleIds) => {
-        const present = Array.from(
-          document.querySelectorAll('#sessions-list li[data-chat-id]'),
-        ).map(li => li.getAttribute('data-chat-id'));
-        return staleIds.every((id) => !present.includes(id));
-      },
-      STALE_IDS,
-      { timeout: 5_000, polling: 100 },
-    );
-  } catch {
-    const finalIds = await drawerChatIds(page);
-    const remaining = STALE_IDS.filter(id => finalIds.includes(id));
-    throw new Error(
-      `stale 0-msg chats still in drawer after rotation cleanup.\n` +
-      `  remaining stale: ${JSON.stringify(remaining)}\n` +
-      `  full drawer:     ${JSON.stringify(finalIds)}`,
-    );
-  }
+  // 5. Wait long enough for any (regressed) auto-cleanup to have fired,
+  //    then verify the stale rows are STILL there. 1.5s is comfortably
+  //    longer than the rotation's refresh + any background sweep cycle.
+  await page.waitForTimeout(1500);
 
-  // 6. Final state: chat A (with content) is still there, no stale rows.
+  // 6. Final state: chat A still there, all stale rows still there too.
   ids = await drawerChatIds(page);
   assert(
     ids.includes(CHAT_A),
-    `chat A (with content) should remain after cleanup, got ${JSON.stringify(ids)}`,
+    `chat A (with content) should remain after rotation, got ${JSON.stringify(ids)}`,
   );
   for (const id of STALE_IDS) {
     assert(
-      !ids.includes(id),
-      `stale chat ${id} should be gone, drawer = ${JSON.stringify(ids)}`,
+      ids.includes(id),
+      `stale chat ${id} should STILL be in drawer (no auto-delete invariant); ` +
+      `if this assertion regresses, the rotation re-introduced server-side ` +
+      `delete that wiped real data on 2026-05-05. drawer = ${JSON.stringify(ids)}`,
     );
   }
-  log(`cleanup successful — ${STALE_IDS.length} stale 0-msg chats removed ✓`);
+  log(`no-auto-delete invariant holds — ${STALE_IDS.length} stale rows preserved ✓`);
 }

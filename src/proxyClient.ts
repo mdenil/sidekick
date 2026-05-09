@@ -44,6 +44,7 @@
 
 import { log, diag } from './util/log.ts';
 import * as conversations from './conversations.ts';
+import { markRecentlyDeleted, isRecentlyDeleted } from './sessionOps.ts';
 
 let subs: any = null;
 let connected = false;
@@ -909,6 +910,16 @@ export const proxyClientAdapter = {
     if (id.startsWith('__sidekick:hint:')) {
       return { messages: [], firstId: null, hasMore: false };
     }
+    // Phantom-resume guard: if `id` was deleted from this tab in the
+    // last few seconds, return empty WITHOUT calling setActive(id) —
+    // an in-flight click that fired before the delete would otherwise
+    // re-pin activeChatId on a chat that no longer exists, leaving the
+    // PWA pointing at a phantom. The drawer's recentlyDeleted filter
+    // hides the row but proxyClient state would still be wrong.
+    if (isRecentlyDeleted(id)) {
+      diag(`proxy-client.resumeSession: ${id} was just deleted, skipping setActive + fetch`);
+      return { messages: [], firstId: null, hasMore: false };
+    }
     // Flip the active pointer FIRST. The next sendMessage uses this
     // chat_id even if the history fetch below errors — the gateway
     // resolves (Platform.SIDEKICK, chat_id) → session_id internally
@@ -1051,6 +1062,12 @@ export const proxyClientAdapter = {
 
   async deleteSession(id: string) {
     if (id.startsWith('__sidekick:hint:')) return;
+    // Mark BEFORE the network round-trip so any concurrent resumeSession
+    // for the same id sees the flag and short-circuits before its own
+    // setActive(id) re-pins activeChatId. Without this, click-then-
+    // immediate-delete races re-pin after delete clears activeChatId,
+    // and the drawer paints a placeholder for the deleted chat.
+    markRecentlyDeleted(id);
     // Drop the proxy-side row first (best-effort — the local row is
     // the source of truth, but we want the drawer-enrichment query
     // to stop returning this id immediately). Then drop locally + clear

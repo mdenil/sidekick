@@ -115,6 +115,9 @@ export async function resetServerSettings(page, overrides = {}) {
     bargeIn: true,
     bargeThreshold: 0.10,
     autoSend: true,
+    // Body-STT engine (default = server-side blob → /transcribe). Tests
+    // that exercise the local Web Speech path override to 'local'.
+    streamingEngine: 'server',
   };
   const target = { ...defaults, ...overrides };
   // Use a Promise.all of fetches; the proxy handles each independently.

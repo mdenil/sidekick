@@ -28,7 +28,7 @@
 //        actually called speechVad.stop, not just the BargeDetector loop).
 //   4. After 3 cycles: 3 barge sends, 3 destroy calls, no leaked state.
 
-import { waitForReady, assert } from './lib.mjs';
+import { assert, DEFAULT_URL } from './lib.mjs';
 
 export const NAME = 'realtime-barge-multi-connect';
 export const DESCRIPTION = 'BargeDetector fires on every cycle of open/fire/close (guards v0.422 stale-stream bug)';
@@ -107,7 +107,18 @@ export default async function run({ page, log }) {
     await route.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' });
   });
 
-  await waitForReady(page);
+  // Force the client-side VAD strategy so the speechVad stub below is on
+  // the active code path. Default routing is per-device — non-iOS goes to
+  // BridgeVadSource, which subscribes to data-channel envelopes and never
+  // touches speechVad/MicVAD. The v0.422 bug this test pins is specific
+  // to ClientSideVadSource's refcount/teardown path, so pin it here.
+  await page.goto(`${DEFAULT_URL}/?vad=client&debug=1`, { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('#composer-input', { timeout: 15_000 });
+  await page.waitForFunction(
+    () => /Connected/.test(document.body.innerText),
+    null,
+    { timeout: 15_000, polling: 250 },
+  );
 
   await page.evaluate(async () => {
     const settings = await import('/build/settings.mjs');

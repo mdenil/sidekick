@@ -22,6 +22,7 @@ import { log, diag } from './util/log.ts';
 import { parseQuery, applyFilter } from './sessionFilter.ts';
 import { getFilter as getStoredFilter, putFilter as putStoredFilter, clearFilter as clearStoredFilter } from './util/filterStore.ts';
 import { deleteSelected as bulkDeleteSelected } from './multiSelect.ts';
+import { markRecentlyDeleted, isRecentlyDeleted, recentlyDeletedSize } from './sessionOps.ts';
 
 let onResumeCb: ((id: string, messages: any[], pagination?: { firstId: number | null; hasMore: boolean }) => void) | null = null;
 
@@ -360,6 +361,9 @@ let cachedSessions: any[] = [];
 const PENDING_TTL_MS = 60_000;  // 1 min — listSessions polls every 5s
 const pendingSessions = new Map<string, any>();
 
+// recentlyDeleted lives in src/sessionOps.ts now — both sessionDrawer
+// (here) and proxyClient consult it. See sessionOps.ts for rationale.
+
 /** Merge pending sessions into a base list, prepended, deduped by id.
  *  Used by every render path so the synthesized rows are always present
  *  alongside the server-canonical ones. */
@@ -630,11 +634,20 @@ async function runServerFilterReconcile(q: string) {
 
 /** Re-render the visible session list with the current filter applied. */
 function renderListFiltered(listEl: HTMLElement, activeId: string) {
+  // Strip recently-deleted ids before merge. cachedSessions can briefly
+  // include a deleted id when an in-flight pre-delete listSessions fetch
+  // resolves AFTER our delete + cache patch — its response overwrites
+  // the patched cache. Filtering here keeps the deleted id out of the
+  // visible drawer until the recentlyDeleted TTL elapses (or until a
+  // post-delete listSessions response replaces cachedSessions naturally).
+  const base = recentlyDeletedSize() > 0
+    ? cachedSessions.filter(s => !isRecentlyDeleted(s.id))
+    : cachedSessions;
   // Merge pending (SSE-announced, not-yet-persisted) sessions into the
   // base list before filtering. They survive refresh() cycles so the row
   // stays visible across session-switch even when cachedSessions gets
   // overwritten by the server fetch.
-  const merged = mergePending(cachedSessions);
+  const merged = mergePending(base);
   const filtered = currentFilter
     ? applyFilter(merged, parseQuery(currentFilter))
     : merged;
@@ -649,7 +662,11 @@ function renderListFiltered(listEl: HTMLElement, activeId: string) {
   // is genuinely missing from the merged list (= brand-new chat that
   // hasn't even hit /v1/responses yet, so no SSE row either). Once the
   // user sends a message, the pending row covers them.
-  const isFresh = !!activeId && !merged.some(s => s.id === activeId);
+  // Suppress the isFresh placeholder for chats we just deleted in this
+  // tab — see recentlyDeleted comment for the click-then-delete race.
+  const isFresh = !!activeId
+    && !merged.some(s => s.id === activeId)
+    && !isRecentlyDeleted(activeId);
   renderList(listEl, filtered, activeId, isFresh);
 }
 
@@ -955,24 +972,61 @@ async function promptRename(s: any) {
   }
 }
 
+/** Single entry point for "delete this session and reconcile every
+ *  drawer-side state surface that depends on it." Both the row-menu
+ *  delete (`promptDelete`) and the multi-select bulk delete go through
+ *  here so race-handling is in ONE place rather than duplicated.
+ *
+ *  State surfaces this touches (do not split — they all need to agree):
+ *    1. recentlyDeleted set — gates renderListFiltered against pre-delete
+ *       listSessions responses that resolve AFTER our delete and would
+ *       otherwise put `id` back into cachedSessions.
+ *    2. resumeGen — bumped so any in-flight resume() for `id` bails at
+ *       the myGen !== resumeGen guard before its onResumeCb fires
+ *       (otherwise main.ts's replaySessionMessages re-runs setViewed(id)
+ *       on the deleted chat).
+ *    3. optimisticActiveId / viewedSessionId — cleared if they pointed
+ *       at `id` (otherwise refresh()'s active = optimistic||viewed
+ *       fallback paints an isFresh placeholder for the deleted id).
+ *    4. backend (proxyClient) — server-side DELETE + IDB conversation
+ *       remove + activeChatId clear.
+ *    5. sessionCache — IDB list cache patched so the next refresh's
+ *       cache-render doesn't briefly resurrect the row before the
+ *       server-fetch reconciles.
+ *    6. refresh() — final repaint.
+ *
+ *  Throws if backend.deleteSession throws; callers handle (promptDelete
+ *  alerts, multiSelect logs and continues to the next id). */
+async function deleteSessionAtomic(id: string): Promise<void> {
+  // Mark + bump generation BEFORE the network call so any list response
+  // or resume continuation that lands during the await is already gated.
+  markRecentlyDeleted(id);
+  resumeGen++;
+  if (optimisticActiveId === id) optimisticActiveId = null;
+  if (viewedSessionId === id) viewedSessionId = null;
+  await backend.deleteSession(id);
+  await sessionCache.removeMessagesCache(id);
+  const cached = await sessionCache.getListCache();
+  if (cached?.sessions?.length) {
+    const filtered = cached.sessions.filter((c: any) => c.id !== id);
+    await sessionCache.putListCache(filtered);
+  }
+  refresh();
+}
+
+/** Public wrapper for the multi-select bulk path — main.ts wires
+ *  `multiSelect.deleteOne` to this so bulk delete inherits all the
+ *  race-handling above instead of just calling backend.deleteSession
+ *  directly. */
+export function deleteSessionFromUI(id: string): Promise<void> {
+  return deleteSessionAtomic(id);
+}
+
 async function promptDelete(s: any) {
   const label = s.title || s.snippet?.slice(0, 40) || s.id;
   if (!confirm(`Delete session "${label}"? This cannot be undone.`)) return;
   try {
-    await backend.deleteSession(s.id);
-    // Server confirmed deletion. Surgically patch the cached list so the
-    // drawer paints the row gone immediately — without this, refresh()
-    // would read from IDB cache (still has the row) and repaint it for
-    // the 5-10s the server fetch takes. No divergence risk: deleteSession
-    // threw above if the server call failed, so reaching here means the
-    // row IS gone server-side.
-    await sessionCache.removeMessagesCache(s.id);
-    const cached = await sessionCache.getListCache();
-    if (cached?.sessions?.length) {
-      const filtered = cached.sessions.filter((c: any) => c.id !== s.id);
-      await sessionCache.putListCache(filtered);
-    }
-    refresh();
+    await deleteSessionAtomic(s.id);
   } catch (e: any) {
     diag(`sessionDrawer: delete failed: ${e.message}`);
     alert(`Delete failed: ${e.message}`);

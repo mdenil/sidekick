@@ -23,7 +23,7 @@
 //   6. Re-open + close cycle to confirm the next call gets a fresh
 //      MicVAD (counters increment again).
 
-import { waitForReady, assert } from './lib.mjs';
+import { assert, DEFAULT_URL } from './lib.mjs';
 
 export const NAME = 'realtime-barge-hangup-before-reply';
 export const DESCRIPTION = 'BargeDetector tears down cleanly when call ends mid-VAD-warmup (guards v0.422 vadStartCalled invariant)';
@@ -99,7 +99,16 @@ export default async function run({ page, log }) {
     await route.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' });
   });
 
-  await waitForReady(page);
+  // Force client-side VAD strategy — see realtime-barge-multi-connect.mjs
+  // for the rationale. This test pins the v0.422 vadStartCalled invariant
+  // which only exists in ClientSideVadSource's path.
+  await page.goto(`${DEFAULT_URL}/?vad=client&debug=1`, { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('#composer-input', { timeout: 15_000 });
+  await page.waitForFunction(
+    () => /Connected/.test(document.body.innerText),
+    null,
+    { timeout: 15_000, polling: 250 },
+  );
 
   await page.evaluate(async () => {
     const settings = await import('/build/settings.mjs');

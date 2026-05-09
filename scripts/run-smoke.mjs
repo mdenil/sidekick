@@ -35,6 +35,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   launchBrowser, launchSharedBrowser, attachConsoleCapture, dumpLines, DEFAULT_URL,
+  resetServerSettings,
 } from './smoke/lib.mjs';
 import { installMockBackend } from './smoke/mock-backend.mjs';
 
@@ -83,6 +84,13 @@ async function loadScenarios() {
 
 async function runOne(scenario, browser) {
   const start = Date.now();
+  // Reset proxy-side yaml-backed settings to canonical defaults BEFORE
+  // we open a context. The proxy's settings table is global across
+  // scenarios; per-context isolation only covers localStorage + IDB.
+  // Without this, a test that flips streamingEngine='local' leaks into
+  // every subsequent scenario. Scenarios can still override via their
+  // own resetServerSettings() call after this.
+  try { await resetServerSettings(null); } catch { /* dev proxy down — let scenario fail with the actual error */ }
   const { ctx, page, cleanup } = await launchBrowser(browser, { headed: HEADED });
   const getConsole = attachConsoleCapture(page);
   const log = (msg) => console.log(`  [${scenario.name}] ${msg}`);

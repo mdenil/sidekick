@@ -82,6 +82,15 @@ export default async function run({ page, log, fail, url }) {
     waitUntil: 'domcontentloaded',
   });
   await page.waitForSelector('#composer-input', { timeout: 15_000 });
+  // Boot does a SW-activation reload on first install (cold cache) — wait
+  // for "Connected" so listen-mode wiring has actually run before we drive
+  // a sendword. Without this, the streamingEngine read can be torn between
+  // boot 1 and boot 2.
+  await page.waitForFunction(
+    () => /Connected/.test(document.body.innerText),
+    null,
+    { timeout: 15_000, polling: 250 },
+  );
   await page.waitForFunction(() => (window).__listen?.state === 'armed', null, {
     timeout: 10_000, polling: 100,
   });

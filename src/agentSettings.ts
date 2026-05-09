@@ -263,6 +263,18 @@ async function onSubmit(
   refresh?: () => void,
 ) {
   const prev = def.value;
+  // Re-resolve def by id from the LIVE lastSchema before mutating, in
+  // case a concurrent load() (e.g. settings.ts:openPanel) ran between
+  // when the row's onchange handler captured this `def` and now. If
+  // load() replaced lastSchema with fresh defs parsed from the server,
+  // our closure-captured `def` is orphaned — Object.assign'ing it would
+  // mutate dead state, and getCurrentValue (which reads lastSchema)
+  // would keep returning the pre-change value forever. Pre-fix repro:
+  // `composer-attach-vision-gate` smoke had to wait 1500ms for the
+  // openPanel reload to settle before driving the select; without the
+  // wait, the user's change vanished into an orphaned def.
+  const live = lastSchema.find((d) => d.id === def.id);
+  if (live && live !== def) def = live;
   try {
     const adapter: any = (backend as any).adapter ?? await getAdapter();
     if (!adapter?.updateSetting) {
@@ -271,6 +283,11 @@ async function onSubmit(
     const updated: AgentSettingDef = await adapter.updateSetting(def.id, value);
     // Replace our cached copy with the agent's response (lets the
     // agent normalize — e.g. trim whitespace, lower-case, snap-to-step).
+    // Resolve `def` AGAIN — load() may have run during the awaited POST
+    // too, replacing lastSchema once more. We want to mutate whatever
+    // is live in lastSchema NOW, not the snapshot we took before await.
+    const liveAfter = lastSchema.find((d) => d.id === def.id);
+    if (liveAfter && liveAfter !== def) def = liveAfter;
     Object.assign(def, updated);
     // Re-sync the input in case the agent normalized.
     syncInputToValue(inputEl, def);
@@ -285,17 +302,19 @@ async function onSubmit(
       }));
     } catch { /* SSR-safe */ }
   } catch (e: any) {
-    // Revert.
-    syncInputToValue(inputEl, { ...def, value: prev });
+    // Revert. Re-resolve once more in case lastSchema changed during
+    // the failed await.
+    const liveErr = lastSchema.find((d) => d.id === def.id) ?? def;
+    syncInputToValue(inputEl, { ...liveErr, value: prev });
     // For chip-list, restore the previous list before re-rendering.
     if (refresh) {
-      def.value = prev;
+      liveErr.value = prev;
       refresh();
     }
     // Surface the agent's rejection message — this only fires from
     // settings-panel interactions so window.alert is acceptable; a
     // toast would be nicer when the toast util lands.
-    try { window.alert(`Couldn't update ${def.label}: ${e?.message ?? e}`); } catch {}
+    try { window.alert(`Couldn't update ${liveErr.label}: ${e?.message ?? e}`); } catch {}
   }
 }
 

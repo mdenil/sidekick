@@ -438,7 +438,13 @@ async function boot() {
   // row deletes do.
   multiSelect.init({
     getSessions: () => sessionDrawer.getCachedSessions() as any,
-    deleteOne: (id: string) => (backend as any).deleteSession?.(id),
+    // Route bulk delete through sessionDrawer's atomic path so it picks
+    // up recentlyDeleted, resumeGen bump, optimistic/viewed clears, and
+    // IDB cache patch — same race protections as the row-menu delete.
+    // Pre-refactor this called backend.deleteSession directly and missed
+    // every one of those surfaces (latent bug; tests didn't exercise the
+    // race for bulk).
+    deleteOne: (id: string) => sessionDrawer.deleteSessionFromUI(id),
     onClear: () => sessionDrawer.clearMultiSelect(),
   });
 

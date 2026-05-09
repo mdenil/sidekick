@@ -65,8 +65,11 @@ export default async function run({ page, log }) {
   );
   await page.waitForTimeout(6_500);  // 5s prefetch trigger + 1.5s lib-parse headroom
 
-  // Find the prefetch + lib-parse log lines.
-  const sawPrefetch = consoleLogs.some((l) => l.includes('VAD prefetch:') && l.includes('assets kicked off'));
+  // Find the prefetch + lib-parse log lines. The phrase "sequentially
+  // warmed" matches main.ts:3647's actual log; the original "kicked off"
+  // text never landed in production. The test was written against an
+  // earlier draft; aligning to what main.ts actually logs.
+  const sawPrefetch = consoleLogs.some((l) => l.includes('VAD prefetch:') && l.includes('sequentially warmed'));
   const sawLibParse = consoleLogs.some((l) => l.includes('VAD prefetch: lib parsed'));
   log(`saw prefetch line: ${sawPrefetch}; saw lib-parse line: ${sawLibParse}`);
 
