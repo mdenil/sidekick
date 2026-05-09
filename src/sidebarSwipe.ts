@@ -254,4 +254,49 @@ export function init(opts: SwipeOptions): void {
   window.addEventListener('pointermove', onPointerMove, { passive: false });
   window.addEventListener('pointerup', onPointerEnd);
   window.addEventListener('pointercancel', onPointerEnd);
+
+  // Defensive cleanup paths — the body.swipe-active CSS rule sets
+  // `touch-action: none !important` on body and ALL descendants while
+  // the lock is held. Normally cleared on pointerup/cancel or on
+  // snap()'s transitionend, but if any of those fire-and-forget paths
+  // break (iOS swallows pointerup, app backgrounded mid-gesture,
+  // exception in transitionend, gesture handed off to a different
+  // page), the class stays on body and the entire app becomes
+  // unscrollable until reload. Field-reported by Jonathan 2026-05-09:
+  // "chat scroll freezes and can't scroll" intermittently.
+  //
+  // Three safety nets, all idempotent:
+  //   1. visibilitychange → on tab/app return-to-foreground, clear.
+  //      Covers the "backgrounded mid-gesture" and iOS task-switch
+  //      cases where pointer events get lost across the suspend.
+  //   2. Stale-state check on the next pointerdown — if body still
+  //      has swipe-active before we set it, something previously got
+  //      stuck; clear it then re-evaluate normally.
+  //   3. Safety timeout — if a real swipe is in progress it'll clear
+  //      via the normal path within ~500ms. If the lock has been on
+  //      for >2s with no activity, force-clear.
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) {
+      document.body.classList.remove('swipe-active');
+    }
+  });
+  // Wrap onPointerDown to clear stale lock before honoring the new
+  // gesture. Don't muck with the original handler logic; just
+  // pre-clean if we detect leftover state.
+  window.addEventListener('pointerdown', () => {
+    // intent === null means no gesture is in progress per our state
+    // machine; if the class is on body anyway, it's a leftover from
+    // a previous broken cleanup.
+    if (intent === null && document.body.classList.contains('swipe-active')) {
+      document.body.classList.remove('swipe-active');
+    }
+  }, { passive: true, capture: true });
+  // Last-resort timeout. Polls every 2s; if the lock has been on for
+  // longer than that without our state machine being in a gesture,
+  // force-clear.
+  setInterval(() => {
+    if (intent === null && document.body.classList.contains('swipe-active')) {
+      document.body.classList.remove('swipe-active');
+    }
+  }, 2000);
 }
