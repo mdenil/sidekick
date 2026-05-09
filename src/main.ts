@@ -2599,11 +2599,12 @@ async function boot() {
     // discard-armed; release in red → discard. The bar itself is the
     // "still recording" zone; outside the padded rect arms discard.
     // 200ms originally — too tight for a deliberate "tap" gesture
-    // (natural finger lift takes ~250ms), so a tap that the user
-    // intended as toggle-mode kept finalizing as PTT instead. 350ms
-    // matches the iOS "long press" threshold range and gives borderline
-    // taps room without making true PTT feel laggy.
-    const TAP_THRESHOLD_MS = 350;
+    // (natural finger lift takes ~250ms). Was 350ms (iOS long-press
+    // range) but felt laggy in field use 2026-05-09; 280 splits the
+    // difference: PTT triggers crisply for deliberate holds while
+    // ~250ms tap-releases still classify as taps. If you start hitting
+    // "I tapped to toggle but it recorded" misfires, bump back up.
+    const TAP_THRESHOLD_MS = 280;
 
     type MicState = 'idle' | 'recording' | 'recording_toggle';
     let micState: MicState = 'idle';

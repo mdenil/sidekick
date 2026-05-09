@@ -353,7 +353,12 @@ export async function playReplyTts(
       });
       if (!res.ok) {
         diag(`[text-tts] /tts ${res.status}`);
-        if (activeReplyId) emit('stopped', { replyId: activeReplyId, reason: 'tts-http-error' });
+        // Reset state so the user can retry. Pre-fix the error path only
+        // emitted 'stopped' but left state='loading' + active set, which
+        // wedged the play-btn: replyPlayer.ts's loading-guard dropped
+        // every subsequent tap with "[reply-player] click ignored
+        // (loading)." Field repro 2026-05-09: /tts 502 → tap dead.
+        cancelReplyTts('tts-http-error');
         return;
       }
       blob = await res.blob();
@@ -369,7 +374,8 @@ export async function playReplyTts(
   } catch (e: any) {
     if (e?.name === 'AbortError') return;
     diag(`[text-tts] failed: ${e?.message || e}`);
-    if (activeReplyId) emit('stopped', { replyId: activeReplyId, reason: 'play-error' });
+    // Same reason as the !res.ok branch — reset state so retry works.
+    cancelReplyTts('play-error');
   }
   // NOTE: do NOT clear `active` in a finally block. play() resolves
   // when audio STARTS, not when it ends. The 'ended' listener clears
