@@ -134,6 +134,15 @@
     touch-action: none !important;
   }
   .sidebar-top { display: flex; flex-direction: column; padding: 10px 8px 6px; gap: 4px; }
+  /* Capacitor (edge-to-edge): the sidebar's top edge overlaps the iOS
+   * status bar / Dynamic Island when the drawer is open, clipping the
+   * "Menu" label + sb-toggle button. Mirror the header's -20px shift
+   * into the safe-area zone so the menu sits adjacent to the system
+   * clock without colliding. PWA-standalone doesn't have viewport-fit=
+   * cover, so env() returns 0 there → no-op. */
+  .capacitor-app .sidebar-top {
+    padding-top: max(10px, calc(env(safe-area-inset-top) - 20px));
+  }
   /* Top header row: hamburger left, search right (Gemini-style). When the
    * sidebar is collapsed (rail), the row collapses to just the hamburger
    * — see #sidebar.collapsed .sb-search-btn rule below. justify-content
