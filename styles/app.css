@@ -339,6 +339,22 @@
     -webkit-touch-callout: none;
   }
   .header .dev-pill:active { opacity: 0.6; }
+  /* Force-reload button — sibling of .brand inside .header, only
+   * rendered when dev mode is on. Tap = SW + Cache API nuke + reload.
+   * Long-press = also wipe IDB. */
+  .header .dev-reload-btn {
+    font-size: 16px; line-height: 1;
+    color: var(--accent, #6c9);
+    background: transparent;
+    border: 1px solid var(--accent, #6c9);
+    border-radius: 4px;
+    padding: 2px 8px;
+    margin-left: 8px;
+    cursor: pointer;
+    user-select: none; -webkit-user-select: none;
+    -webkit-touch-callout: none;
+  }
+  .header .dev-reload-btn:active { opacity: 0.6; }
   .header .subtitle {
     grid-column: 2 / span 2; grid-row: 2;
     /* Pull A toward the "i" in idekick — but not so far that it overlaps

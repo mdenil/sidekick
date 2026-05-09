@@ -58,6 +58,68 @@ export function setDevMode(on: boolean): void {
   } catch {}
 }
 
+/** Nuke every cache layer the WebView holds and reload from origin.
+ *  Built for the on-the-go workflow: dev hits "F5 isn't working,
+ *  changes aren't propagating" — this is the universal "yes I really
+ *  mean it, get a fresh build" button.
+ *
+ *  Order matters: unregister SW first so its fetch interception is
+ *  gone before we reload (otherwise a stale SW could re-serve cached
+ *  bytes after caches.delete fires). IDB clear is opt-in via the arg
+ *  because session state lives there — caller signals when a
+ *  full nuke (vs. just network) is wanted.
+ *
+ *  Returns a Promise that resolves before the reload happens; the
+ *  reload itself is fire-and-forget. */
+export async function forceReload(opts: { clearIdb?: boolean } = {}): Promise<void> {
+  log('[force-reload] starting nuke sequence');
+  // 1. Unregister all service workers — kills the fetch-interception
+  //    layer that would otherwise serve cached responses on reload.
+  try {
+    if ('serviceWorker' in navigator) {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      for (const r of regs) {
+        await r.unregister();
+        log('[force-reload] unregistered SW:', r.scope);
+      }
+    }
+  } catch (e) { log('[force-reload] SW unregister failed:', e); }
+  // 2. Delete every Cache API bucket (sw-cache-v1 etc.). This is the
+  //    HTTP-asset cache the SW was populating.
+  try {
+    if ('caches' in self) {
+      const keys = await caches.keys();
+      await Promise.all(keys.map(k => caches.delete(k)));
+      log(`[force-reload] cleared ${keys.length} cache bucket(s):`, keys);
+    }
+  } catch (e) { log('[force-reload] caches.delete failed:', e); }
+  // 3. Optional IDB clear — session state, message store, etc. live
+  //    here; only nuke if explicitly requested.
+  if (opts.clearIdb) {
+    try {
+      const dbs = await (indexedDB as any).databases?.() || [];
+      for (const db of dbs) {
+        if (db.name) {
+          await new Promise<void>((resolve) => {
+            const req = indexedDB.deleteDatabase(db.name);
+            req.onsuccess = req.onerror = req.onblocked = () => resolve();
+          });
+          log('[force-reload] deleted IDB:', db.name);
+        }
+      }
+    } catch (e) { log('[force-reload] IDB clear failed:', e); }
+  }
+  // 4. Reload. cache:'reload' on fetch isn't relevant for navigation —
+  //    location.reload(true) used to force, but the boolean is
+  //    deprecated. Modern path: navigate to a fresh URL with a
+  //    cache-busting query, replacing history so back-button isn't
+  //    polluted.
+  log('[force-reload] reloading');
+  const url = new URL(location.href);
+  url.searchParams.set('_fr', Date.now().toString());
+  location.replace(url.toString());
+}
+
 /** Emit a single annotation line through the log relay. Used by the
  *  DEV-pill tap handler AND exposed as `window.__mark__(label)` so
  *  desktop console can call it with custom labels. Marker lines
@@ -132,8 +194,60 @@ export function mountDevPill(): void {
       pill.addEventListener('click', onTap);
       pill.addEventListener('pointerup', onTap);
       versionEl!.insertAdjacentElement('afterend', pill);
+
+      // Render the force-reload button next to the DEV pill. Tap to
+      // do the safe nuke (SW + Cache API, no IDB). Long-press for the
+      // full nuke including IDB (drops session state — confirmed via
+      // alert before firing). Discreet — only visible when dev mode
+      // is on, exactly as Jonathan asked.
+      const reloadBtn = document.createElement('button');
+      reloadBtn.id = 'dev-reload-btn';
+      reloadBtn.className = 'dev-reload-btn';
+      reloadBtn.type = 'button';
+      reloadBtn.textContent = '↻';
+      reloadBtn.title = 'Force reload (clears SW + asset cache). Long-press to also wipe IDB session state.';
+      reloadBtn.setAttribute('aria-label', 'Force reload');
+      let reloadHoldTimer: ReturnType<typeof setTimeout> | null = null;
+      const cancelReloadHold = () => {
+        if (reloadHoldTimer) { clearTimeout(reloadHoldTimer); reloadHoldTimer = null; }
+      };
+      reloadBtn.addEventListener('pointerdown', () => {
+        cancelReloadHold();
+        reloadHoldTimer = setTimeout(() => {
+          reloadHoldTimer = null;
+          // Long-press path: nuke IDB too. Confirm because session
+          // history lives there — easy to lose work otherwise.
+          const ok = confirm('Force reload + wipe IDB (session history)?\nOK = full nuke, Cancel = abort.');
+          if (ok) {
+            log('[dev-reload] long-press → forceReload({clearIdb:true})');
+            void forceReload({ clearIdb: true });
+          }
+        }, 600);
+      });
+      reloadBtn.addEventListener('pointerup', () => {
+        if (reloadHoldTimer) {
+          // pointerup before long-press fired = quick tap = safe reload
+          cancelReloadHold();
+          log('[dev-reload] tap → forceReload() (no IDB)');
+          void forceReload();
+        }
+      });
+      reloadBtn.addEventListener('pointercancel', cancelReloadHold);
+      reloadBtn.addEventListener('pointerleave', cancelReloadHold);
+      // Insert as a sibling of .brand inside .header so it lives in
+      // the header's flex row, not inside the brand grid (where it
+      // would have no natural cell). Falls back to next-to-pill if
+      // the header structure isn't there.
+      const brand = versionEl!.closest('.brand');
+      if (brand && brand.parentElement) {
+        brand.insertAdjacentElement('afterend', reloadBtn);
+      } else {
+        pill.insertAdjacentElement('afterend', reloadBtn);
+      }
     } else if (existing) {
       existing.remove();
+      const oldReload = document.getElementById('dev-reload-btn');
+      if (oldReload) oldReload.remove();
     }
   }
   renderPill();

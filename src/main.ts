@@ -184,6 +184,19 @@ async function boot() {
   // See src/util/devMode.ts for the rationale (Jonathan's on-the-go
   // phone-bug-report workflow needs unmissable transparency).
   mountDevPill();
+  // Fallback version label for runtimes where the service worker
+  // can't deliver a version string — Capacitor's WKWebView blocks SW
+  // registration, so #app-version stays at the "—" default forever
+  // and the long-press surface is a tiny invisible target. Also a
+  // back-stop for browsers where SW takes a long time to respond.
+  // Wait briefly, then if still empty, write a generic label so the
+  // long-press hit area is visibly a real button.
+  setTimeout(() => {
+    const vEl = document.getElementById('app-version');
+    if (vEl && (vEl.textContent === '—' || vEl.textContent?.trim() === '')) {
+      vEl.textContent = (window as any).Capacitor ? 'cap' : 'live';
+    }
+  }, 2500);
   document.addEventListener('keydown', (e) => {
     if (e.ctrlKey && e.shiftKey && e.key === 'D') {
       document.getElementById('debug').classList.toggle('on');
