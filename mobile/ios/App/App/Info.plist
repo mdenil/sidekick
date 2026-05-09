@@ -2,12 +2,12 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CAPACITOR_DEBUG</key>
+	<key>CAPACITOR_DEBUG</key>
 	<string>$(CAPACITOR_DEBUG)</string>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleDisplayName</key>
-        <string>Sidekick</string>
+	<string>Sidekick</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -24,6 +24,10 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>Sidekick uses the camera for image attachments.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Sidekick uses your microphone for voice messages and dictation.</string>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	<key>UIMainStoryboardFile</key>
@@ -47,10 +51,6 @@
 	</array>
 	<key>UIViewControllerBasedStatusBarAppearance</key>
 	<true/>
-	<key>NSMicrophoneUsageDescription</key>
-	<string>Sidekick uses your microphone for voice messages and dictation.</string>
-	<key>NSCameraUsageDescription</key>
-	<string>Sidekick uses the camera for image attachments.</string>
 	<!--
 	  Audio background mode keeps the AVAudioSession (and the WebView's
 	  JavaScript) alive while the app is backgrounded — required for
@@ -64,13 +64,5 @@
 	<array>
 		<string>audio</string>
 	</array>
-	<!--
-	  App Transport Security is left at the iOS defaults. Modern HTTPS with
-	  valid certs (Tailscale MagicDNS, Cloudflare Tunnel, real CA-signed
-	  certs) works out of the box. If your deployment uses a self-signed
-	  cert or a server that doesn't support forward secrecy, add an
-	  NSAppTransportSecurity / NSExceptionDomains block here for your
-	  hostname before `npx cap sync ios`.
-	-->
 </dict>
 </plist>
