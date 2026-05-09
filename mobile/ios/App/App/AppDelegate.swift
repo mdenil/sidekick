@@ -1,6 +1,7 @@
 import UIKit
 import Capacitor
 import AVFoundation
+import MediaPlayer
 
 @UIApplicationMain
 class AppDelegate: UIResponder, UIApplicationDelegate {
@@ -64,6 +65,11 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
                        name: AVAudioSession.routeChangeNotification, object: nil)
 
         startSilentKeepalive()
+        // Lock-screen / Control-Center "Now Playing" widget. Phase 1:
+        // visibility only — buttons render but no-op. Phase 2 (next
+        // sprint) wires play/pause→TTS-interrupt and stop→hangup via
+        // a JS bridge with platform-neutral events from shared code.
+        CallControls.shared.setActive()
         return true
     }
 
@@ -180,4 +186,75 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         return ApplicationDelegateProxy.shared.application(application, continue: userActivity, restorationHandler: restorationHandler)
     }
 
+}
+
+// MARK: - Lock-screen Now Playing integration
+
+/// Singleton owning the lock-screen / Control-Center Now Playing widget.
+/// Phase 1: visibility only (this commit). Widget appears with the
+/// Sidekick brand + dark icon while audio session is active. Play /
+/// pause / stop buttons render but no-op.
+/// Phase 2 (TODO): bidirectional bridge so the buttons actually do
+/// things — stop hangs up active realtime call, play/pause interrupts
+/// the agent's TTS. Will need platform-neutral events emitted from
+/// shared code (sidekick:call-active, sidekick:remote-stop, etc.) +
+/// a Cap WKUserScript that wires webkit.messageHandlers to/from this
+/// class. That preserves the architectural rule (Cap-specific code
+/// stays in mobile/ios/, shared code emits platform-agnostic events).
+final class CallControls {
+    static let shared = CallControls()
+    private init() {}
+
+    private var registeredCommands = false
+
+    func setActive(title: String = "Sidekick", subtitle: String = "Agent ready") {
+        registerRemoteCommandsIfNeeded()
+        var info: [String: Any] = [
+            MPMediaItemPropertyTitle: title,
+            MPMediaItemPropertyArtist: subtitle,
+            // Live = true → iOS shows a "live" indicator instead of a
+            // playback scrubber. Right semantics for an open mic /
+            // active assistant rather than a fixed-length recording.
+            MPNowPlayingInfoPropertyIsLiveStream: true,
+            MPNowPlayingInfoPropertyPlaybackRate: 1.0,
+        ]
+        if let icon = UIImage(named: "AppIcon") {
+            let artwork = MPMediaItemArtwork(boundsSize: icon.size) { _ in icon }
+            info[MPMediaItemPropertyArtwork] = artwork
+        }
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+        UIApplication.shared.beginReceivingRemoteControlEvents()
+        NSLog("[Sidekick] Now Playing set: \(title) — \(subtitle)")
+    }
+
+    func clear() {
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+        UIApplication.shared.endReceivingRemoteControlEvents()
+        NSLog("[Sidekick] Now Playing cleared")
+    }
+
+    /// Phase 1: handlers no-op. Without a registered handler iOS hides
+    /// the button entirely; we want the placeholder visible so muscle
+    /// memory builds, and Phase 2 will route these to JS.
+    private func registerRemoteCommandsIfNeeded() {
+        guard !registeredCommands else { return }
+        registeredCommands = true
+        let center = MPRemoteCommandCenter.shared()
+        center.togglePlayPauseCommand.addTarget { _ in
+            NSLog("[Sidekick] remote: togglePlayPause (Phase 2 TODO)")
+            return .success
+        }
+        center.playCommand.addTarget { _ in
+            NSLog("[Sidekick] remote: play (Phase 2 TODO)")
+            return .success
+        }
+        center.pauseCommand.addTarget { _ in
+            NSLog("[Sidekick] remote: pause (Phase 2 TODO)")
+            return .success
+        }
+        center.stopCommand.addTarget { _ in
+            NSLog("[Sidekick] remote: stop (Phase 2 TODO)")
+            return .success
+        }
+    }
 }
