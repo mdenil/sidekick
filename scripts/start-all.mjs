@@ -160,8 +160,20 @@ if (!skipAgent) {
   }
 }
 
+// Two prints: a prominent banner with the URL the user should open
+// (the proxy / PWA), and a follow-up dev line that names both ports
+// for log-readers. install.sh's "Open the URL printed below" wording
+// points readers at the banner — keep it visually distinct from the
+// child-prefixed log lines so it doesn't get lost in the boot spew.
+const userUrl = `http://localhost:${proxyPort}`;
 process.stdout.write(
-  `[start-all] proxy on http://localhost:${proxyPort}` +
+  '\n' +
+  '────────────────────────────────────────────────────────\n' +
+  `  Sidekick is ready — open ${userUrl} in your browser.\n` +
+  '────────────────────────────────────────────────────────\n\n',
+);
+process.stdout.write(
+  `[start-all] proxy on ${userUrl}` +
   (skipAgent ? ' (no in-tree agent)\n' : `, agent on http://127.0.0.1:${agentPort}\n`),
 );
 
