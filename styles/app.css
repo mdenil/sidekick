@@ -2060,10 +2060,13 @@
     border: 1px solid var(--border);
     border-radius: 8px;
     padding: 6px;
-    /* 240px fits "VAD source" label + Auto/Client/Bridge segmented row
-       without the Bridge button overflowing the right edge. Was 200px;
-       Bridge wrapped at the narrower width. */
-    min-width: 240px;
+    /* 280px gives the barge-sensitivity row enough room: "Barge
+       sensitivity" label (~110px) + slider (max 140px) + "50%" value
+       (36px) + gaps don't fit in 240px and the value gets shoved
+       flush to the rounded corner. 280 keeps a corner gutter and
+       still fits the VAD-source row's Auto/Client/Bridge segmented
+       buttons without wrap. */
+    min-width: 280px;
     box-shadow: 0 6px 16px rgba(0,0,0,0.32);
     display: flex; flex-direction: column; gap: 2px;
   }
