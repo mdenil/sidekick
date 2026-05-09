@@ -41,31 +41,63 @@ class SidekickBridgeViewController: CAPBridgeViewController, WKUIDelegate {
     ///      status bar.
     private static let capOverlayScript = """
     (function() {
+      // documentElement exists at .atDocumentStart — class can be set
+      // immediately so first paint already sees `<html class="capacitor-app">`.
       document.documentElement.classList.add('capacitor-app');
-      var vp = document.querySelector('meta[name=viewport]');
-      if (vp) vp.setAttribute('content', vp.getAttribute('content') + ', viewport-fit=cover');
-      var s = document.createElement('style');
-      s.textContent = [
-        '.capacitor-app .header {',
-        '  padding: max(4px, calc(env(safe-area-inset-top) - 20px)) 18px 4px;',
-        '}',
-        '.capacitor-app .sidebar-top {',
-        '  /* Buttons inside (sb-toggle, sb-search) must be tappable —',
-        '   * use the FULL safe-area inset (not the -20px shift the header',
-        '   * brand uses). With -20 the search button on the right could',
-        '   * end up under the iOS signal/wifi icons or in the swipe-zone',
-        '   * iOS reserves for system gestures, making it unreachable. */',
-        '  padding-top: max(10px, env(safe-area-inset-top));',
-        '}'
-      ].join('\\n');
-      // Append at document_start: <head> may not exist yet on the very
-      // first run, so stash on documentElement and defer-attach if so.
-      if (document.head) {
-        document.head.appendChild(s);
-      } else {
-        document.addEventListener('DOMContentLoaded', function() {
+
+      // <head> + its children (including <meta name=viewport>) DO NOT
+      // yet exist at .atDocumentStart — only <html> has been opened.
+      // The meta-tag mutation + <style> injection must wait until <head>
+      // is parsed, otherwise:
+      //   - querySelector for the viewport meta returns null → no
+      //     viewport-fit=cover ever gets added → env(safe-area-inset-*)
+      //     returns 0 → `.capacitor-app .header` rule resolves to
+      //     `padding: max(4px, -20px) ...` = 4px → brand draws 4px
+      //     from screen top, overlapping the status bar / clock.
+      //     (Field-reported by Jonathan 2026-05-09 right after the
+      //     isolation refactor — pre-refactor the meta was static in
+      //     index.html so CSS saw real env values.)
+      // Use MutationObserver to fire as soon as <head> appears (more
+      // reliable than DOMContentLoaded for Cap's WKWebView, which can
+      // sometimes lay out before DCL fires).
+      function applyOverlay() {
+        var vp = document.querySelector('meta[name=viewport]');
+        if (vp && !/viewport-fit=cover/.test(vp.getAttribute('content') || '')) {
+          vp.setAttribute('content', vp.getAttribute('content') + ', viewport-fit=cover');
+        }
+        if (!document.getElementById('cap-overlay-style')) {
+          var s = document.createElement('style');
+          s.id = 'cap-overlay-style';
+          s.textContent = [
+            '.capacitor-app .header {',
+            '  padding: max(4px, calc(env(safe-area-inset-top) - 20px)) 18px 4px;',
+            '}',
+            '.capacitor-app .sidebar-top {',
+            '  /* Buttons inside (sb-toggle, sb-search) must be tappable —',
+            '   * use the FULL safe-area inset (not the -20px shift the header',
+            '   * brand uses). With -20 the search button on the right could',
+            '   * end up under the iOS signal/wifi icons or in the swipe-zone',
+            '   * iOS reserves for system gestures, making it unreachable. */',
+            '  padding-top: max(10px, env(safe-area-inset-top));',
+            '}'
+          ].join('\\n');
           document.head.appendChild(s);
-        }, { once: true });
+        }
+      }
+
+      if (document.head) {
+        applyOverlay();
+      } else {
+        // Watch for <head> being added to <html>. Fires before any
+        // <link rel=stylesheet> children are parsed, so our <style>
+        // gets ordered after them — same-specificity tiebreak by
+        // source order favors our rule.
+        var obs = new MutationObserver(function() {
+          if (document.head) { obs.disconnect(); applyOverlay(); }
+        });
+        obs.observe(document.documentElement, { childList: true });
+        // Belt-and-braces fallback in case the observer never fires.
+        document.addEventListener('DOMContentLoaded', applyOverlay, { once: true });
       }
     })();
     """
