@@ -30,13 +30,6 @@ const MIN_DISTANCE_PX = 30;
 const VELOCITY_SNAP_PX_MS = 0.5;
 const SNAP_DURATION_MS = 180;
 const MOBILE_BREAKPOINT_PX = 700;
-// Only initiate the open-drawer gesture from the left edge of the
-// viewport — same affordance as iOS system back-swipe. Without this,
-// any rightward drag anywhere on screen (text selection in the
-// composer, a slider drag, horizontal scroll in a code block) gets
-// hijacked because we'd already have applied `body.swipe-active`
-// before the direction was classified.
-const OPEN_EDGE_PX = 24;
 
 /** Bail the gesture entirely if the touch landed on something that
  *  owns horizontal motion natively. Two cases:
@@ -158,11 +151,12 @@ export function init(opts: SwipeOptions): void {
     const expanded = opts.isExpanded();
 
     if (!expanded) {
-      // Open-from-left gesture: only engage when the touch lands in
-      // the left edge zone. Matches iOS system back-swipe affordance,
-      // and frees the rest of the viewport for content interactions
-      // (text selection in composer, taps on bubbles, etc.).
-      if (e.clientX > OPEN_EDGE_PX) return;
+      // Open-drawer gesture engages from anywhere on screen (matches
+      // ChatGPT iOS app affordance — no edge requirement). What
+      // protects content interactions is `targetOwnsHorizontalMotion`
+      // above, which bails before swipe-lock applies. Anything else
+      // (transcript, agent bubbles, system rows, etc.) drags the
+      // drawer in.
       intent = 'opening';
     } else {
       if (!sidebar.contains(e.target as Node)) return;

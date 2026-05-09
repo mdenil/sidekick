@@ -1,6 +1,7 @@
-// Pin sidebarSwipe's pointerdown gating: the open-drawer gesture must
-// ONLY engage from the left edge of the viewport AND must NEVER engage
-// on text inputs, range sliders, or horizontal-scrollable containers.
+// Pin sidebarSwipe's pointerdown gating. The open-drawer gesture engages
+// anywhere on screen (ChatGPT iOS pattern — no edge requirement), but
+// MUST NOT engage on text inputs, range sliders, or horizontal-scrollable
+// containers — those own horizontal touch natively.
 //
 // Field-reported bug 2026-05-09: "swiping right inside the composer
 // textarea opens the drawer, can't text-select." Pre-fix the gesture
@@ -8,15 +9,15 @@
 // regardless of target, killing iOS's native text selection.
 //
 // Asserts (mobile viewport, drawer collapsed):
-//   1. pointerdown at clientX=100 (outside edge zone) → no swipe-active.
-//   2. pointerdown on textarea even within edge zone → no swipe-active.
-//   3. pointerdown on range slider even within edge zone → no swipe-active.
-//   4. pointerdown at clientX=10 (edge zone) on body → swipe-active applies.
+//   1. pointerdown anywhere on body (edge OR mid-screen) → swipe-active
+//      applies — this IS the ChatGPT-style open path.
+//   2. pointerdown on textarea → no swipe-active (iOS native selection).
+//   3. pointerdown on range slider → no swipe-active (iOS native drag).
 
 import { waitForReady, assert } from './lib.mjs';
 
 export const NAME = 'sidebar-swipe-gate';
-export const DESCRIPTION = 'Open-drawer swipe is edge-only and skips inputs/sliders/h-scrollables';
+export const DESCRIPTION = 'Open-drawer swipe engages anywhere on screen but skips inputs/sliders/h-scrollables';
 export const STATUS = 'implemented';
 export const BACKEND = 'mocked';
 
@@ -56,57 +57,40 @@ export default async function run({ page, log }) {
     });
   };
 
-  // ── Case 1: middle-of-screen pointerdown should NOT engage ──────────
-  await fireDown(200, 400, null);
+  // ── Case 1: pointerdown on textarea (would-be-but-no) ─────────────
+  // The textarea-target bail must hold regardless of x position.
+  await fireDown(200, 420, '#composer-input');
   assert(!(await swipeActive()),
-    'pointerdown at clientX=200 (outside edge) should NOT apply swipe-active');
-  await fireUp();
-  log('mid-screen pointerdown: gesture inactive ✓');
-
-  // ── Case 2: pointerdown on composer textarea (even at edge) ─────────
-  // The textarea sits well past the edge zone in normal layout, but
-  // the textarea-target bail must hold even if the layout placed it
-  // right against the edge. Set a temporary CSS override to put it
-  // at x=0 so the test pin BOTH gates simultaneously.
-  await page.evaluate(() => {
-    const ta = document.getElementById('composer-input');
-    if (ta) (ta).style.cssText += ';position:fixed;left:0;top:50%;width:200px;height:40px;z-index:9999';
-  });
-  await fireDown(10, 420, '#composer-input');
-  assert(!(await swipeActive()),
-    'pointerdown on composer textarea should NOT apply swipe-active even within edge zone');
+    'pointerdown on composer textarea should NOT apply swipe-active');
   await fireUp();
   log('textarea pointerdown: gesture inactive ✓');
 
-  // ── Case 3: pointerdown on a range slider ──────────────────────────
-  // Inject a temporary <input type=range> at x=0 to pin the gate.
+  // ── Case 2: pointerdown on a range slider ─────────────────────────
   await page.evaluate(() => {
     const r = document.createElement('input');
     r.type = 'range'; r.id = 'smoke-test-slider';
-    r.style.cssText = 'position:fixed;left:0;top:60%;width:200px;z-index:9999';
+    r.style.cssText = 'position:fixed;left:50px;top:60%;width:200px;z-index:9999';
     document.body.appendChild(r);
   });
-  await fireDown(10, 530, '#smoke-test-slider');
+  await fireDown(150, 530, '#smoke-test-slider');
   assert(!(await swipeActive()),
     'pointerdown on range slider should NOT apply swipe-active');
   await fireUp();
   log('range-slider pointerdown: gesture inactive ✓');
 
-  // ── Case 4: pointerdown at the actual edge on body — engages ────────
-  // Reset the textarea position so it doesn't sit at the edge anymore.
+  // ── Case 3: pointerdown anywhere on body — engages ────────────────
+  // Sanity that the input bails above weren't accidentally so broad
+  // they killed the gesture entirely. Mid-screen on body must engage
+  // (this is the whole point of the ChatGPT-style anywhere-on-screen
+  // affordance).
   await page.evaluate(() => {
-    const ta = document.getElementById('composer-input');
-    if (ta) (ta).style.cssText = '';
-    const slider = document.getElementById('smoke-test-slider');
-    slider?.remove();
+    document.getElementById('smoke-test-slider')?.remove();
   });
-  await fireDown(10, 200, null);
+  await fireDown(200, 300, null);
   assert(await swipeActive(),
-    'pointerdown at clientX=10 on body SHOULD apply swipe-active (this IS the open-drawer entry path)');
+    'pointerdown anywhere on body SHOULD apply swipe-active (this IS the open-drawer entry path)');
   await fireUp();
-  // After pointerup with no horizontal motion, gesture resets and
-  // swipe-active is dropped.
   await page.waitForFunction(() => !document.body.classList.contains('swipe-active'),
     null, { timeout: 1000 });
-  log('edge-zone pointerdown on body: gesture engaged then released ✓');
+  log('mid-screen pointerdown on body: gesture engaged then released ✓');
 }
