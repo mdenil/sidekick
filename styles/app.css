@@ -245,11 +245,18 @@
    * env(safe-area-inset-*) all resolve to 0 even on a notch device. */
   @media (display-mode: standalone) {
     .header {
-      padding: max(4px, env(safe-area-inset-top)) 18px 4px;
+      /* Pull the brand up into the unused part of the iOS safe-area
+       * zone by subtracting 30px from the inset. Status bar text
+       * (time, signal, battery) lives in roughly the upper 30-40px
+       * of the safe area, so leaving ~32px of padding (62px inset −
+       * 30px) keeps the brand visually adjacent to the system text
+       * without colliding with it. max() floor of 4px keeps non-notch
+       * devices sane. */
+      padding: max(4px, calc(env(safe-area-inset-top) - 30px)) 18px 4px;
     }
   }
   .capacitor-app .header {
-    padding: max(4px, env(safe-area-inset-top)) 18px 4px;
+    padding: max(4px, calc(env(safe-area-inset-top) - 30px)) 18px 4px;
   }
   /* Brand layout: [S]  [subtitle top-right / idekick bottom-right] [version]
    * The S-mark spans both rows vertically so its bottom visually aligns
