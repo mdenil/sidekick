@@ -1923,36 +1923,38 @@
    * dvh (dynamic viewport units, 2022+) handles the iOS URL-bar-
    * collapse case correctly; vh has the same value here for
    * standalone display modes (URL bar isn't there). */
+  /* iOS PWA standalone: position composer with `position: fixed`
+   * pinned to the physical screen bottom. Decouples composer placement
+   * from body height entirely — bypasses the iOS Safari quirk where
+   * body's `height: 100%` is capped at the layout viewport (which
+   * stops 34px above the physical screen bottom under viewport-fit=
+   * cover) and the composer ends up "floating" above empty WebView.
+   *
+   * This is the canonical pattern iOS Messages, WhatsApp, and
+   * Telegram use for chat composers. Side-effect: the chat content
+   * needs padding-bottom so its scroll area doesn't disappear under
+   * the fixed composer. */
   @media (display-mode: standalone) {
-    /* iOS Safari PWA standalone caps the layout viewport (and `100vh`/
-     * `100dvh`) at "screen height − safe-area insets" — body fills
-     * that, but the WebView itself extends to physical screen edges
-     * (because viewport-fit=cover). Result: empty WebView space below
-     * body, and the composer's "25px from body bottom" sits 25 + 34
-     * (safe-area-inset-bottom) ≈ 59px above the actual screen bottom.
-     *
-     * `-webkit-fill-available` is iOS Safari's special height value
-     * that means "fill the actual available space including safe
-     * areas" — body genuinely covers the full screen. The 100vh
-     * fallback handles non-iOS browsers in standalone mode (Android
-     * Chrome PWA, desktop). Order matters: -webkit-fill-available
-     * second so iOS overrides 100vh. */
-    html, body {
-      height: 100vh;
-      height: -webkit-fill-available;
-    }
-    /* Composer lands env(safe-area-inset-bottom) above body.bottom so
-     * it clears the home-indicator zone. ~34px on iPhones with home
-     * indicator, 0 on devices without — max() floor of 16px keeps a
-     * sensible cushion either way. Matches iOS Messages / WhatsApp
-     * placement (composer flush above home-indicator zone). */
     .composer {
-      margin-bottom: max(16px, env(safe-area-inset-bottom));
+      position: fixed;
+      left: 14px; right: 14px; bottom: 0;
+      padding-bottom: env(safe-area-inset-bottom);
+      margin-bottom: 0;  /* override the touch-coarse 25px above */
+      /* Match the original 14px horizontal margin via left/right; .composer's
+       * own .composer { margin: 10px 14px } gives 10px above + 14px sides
+       * — fixed positioning replaces that, so re-establish via left/right. */
+    }
+    /* Reserve space at the bottom of the chat scroll area so the last
+     * messages don't disappear under the fixed composer. ~140px covers
+     * a typical composer height (textarea + actions row) plus the
+     * safe-area cushion. */
+    .chat-column {
+      padding-bottom: calc(140px + env(safe-area-inset-bottom));
     }
   }
-  /* Capacitor's WebView treats body as full screen height already
-   * (no safe-area subtraction), so the default touch-coarse 25px rule
-   * lands the composer correctly there. No standalone override needed. */
+  /* Capacitor stays in normal flow (touch-coarse 25px rule) — its
+   * WebView treats body as full screen so it doesn't have the iOS
+   * Safari standalone problem. */
   .composer textarea {
     /* Auto-grows up to --composer-textarea-max (set per breakpoint below).
      * JS in main.ts:autoResize() sets the inline height, reading this same
