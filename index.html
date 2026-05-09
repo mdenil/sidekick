@@ -12,6 +12,16 @@
 <meta name="apple-mobile-web-app-capable" content="yes"/>
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
 <link rel="stylesheet" href="/styles/app.css"/>
+<script>
+  // Tag the body when running inside Capacitor (native iOS/Android shell)
+  // so CSS can apply edge-to-edge safe-area padding. Capacitor's WKWebView
+  // does NOT report `display-mode: standalone` (despite rendering full-
+  // screen with no browser chrome), so the @media query alone misses it.
+  // Inline + pre-body so the class is on <body> before first paint.
+  if (typeof window !== 'undefined' && window.Capacitor) {
+    document.documentElement.classList.add('capacitor-app');
+  }
+</script>
 </head>
 <body>
 

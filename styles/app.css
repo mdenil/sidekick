@@ -233,16 +233,23 @@
     background: linear-gradient(180deg, var(--header-grad-top) 0%, var(--header-grad-bot) 100%);
     border-bottom: 1px solid var(--border);
   }
-  /* Standalone display modes — Capacitor native shell AND PWA installed
-   * via "Add to Home Screen". These render edge-to-edge, with the iOS
-   * status bar / notch / Dynamic Island overlaying the top of the
-   * WebView. Pad the header by the system safe-area inset so the brand
-   * clears the system zone but sits flush against its bottom edge —
-   * no extra gap. Pairs with viewport-fit=cover in index.html. */
+  /* Edge-to-edge contexts — pad by the system safe-area inset so the
+   * brand clears the iOS status bar / notch / Dynamic Island but sits
+   * flush against its bottom edge. Two triggers:
+   *   - @media (display-mode: standalone): PWA installed via Add to
+   *     Home Screen (also Android Chrome's PWA mode).
+   *   - .capacitor-app on <html>: Capacitor's WKWebView. Set by the
+   *     inline script in index.html — Cap does NOT report standalone
+   *     to matchMedia despite rendering edge-to-edge.
+   * Pairs with viewport-fit=cover in index.html — without that meta,
+   * env(safe-area-inset-*) all resolve to 0 even on a notch device. */
   @media (display-mode: standalone) {
     .header {
       padding: max(4px, env(safe-area-inset-top)) 18px 4px;
     }
+  }
+  .capacitor-app .header {
+    padding: max(4px, env(safe-area-inset-top)) 18px 4px;
   }
   /* Brand layout: [S]  [subtitle top-right / idekick bottom-right] [version]
    * The S-mark spans both rows vertically so its bottom visually aligns
