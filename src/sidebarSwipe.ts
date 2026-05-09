@@ -24,6 +24,8 @@
  * Desktop: no-op (window.innerWidth >= 700).
  */
 
+import { diag } from './util/log.ts';
+
 // ~3-4 character widths in chat font; the minimum motion that feels
 // like a deliberate drag rather than a tap or scroll wobble.
 const MIN_DISTANCE_PX = 30;
@@ -102,8 +104,20 @@ export function init(opts: SwipeOptions): void {
   // (touch-action on html/body alone doesn't propagate: scrollable
   // containers like .transcript and inner elements with explicit
   // `touch-action: manipulation` win over ancestor rules.)
+  // lockSetAt: timestamp ms when the lock was last applied. Lets the
+  // poll-cleanup distinguish "lock just set, gesture in flight" from
+  // "lock has been on for ages, must be stuck". Set to 0 when cleared.
+  let lockSetAt = 0;
   const setSwipeLock = (lock: boolean) => {
+    const had = document.body.classList.contains('swipe-active');
     document.body.classList.toggle('swipe-active', lock);
+    if (lock && !had) {
+      lockSetAt = Date.now();
+      diag('[swipe-lock] set (intent=' + intent + ')');
+    } else if (!lock && had) {
+      lockSetAt = 0;
+      diag('[swipe-lock] clear (normal)');
+    }
   };
 
   const snap = (open: boolean) => {
@@ -276,8 +290,11 @@ export function init(opts: SwipeOptions): void {
   //      via the normal path within ~500ms. If the lock has been on
   //      for >2s with no activity, force-clear.
   document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) {
+    if (!document.hidden && document.body.classList.contains('swipe-active')) {
+      const ageMs = lockSetAt ? Date.now() - lockSetAt : -1;
+      diag('[swipe-lock] clear (visibilitychange, ageMs=' + ageMs + ')');
       document.body.classList.remove('swipe-active');
+      lockSetAt = 0;
     }
   });
   // Wrap onPointerDown to clear stale lock before honoring the new
@@ -288,7 +305,10 @@ export function init(opts: SwipeOptions): void {
     // machine; if the class is on body anyway, it's a leftover from
     // a previous broken cleanup.
     if (intent === null && document.body.classList.contains('swipe-active')) {
+      const ageMs = lockSetAt ? Date.now() - lockSetAt : -1;
+      diag('[swipe-lock] clear (capture-pointerdown, ageMs=' + ageMs + ')');
       document.body.classList.remove('swipe-active');
+      lockSetAt = 0;
     }
   }, { passive: true, capture: true });
   // Last-resort timeout. Polls every 2s; if the lock has been on for
@@ -296,7 +316,10 @@ export function init(opts: SwipeOptions): void {
   // force-clear.
   setInterval(() => {
     if (intent === null && document.body.classList.contains('swipe-active')) {
+      const ageMs = lockSetAt ? Date.now() - lockSetAt : -1;
+      diag('[swipe-lock] clear (poll-2s, ageMs=' + ageMs + ')');
       document.body.classList.remove('swipe-active');
+      lockSetAt = 0;
     }
   }, 2000);
 }
