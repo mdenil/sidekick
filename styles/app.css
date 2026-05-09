@@ -246,17 +246,16 @@
   @media (display-mode: standalone) {
     .header {
       /* Pull the brand up into the unused part of the iOS safe-area
-       * zone by subtracting 30px from the inset. Status bar text
-       * (time, signal, battery) lives in roughly the upper 30-40px
-       * of the safe area, so leaving ~32px of padding (62px inset −
-       * 30px) keeps the brand visually adjacent to the system text
-       * without colliding with it. max() floor of 4px keeps non-notch
+       * zone by subtracting 20px from the inset (was 30px — too tight,
+       * brand was nudging the system clock). Leaves ~42px of padding
+       * (62px inset − 20px) so the brand sits adjacent to the status-
+       * bar text without colliding. max() floor of 4px keeps non-notch
        * devices sane. */
-      padding: max(4px, calc(env(safe-area-inset-top) - 30px)) 18px 4px;
+      padding: max(4px, calc(env(safe-area-inset-top) - 20px)) 18px 4px;
     }
   }
   .capacitor-app .header {
-    padding: max(4px, calc(env(safe-area-inset-top) - 30px)) 18px 4px;
+    padding: max(4px, calc(env(safe-area-inset-top) - 20px)) 18px 4px;
   }
   /* Brand layout: [S]  [subtitle top-right / idekick bottom-right] [version]
    * The S-mark spans both rows vertically so its bottom visually aligns
@@ -1871,6 +1870,16 @@
   .composer:focus-within { border-color: var(--primary); }
   @media (hover: none) and (pointer: coarse) {
     .composer { margin-bottom: 25px; }
+  }
+  /* PWA installed via Add-to-Home-Screen runs inside the iOS WebKit
+   * "homescreen" mode: body shortens to exclude the home-indicator
+   * safe-area zone, so the 25px above ends up ~25 + 34 = 59px above
+   * the actual screen bottom — composer visibly floats. Capacitor's
+   * WebView treats body as full screen height, so 25px sits flush.
+   * Override the touch rule for PWA-standalone only. Cap stays at
+   * 25px because Jonathan says it looks right there. */
+  @media (display-mode: standalone) {
+    .composer { margin-bottom: 4px; }
   }
   .composer textarea {
     /* Auto-grows up to --composer-textarea-max (set per breakpoint below).
