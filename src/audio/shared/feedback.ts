@@ -25,6 +25,7 @@
  */
 
 import * as settings from '../../settings.ts';
+import { diag } from '../../util/log.ts';
 
 export type ChimeName =
   | 'send' | 'receive' | 'error' | 'start'
@@ -32,7 +33,15 @@ export type ChimeName =
 
 // Pre-render at scale=4 so el.volume=userVolume reproduces the legacy
 // oscillator path's amplitude curve.
-const RENDER_SCALE = 4;
+// 2026-05-09: bumped 4 → 8 after Jonathan field-reported the commit
+// ("over") chime missing or inaudible during walk + bike scenarios.
+// At scale=4 the loudest baked gain (commit) was 0.05*4*0.5 = 0.10
+// effective at default volume — quiet over BT headsets with wind noise.
+// At scale=8 it's 0.05*8*0.5 = 0.20 (~2x louder). Headroom remains
+// before clipping (loudest pre-scale gain is barge at 0.18; 0.18*8 =
+// 1.44 — clamped to 1.0 by the WAV encoder, slight clipping on the
+// barge attack which is desirable for "I heard you" punch).
+const RENDER_SCALE = 8;
 const SAMPLE_RATE = 44100;
 
 /** Must cover every osc.stop() in scheduleChime so render doesn't truncate. */
@@ -288,15 +297,30 @@ export function playFeedback(name: ChimeName): void {
   const userVolume = Math.max(0, Math.min(1, volume));
 
   // Fire-and-forget. First-call render is async; subsequent calls resolve
-  // synchronously off the cache. Errors swallowed (chime failure must
-  // never throw upward into the app's hot path).
+  // synchronously off the cache. Errors logged (not swallowed silently)
+  // so dev-mode catches missing chimes — Jonathan field-reported 2026-
+  // 05-09 that the commit ("over") chime was inconsistent. Without
+  // logging we'd never know which side failed (render vs play).
+  // Failures still don't throw upward into the app's hot path.
   void (async () => {
+    let el: HTMLAudioElement;
     try {
-      const el = await getPlayer(name);
-      el.volume = userVolume;
-      try { el.currentTime = 0; } catch { /* ignore — element may still be loading */ }
-      const p = el.play();
-      if (p && typeof p.catch === 'function') p.catch(() => { /* ignore play rejection */ });
-    } catch { /* ignore render/play failures */ }
+      el = await getPlayer(name);
+    } catch (err: any) {
+      diag(`[feedback] render failed (${name}): ${err?.message ?? err}`);
+      return;
+    }
+    el.volume = userVolume;
+    try { el.currentTime = 0; } catch { /* ignore — element may still be loading */ }
+    const p = el.play();
+    if (p && typeof p.catch === 'function') {
+      p.catch((err: any) => {
+        // Most common cause on iOS: AVAudioSession not yet activated by
+        // a user gesture, or the WebView's audio output path is wedged.
+        // Log for diagnostics; the keepalive engine + interruption
+        // handlers we added 2026-05-09 should reduce the second class.
+        diag(`[feedback] play failed (${name}): ${err?.message ?? err}`);
+      });
+    }
   })();
 }

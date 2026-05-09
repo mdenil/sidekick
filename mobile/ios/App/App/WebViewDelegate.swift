@@ -50,7 +50,12 @@ class SidekickBridgeViewController: CAPBridgeViewController, WKUIDelegate {
         '  padding: max(4px, calc(env(safe-area-inset-top) - 20px)) 18px 4px;',
         '}',
         '.capacitor-app .sidebar-top {',
-        '  padding-top: max(10px, calc(env(safe-area-inset-top) - 20px));',
+        '  /* Buttons inside (sb-toggle, sb-search) must be tappable —',
+        '   * use the FULL safe-area inset (not the -20px shift the header',
+        '   * brand uses). With -20 the search button on the right could',
+        '   * end up under the iOS signal/wifi icons or in the swipe-zone',
+        '   * iOS reserves for system gestures, making it unreachable. */',
+        '  padding-top: max(10px, env(safe-area-inset-top));',
         '}'
       ].join('\\n');
       // Append at document_start: <head> may not exist yet on the very

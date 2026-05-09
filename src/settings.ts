@@ -190,7 +190,7 @@ const DEFAULTS = {
   // bargeIn=true. See sensitivityToVadThreshold() / vadThresholdToSensitivity().
   bargeVadThreshold: 0.5,
   contentSize: 15,
-  audioFeedbackVolume: 0.5,
+  audioFeedbackVolume: 0.85,  // 2026-05-09: 0.5 → 0.85 for bike/walk audibility (BT-headset wind noise was burying chimes)
   theme: 'dark',
   // Mic-button mode: gesture-driven (tap = live dictation to composer
   // cursor; hold = PTT memo, fire-and-forget). The `streaming` and
