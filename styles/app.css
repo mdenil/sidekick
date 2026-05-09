@@ -226,7 +226,13 @@
   /* ── Header ── */
   .header {
     display: flex; align-items: center; gap: 12px;
-    padding: 14px 18px;
+    /* Top padding adds the device safe-area inset so the header
+     * sits below the iOS status bar / notch / Dynamic Island in
+     * the Capacitor native shell. In Safari/desktop the inset is 0
+     * so this is a no-op there. Pairs with viewport-fit=cover in
+     * index.html — without that meta, env(safe-area-inset-*) all
+     * resolve to 0 even on a notch device. */
+    padding: calc(14px + env(safe-area-inset-top)) 18px 14px;
     background: linear-gradient(180deg, var(--header-grad-top) 0%, var(--header-grad-bot) 100%);
     border-bottom: 1px solid var(--border);
   }
