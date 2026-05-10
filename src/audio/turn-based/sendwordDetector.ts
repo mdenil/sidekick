@@ -88,12 +88,15 @@ export function isSupported(): boolean {
 function build(): SR | null {
   if (typeof window === 'undefined') return null;
   const Ctor = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-  if (typeof Ctor !== 'function') return null;
+  if (typeof Ctor !== 'function') {
+    diag('[sendword] build: no SpeechRecognition constructor available');
+    return null;
+  }
   let inst: SR;
   try {
     inst = new Ctor() as SR;
   } catch (e: any) {
-    diag('sendword: construct failed', e?.message);
+    diag('[sendword] build: construct failed', e?.message);
     return null;
   }
   inst.continuous = true;
@@ -102,6 +105,7 @@ function build(): SR | null {
   inst.onresult = handleResult;
   inst.onend = handleEnd;
   inst.onerror = handleError;
+  inst.onstart = () => diag('[sendword] SR onstart — session alive');
   return inst;
 }
 
@@ -118,9 +122,17 @@ function checkTranscript(transcript: string): boolean {
   // boundary, optional trailing punctuation, anywhere in the segment.
   const re = new RegExp(`\\b${escaped}\\b[\\s.,!?]*$`, 'i');
   if (!transcript) return false;
-  if (re.test(transcript)) {
+  const hit = re.test(transcript);
+  // Diag every check so a "didn't fire" repro reveals whether checks
+  // are happening at all (no transcripts arriving) vs happening but
+  // not matching (regex / trailing-punctuation issue) vs matching but
+  // onMatch failing.
+  diag(`[sendword] check phrase="${phrase}" hit=${hit} transcript="${transcript}"`);
+  if (hit) {
     log(`sendword: matched "${phrase}" in "${transcript}"`);
-    try { opts.onMatch(); } catch { /* noop */ }
+    try { opts.onMatch(); } catch (e: any) {
+      diag(`[sendword] onMatch threw: ${e?.message || e}`);
+    }
     return true;
   }
   return false;
@@ -132,17 +144,20 @@ function handleResult(ev: any): void {
   // and check each segment for the phrase.
   try {
     const start = ev.resultIndex || 0;
-    for (let i = start; i < ev.results.length; i++) {
+    const total = ev.results?.length ?? 0;
+    diag(`[sendword] handleResult resultIndex=${start} total=${total}`);
+    for (let i = start; i < total; i++) {
       const result = ev.results[i];
       const transcript = String(result?.[0]?.transcript || '');
       if (checkTranscript(transcript)) return;
     }
   } catch (e: any) {
-    diag('sendword: handleResult threw', e?.message);
+    diag('[sendword] handleResult threw', e?.message);
   }
 }
 
 function handleEnd(_ev: any): void {
+  diag(`[sendword] SR onend stopRequested=${stopRequested}`);
   // Auto-restart loop — Safari kills the session ~30s. Skip if stop()
   // was explicitly requested.
   if (stopRequested) return;
@@ -159,7 +174,7 @@ function handleEnd(_ev: any): void {
 }
 
 function handleError(ev: any): void {
-  diag('sendword: error', ev?.error || ev?.message || ev);
+  diag('[sendword] SR onerror', ev?.error || ev?.message || ev);
 }
 
 /** Begin listening. Two paths:
@@ -174,20 +189,29 @@ function handleError(ev: any): void {
  *     caller knows to expect no matches.
  */
 export function start(o: SendwordOpts): boolean {
-  if (sr || fedMode) return true;  // already running
+  if (sr || fedMode) {
+    diag(`[sendword] start: already running (sr=${!!sr} fed=${fedMode})`);
+    return true;  // already running
+  }
   opts = o;
   stopRequested = false;
+  const supported = isSupported();
+  diag(`[sendword] start phrase="${o.phrase}" mode=${o.feed ? 'fed' : 'standalone'} supported=${supported}`);
   if (o.feed) {
     fedMode = true;
     return true;
   }
   // Standalone mode: open our own SR session.
   sr = build();
-  if (!sr) return false;
+  if (!sr) {
+    diag('[sendword] start: build() returned null — Web Speech API unavailable in this WebView');
+    return false;
+  }
   try {
     sr.start();
+    diag('[sendword] start: SR.start() invoked (waiting for onstart)');
   } catch (e: any) {
-    diag('sendword: start() threw', e?.message);
+    diag('[sendword] start() threw', e?.message);
     sr = null;
     return false;
   }
@@ -200,7 +224,12 @@ export function start(o: SendwordOpts): boolean {
  *  accumulation and sendword matching — STTProvider only supports one
  *  listener (see stt-provider.ts contract). */
 export function feedTranscript(ev: TranscriptEvent): void {
-  if (!fedMode || !opts) return;
+  if (!fedMode || !opts) {
+    // Skip silently — feedTranscript is called from a hot path
+    // (per-event listener), don't log every drop. start() logs the
+    // mode at startup; if mode is wrong, that's where to see it.
+    return;
+  }
   if (ev.role !== 'user') return;
   if (!ev.text) return;
   checkTranscript(ev.text);

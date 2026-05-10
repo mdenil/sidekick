@@ -432,6 +432,7 @@ async function armRecorder(): Promise<void> {
   // both paths (the user-facing kill switch — separate from
   // streamingEngine which controls body transcription).
   const sendwordEngine = (settings.get() as any).listenSttEngine || 'local';
+  diag(`[turnbased] sendword config: phrase="${cfg.sendwordPhrase}" engine=${sendwordEngine} streamingEngine=${(settings.get() as any).streamingEngine} armedWithLocal=${armedWithLocal} localProvider=${!!localProvider}`);
   if (cfg.sendwordPhrase && sendwordEngine !== 'silence-only') {
     sendwordDetector.start({
       phrase: cfg.sendwordPhrase,
@@ -441,6 +442,8 @@ async function armRecorder(): Promise<void> {
       // server path, which has no realtime transcript stream to feed.
       feed: armedWithLocal && !!localProvider,
     });
+  } else {
+    diag(`[turnbased] sendword skipped: phrase=${!!cfg.sendwordPhrase} engine=${sendwordEngine}`);
   }
   transition('armed');
 }
