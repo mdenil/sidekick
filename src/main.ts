@@ -1480,8 +1480,20 @@ async function boot() {
       );
     },
   });
+  // Enter-key handling. Desktop: Enter sends, Shift+Enter newline (chat
+  // convention). iOS (PWA + Cap): Enter inserts newline like a normal
+  // textarea — soft keyboards don't have shift+enter, so binding Enter
+  // to send leaves no easy way to add a line break. Send button is the
+  // unambiguous send affordance on touch. Matches Gemini / ChatGPT iOS.
+  // iPad with hardware keyboard is still iOS by UA — power users get
+  // Cmd+Enter via the global handler below.
+  const isIosComposer = /iPad|iPhone|iPod/.test(navigator.userAgent);
   composerInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendTypedMessage(); }
+    if (e.key === 'Enter' && !e.shiftKey) {
+      if (isIosComposer) return;        // default = newline; tap send
+      e.preventDefault();
+      sendTypedMessage();
+    }
   });
 
   // Global Cmd/Ctrl+Enter → send composer, UNLESS focus is in the draft
