@@ -1,56 +1,33 @@
-// Server-side cache + endpoint for OpenRouter input-modality lookups
-// PLUS the hermes-side auxiliary-vision advertisement that lets the
-// PWA enable the attachment button when the primary is text-only but
-// hermes is configured to auto-route images through an auxiliary
-// vision model (`auxiliary.vision.model` in ~/.hermes/config.yaml,
-// surfaced via the plugin's /v1/sidekick/auxiliary-models endpoint).
+// Sidekick proxy — model capability + auxiliary-vision advertisement
+// endpoints. Both are thin pass-throughs to the hermes plugin. No
+// catalog cache, no regex fallback, no OpenRouter dependency — hermes
+// owns the ground truth (models.dev registry + live config).
 //
-// Why server-side: the previous design shipped an 800-LOC catalog
-// snapshot (`src/data/modelModalities.ts`) baked into the PWA bundle
-// and refreshed by a manual script. That meant every model rotation
-// required a build + cache-bust + redeploy, and 99% of users only
-// ever see ~30 models in their attach-button gate. The proxy fetches
-// once on boot (and refreshes daily), and the PWA fetches a small
-// JSON map once per session — no JS module to invalidate, no manual
-// re-run.
+// Two endpoints exposed:
+//   GET /api/sidekick/model-capabilities?model=Y[&provider=X]
+//     Returns the full ModelCapabilities shape from
+//     agent.models_dev.get_model_capabilities — the same data hermes
+//     consults at request time for native-vs-text image routing.
+//   GET /api/sidekick/auxiliary-models
+//     Returns {vision: <model_id> | null} reflecting the configured
+//     auxiliary.vision.model. PWA reads this to show the "will route
+//     through X" hint when the primary doesn't support vision.
 //
-// Local-only models (gemma served by llama.cpp on hermes etc.) are
-// not in OpenRouter's catalog and never make it into this map. The
-// PWA's `isVisionCapableModel` keeps a regex fallback for those.
+// History note: this module previously cached an OpenRouter-derived
+// modality map and a regex fallback for non-cataloged models. Both
+// were dropped (May 2026) in favor of asking hermes directly.
 
 import http from 'node:http';
 
-const OPENROUTER_URL = 'https://openrouter.ai/api/v1/models';
 const UPSTREAM_URL = (process.env.UPSTREAM_URL || 'http://127.0.0.1:8645').replace(/\/+$/, '');
 const UPSTREAM_TOKEN = (process.env.UPSTREAM_TOKEN || process.env.SIDEKICK_PLATFORM_TOKEN || '').trim();
 
-// Refresh once a day. The catalog rarely shifts mid-day; a longer
-// stale window is fine — the cost of a stale "image-capable" claim
-// is just a wasted attach attempt that the model will reject.
-const REFRESH_MS = 24 * 60 * 60 * 1000;
+// ── Auxiliary vision advertisement ────────────────────────────────────
+// Short server-side memo so rapid PWA polls (visibility-change retries,
+// settings-changed handlers) don't hammer the plugin. 30s is enough to
+// recover from a config-edit-then-/restart on hermes; a stale value just
+// makes the +button briefly mis-labeled, never broken.
 
-// Slim shape: id → input_modalities[]. Drop text-only models so the
-// payload stays small; missing IDs default to text-only at the call
-// site.
-type ModalityMap = Record<string, readonly string[]>;
-
-let cache: {
-  fetchedAt: string;
-  modalities: ModalityMap;
-} = {
-  fetchedAt: '',
-  modalities: {},
-};
-let lastRefreshAt = 0;
-let refreshInFlight: Promise<void> | null = null;
-
-// Vision-fallback is fetched live (with a short memo) instead of folded
-// into the 24h openrouter cache. Why: the original combined-cache design
-// cached a transient null when hermes-gateway was still warming on
-// sidekick boot, then the 24h TTL locked the dead value in until the
-// next day. Localhost call is ~ms; 30s memo avoids hammering on rapid
-// modalities-endpoint hits while still recovering quickly from a
-// transient miss or a config edit.
 const VISION_MEMO_MS = 30 * 1000;
 let visionMemo: { value: string | null; at: number } | null = null;
 let visionInFlight: Promise<string | null> | null = null;
@@ -82,75 +59,84 @@ async function getVisionFallbackModel(): Promise<string | null> {
   return value;
 }
 
-async function refresh(): Promise<void> {
-  const res = await fetch(OPENROUTER_URL, {
-    headers: { Accept: 'application/json' },
-  });
-  if (!res.ok) {
-    throw new Error(`openrouter ${res.status}`);
-  }
-  const catalog = await res.json() as { data?: Array<{
-    id?: string;
-    architecture?: { input_modalities?: string[] };
-  }> };
-  const models = Array.isArray(catalog?.data) ? catalog.data : [];
-
-  const next: ModalityMap = {};
-  for (const m of models) {
-    const id = m?.id;
-    const mods = m?.architecture?.input_modalities;
-    if (!id || !Array.isArray(mods)) continue;
-    const interesting = mods.filter(mod => mod !== 'text');
-    if (interesting.length === 0) continue;
-    next[id] = mods;
-  }
-  cache = { fetchedAt: new Date().toISOString(), modalities: next };
-  lastRefreshAt = Date.now();
-  console.log(`[sidekick:modalities] refreshed (${Object.keys(next).length} multimodal models)`);
-}
-
-async function ensureFresh(): Promise<void> {
-  if (Date.now() - lastRefreshAt < REFRESH_MS && cache.fetchedAt) return;
-  if (refreshInFlight) {
-    await refreshInFlight;
-    return;
-  }
-  refreshInFlight = refresh().finally(() => { refreshInFlight = null; });
-  try {
-    await refreshInFlight;
-  } catch (err) {
-    // Fail-soft: a transient OpenRouter outage shouldn't 500 the
-    // attach gate. Log and serve whatever's in cache (possibly empty
-    // on first boot — the PWA falls back to its regex for that case).
-    console.warn('[sidekick:modalities] refresh failed, serving cached map:', err);
-  }
-}
-
-/** Optional eager warm at server boot — surfaces network issues
- *  early instead of deferring to the first PWA request. Safe to skip;
- *  the lazy `ensureFresh` path covers cold cache too. */
-export function init(): void {
-  void ensureFresh();
-}
-
-export async function handleSidekickModelModalities(
+export async function handleSidekickAuxiliaryModels(
   _req: http.IncomingMessage,
   res: http.ServerResponse,
 ): Promise<void> {
-  const [, visionFallbackModel] = await Promise.all([
-    ensureFresh(),
-    getVisionFallbackModel(),
-  ]);
+  const vision = await getVisionFallbackModel();
   res.statusCode = 200;
   res.setHeader('content-type', 'application/json');
-  // No browser-side cache — vision_fallback_model can change as soon as
-  // hermes-gateway reloads its config; a stale browser cache would make
-  // the PWA gate stale across deploys. Modalities map is module-memory
-  // cached on the PWA side (see ensureModalitiesFetched in main.ts).
   res.setHeader('cache-control', 'no-store');
-  res.end(JSON.stringify({
-    fetched_at: cache.fetchedAt,
-    modalities: cache.modalities,
-    vision_fallback_model: visionFallbackModel,
-  }));
+  res.end(JSON.stringify({ vision }));
+}
+
+// ── Model capabilities ────────────────────────────────────────────────
+// Per-model fetch from hermes's models.dev registry. Per-(provider,
+// model) memo so rapid model-switching in the PWA doesn't hammer the
+// plugin. 60s TTL is short enough that capability updates land quickly
+// after a hermes-agent upgrade refreshes models.dev.
+
+type CapabilitiesResponse = {
+  provider: string | null;
+  model: string;
+  known: boolean;
+  supports_vision?: boolean;
+  supports_tools?: boolean;
+  supports_reasoning?: boolean;
+  context_window?: number;
+  max_output_tokens?: number;
+  model_family?: string;
+};
+
+const CAPS_TTL_MS = 60 * 1000;
+const capsMemo = new Map<string, { value: CapabilitiesResponse; at: number }>();
+
+async function fetchCapabilitiesLive(
+  provider: string,
+  model: string,
+): Promise<CapabilitiesResponse | null> {
+  if (!UPSTREAM_TOKEN) return null;
+  const qs = new URLSearchParams();
+  if (provider) qs.set('provider', provider);
+  qs.set('model', model);
+  try {
+    const r = await fetch(
+      `${UPSTREAM_URL}/v1/sidekick/model-capabilities?${qs.toString()}`,
+      { headers: { authorization: `Bearer ${UPSTREAM_TOKEN}` } },
+    );
+    if (!r.ok) return null;
+    return await r.json() as CapabilitiesResponse;
+  } catch {
+    return null;
+  }
+}
+
+export async function handleSidekickModelCapabilities(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+): Promise<void> {
+  const url = new URL(req.url || '/', 'http://x');
+  const provider = (url.searchParams.get('provider') || '').trim();
+  const model = (url.searchParams.get('model') || '').trim();
+  if (!model) {
+    res.statusCode = 400;
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ error: 'model query param required' }));
+    return;
+  }
+  const key = `${provider}::${model}`;
+  const memo = capsMemo.get(key);
+  let value: CapabilitiesResponse | null;
+  if (memo && Date.now() - memo.at < CAPS_TTL_MS) {
+    value = memo.value;
+  } else {
+    value = await fetchCapabilitiesLive(provider, model);
+    if (value) capsMemo.set(key, { value, at: Date.now() });
+  }
+  res.statusCode = value ? 200 : 502;
+  res.setHeader('content-type', 'application/json');
+  res.setHeader('cache-control', 'no-store');
+  res.end(JSON.stringify(
+    value ?? { provider: provider || null, model, known: false, error: 'upstream unavailable' },
+  ));
 }

@@ -1,26 +1,27 @@
 // Pin the b011aa4 feature: switching the model in the settings panel
 // surfaces a system line in the chat listing the freshly-selected
 // model's input modalities, so the user knows immediately whether
-// image / pdf / audio attachments will work.
+// image / pdf attachments will work.
 //
-// Behaviour:
-//   - Reads from /api/sidekick/model-modalities (proxy-served snapshot
-//     of the OpenRouter catalog) when the model is in the map.
-//   - Falls back to a "(heuristic)" hint via isVisionCapableModel when
-//     the model is local-only (not in OpenRouter).
+// Behaviour (post-2026-05 refactor):
+//   - Reads /api/sidekick/model-capabilities?model=X for ground truth
+//     from hermes's models.dev registry (no more OpenRouter cache).
+//   - Reads /api/sidekick/auxiliary-models to know whether an
+//     auxiliary vision model is configured (drives the "images route
+//     via X" hint when the primary is non-vision).
+//   - When models.dev doesn't know the model AND no aux is configured,
+//     the line reads "text · capability unknown to models.dev".
 //
 // Test plan (mocked):
-//   1. Mock /api/sidekick/model-modalities with two known entries.
-//   2. setSettingsSchema with a model enum carrying both ids + a
-//      third local-only id that the regex would call vision-capable.
-//   3. Open settings → trigger schema load.
-//   4. Flip the model select to entry A; assert a `.line.system`
-//      appears with text matching `Model: <id> — accepts <inputs>`
-//      where <inputs> equals the joined modalities.
-//   5. Flip to entry B (different modalities); assert another system
-//      line lands with the new model's modalities.
-//   6. Flip to the heuristic-fallback id; assert the line says
-//      `(heuristic)` since it's not in the modalities map.
+//   1. Mock /api/sidekick/auxiliary-models with vision=null.
+//   2. Mock /api/sidekick/model-capabilities to return per-model caps
+//      based on a small in-test table.
+//   3. Set agent settings schema with three model enum values.
+//   4. Flip the model select to a vision model; assert system line
+//      reads "Model: X — accepts text, image".
+//   5. Flip to a text-only model; assert "accepts text".
+//   6. Flip to an unknown-to-models.dev model; assert
+//      "accepts text · capability unknown to models.dev".
 
 import { waitForReady, assert } from './lib.mjs';
 
@@ -29,16 +30,11 @@ export const DESCRIPTION = 'Model switch surfaces a system line listing accepted
 export const STATUS = 'implemented';
 export const BACKEND = 'mocked';
 
-// Two ids in the modalities map + one that isn't (forcing the regex
-// fallback path). The fallback id starts with `claude-` so the
-// isVisionCapableModel regex returns true → "(heuristic)" hint with
-// 'text, image' as inputs.
-const MOCK_MODALITIES = {
-  fetched_at: '2026-05-01T00:00:00Z',
-  modalities: {
-    'mock/multi-everything': ['text', 'image', 'file', 'audio'],
-    'mock/text-only': ['text'],
-  },
+const CAPS = {
+  'mock/multi-everything': { known: true, supports_vision: true },
+  'mock/text-only': { known: true, supports_vision: false },
+  // 'local/unknown-mock' is intentionally absent — exercises the
+  // "unknown to models.dev" branch.
 };
 
 export function MOCK_SETUP(mock) {
@@ -53,7 +49,7 @@ export function MOCK_SETUP(mock) {
       options: [
         { value: 'mock/multi-everything', label: 'Multi-modal mock' },
         { value: 'mock/text-only', label: 'Text-only mock' },
-        { value: 'local/claude-sonnet-mock', label: 'Local heuristic-vision' },
+        { value: 'local/unknown-mock', label: 'Unknown to models.dev' },
       ],
     },
   ]);
@@ -71,9 +67,6 @@ async function setModelTo(page, value) {
 async function waitForSystemLine(page, predicate, timeout = 4_000) {
   await page.waitForFunction(
     (pred) => {
-      // page.evaluate stringifies, so re-build the predicate on the
-      // page side. Caller passes a substring or regex source; we
-      // accept either.
       const lines = Array.from(document.querySelectorAll('#transcript .line.system'));
       const re = new RegExp(pred);
       return lines.some((l) => re.test(l.textContent || ''));
@@ -84,11 +77,33 @@ async function waitForSystemLine(page, predicate, timeout = 4_000) {
 }
 
 export default async function run({ page, log }) {
-  await page.route('**/api/sidekick/model-modalities', async (route) => {
+  await page.route('**/api/sidekick/auxiliary-models', async (route) => {
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify(MOCK_MODALITIES),
+      body: JSON.stringify({ vision: null }),
+    });
+  });
+  await page.route('**/api/sidekick/model-capabilities*', async (route) => {
+    const u = new URL(route.request().url());
+    const model = u.searchParams.get('model') || '';
+    const c = CAPS[model];
+    if (!c) {
+      await route.fulfill({
+        status: 200, contentType: 'application/json',
+        body: JSON.stringify({ provider: null, model, known: false }),
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 200, contentType: 'application/json',
+      body: JSON.stringify({
+        provider: 'mock', model, known: true,
+        supports_vision: c.supports_vision,
+        supports_tools: true, supports_reasoning: false,
+        context_window: 200000, max_output_tokens: 8192,
+        model_family: 'mock',
+      }),
     });
   });
 
@@ -113,22 +128,22 @@ export default async function run({ page, log }) {
   );
   log('text-only model: system line shows "accepts text" ✓');
 
-  // Switch to multi-everything — system line lists all 4 modalities.
+  // Switch to multi-modal — system line lists "text, image".
   await setModelTo(page, 'mock/multi-everything');
   await waitForSystemLine(
     page,
-    'Model: mock/multi-everything — accepts text, image, file, audio',
+    'Model: mock/multi-everything — accepts text, image',
   );
-  log('multi-modal model: system line lists all 4 modalities ✓');
+  log('multi-modal model: system line shows "text, image" ✓');
 
-  // Switch to the local-only id → heuristic fallback (regex matches
-  // "claude" prefix → "text, image (heuristic)").
-  await setModelTo(page, 'local/claude-sonnet-mock');
+  // Switch to a model models.dev doesn't know + no aux configured →
+  // the line says "text · capability unknown to models.dev".
+  await setModelTo(page, 'local/unknown-mock');
   await waitForSystemLine(
     page,
-    'Model: local/claude-sonnet-mock — accepts text, image \\(heuristic\\)',
+    'Model: local/unknown-mock — accepts text  ·  capability unknown to models\\.dev',
   );
-  log('local model: system line shows heuristic-fallback ✓');
+  log('unknown model: system line shows "capability unknown to models.dev" ✓');
 
   // Final assertion: at least 3 system lines for the 3 model switches.
   const systemLineCount = await page.evaluate(() => {

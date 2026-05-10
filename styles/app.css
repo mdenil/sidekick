@@ -1336,15 +1336,17 @@
     to { background-color: transparent; }
   }
   /* Drag-and-drop attach: dashed border + dim overlay + centered hint
-     when an image/pdf is being dragged over the transcript AND the
-     model gate allows it. The .drag-over class is toggled from main.ts;
-     ::before paints the hint without injecting DOM. */
-  .transcript.drag-over {
+     when an image/pdf is being dragged over the main app area (the
+     full surface to the right of the drawer, including the dark
+     gutters and the composer) AND the model gate allows it. The
+     .drag-over class is toggled from main.ts; ::before paints the
+     hint without injecting DOM. */
+  .main.drag-over {
     outline: 2px dashed var(--accent, #6c9);
     outline-offset: -8px;
     background: color-mix(in srgb, var(--accent, #6c9) 6%, transparent);
   }
-  .transcript.drag-over::before {
+  .main.drag-over::before {
     content: 'Drop image or PDF to attach';
     position: absolute; inset: 0;
     display: flex; align-items: center; justify-content: center;
@@ -2447,7 +2449,7 @@
   /* .toolbar button.dbg, .toolbar button.set — legacy, superseded by .toolbar-btn */
 
   /* ── Main: chat column, center-constrained like Anthropic ── */
-  .main { flex: 1; display: flex; overflow: hidden; min-height: 0; }
+  .main { flex: 1; display: flex; overflow: hidden; min-height: 0; position: relative; }
   .chat-column {
     flex: 1; display: flex; flex-direction: column; min-width: 0;
     /* Center the column contents within a readable max-width. */

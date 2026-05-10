@@ -1,13 +1,32 @@
 name: sidekick
-version: 0.1.0
+label: Sidekick
+kind: platform
+version: 0.2.0
 description: |
   Sidekick PWA platform adapter. Runs an aiohttp WebSocket server
   bound to localhost so the sidekick proxy (Node.js) can dispatch
   user messages and receive streaming agent responses + push
   notifications. Peer of telegram/slack/signal adapters.
+
+  v0.2.0 — migrated to upstream's plugin-driven platform registration
+  (gateway/platform_registry.py). No longer requires a hermes-agent
+  patch to add Platform.SIDEKICK or wire the adapter factory.
 author: Reimagine Robotics
-kind: standalone
-provides_hooks: []
+provides_hooks:
+  - pre_tool_call
+  - post_tool_call
 provides_tools: []
 requires_env:
-  - SIDEKICK_PLATFORM_TOKEN
+  - name: SIDEKICK_PLATFORM_TOKEN
+    description: "Bearer token the sidekick proxy uses on every WS message + HTTP call to this plugin"
+    prompt: "Sidekick platform token (will also be set on the proxy side)"
+    password: true
+optional_env:
+  - name: SIDEKICK_PLATFORM_ALLOWED_USERS
+    description: "Comma-separated user ids allowed to talk to the agent through sidekick"
+    prompt: "Allowed user ids (comma-separated)"
+    password: false
+  - name: SIDEKICK_PLATFORM_ALLOW_ALL_USERS
+    description: "Allow any sidekick client through (single-user PWA installs only)"
+    prompt: "Allow all users? (true/false)"
+    password: false

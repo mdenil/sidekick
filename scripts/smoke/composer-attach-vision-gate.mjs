@@ -56,26 +56,45 @@ async function attachDisabled(page) {
 }
 
 export default async function run({ page, log }) {
-  // Mock /api/sidekick/model-modalities so the test runs in isolation
-  // from the live proxy's catalog. CRITICAL: vision_fallback_model is
-  // null here — the live proxy advertises a fallback, which makes
+  // Mock both capability endpoints so the test runs in isolation from
+  // the live hermes plugin. CRITICAL: vision is null in auxiliary-models
+  // — the live system advertises a fallback, which makes
   // isVisionCapableModel true for EVERY model regardless of primary
   // capability (the fallback routes images through an auxiliary vision
-  // model). We need fallback=null so the gate reflects the primary
-  // model's own modality.
-  await page.route('**/api/sidekick/model-modalities', async (route) => {
+  // model). We need vision=null so the gate reflects the primary
+  // model's own caps.
+  await page.route('**/api/sidekick/auxiliary-models', async (route) => {
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
+      body: JSON.stringify({ vision: null }),
+    });
+  });
+  const CAPS = {
+    'google/gemma-3-27b-it': { supports_vision: true, model_family: 'gemma' },
+    'google/gemma-2-9b-it': { supports_vision: false, model_family: 'gemma' },
+    'anthropic/claude-sonnet-4': { supports_vision: true, model_family: 'claude' },
+    'mistralai/mistral-7b-instruct': { supports_vision: false, model_family: 'mistral' },
+  };
+  await page.route('**/api/sidekick/model-capabilities*', async (route) => {
+    const u = new URL(route.request().url());
+    const model = u.searchParams.get('model') || '';
+    const caps = CAPS[model];
+    if (!caps) {
+      await route.fulfill({
+        status: 200, contentType: 'application/json',
+        body: JSON.stringify({ provider: null, model, known: false }),
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 200, contentType: 'application/json',
       body: JSON.stringify({
-        fetched_at: '2026-05-01T00:00:00Z',
-        modalities: {
-          'google/gemma-3-27b-it': ['text', 'image'],
-          'google/gemma-2-9b-it': ['text'],
-          'anthropic/claude-sonnet-4': ['text', 'image'],
-          'mistralai/mistral-7b-instruct': ['text'],
-        },
-        vision_fallback_model: null,
+        provider: 'mock', model, known: true,
+        supports_vision: caps.supports_vision,
+        supports_tools: true, supports_reasoning: false,
+        context_window: 200000, max_output_tokens: 8192,
+        model_family: caps.model_family,
       }),
     });
   });

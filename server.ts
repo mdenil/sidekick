@@ -1016,8 +1016,11 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && /^\/api\/sidekick\/commands(?:\?.*)?$/.test(req.url)) {
       return sidekick.handleSidekickCommands(req, res);
     }
-    if (req.method === 'GET' && /^\/api\/sidekick\/model-modalities(?:\?.*)?$/.test(req.url)) {
-      return sidekick.handleSidekickModelModalities(req, res);
+    if (req.method === 'GET' && /^\/api\/sidekick\/model-capabilities(?:\?.*)?$/.test(req.url)) {
+      return sidekick.handleSidekickModelCapabilities(req, res);
+    }
+    if (req.method === 'GET' && /^\/api\/sidekick\/auxiliary-models(?:\?.*)?$/.test(req.url)) {
+      return sidekick.handleSidekickAuxiliaryModels(req, res);
     }
     if (req.method === 'GET' && /^\/api\/sidekick\/search(?:\?.*)?$/.test(req.url)) {
       return sidekick.handleSidekickSearch(req, res);

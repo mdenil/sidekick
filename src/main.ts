@@ -1652,17 +1652,19 @@ async function boot() {
     };
   }
 
-  // Drag-and-drop attach on the transcript area. Same gate as the +
-  // button: only accept when the model (or its vision fallback) can
-  // process attachments. attachments.add() validates each file's type
-  // + size internally and surfaces errors via the status line.
+  // Drag-and-drop attach on the whole main app area (everything to
+  // the right of the drawer — transcript, the dark side gutters, and
+  // the composer). Same gate as the + button: only accept when the
+  // model (or its vision fallback) can process attachments.
+  // attachments.add() validates each file's type + size internally
+  // and surfaces errors via the status line.
   //
   // Counter pattern for dragenter/dragleave: bare booleans flicker
   // because dragleave fires every time the pointer crosses a child
   // boundary. Tracking depth keeps the highlight steady until the
-  // pointer truly exits the transcript.
-  const transcriptDropZone = document.getElementById('transcript');
-  if (transcriptDropZone) {
+  // pointer truly exits the area.
+  const mainDropZone = document.querySelector('.main') as HTMLElement | null;
+  if (mainDropZone) {
     let dragDepth = 0;
     const hasFiles = (e: DragEvent): boolean => {
       const types = e.dataTransfer?.types;
@@ -1674,32 +1676,32 @@ async function boot() {
       }
       return false;
     };
-    transcriptDropZone.addEventListener('dragenter', (e: Event) => {
+    mainDropZone.addEventListener('dragenter', (e: Event) => {
       const dragEvent = e as DragEvent;
       if (!hasFiles(dragEvent) || !canAttachFiles()) return;
       dragEvent.preventDefault();
       dragDepth += 1;
-      transcriptDropZone.classList.add('drag-over');
+      mainDropZone.classList.add('drag-over');
     });
-    transcriptDropZone.addEventListener('dragover', (e: Event) => {
+    mainDropZone.addEventListener('dragover', (e: Event) => {
       const dragEvent = e as DragEvent;
       if (!hasFiles(dragEvent) || !canAttachFiles()) return;
       // preventDefault is required for `drop` to fire on this element.
       dragEvent.preventDefault();
       if (dragEvent.dataTransfer) dragEvent.dataTransfer.dropEffect = 'copy';
     });
-    transcriptDropZone.addEventListener('dragleave', (e: Event) => {
+    mainDropZone.addEventListener('dragleave', (e: Event) => {
       const dragEvent = e as DragEvent;
       if (!hasFiles(dragEvent)) return;
       dragDepth = Math.max(0, dragDepth - 1);
-      if (dragDepth === 0) transcriptDropZone.classList.remove('drag-over');
+      if (dragDepth === 0) mainDropZone.classList.remove('drag-over');
     });
-    transcriptDropZone.addEventListener('drop', async (e: Event) => {
+    mainDropZone.addEventListener('drop', async (e: Event) => {
       const dragEvent = e as DragEvent;
       if (!hasFiles(dragEvent)) return;
       dragEvent.preventDefault();
       dragDepth = 0;
-      transcriptDropZone.classList.remove('drag-over');
+      mainDropZone.classList.remove('drag-over');
       if (!canAttachFiles()) {
         status.setStatus('Drop ignored — selected model does not support attachments', 'err');
         return;
@@ -1710,68 +1712,98 @@ async function boot() {
   }
 
   // Image-upload UI is gated on the selected model's vision capability.
-  // The proxy serves an OpenRouter-derived modality map at
-  // /api/sidekick/model-modalities (cached server-side, refreshed
-  // daily). The PWA fetches it once on boot and reads it from module
-  // memory thereafter. Local-only models (gemma served by llama.cpp
-  // on hermes etc.) aren't in OpenRouter's catalog and fall through
-  // to the regex below.
-  let modelModalities: Record<string, readonly string[]> = {};
+  // Ground truth is hermes's models.dev registry, surfaced via the
+  // plugin endpoint `/v1/sidekick/model-capabilities`. The proxy at
+  // `/api/sidekick/model-capabilities?model=<id>` is a thin pass-through
+  // with a 60s memo. We fetch on demand per-model instead of holding a
+  // bulk map; the result is cached in module memory keyed by model id.
+  //
   // Hermes auto-routes media_urls through `_enrich_message_with_vision`
-  // → `vision_analyze_tool` → `auxiliary.vision` (gateway/run.py:8275),
+  // → `vision_analyze_tool` → `auxiliary.vision` (gateway/run.py:6051),
   // so even text-only primaries can accept attachments end-to-end. The
-  // proxy advertises the configured fallback alongside the modality map;
-  // null when no auxiliary vision model is configured.
+  // plugin's `/v1/sidekick/auxiliary-models` (proxied at
+  // `/api/sidekick/auxiliary-models`) advertises the configured
+  // fallback; null when none is set.
+  type ModelCaps = {
+    known: boolean;
+    supports_vision: boolean;
+    supports_tools: boolean;
+    supports_reasoning: boolean;
+    context_window: number;
+    max_output_tokens: number;
+    model_family: string;
+  };
+  const capsByModel = new Map<string, ModelCaps>();
+  const capsInFlight = new Map<string, Promise<ModelCaps | null>>();
   let visionFallbackModel: string | null = null;
-  let modalitiesReady: Promise<void> | null = null;
-  // Single entry point: first call fetches; subsequent calls reuse the
-  // cached promise UNLESS visionFallbackModel is null — that's the
-  // boot-time-race recovery path (hermes was warming when the proxy
-  // first asked, so we got a null and want to retry as the user
-  // interacts). Proxy memos for 30s, so re-firing this on
-  // schema-loaded / visibilitychange is cheap.
-  function ensureModalitiesFetched(): Promise<void> {
-    if (modalitiesReady && visionFallbackModel !== null) return modalitiesReady;
-    modalitiesReady = (async () => {
+  let auxiliaryReady: Promise<void> | null = null;
+  // Auxiliary vision advertisement — separate from per-model caps because
+  // it's config-driven on the hermes side, not model-driven. Thin pass-
+  // through to the plugin's /v1/sidekick/auxiliary-models via the proxy
+  // at /api/sidekick/auxiliary-models.
+  function ensureAuxiliaryFetched(): Promise<void> {
+    if (auxiliaryReady && visionFallbackModel !== null) return auxiliaryReady;
+    auxiliaryReady = (async () => {
       try {
-        const res = await fetch('/api/sidekick/model-modalities', { cache: 'no-store' });
+        const res = await fetch('/api/sidekick/auxiliary-models', { cache: 'no-store' });
         if (!res.ok) return;
-        const body = await res.json() as {
-          modalities?: Record<string, string[]>;
-          vision_fallback_model?: string | null;
-        };
-        if (body && typeof body.modalities === 'object') {
-          modelModalities = body.modalities;
-        }
-        if (typeof body?.vision_fallback_model === 'string'
-            || body?.vision_fallback_model === null) {
-          visionFallbackModel = body.vision_fallback_model ?? null;
+        const body = await res.json() as { vision?: string | null };
+        if (typeof body?.vision === 'string' || body?.vision === null) {
+          visionFallbackModel = body.vision ?? null;
         }
         updateAttachButtonsState();
       } catch {
-        // Network blip or proxy unreachable. The regex fallback in
-        // primaryModelHasVision keeps the gate working in the meantime.
+        // Network blip — the gate stays disabled until the next retry.
       }
     })();
-    return modalitiesReady;
+    return auxiliaryReady;
+  }
+  async function fetchModelCaps(modelId: string): Promise<ModelCaps | null> {
+    if (!modelId) return null;
+    const cached = capsByModel.get(modelId);
+    if (cached) return cached;
+    const inflight = capsInFlight.get(modelId);
+    if (inflight) return inflight;
+    const p = (async () => {
+      try {
+        const res = await fetch(
+          `/api/sidekick/model-capabilities?model=${encodeURIComponent(modelId)}`,
+          { cache: 'no-store' },
+        );
+        if (!res.ok) return null;
+        const body = await res.json() as Partial<ModelCaps> & { known?: boolean };
+        const caps: ModelCaps = {
+          known: !!body.known,
+          supports_vision: !!body.supports_vision,
+          supports_tools: !!body.supports_tools,
+          supports_reasoning: !!body.supports_reasoning,
+          context_window: typeof body.context_window === 'number' ? body.context_window : 0,
+          max_output_tokens: typeof body.max_output_tokens === 'number' ? body.max_output_tokens : 0,
+          model_family: typeof body.model_family === 'string' ? body.model_family : '',
+        };
+        capsByModel.set(modelId, caps);
+        return caps;
+      } catch {
+        return null;
+      } finally {
+        capsInFlight.delete(modelId);
+      }
+    })();
+    capsInFlight.set(modelId, p);
+    return p;
   }
   function primaryModelHasVision(modelId: string): boolean {
     if (!modelId) return false;
-    const cap = modelModalities[modelId];
-    if (cap) return cap.includes('image');
-    // Fallback regex for local-only models (and the boot window
-    // before the modality map lands). Liberal-leaning: false
-    // positives just mean the model gets an image it ignores; false
-    // negatives lock the user out of attaching at all.
-    const id = modelId.split('/').pop() || modelId;
-    return /^(gpt-(4o|4-turbo|4-vision|5)|claude-(3|sonnet|opus|haiku)|gemini-|gemma-(3|4)-|llava-|llama-3\.2-(11b|90b)-vision|pixtral-|qwen[23](\.\d+)?-?(vl-)?|qwen3-|internvl-|minimax-m[23]|mimo-)/i
-      .test(id);
+    const caps = capsByModel.get(modelId);
+    // Conservative on cache miss: don't claim vision before we've heard
+    // back. updateAttachButtonsState re-runs once the fetch resolves.
+    return !!caps && caps.known && caps.supports_vision;
   }
   function isVisionCapableModel(modelId: string): boolean {
     return primaryModelHasVision(modelId) || !!visionFallbackModel;
   }
   // Single source of truth for "is the user allowed to attach files
-  // right now?" — read by both the +button gate and the transcript
+  // right now?" — read by both the +button gate and the main-area
   // drag-drop handler. Future role checks / feature flags fold in here.
   function canAttachFiles(): boolean {
     const modelId = String(agentSettingsMod.getCurrentValue('model') ?? '');
@@ -1779,6 +1811,11 @@ async function boot() {
   }
   function updateAttachButtonsState(): void {
     const modelId = String(agentSettingsMod.getCurrentValue('model') ?? '');
+    // Kick the per-model fetch (idempotent if already cached/in-flight);
+    // when it lands the function re-runs to update the tooltip.
+    if (modelId && !capsByModel.has(modelId)) {
+      void fetchModelCaps(modelId).then(() => updateAttachButtonsState());
+    }
     const primaryVision = primaryModelHasVision(modelId);
     const enabled = primaryVision || !!visionFallbackModel;
     // Tooltip distinguishes the three states so the user knows which
@@ -1811,22 +1848,28 @@ async function boot() {
   // /v1/settings/schema response; the setting-changed event fires after
   // a successful POST /v1/settings/{id} round-trip.
   window.addEventListener('agent-schema-loaded', () => {
-    ensureModalitiesFetched();
+    ensureAuxiliaryFetched();
     updateAttachButtonsState();
   });
-  window.addEventListener('agent-setting-changed', updateAttachButtonsState);
-  // Tab-visibility return is the other moment to retry — user may have
-  // edited hermes config while the PWA was backgrounded.
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') ensureModalitiesFetched();
+  window.addEventListener('agent-setting-changed', () => {
+    // Model may have changed — clear the cache so we re-fetch fresh
+    // caps on the next gate evaluation.
+    capsByModel.clear();
+    updateAttachButtonsState();
   });
-  // Initial pass — settings panel may already have populated by the
-  // time main.ts wiring completes (race between async settings load
-  // and this synchronous setup). No-op if schema hasn't loaded yet.
+  // Tab-visibility return: re-fetch the auxiliary model advertisement
+  // (user may have edited hermes config while the PWA was backgrounded).
+  // Per-model caps invalidate via their 60s server-side memo.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      auxiliaryReady = null;
+      visionFallbackModel = null;
+      ensureAuxiliaryFetched();
+    }
+  });
+  // Initial pass.
   updateAttachButtonsState();
-  // Kick the modality-map fetch so the gate becomes data-driven
-  // (rather than regex-only) as soon as the proxy responds.
-  ensureModalitiesFetched();
+  ensureAuxiliaryFetched();
 
   // Surface a system line in the live chat when the model changes via
   // the settings panel — same pattern as the cli's `/model` confirmation.
@@ -1837,11 +1880,21 @@ async function boot() {
     if (detail.id !== 'model') return;
     const modelId = String(detail.value || '');
     if (!modelId) return;
-    const mods = modelModalities[modelId];
-    const inputs = mods && mods.length
-      ? mods.join(', ')
-      : (isVisionCapableModel(modelId) ? 'text, image (heuristic)' : 'text');
-    chat.addSystemLine(`Model: ${modelId} — accepts ${inputs}`);
+    // Resolve modalities from the live caps lookup. If models.dev knows
+    // the model, label is "text" or "text, image" based on supports_vision;
+    // otherwise fall back to "text" plus a note if vision_fallback_model
+    // is configured (hermes will route via auxiliary).
+    void fetchModelCaps(modelId).then(caps => {
+      let inputs: string;
+      if (caps && caps.known) {
+        inputs = caps.supports_vision ? 'text, image' : 'text';
+      } else if (visionFallbackModel) {
+        inputs = `text  ·  images route via ${visionFallbackModel}`;
+      } else {
+        inputs = 'text  ·  capability unknown to models.dev';
+      }
+      chat.addSystemLine(`Model: ${modelId} — accepts ${inputs}`);
+    });
   });
 
   // New-chat button — lives in the sidebar now (#sb-new-chat). Works for

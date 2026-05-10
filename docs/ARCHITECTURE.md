@@ -112,7 +112,8 @@ Every HTTP+SSE endpoint sidekick speaks, with a one-line purpose and a classific
 | `GET /api/sidekick/settings/schema` | sidekick-ext | Wraps `GET /v1/settings/schema`. |
 | `POST /api/sidekick/settings/{id}` | sidekick-ext | Wraps `POST /v1/settings/{id}`. |
 | `GET /api/sidekick/commands` | sidekick-ext | Wraps `GET /v1/commands`. |
-| `GET /api/sidekick/model-modalities` | sidekick-ext | Per-model input modalities + auxiliary-vision fallback advertisement (powers attach-button gating). |
+| `GET /api/sidekick/model-capabilities?model=Y[&provider=X]` | sidekick-ext | Ground-truth ModelCapabilities from hermes's models.dev registry (powers attach-button gating). Wraps `GET /v1/sidekick/model-capabilities`. |
+| `GET /api/sidekick/auxiliary-models` | sidekick-ext | Auxiliary-vision-model advertisement (`{vision: <id> \| null}`) — drives the "images route via X" hint when the primary is non-vision. Wraps `GET /v1/sidekick/auxiliary-models`. |
 | `GET /api/sidekick/config` | sidekick-ext | PWA-frontend settings snapshot (yaml-backed). Distinct from `/v1/settings/*` — those are agent-owned. |
 | `POST /api/sidekick/config/{key}` | sidekick-ext | Write one frontend setting back to `sidekick.config.yaml`. |
 

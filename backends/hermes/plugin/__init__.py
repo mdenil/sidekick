@@ -370,18 +370,16 @@ def check_sidekick_requirements() -> bool:
     """Return True when adapter dependencies are available.
 
     Required: aiohttp (already a hermes core dep — webhook adapter uses it).
-    Required: ``Platform.SIDEKICK`` enum value (added by the hermes patch).
-    Required: ``SIDEKICK_PLATFORM_TOKEN`` env var (otherwise we refuse all
-    connections — see auth).
+
+    Note: ``Platform.SIDEKICK`` is created on demand by ``Platform._missing_``
+    once this plugin's ``register(ctx)`` has called ``ctx.register_platform``,
+    so we no longer have to verify the enum entry by hand. The
+    ``SIDEKICK_PLATFORM_TOKEN`` gate lives in the auth path on the WS
+    server, not here — adapter instantiation is allowed without a token,
+    just unauthenticated requests get rejected.
     """
     if not AIOHTTP_AVAILABLE:
         logger.warning("[sidekick] aiohttp not installed")
-        return False
-    if not hasattr(Platform, "SIDEKICK"):
-        logger.warning(
-            "[sidekick] Platform.SIDEKICK enum missing — apply "
-            "0001-add-sidekick-platform.patch in hermes-agent first."
-        )
         return False
     return True
 
@@ -398,16 +396,13 @@ class SidekickAdapter(BasePlatformAdapter):
     MAX_MESSAGE_LENGTH: int = 64 * 1024
 
     def __init__(self, config: PlatformConfig):
-        # Tolerate patch-not-yet-applied so the import doesn't crash gateway
-        # startup when the plugin is half-installed; check_sidekick_requirements
-        # gates the actual instantiation in _create_adapter().
-        platform_value = getattr(Platform, "SIDEKICK", None)
-        if platform_value is None:
-            raise RuntimeError(
-                "Platform.SIDEKICK is not registered. "
-                "Apply backends/hermes/plugin/0001-add-sidekick-platform.patch."
-            )
-        super().__init__(config, platform_value)
+        # Platform.SIDEKICK is created on demand by Platform._missing_ as
+        # soon as our register(ctx) calls ctx.register_platform("sidekick"),
+        # so by the time we land here the enum lookup always succeeds.
+        # If a future hermes version drops _missing_ we'd see an
+        # AttributeError or ValueError below — surface it loudly rather
+        # than papering over.
+        super().__init__(config, Platform("sidekick"))
 
         extra = config.extra or {}
         self._host: str = extra.get(
@@ -580,6 +575,13 @@ class SidekickAdapter(BasePlatformAdapter):
         # the upload would actually work end-to-end.
         self._app.router.add_get(
             "/v1/sidekick/auxiliary-models", self._handle_auxiliary_models
+        )
+        # Model capability lookup — ground truth from hermes's models.dev
+        # registry. Replaces the previous OpenRouter-catalog fetch +
+        # regex-fallback in sidekick. Same data hermes consults at request
+        # time for native-vs-text image routing.
+        self._app.router.add_get(
+            "/v1/sidekick/model-capabilities", self._handle_model_capabilities
         )
         # Cross-conversation FTS5 search. Reads against the same
         # messages_fts virtual table hermes_state.SessionDB maintains
@@ -2232,6 +2234,80 @@ class SidekickAdapter(BasePlatformAdapter):
         vision_model = vision_cfg.get("model") if isinstance(vision_cfg.get("model"), str) else None
         return web.json_response({"vision": vision_model or None})
 
+    async def _handle_model_capabilities(self, request: "web.Request") -> "web.Response":
+        """GET /v1/sidekick/model-capabilities?provider=X&model=Y — return
+        ground-truth capability metadata from the models.dev registry that
+        hermes already uses for its native-vs-text image routing decision
+        (see agent/image_routing.py:_lookup_supports_vision).
+
+        Replaces sidekick's previous OpenRouter-catalog + regex-fallback
+        approach with the same data hermes consults at request time. Returns
+        the full ModelCapabilities shape (so future capability gates —
+        tool-calling, reasoning, context window — share one source).
+
+        Response shape (200):
+          {"supports_vision": bool, "supports_tools": bool,
+           "supports_reasoning": bool, "context_window": int,
+           "max_output_tokens": int, "model_family": str}
+        Returns null fields (404 if model unknown to models.dev) so the PWA
+        can fall back to its `vision_fallback_model` advertisement when the
+        primary's caps are unknown.
+        """
+        if not self._check_http_auth(request):
+            return web.Response(status=401, text="invalid token")
+        provider = (request.query.get("provider") or "").strip()
+        model = (request.query.get("model") or "").strip()
+        if not model:
+            return web.json_response(
+                {"error": "model query param required"}, status=400,
+            )
+        try:
+            from agent.models_dev import (
+                get_model_capabilities,
+                PROVIDER_TO_MODELS_DEV,
+            )
+            if provider:
+                caps = get_model_capabilities(provider, model)
+                resolved_provider = provider if caps is not None else None
+            else:
+                # PWA may not know the provider (the picker groups by
+                # "OpenAI" / "OpenAI Codex" / "OpenRouter" but the value
+                # is just the model ID). Try each known provider in
+                # models.dev order and return the first match.
+                caps = None
+                resolved_provider = None
+                for p in PROVIDER_TO_MODELS_DEV.keys():
+                    candidate = get_model_capabilities(p, model)
+                    if candidate is not None:
+                        caps = candidate
+                        resolved_provider = p
+                        break
+        except Exception as e:
+            logger.exception("[sidekick] model-capabilities lookup failed")
+            return web.json_response(
+                {"error": {"type": "server_error", "message": str(e)}},
+                status=500,
+            )
+        if caps is None:
+            # Distinguish "unknown to models.dev" from "lookup errored" so
+            # the PWA can route the fallback path (vision_fallback_model
+            # advertisement) without the user seeing an error.
+            return web.json_response(
+                {"provider": provider or None, "model": model, "known": False},
+                status=200,
+            )
+        return web.json_response({
+            "provider": resolved_provider,
+            "model": model,
+            "known": True,
+            "supports_vision": caps.supports_vision,
+            "supports_tools": caps.supports_tools,
+            "supports_reasoning": caps.supports_reasoning,
+            "context_window": caps.context_window,
+            "max_output_tokens": caps.max_output_tokens,
+            "model_family": caps.model_family,
+        })
+
     async def _handle_search_conversations(self, request: "web.Request") -> "web.Response":
         """GET /v1/conversations/search?q=&limit=20 — FTS5 cross-conversation search.
 
@@ -3666,17 +3742,68 @@ class SidekickAdapter(BasePlatformAdapter):
 # ---------------------------------------------------------------------------
 
 
+def _sidekick_env_enablement() -> Optional[Dict[str, Any]]:
+    """Read SIDEKICK_PLATFORM_TOKEN at startup.
+
+    Returning a non-None dict signals to the platform registry that the
+    plugin is enabled for this run. Mirrors the env-var gate the
+    pre-migration patch installed in ``_apply_env_overrides``: token
+    present → enabled, missing → adapter never instantiates.
+    """
+    token = os.getenv("SIDEKICK_PLATFORM_TOKEN")
+    if not token:
+        return None
+    return {"enabled": True, "token": token}
+
+
 def register(ctx) -> None:  # noqa: ANN001 — PluginContext type is internal
     """Hermes plugin entry point.
 
-    Adapter wiring itself is handled by the gateway patch (the plugin
-    system has no register_platform_adapter API yet). What we DO use
-    PluginContext for: pre_tool_call / post_tool_call hooks (Phase 3
-    tool-event surfacing). Hooks dispatch to the live SidekickAdapter
-    via a module-level reference set in connect(); when no adapter is
-    live (or the session isn't a sidekick DM) the callbacks are silent
-    no-ops.
+    Two responsibilities:
+
+    1. Platform registration (added 2026-05). Replaces the
+       0001-add-sidekick-platform.patch we used to carry against
+       gateway/config.py + gateway/run.py + hermes_cli/platforms.py.
+       Upstream's gateway/platform_registry.py now offers a clean
+       hook for this.
+    2. Tool-event hooks (pre_tool_call / post_tool_call). These dispatch
+       to the live SidekickAdapter via a module-level reference set in
+       connect(); when no adapter is live the callbacks are silent
+       no-ops.
     """
+    try:
+        ctx.register_platform(
+            name="sidekick",
+            label="Sidekick",
+            adapter_factory=lambda cfg: SidekickAdapter(cfg),
+            check_fn=check_sidekick_requirements,
+            required_env=["SIDEKICK_PLATFORM_TOKEN"],
+            install_hint="aiohttp ships with hermes-agent — no extra packages needed",
+            env_enablement_fn=_sidekick_env_enablement,
+            allowed_users_env="SIDEKICK_PLATFORM_ALLOWED_USERS",
+            allow_all_env="SIDEKICK_PLATFORM_ALLOW_ALL_USERS",
+            emoji="🎙️",
+            pii_safe=False,
+            allow_update_command=True,
+            platform_hint=(
+                "You are chatting via the Sidekick PWA — a same-browser "
+                "interface with full markdown + image rendering. Replies "
+                "are streamed token-by-token. The user can also speak to "
+                "you via the audio bridge (Deepgram STT → text → reply → "
+                "TTS), so when audio is in flight, prefer concise replies."
+            ),
+        )
+    except AttributeError:
+        # Older hermes-agent without ctx.register_platform — fall back to
+        # the patch-driven path (Platform.SIDEKICK + _create_adapter
+        # branch). If both are missing, the adapter just won't load and
+        # the gateway logs will say so. We don't crash the plugin.
+        logger.warning(
+            "[sidekick] ctx.register_platform unavailable on this hermes "
+            "version; falling back to patch-driven registration"
+        )
+    except Exception:
+        logger.exception("[sidekick] register_platform failed")
 
     def _pre(**kwargs: Any) -> None:
         adapter = _active_adapter

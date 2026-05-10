@@ -19,11 +19,13 @@
 //     return sidekick.handleSidekickSessionDelete(req, res, chatId);
 
 import { init as initStream } from './stream.ts';
-import { init as initModalities } from './modelModalities.ts';
 import { HTTPAgentUpstream, type UpstreamAgent } from './upstream.ts';
 
 export { handleSidekickMessage } from './messages.ts';
-export { handleSidekickModelModalities } from './modelModalities.ts';
+export {
+  handleSidekickModelCapabilities,
+  handleSidekickAuxiliaryModels,
+} from './modelModalities.ts';
 export {
   handleSidekickSessionsList,
   handleSidekickSessionDelete,
@@ -58,9 +60,6 @@ export function init(opts: { token: string; url: string }): void {
   // BEFORE the first PWA tab attaches — we'd otherwise miss any
   // envelope that arrives during the startup window.
   initStream();
-  // Warm the OpenRouter modality cache eagerly so the first PWA boot
-  // doesn't pay the round-trip on its attach-button gate evaluation.
-  initModalities();
 }
 
 /** Returns the upstream singleton, or null if SIDEKICK_PLATFORM_TOKEN

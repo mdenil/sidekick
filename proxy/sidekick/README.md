@@ -15,7 +15,7 @@ agent is wired in (hermes plugin, stub agent, raw OAI third-party).
 | `history.ts` | `GET /api/sidekick/sessions/{id}/messages` — transcript replay. |
 | `settings.ts` | `/api/sidekick/settings/*` — wraps upstream `/v1/settings/*`. |
 | `commands.ts` | `GET /api/sidekick/commands` — slash-command catalog. |
-| `modelModalities.ts` | Per-model input modalities (image / audio / video gating). |
+| `modelModalities.ts` | Model capabilities + auxiliary-vision passthrough — thin proxy to hermes plugin's models.dev lookup; powers attach-button gating. (Filename pre-dates the refactor; content is now ground-truth caps, not modalities.) |
 | `frontend-config.ts` | yaml-backed PWA settings (`/api/sidekick/config`). Distinct from `/v1/settings` — those are agent-owned. |
 | `upstream.ts` | The `UpstreamAgent` interface + `HTTPAgentUpstream` implementation. The `SidekickEnvelope` union here is the canonical wire-shape reference. |
 | `__tests__/proxy.test.ts` | Integration tests against a `FakeAgent`. Run via `npm test`. |
