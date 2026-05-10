@@ -266,6 +266,18 @@ export function init(input: HTMLTextAreaElement | null): void {
   // selectionchange fires on document, not the element. We filter to the
   // composer's selection by checking activeElement at handler time.
   document.addEventListener('selectionchange', onUserSelectionChange);
+  // User-tap-to-focus during active dictation: commit the in-flight
+  // utterance and stop fighting iOS for the cursor. Field bug 2026-05-10
+  // (Jonathan, Cap): tapping the composer during dictation deferred the
+  // iOS keyboard appearance by ~7 seconds because dictate's setCursor()
+  // polling kept calling setSelectionRange() right as iOS was trying
+  // to present the keyboard — WKWebView treats programmatic selection
+  // as a reason to delay keyboard from a user-gesture focus. After
+  // resetUtterance, dictate stops calling setCursor on the focused
+  // textarea (no in-flight anchor) and iOS can present immediately.
+  // The user can keep dictating; the next utterance captures fresh
+  // wherever they leave the cursor.
+  input.addEventListener('focus', onComposerFocus);
   if (dictateDebugOn) log('[dictate] debug logging enabled');
 }
 
@@ -687,6 +699,18 @@ function onUserInput(_ev: Event): void {
   // next utterance captures fresh wherever the user's cursor lands.
   diag('[dictate] user input mid-utterance — committing in place');
   resetUtterance('user-input');
+}
+
+function onComposerFocus(_ev: Event): void {
+  if (updating) return;          // our own write — ignore (defensive; setSelectionRange shouldn't fire focus)
+  if (!active) return;           // not dictating — let iOS handle focus normally
+  if (anchor === null) return;   // no in-flight utterance — programmatic focus at dictation start fires before the first interim
+  // User tapped the composer while we had a voice utterance in flight.
+  // Commit it and stop calling setCursor on the now-focused textarea so
+  // iOS WKWebView can present the keyboard without programmatic-selection
+  // interference.
+  diag('[dictate] composer focused mid-utterance — committing in place');
+  resetUtterance('user-focus');
 }
 
 function onUserSelectionChange(_ev: Event): void {
