@@ -153,26 +153,38 @@
   }
 
   async function probe(url) {
-    // Best-effort connectivity check. /version is cheap on the proxy
-    // and returns a small JSON. We accept any 2xx as "reachable."
-    // Networks that block unknown hosts will fail with a TypeError
-    // (CORS / network) — surface that as "not reachable."
+    // Best-effort reachability check. The bootstrap loads from the
+    // capacitor://localhost origin (or http://localhost on Android),
+    // so any fetch to the user's server is cross-origin. The proxy's
+    // /version endpoint doesn't set Access-Control-Allow-Origin for
+    // arbitrary origins (no reason to — once we redirect, we're at
+    // the proxy's origin and CORS doesn't apply). So a `mode: 'cors'`
+    // fetch fails with "Load failed" even when the server is
+    // perfectly reachable.
+    //
+    // Workaround: probe with mode: 'no-cors'. The response is opaque
+    // (we can't read body or status), but the promise still resolves
+    // when the host is reachable and rejects (TypeError) when it
+    // isn't. That's enough for "reachable y/n" — actual server
+    // identity is verified by the redirect itself.
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), 8000);
     try {
-      const r = await fetch(url + '/version', {
+      await fetch(url + '/version', {
         method: 'GET',
+        mode: 'no-cors',
         signal: ctrl.signal,
-        // No-cors as a fallback if the server doesn't set CORS
-        // headers — we won't see the body but a successful fetch
-        // promise resolution still tells us the host is reachable.
-        // Default mode: cors. We try cors first for clearer errors.
+        cache: 'no-store',
       });
       clearTimeout(t);
-      return r.ok ? { ok: true } : { ok: false, err: 'HTTP ' + r.status };
+      return { ok: true };
     } catch (e) {
       clearTimeout(t);
-      return { ok: false, err: (e && e.message) || 'unreachable' };
+      // AbortError after 8s = timeout. TypeError = network unreachable
+      // (DNS / connection refused / TLS). Surface a friendly message.
+      const msg = (e && e.name === 'AbortError') ? 'timed out'
+        : (e && e.message) || 'unreachable';
+      return { ok: false, err: msg };
     }
   }
 
