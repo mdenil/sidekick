@@ -161,7 +161,13 @@ function startModelPoll() {
 // Keys + values match `proxy/sidekick/frontend-config.ts`'s
 // FRONTEND_SETTINGS table. If you add a setting, add it to BOTH.
 const DEFAULTS = {
-  tts: false,
+  // Speak-replies + realtime default ON for fresh installs (Tom field
+  // report 2026-05-10): a brand-new user opening the call menu and
+  // seeing both toggles off makes the voice features look broken
+  // out of the box. Existing users keep whatever they've already
+  // toggled (load() merges over DEFAULTS, so a yaml-persisted false
+  // stays false).
+  tts: true,
   autoSend: true,
   voice: 'aura-2-thalia-en',
   micDevice: '',
@@ -218,7 +224,7 @@ const DEFAULTS = {
   // both modes — see src/audio/shared/handsfree.ts. Legacy
   // listenSendword + listenSilenceSec keys migrate into commitPhrase /
   // silenceSec on first load (see migrateLegacyHandsfreeKeys below).
-  realtime: false,
+  realtime: true,
   // Sendword detector toggle for Listen mode. With design A
   // (`streamingEngine` is the canonical body-STT switch as of v0.403),
   // this setting now controls ONLY the sendword detector — body

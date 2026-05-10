@@ -2246,6 +2246,14 @@
     padding: 8px 10px; border-radius: 6px;
     -webkit-user-select: none; user-select: none;
   }
+  /* `display: flex` above wins over the UA's [hidden] { display: none },
+     so the JS-driven `vadRow.hidden = true` was a no-op for non-dev
+     users (Tom field report 2026-05-10 — saw the dev-only VAD row in
+     his menu). Restore expected `hidden` semantics with a same-
+     specificity override. */
+  .mic-mode-menu .mic-vad-row[hidden] {
+    display: none;
+  }
   .mic-mode-menu .mic-vad-label {
     font-size: 13px;
     flex: 0 0 auto;
