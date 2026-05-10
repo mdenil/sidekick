@@ -799,6 +799,31 @@ export function hydrate(handlers: {
     set('agentActivity', setAgentActivity.value as any);
   };
 
+  // Cap-only "Reset Server URL" — navigates the WebView to the bundled
+  // bootstrap (capacitor://localhost/?config=1) which clears the saved
+  // URL prompt state and shows the form again. PWA users don't see
+  // this row (CSS gates on html.capacitor-app). The bootstrap reads
+  // ?config=1 to suppress its auto-redirect and pre-fill with the
+  // current saved URL so the user can edit incrementally.
+  const setResetServer = document.getElementById('set-reset-server') as HTMLButtonElement | null;
+  if (setResetServer) {
+    setResetServer.addEventListener('click', () => {
+      const ok = window.confirm(
+        'Reload the server picker?\n\n'
+        + 'You will be returned to the URL picker. Your saved URL is preserved'
+        + ' as the default — you can keep it or pick a different one.'
+      );
+      if (!ok) return;
+      // capacitor://localhost is the WKWebView's bundle origin on iOS.
+      // The bootstrap reads ?config=1 and shows the form even when a
+      // saved URL exists. After reload, localStorage at that origin is
+      // intact (we don't wipe — the user might just want to peek).
+      try {
+        window.location.href = 'capacitor://localhost/?config=1';
+      } catch (_) { /* SSR / blocked navigation */ }
+    });
+  }
+
   // Settings panel toggle — button moved into the sidebar bottom (#sb-settings).
   // Panel is a modal overlay (same shape as #info-panel); close via X button,
   // Esc key, or backdrop click.

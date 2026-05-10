@@ -1,10 +1,235 @@
 <!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <title>Sidekick</title>
-  </head>
-  <body>
-    <p>Sidekick fallback shell. The native app loads the live PWA via server.url in capacitor.config.ts.</p>
-  </body>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+<title>Sidekick — Server</title>
+<style>
+  /* Self-contained — no shared CSS, no JS framework. The bundled
+     bootstrap should boot fast and not depend on the real app's
+     toolchain. */
+  :root {
+    --bg: #0a0a0a;
+    --fg: #e8e8e8;
+    --muted: #9a9a9a;
+    --primary: #6c9;
+    --primary-dim: rgba(102, 204, 153, 0.1);
+    --error: #c44;
+    --border: rgba(255,255,255,0.12);
+    --font-mono: ui-monospace, 'SF Mono', Menlo, Monaco, monospace;
+    --font-sans: -apple-system, system-ui, 'Helvetica Neue', sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg); color: var(--fg);
+    font-family: var(--font-sans);
+    min-height: 100vh;
+    min-height: 100dvh;
+  }
+  body {
+    padding: max(env(safe-area-inset-top), 24px) 18px max(env(safe-area-inset-bottom), 24px);
+    display: flex; flex-direction: column; align-items: center;
+    justify-content: center; gap: 28px;
+  }
+  .logo {
+    font-family: var(--font-mono);
+    font-size: 32px; letter-spacing: -0.5px;
+    color: var(--primary);
+    margin-bottom: -4px;
+  }
+  h1 {
+    font-size: 18px; font-weight: 600; margin: 0;
+  }
+  p, label {
+    color: var(--muted); font-size: 14px; line-height: 1.5;
+    margin: 0; max-width: 380px; text-align: center;
+  }
+  form {
+    display: flex; flex-direction: column; gap: 12px;
+    width: 100%; max-width: 420px;
+  }
+  label.url-label {
+    text-align: left; color: var(--fg); font-size: 13px;
+    font-weight: 600; padding: 0 2px;
+  }
+  input[type=url] {
+    width: 100%;
+    padding: 14px 16px; font-size: 16px;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    color: var(--fg);
+    font-family: var(--font-mono);
+  }
+  input[type=url]:focus {
+    outline: none;
+    border-color: var(--primary);
+    background: var(--primary-dim);
+  }
+  button {
+    width: 100%;
+    padding: 14px 20px; font-size: 16px; font-weight: 600;
+    background: var(--primary); color: #000;
+    border: 0; border-radius: 12px;
+    cursor: pointer;
+    transition: opacity 120ms ease;
+  }
+  button:disabled { opacity: 0.5; cursor: default; }
+  .status {
+    min-height: 20px; font-size: 13px;
+    font-family: var(--font-mono);
+    text-align: center;
+  }
+  .status.ok { color: var(--primary); }
+  .status.err { color: var(--error); }
+  .footnote {
+    color: var(--muted); font-size: 12px;
+    text-align: center; max-width: 360px; line-height: 1.5;
+  }
+  .footnote code {
+    font-family: var(--font-mono);
+    background: rgba(255,255,255,0.06);
+    padding: 1px 5px; border-radius: 4px;
+  }
+</style>
+</head>
+<body>
+
+<div class="logo">sidekick</div>
+<h1>Connect to your server</h1>
+<p>
+  Enter the URL where your <code>sidekick</code> proxy is reachable.
+  Your hermes-agent backend (and the proxy in front of it) runs this URL.
+</p>
+
+<form id="form" autocomplete="off">
+  <label class="url-label" for="url">Server URL</label>
+  <input
+    id="url"
+    type="url"
+    placeholder="https://your-host.example.com:3001"
+    autocapitalize="off"
+    autocorrect="off"
+    spellcheck="false"
+    inputmode="url"
+    required
+  />
+  <button type="submit" id="connect">Connect</button>
+  <div id="status" class="status"></div>
+</form>
+
+<p class="footnote">
+  Saved URLs are remembered. To re-pick later, reinstall the app
+  (a settings-side reset is on the way).
+</p>
+
+<script>
+(() => {
+  'use strict';
+
+  const STORAGE_KEY = 'sidekick_server_url';
+  const QS = new URLSearchParams(location.search);
+  const FORCE_CONFIG = QS.get('config') === '1';
+
+  const $url = document.getElementById('url');
+  const $btn = document.getElementById('connect');
+  const $status = document.getElementById('status');
+  const $form = document.getElementById('form');
+
+  function setStatus(text, kind) {
+    $status.textContent = text || '';
+    $status.className = 'status' + (kind ? ' ' + kind : '');
+  }
+
+  function normalize(raw) {
+    let s = (raw || '').trim();
+    if (!s) return '';
+    // No scheme → assume https for the user.
+    if (!/^https?:\/\//i.test(s)) s = 'https://' + s;
+    // Strip trailing slash.
+    s = s.replace(/\/+$/, '');
+    return s;
+  }
+
+  async function probe(url) {
+    // Best-effort connectivity check. /version is cheap on the proxy
+    // and returns a small JSON. We accept any 2xx as "reachable."
+    // Networks that block unknown hosts will fail with a TypeError
+    // (CORS / network) — surface that as "not reachable."
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 8000);
+    try {
+      const r = await fetch(url + '/version', {
+        method: 'GET',
+        signal: ctrl.signal,
+        // No-cors as a fallback if the server doesn't set CORS
+        // headers — we won't see the body but a successful fetch
+        // promise resolution still tells us the host is reachable.
+        // Default mode: cors. We try cors first for clearer errors.
+      });
+      clearTimeout(t);
+      return r.ok ? { ok: true } : { ok: false, err: 'HTTP ' + r.status };
+    } catch (e) {
+      clearTimeout(t);
+      return { ok: false, err: (e && e.message) || 'unreachable' };
+    }
+  }
+
+  async function commit(url) {
+    setStatus('Checking ' + url + ' …', null);
+    $btn.disabled = true;
+    try {
+      const res = await probe(url);
+      if (!res.ok) {
+        setStatus('Could not reach ' + url + ' — ' + res.err, 'err');
+        $btn.disabled = false;
+        return;
+      }
+      try { localStorage.setItem(STORAGE_KEY, url); } catch (_) { /* private mode etc */ }
+      setStatus('Connected. Loading …', 'ok');
+      // Small delay so the user sees the success state before the
+      // WebView swaps origins. Cap WebViews preserve the AVAudioSession
+      // and getUserMedia permission state across this redirect (same
+      // process, same WKWebView instance).
+      setTimeout(() => {
+        location.href = url + '/';
+      }, 200);
+    } finally {
+      // (intentionally don't re-enable the button on success — we're
+      // about to redirect)
+    }
+  }
+
+  // Auto-redirect on subsequent launches unless the user is explicitly
+  // here to reconfigure (?config=1 query param, set by a future
+  // settings-side reset button).
+  const saved = (() => {
+    try { return localStorage.getItem(STORAGE_KEY); } catch (_) { return null; }
+  })();
+
+  if (saved && !FORCE_CONFIG) {
+    setStatus('Loading ' + saved + ' …', null);
+    location.href = saved + '/';
+    return;
+  }
+
+  // Reconfigure mode — pre-fill the field with the prior choice so
+  // the user can edit incrementally.
+  if (saved && FORCE_CONFIG) {
+    $url.value = saved;
+  }
+
+  $form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const url = normalize($url.value);
+    if (!url) {
+      setStatus('Please enter a URL', 'err');
+      return;
+    }
+    void commit(url);
+  });
+})();
+</script>
+</body>
 </html>

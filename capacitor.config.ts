@@ -3,27 +3,37 @@ import type { CapacitorConfig } from '@capacitor/cli';
 /**
  * Capacitor configuration for the Sidekick native shell.
  *
- * The PWA is served by the Node `server.ts` over the network (e.g. Tailscale,
- * tunnel, LAN). Rather than bundling the web assets into the native app, we
- * point Capacitor's WKWebView / Android WebView at the live URL via
- * `server.url`. The native shell's update story stays identical to the PWA:
- * bump the SW version + refresh.
+ * Loading model (changed 2026-05-10):
+ *   The Cap WebView no longer loads a fixed `server.url`. Instead the
+ *   app boots from the bundled `mobile/webdir/index.html` (a tiny
+ *   self-contained "Server URL" landing page) which prompts the user
+ *   for their proxy host on first launch and remembers it in
+ *   localStorage. On subsequent launches the bootstrap auto-redirects
+ *   to the saved URL via `location.href = url`.
  *
- * SET YOUR SERVER URL: export `SIDEKICK_NATIVE_URL` to the HTTPS URL where
- * `server.ts` is reachable from the device, then run `npx cap sync`. Example:
- *   export SIDEKICK_NATIVE_URL=https://my-pi.tailnet.ts.net:3001
- * Without it, the native shell falls back to localhost (works for the iOS
- * simulator on the same machine but not for a phone).
+ *   This makes the same .ipa installable by anyone — they enter their
+ *   own backend URL (the one they got from `hermes-agent-workflow`
+ *   bringup) without rebuilding. The dev-iteration workflow is
+ *   preserved: any URL the user picks fetches its JS over the network,
+ *   so updates ship via `git push` + sidekick.service restart on the
+ *   proxy host + dev-reload in the app, exactly as before.
  *
- * Layout (v0.421 — relocated under mobile/):
+ *   To re-pick the URL later, navigate the WebView to
+ *   `capacitor://localhost/?config=1` (the `?config=1` query forces
+ *   the bootstrap to show the form even when a URL is saved). A
+ *   settings-side affordance is on the way.
+ *
+ * `allowNavigation: ['*']` permits the bootstrap-initiated redirect
+ * to whatever HTTPS host the user picks. The user's URL choice is
+ * the security gate; we don't whitelist a fixed host any more.
+ *
+ * Layout:
  *   mobile/ios/      — Xcode project
  *   mobile/android/  — Gradle project
- *   mobile/webdir/   — placeholder bundled webDir
- * The capacitor.config.ts itself stays at repo root because the Capacitor
- * CLI looks for it there with no override.
+ *   mobile/webdir/   — bundled bootstrap (loaded on launch)
+ * The capacitor.config.ts itself stays at repo root because the
+ * Capacitor CLI looks for it there with no override.
  */
-const NATIVE_URL = process.env.SIDEKICK_NATIVE_URL || 'https://localhost:3001';
-const NATIVE_HOST = new URL(NATIVE_URL).hostname;
 
 const config: CapacitorConfig = {
   appId: 'com.reimaginerobotics.sidekick',
@@ -32,9 +42,8 @@ const config: CapacitorConfig = {
   ios: { path: 'mobile/ios' },
   android: { path: 'mobile/android' },
   server: {
-    url: NATIVE_URL,
     cleartext: false,
-    allowNavigation: [NATIVE_HOST],
+    allowNavigation: ['*'],
   },
 };
 

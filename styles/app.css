@@ -1187,6 +1187,18 @@
     background: var(--surface-2);
   }
   #settings .row { display: flex; align-items: center; gap: 12px; padding: 7px 0; }
+  /* Cap-only settings rows. Hidden in PWA (where the affordance
+     wouldn't make sense — the user already chose the URL by typing
+     it into Safari). The .capacitor-app class is set on <html> by
+     the Cap WKUserScript at boot. */
+  .capacitor-only-row { display: none; }
+  html.capacitor-app .capacitor-only-row { display: flex; }
+  #settings .settings-action-btn {
+    background: var(--bg); color: var(--fg); border: 1px solid var(--border);
+    border-radius: 8px; padding: 5px 12px; font-size: var(--content-size);
+    cursor: pointer;
+  }
+  #settings .settings-action-btn:hover { background: var(--surface); }
   #settings .row:has(input[type=checkbox]) { cursor: pointer; }
   #settings label { color: var(--fg); min-width: 150px; font-size: var(--content-size); font-weight: 500; }
   #settings select, #settings input[type=range], #settings input[type=text], #settings textarea {

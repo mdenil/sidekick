@@ -425,6 +425,14 @@
         <option value="auto">Match system</option>
       </select>
     </div>
+    <!-- Cap-only: navigates to the bundled bootstrap (capacitor://localhost/?config=1)
+         where the user can pick a different server URL. Hidden in PWA where the
+         server is whatever URL the user typed into Safari. -->
+    <div class="row capacitor-only-row">
+      <label>Server URL</label>
+      <button type="button" id="set-reset-server" class="settings-action-btn">Reset…</button>
+      <span class="hint">re-pick the backend (Cap only)</span>
+    </div>
   </div>
     </div><!-- /.settings-content -->
   </div><!-- /.settings-shell -->
