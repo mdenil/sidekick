@@ -68,6 +68,12 @@ async function handleSessionMessagesViaUpstream(
       content: it.content,
       timestamp: it.created_at,
       ...(it.tool_name ? { toolName: it.tool_name } : {}),
+      // SSE-shape id (umsg_*/msg_*) when the plugin recorded a link
+      // for this row in sidekick_msg_links. PWA's renderHistoryMessage
+      // prefers this over the integer id as the dedup key so reload
+      // bubbles match the IDB-cached SSE-shape ones. Absent for
+      // legacy rows / other-channel rows / tool+system rows.
+      ...(it.sidekick_id ? { sidekick_id: it.sidekick_id } : {}),
     }));
     trace('serialize-start');
     const body = JSON.stringify({

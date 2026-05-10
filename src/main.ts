@@ -4102,6 +4102,47 @@ function replaySessionMessages(
     `flush=${Math.round(tEnd - tFlush0)}ms ` +
     `total=${Math.round(tEnd - tRender0)}ms`,
   );
+
+  // Divergence-detection self-heal. After a server-driven replay,
+  // the on-screen bubble count should match the server's message
+  // set (modulo system_meta rows the server hides + filtered-out
+  // CONTEXT-COMPACTION lines we silently drop in renderHistoryMessage).
+  // If the count is materially higher, an earlier render path leaked
+  // stale bubbles — most commonly the sidekick_id ↔ integer-id dedup-
+  // mismatch this code is designed to prevent. Clear and re-render
+  // once to recover. The check is O(1) on the happy path (DOM length
+  // count + comparison); the heal path is a fresh batch render of
+  // up to 200 messages (~10ms). Fires at most once per replaySession-
+  // Messages call so we don't loop on stuck divergence.
+  const transcriptEl = document.getElementById('transcript');
+  if (transcriptEl) {
+    const renderedCount = transcriptEl.querySelectorAll('.line[data-message-id]').length;
+    // Server count excludes system_meta rows (no content, dropped by
+    // renderHistoryMessage). Filter to match.
+    const serverContentCount = messages.filter((m: any) => {
+      const t = (m?.content || '').trim();
+      return t && !t.startsWith('[CONTEXT COMPACTION');
+    }).length;
+    // Tolerance of +1 covers an in-flight streaming bubble that the
+    // server hasn't persisted yet (rare during replay, but possible
+    // on tightly-timed reconnects). Higher delta = real divergence.
+    if (renderedCount > serverContentCount + 1) {
+      log(
+        `[chat-resume] divergence detected: DOM has ${renderedCount} ` +
+        `bubbles vs server ${serverContentCount} — clearing + re-rendering`,
+      );
+      renderedMessages.clear();
+      activityRow.clearAll();
+      replyNavigator.reset();
+      // Re-render from server. Don't recurse — we've already cleared
+      // the entries map so the upserts here are guaranteed to create.
+      for (const m of messages) {
+        renderHistoryMessage(m, label, 'append', /*batch*/ true);
+      }
+      chat.flushBatchedRender();
+      log(`[chat-resume] divergence healed: re-rendered ${messages.length} msgs from server`);
+    }
+  }
   // Register pagination state AFTER messages land so the scroll listener
   // doesn't fire mid-render. hasMore=false (or missing) disables lazy-load.
   chat.setPaginationState(pagination?.firstId ?? null, !!pagination?.hasMore);
@@ -4146,10 +4187,20 @@ function renderHistoryMessage(m: any, label: string, mode: 'append' | 'prepend' 
   const prepend = mode === 'prepend';
   // Stamp data-message-id on history-rendered bubbles so a subsequent
   // SSE re-delivery for the same message can be deduped at the handler
-  // level (see handleReplyDelta / handleReplyFinal). Hermes' /messages
-  // returns `id` matching the SSE envelope `message_id` (see
-  // proxy/sidekick/history.ts → it.id and proxy/sidekick/upstream.ts).
-  const messageId = m.id != null ? String(m.id) : undefined;
+  // level (see handleReplyDelta / handleReplyFinal).
+  //
+  // Key selection: prefer `sidekick_id` (the SSE-shape id the plugin
+  // emitted live via user_message / reply_final) over the raw integer
+  // `id` from state.db. Without this preference the IDB-cached bubble
+  // (keyed by umsg_*/msg_*) won't match the history-replay upsert
+  // (keyed by integer), causing every reload to duplicate the entire
+  // transcript. See backends/hermes/plugin's _write_msg_links_after_turn
+  // for the link table the plugin populates after each turn. Falls
+  // back to integer id for legacy rows persisted before the link table
+  // existed and for messages from other channels (telegram, slack, ...).
+  const messageId = m.sidekick_id
+    ? String(m.sidekick_id)
+    : (m.id != null ? String(m.id) : undefined);
   // Caller may force batching even for append (resume-loop case);
   // prepend always batches because chat.prependHistory wraps the loop.
   const useBatch = prepend || batch;

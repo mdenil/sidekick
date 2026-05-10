@@ -160,12 +160,21 @@ export async function installMockBackend(page) {
     const m = url.pathname.match(/\/sessions\/([^/]+)\/messages/);
     const chatId = m ? decodeURIComponent(m[1]) : '';
     const chat = chats.get(chatId);
-    const messages = chat ? chat.messages.map((m, i) => ({
-      id: m.message_id || `mock-msg-history-${chatId}-${i}`,
-      role: m.role,
-      content: m.content,
-      timestamp: m.timestamp || (chat.lastActiveAt / 1000),
-    })) : [];
+    const messages = chat ? chat.messages.map((m, i) => {
+      const out = {
+        id: m.message_id || `mock-msg-history-${chatId}-${i}`,
+        role: m.role,
+        content: m.content,
+        timestamp: m.timestamp || (chat.lastActiveAt / 1000),
+      };
+      // Mirror the real plugin's surfacing of sidekick_id from
+      // sidekick_msg_links — present when the live SSE round-trip
+      // recorded a link, absent for legacy / other-channel rows.
+      // Tests can opt in per-message by setting `sidekick_id` on the
+      // mock chat's message dict.
+      if (m.sidekick_id) out.sidekick_id = m.sidekick_id;
+      return out;
+    }) : [];
     await route.fulfill({
       status: 200,
       contentType: 'application/json',

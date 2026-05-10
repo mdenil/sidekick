@@ -133,6 +133,13 @@ export interface ConversationItem {
    *  the OAI item shape so the drawer's "agent activity" view can
    *  render the row with its tool label. Absent for non-tool rows. */
   tool_name?: string;
+  // Sidekick extension: SSE-shape id (umsg_X / msg_X) the plugin
+  // emitted during the live turn that persisted this row. Recorded
+  // by the plugin via sidekick_msg_links and surfaced through the
+  // history endpoint so reload-time dedup keys off the same id the
+  // IDB cache stored. Absent for legacy rows, other-channel rows,
+  // and tool / system rows.
+  sidekick_id?: string;
 }
 
 export interface UpstreamAgent {

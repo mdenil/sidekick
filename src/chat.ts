@@ -27,12 +27,38 @@ const SNAPSHOT_KEY = 'current';
 // constant + the `removeItem` line entirely.
 const LEGACY_SS_KEY = 'sidekick.transcript.v1';
 
+// IDB schema version. Bump to force a one-time wipe of cached
+// snapshots written by older PWA bundles.
+//
+// History:
+//   v1 — initial; transcript HTML keyed by SNAPSHOT_KEY.
+//   v2 (2026-05-10) — bubble dedup keys changed from SSE-shape
+//        (umsg_*/msg_*) to plugin-supplied sidekick_id (which falls
+//        back to canonical integer id for pre-link-table rows). Old
+//        snapshots have stale keys that don't match what the new
+//        replaySessionMessages emits → would duplicate every reload
+//        until the user starts a fresh chat. The v2 upgrade clears
+//        the snapshot store so the first cold boot post-upgrade
+//        re-renders cleanly from the server. Cost: one ~200ms blank
+//        transcript on first reload after deploy.
+const DB_VERSION = 2;
+
 function dbOpen(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, 1);
-    req.onupgradeneeded = () => {
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = (ev) => {
       const db = req.result;
-      if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE, { keyPath: 'key' });
+      const oldVersion = (ev as IDBVersionChangeEvent).oldVersion ?? 0;
+      if (!db.objectStoreNames.contains(STORE)) {
+        db.createObjectStore(STORE, { keyPath: 'key' });
+      } else if (oldVersion < 2) {
+        // Existing store from v1 — wipe its contents so stale snapshots
+        // don't cause dedup-key mismatch on first boot of v2 code. The
+        // store object itself stays; only the records are dropped.
+        const tx = req.transaction!;
+        const store = tx.objectStore(STORE);
+        store.clear();
+      }
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);

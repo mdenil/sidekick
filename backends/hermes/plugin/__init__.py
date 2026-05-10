@@ -1605,9 +1605,11 @@ class SidekickAdapter(BasePlatformAdapter):
         if self._state_db_path is None or not self._state_db_path.exists():
             return None
         sql = """
-            SELECT m.id, m.role, m.content, m.tool_name, m.timestamp
+            SELECT m.id, m.role, m.content, m.tool_name, m.timestamp,
+                   sml.sidekick_id
             FROM messages m
             JOIN sessions s ON m.session_id = s.id
+            LEFT JOIN sidekick_msg_links sml ON sml.state_db_id = m.id
             WHERE s.user_id = ? AND s.source = ?
         """
         params: list = [chat_id, source]
@@ -1631,7 +1633,7 @@ class SidekickAdapter(BasePlatformAdapter):
                 return None
             rows = list(conn.execute(sql, params).fetchall())
         items = []
-        for row_id, role, content, tool_name, ts in rows:
+        for row_id, role, content, tool_name, ts, sidekick_id in rows:
             text = (content or "")
             if text.startswith("[CONTEXT COMPACTION"):
                 continue
@@ -1644,6 +1646,14 @@ class SidekickAdapter(BasePlatformAdapter):
             }
             if tool_name:
                 item["tool_name"] = tool_name
+            # SSE-shape id (umsg_*/msg_*) when this row was persisted
+            # by a sidekick turn that recorded its link. Absent for
+            # legacy messages persisted before the link table existed,
+            # for messages from other channels (telegram, slack, etc.),
+            # and for tool/system rows. PWA's renderHistoryMessage
+            # prefers this as the upsert key; falls back to integer id.
+            if sidekick_id:
+                item["sidekick_id"] = sidekick_id
             items.append(item)
         # Same pagination semantics as the legacy path:
         #  * before_id=None → most-recent `limit` items, has_more=True
@@ -2871,14 +2881,26 @@ class SidekickAdapter(BasePlatformAdapter):
         queue: "asyncio.Queue[Dict[str, Any]]" = asyncio.Queue(maxsize=TURN_QUEUE_MAX)
         self._turn_queues[chat_id] = queue
 
+        # Capture state.db's id high-water mark for this chat BEFORE
+        # dispatching. After reply_final fires, any messages.id strictly
+        # greater than this is a row hermes persisted during this turn —
+        # used by _write_msg_links_after_turn to link the SSE-shape ids
+        # the PWA knows (user_message_id, message_id) back to the
+        # canonical state.db ids history-fetch will surface later.
+        pre_high_water = await asyncio.to_thread(
+            self._capture_msg_high_water_mark, chat_id,
+        )
+
         if not stream:
             return await self._handle_responses_blocking(
                 chat_id, text, queue, response_id, message_id, created_at,
                 attachments=attachments,
+                user_message_id=user_message_id, pre_high_water=pre_high_water,
             )
         return await self._handle_responses_streaming(
             request, chat_id, text, queue, response_id, message_id, created_at,
             attachments=attachments,
+            user_message_id=user_message_id, pre_high_water=pre_high_water,
         )
 
     async def _handle_responses_blocking(
@@ -2886,9 +2908,12 @@ class SidekickAdapter(BasePlatformAdapter):
         queue: "asyncio.Queue[Dict[str, Any]]",
         response_id: str, message_id: str, created_at: int,
         attachments: Optional[list] = None,
+        user_message_id: str = "",
+        pre_high_water: Optional[int] = None,
     ) -> "web.Response":
         """Non-streaming /v1/responses path. Dispatch, drain the queue
         until reply_final, return single JSON envelope."""
+        reply_final_seen = False
         try:
             # _dispatch_message kicks off agent processing; replies
             # arrive on `queue` via _safe_send_envelope's fan-out.
@@ -2904,6 +2929,7 @@ class SidekickAdapter(BasePlatformAdapter):
                     # Track the latest; OAI-shape compaction below.
                     assembled = env.get("text", assembled) or assembled
                 elif t == "reply_final":
+                    reply_final_seen = True
                     break
             return web.json_response(self._build_response_envelope(
                 response_id, message_id, created_at, assembled,
@@ -2915,6 +2941,16 @@ class SidekickAdapter(BasePlatformAdapter):
             )
         finally:
             self._turn_queues.pop(chat_id, None)
+            # Link the just-persisted state.db rows to the PWA's known
+            # SSE-shape ids so a future history-fetch reload can dedup
+            # against the IDB-cached bubbles. Only fires when a turn
+            # actually completed; on timeout / error the rows hermes
+            # may or may not have written aren't ours to claim.
+            if reply_final_seen:
+                await asyncio.to_thread(
+                    self._write_msg_links_after_turn,
+                    chat_id, pre_high_water, user_message_id, message_id,
+                )
 
     async def _handle_responses_streaming(
         self, request: "web.Request",
@@ -2922,6 +2958,8 @@ class SidekickAdapter(BasePlatformAdapter):
         queue: "asyncio.Queue[Dict[str, Any]]",
         response_id: str, message_id: str, created_at: int,
         attachments: Optional[list] = None,
+        user_message_id: str = "",
+        pre_high_water: Optional[int] = None,
     ) -> "web.StreamResponse":
         """Streaming /v1/responses. Emits OpenAI Responses-API SSE
         events as the agent produces output."""
@@ -3057,6 +3095,14 @@ class SidekickAdapter(BasePlatformAdapter):
             self._turn_queues.pop(chat_id, None)
             with contextlib.suppress(Exception):
                 await resp.write_eof()
+            # Mirror of the blocking handler's link-write — only fires
+            # when reply_final actually completed (`completed_emitted`).
+            # See _write_msg_links_after_turn for full rationale.
+            if completed_emitted:
+                await asyncio.to_thread(
+                    self._write_msg_links_after_turn,
+                    chat_id, pre_high_water, user_message_id, message_id,
+                )
         return resp
 
     @staticmethod
@@ -3562,9 +3608,120 @@ class SidekickAdapter(BasePlatformAdapter):
                         "idx_sessions_user_id_source "
                         "ON sessions(user_id, source)"
                     )
+                    # Plugin-owned side table mapping hermes' canonical
+                    # state.db integer message ids to the SSE-shape ids
+                    # the plugin emits to the PWA. Closes the dedup
+                    # gap between live SSE bubbles (keyed by umsg_*/
+                    # msg_*) and history-fetch reconciliation (which
+                    # only sees integer ids). Without it, every PWA
+                    # reload duplicates the IDB-restored transcript on
+                    # top of the server replay because no key matches.
+                    # See agent/image_routing.py-style architectural
+                    # note: hermes core's `messages` schema is upstream-
+                    # owned and has no client_id column; carrying our
+                    # own table keeps the change plugin-local.
+                    conn.execute(
+                        "CREATE TABLE IF NOT EXISTS sidekick_msg_links ("
+                        "state_db_id INTEGER PRIMARY KEY, "
+                        "sidekick_id TEXT NOT NULL UNIQUE)"
+                    )
+                    conn.execute(
+                        "CREATE INDEX IF NOT EXISTS "
+                        "idx_sidekick_msg_links_sidekick_id "
+                        "ON sidekick_msg_links(sidekick_id)"
+                    )
         except Exception as exc:
             logger.warning(
                 "[sidekick] index ensure failed (non-fatal): %s", exc
+            )
+
+    def _capture_msg_high_water_mark(self, chat_id: str) -> Optional[int]:
+        """Return the largest state.db `messages.id` for this sidekick
+        chat, or None when the chat is brand new / state.db missing.
+        Read just before dispatching a turn so we can identify which
+        rows the turn newly persisted (ids strictly greater than the
+        captured value)."""
+        if self._state_db_path is None or not self._state_db_path.exists():
+            return None
+        uri = f"file:{self._state_db_path}?mode=ro"
+        try:
+            with contextlib.closing(
+                sqlite3.connect(uri, uri=True, timeout=2.0)
+            ) as conn:
+                row = conn.execute(
+                    "SELECT MAX(m.id) FROM messages m "
+                    "JOIN sessions s ON m.session_id = s.id "
+                    "WHERE s.user_id = ? AND s.source = ?",
+                    (chat_id, SIDEKICK_SOURCE),
+                ).fetchone()
+            return int(row[0]) if row and row[0] is not None else None
+        except Exception:
+            return None
+
+    def _write_msg_links_after_turn(
+        self,
+        chat_id: str,
+        pre_high_water: Optional[int],
+        user_message_id: str,
+        assistant_message_id: str,
+    ) -> None:
+        """Link the two state.db rows hermes just persisted (one user,
+        one assistant) to the SSE-shape ids the PWA already knows.
+
+        Called once per completed turn, after the streaming handler
+        sees `reply_final` (which the upstream emits AFTER persisting
+        the assistant message; the user message persists earlier in
+        the same dispatch). The first new row with role='user' gets
+        linked to the PWA's user_message_id; the first new row with
+        role='assistant' gets linked to the plugin-minted message_id.
+        Tool / system rows are intentionally not linked — the PWA's
+        history-fetch dedup keys off these two roles only.
+
+        Idempotent via UNIQUE constraint on `sidekick_id` plus INSERT
+        OR IGNORE — replaying a turn never produces duplicate rows.
+
+        Best-effort: a write failure here doesn't break the turn (the
+        envelope was already streamed to the client). It only means
+        the next reload of THIS turn's bubbles falls through to the
+        integer-id path, which is the same behavior we'd get for
+        legacy pre-fix messages anyway."""
+        if self._state_db_path is None or not self._state_db_path.exists():
+            return
+        if not user_message_id and not assistant_message_id:
+            return
+        after = pre_high_water if pre_high_water is not None else 0
+        try:
+            with contextlib.closing(
+                sqlite3.connect(self._state_db_path, timeout=5.0)
+            ) as conn:
+                rows = conn.execute(
+                    "SELECT m.id, m.role FROM messages m "
+                    "JOIN sessions s ON m.session_id = s.id "
+                    "WHERE s.user_id = ? AND s.source = ? AND m.id > ? "
+                    "ORDER BY m.id ASC",
+                    (chat_id, SIDEKICK_SOURCE, after),
+                ).fetchall()
+                mapping: List[Tuple[int, str]] = []
+                seen_user = False
+                seen_assistant = False
+                for state_db_id, role in rows:
+                    if role == "user" and not seen_user and user_message_id:
+                        mapping.append((int(state_db_id), user_message_id))
+                        seen_user = True
+                    elif role == "assistant" and not seen_assistant and assistant_message_id:
+                        mapping.append((int(state_db_id), assistant_message_id))
+                        seen_assistant = True
+                if not mapping:
+                    return
+                with conn:
+                    conn.executemany(
+                        "INSERT OR IGNORE INTO sidekick_msg_links "
+                        "(state_db_id, sidekick_id) VALUES (?, ?)",
+                        mapping,
+                    )
+        except Exception as exc:
+            logger.warning(
+                "[sidekick] msg-link write failed (non-fatal): %s", exc
             )
 
     async def _session_poll_loop(self) -> None:
