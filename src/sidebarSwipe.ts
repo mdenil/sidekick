@@ -98,12 +98,27 @@ export function init(opts: SwipeOptions): void {
   };
 
   // Toggles `body.swipe-active`, whose CSS rule sets `touch-action:
-  // none !important` on body and every descendant. The class is
-  // applied at pointerdown — NOT at commit — so iOS can't classify
-  // the motion as a scroll before we classify it ourselves.
-  // (touch-action on html/body alone doesn't propagate: scrollable
-  // containers like .transcript and inner elements with explicit
-  // `touch-action: manipulation` win over ancestor rules.)
+  // none !important` on body and every descendant. Two roles:
+  //   - Pre-commit: iOS classification protection. Originally we set
+  //     this at pointerdown so iOS couldn't classify the first
+  //     pointermoves as scroll. Modern WebKit (iOS 16+) honors
+  //     preventDefault on pointermove (passive: false) reliably,
+  //     which already does the same job. Setting at pointerdown
+  //     was belt-and-suspenders that turned every tap into a
+  //     potential stuck-class bug if pointerup was lost.
+  //   - Post-commit: prevents iOS from firing pointercancel on
+  //     vertical drift during a committed horizontal swipe. THIS is
+  //     the role we still need.
+  //
+  // Field bug 2026-05-10 (Jonathan): the eager lock + iOS occasionally
+  // dropping pointerup left swipe-active stuck → UI frozen for 2s
+  // until the safety-net poll caught it. Fix: lazy lock — set ONLY
+  // at the commit transition in onPointerMove. Taps never set it
+  // (pointerdown alone doesn't trigger), so the stuck-class bug
+  // can't happen on taps. The narrow surface that remains is
+  // "committed swipe loses pointerup" — the safety nets below
+  // handle that residual case.
+  //
   // lockSetAt: timestamp ms when the lock was last applied. Lets the
   // poll-cleanup distinguish "lock just set, gesture in flight" from
   // "lock has been on for ages, must be stuck". Set to 0 when cleared.
@@ -183,7 +198,12 @@ export function init(opts: SwipeOptions): void {
     lastT = e.timeStamp;
     widthPx = measureWidth() || 280;
     committed = false;
-    setSwipeLock(true);
+    // NO setSwipeLock(true) here — moved to the commit transition in
+    // onPointerMove. Taps never call setSwipeLock; vertical scrolls
+    // never call setSwipeLock; only confirmed horizontal swipes do.
+    // This eliminates the stuck-class freeze that happens when
+    // pointerup is lost on a tap. See the lazy-lock comment block
+    // above setSwipeLock for full rationale.
   };
 
   const onPointerMove = (e: PointerEvent) => {
@@ -192,9 +212,11 @@ export function init(opts: SwipeOptions): void {
     const dy = e.clientY - startY;
 
     if (!committed) {
-      // Pre-commit preventDefault belt-and-suspenders alongside the
-      // body.swipe-active CSS lock — keeps iOS from classifying the
-      // first few pointermoves as scroll before we classify them.
+      // Pre-commit: preventDefault on every pointermove so iOS
+      // doesn't start scroll-classification before we know which
+      // direction the user is going. Modern WebKit honors this with
+      // passive: false; it replaces the older body.swipe-active
+      // belt-and-suspenders that used to fire at pointerdown.
       if (e.cancelable) e.preventDefault();
 
       if (dx * dx + dy * dy < MIN_DISTANCE_PX * MIN_DISTANCE_PX) return;
@@ -202,6 +224,12 @@ export function init(opts: SwipeOptions): void {
       if (intent === 'opening' && dx <= 0) { reset(); return; }
       if (intent === 'closing' && dx >= 0) { reset(); return; }
 
+      // Confirmed horizontal swipe — lock now. Prevents iOS from
+      // dispatching pointercancel on vertical drift during the
+      // committed gesture. This is the EARLIEST point we know we
+      // need the lock; setting it any earlier would risk leaking
+      // it on a tap or vertical-scroll that never gets here.
+      setSwipeLock(true);
       if (intent === 'opening') {
         widthPx = 280;
         setInlineTransform(Math.max(-widthPx, Math.min(0, -widthPx + dx)));
