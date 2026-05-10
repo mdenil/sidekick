@@ -27,7 +27,14 @@
     min-height: 100vh;
     min-height: 100dvh;
   }
-  body {
+  /* Hide body by default. JS unhides ONLY when the form should be
+     shown (no saved URL, or ?config=1). Saved-URL auto-redirect
+     never paints the form, so there's no flicker on relaunch.
+     Background stays the dark color so the briefly-empty page
+     blends with the next destination. */
+  body { visibility: hidden; }
+  body.show {
+    visibility: visible;
     padding: max(env(safe-area-inset-top), 24px) 18px max(env(safe-area-inset-bottom), 24px);
     display: flex; flex-direction: column; align-items: center;
     justify-content: center; gap: 28px;
@@ -221,16 +228,21 @@
   })();
 
   if (saved && !FORCE_CONFIG) {
-    setStatus('Loading ' + saved + ' …', null);
+    // Auto-redirect path: body stays hidden, no paint, no flicker.
+    // Field repro 2026-05-10 (Jonathan): pre-fix the "Connect to
+    // your server" form briefly painted on every relaunch before
+    // the redirect fired.
     location.href = saved + '/';
     return;
   }
 
-  // Reconfigure mode — pre-fill the field with the prior choice so
-  // the user can edit incrementally.
+  // Form-needed path. Pre-fill the field with the prior choice so
+  // the user can edit incrementally. Unhide the body now that we
+  // know we're staying on this page.
   if (saved && FORCE_CONFIG) {
     $url.value = saved;
   }
+  document.body.classList.add('show');
 
   $form.addEventListener('submit', (e) => {
     e.preventDefault();
