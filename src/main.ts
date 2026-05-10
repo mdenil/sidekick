@@ -3074,6 +3074,32 @@ async function boot() {
     };
     btnMic.addEventListener('pointerup', clearPttPressing);
     btnMic.addEventListener('pointercancel', clearPttPressing);
+    // Safety nets — iOS WKWebView occasionally drops pointerup on
+    // btnMic when the gesture overlaps with system events (e.g. mic
+    // tap stopping a Listen call also triggers an audio-session
+    // transition that can swallow the pointerup). The class then
+    // stays on, disabling composer-input until next pointerup.
+    // Field bug 2026-05-10 (Jonathan): turnbased mic-tap left
+    // ptt-pressing stuck on alongside swipe-active.
+    //
+    //   1. visibilitychange — return-to-foreground is a clean
+    //      "user definitely isn't pressing the button anymore"
+    //      signal; clear unconditionally.
+    //   2. Any window pointerdown — if ptt-pressing is on but the
+    //      target isn't btnMic, the user moved on. Clear.
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden && document.body.classList.contains('ptt-pressing')) {
+        diag('[mic] safety: clearing stuck ptt-pressing on visibilitychange');
+        document.body.classList.remove('ptt-pressing');
+      }
+    });
+    window.addEventListener('pointerdown', (e: PointerEvent) => {
+      if (!document.body.classList.contains('ptt-pressing')) return;
+      const t = e.target as Node | null;
+      if (t && btnMic.contains(t)) return;  // legitimate continued press
+      diag('[mic] safety: clearing stuck ptt-pressing on stray pointerdown');
+      document.body.classList.remove('ptt-pressing');
+    }, { capture: true, passive: true });
 
     // The btnMic.onclick handler is intentionally absent: gestures are
     // dispatched entirely by the pointerdown / pointerup state machine

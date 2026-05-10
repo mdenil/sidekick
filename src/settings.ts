@@ -4,6 +4,7 @@
 
 import * as backend from './backend.ts';
 import * as agentSettings from './agentSettings.ts';
+import { log } from './util/log.ts';
 
 const STORAGE_KEY = 'sidekick.settings.v2';
 
@@ -816,13 +817,12 @@ export function hydrate(handlers: {
   const setResetServer = document.getElementById('set-reset-server') as HTMLButtonElement | null;
   if (setResetServer) {
     setResetServer.addEventListener('click', () => {
-      const ok = window.confirm(
-        'Reload the server picker?\n\n'
-        + 'You will be returned to the URL picker. Your saved URL is preserved'
-        + ' as the default — you can keep it or pick a different one.'
-      );
-      if (!ok) return;
+      // No confirm() — WKWebView silently suppresses JS dialogs
+      // without a custom UIDelegate handler, AND the action itself
+      // is benign (saved URL is preserved as the default in the
+      // bootstrap form). One tap = reset.
       const handler = (window as any).webkit?.messageHandlers?.sidekickReset;
+      log(`[settings] reset-server tap (handler=${!!handler})`);
       if (handler && typeof handler.postMessage === 'function') {
         try { handler.postMessage({}); }
         catch (e: any) { console.warn('[settings] sidekickReset postMessage failed:', e?.message || e); }

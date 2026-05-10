@@ -201,4 +201,52 @@ class SidekickBridgeViewController: CAPBridgeViewController, WKUIDelegate, WKScr
                  decisionHandler: @escaping (WKPermissionDecision) -> Void) {
         decisionHandler(.grant)
     }
+
+    // MARK: - JavaScript dialog handlers
+    //
+    // WKWebView's default behavior is to silently swallow JS
+    // alert/confirm/prompt calls unless the WKUIDelegate provides
+    // these methods. Without them, `window.alert(...)` does nothing,
+    // `window.confirm(...)` returns false, `window.prompt(...)`
+    // returns null. Field bug 2026-05-10 (Jonathan): the Reset Server
+    // URL button used confirm() to gate the action; suppressed dialog
+    // → confirm()=false → handler bailed → user saw nothing happen.
+    //
+    // These handlers route the dialogs through native UIAlertController
+    // so they actually appear. Each preserves the page that issued
+    // the dialog by passing through the completion handler the WebView
+    // is waiting on.
+
+    func webView(_ webView: WKWebView,
+                 runJavaScriptAlertPanelWithMessage message: String,
+                 initiatedByFrame frame: WKFrameInfo,
+                 completionHandler: @escaping () -> Void) {
+        let alert = UIAlertController(title: nil, message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .default) { _ in completionHandler() })
+        DispatchQueue.main.async { self.present(alert, animated: true) }
+    }
+
+    func webView(_ webView: WKWebView,
+                 runJavaScriptConfirmPanelWithMessage message: String,
+                 initiatedByFrame frame: WKFrameInfo,
+                 completionHandler: @escaping (Bool) -> Void) {
+        let alert = UIAlertController(title: nil, message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in completionHandler(false) })
+        alert.addAction(UIAlertAction(title: "OK", style: .default) { _ in completionHandler(true) })
+        DispatchQueue.main.async { self.present(alert, animated: true) }
+    }
+
+    func webView(_ webView: WKWebView,
+                 runJavaScriptTextInputPanelWithPrompt prompt: String,
+                 defaultText: String?,
+                 initiatedByFrame frame: WKFrameInfo,
+                 completionHandler: @escaping (String?) -> Void) {
+        let alert = UIAlertController(title: nil, message: prompt, preferredStyle: .alert)
+        alert.addTextField { tf in tf.text = defaultText }
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in completionHandler(nil) })
+        alert.addAction(UIAlertAction(title: "OK", style: .default) { _ in
+            completionHandler(alert.textFields?.first?.text)
+        })
+        DispatchQueue.main.async { self.present(alert, animated: true) }
+    }
 }

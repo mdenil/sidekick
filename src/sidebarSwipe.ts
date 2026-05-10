@@ -299,27 +299,53 @@ export function init(opts: SwipeOptions): void {
   });
   // Wrap onPointerDown to clear stale lock before honoring the new
   // gesture. Don't muck with the original handler logic; just
-  // pre-clean if we detect leftover state.
+  // pre-clean if we detect leftover state. Age-based, NOT intent-
+  // based — see the 2s poll comment below for why.
   window.addEventListener('pointerdown', () => {
-    // intent === null means no gesture is in progress per our state
-    // machine; if the class is on body anyway, it's a leftover from
-    // a previous broken cleanup.
-    if (intent === null && document.body.classList.contains('swipe-active')) {
-      const ageMs = lockSetAt ? Date.now() - lockSetAt : -1;
-      diag('[swipe-lock] clear (capture-pointerdown, ageMs=' + ageMs + ')');
-      document.body.classList.remove('swipe-active');
-      lockSetAt = 0;
-    }
+    if (!document.body.classList.contains('swipe-active')) return;
+    const ageMs = lockSetAt ? Date.now() - lockSetAt : -1;
+    // Allow ~500ms grace for legitimate gestures (snap animation
+    // is 180ms, plus event-loop tick slack). If older, force-clear.
+    if (ageMs >= 0 && ageMs < 500) return;
+    diag('[swipe-lock] clear (capture-pointerdown, ageMs=' + ageMs + ', intent=' + intent + ')');
+    document.body.classList.remove('swipe-active');
+    lockSetAt = 0;
+    // Reset gesture state too — if intent was stuck non-null, the
+    // next gesture's bail-out path would never run because
+    // `if (intent) return` at the top of onPointerDown short-circuits
+    // before re-locking. Clearing here lets the next pointerdown
+    // start fresh.
+    intent = null;
+    committed = false;
+    pointerId = -1;
   }, { passive: true, capture: true });
   // Last-resort timeout. Polls every 2s; if the lock has been on for
-  // longer than that without our state machine being in a gesture,
-  // force-clear.
+  // longer than that, force-clear regardless of `intent` state.
+  //
+  // FIELD BUG 2026-05-10 (Jonathan): the prior `intent === null` guard
+  // here was a footgun. If a pointerdown set intent='opening' (e.g. a
+  // tap on the settings-close button — sidebarSwipe listens globally)
+  // and the matching pointerup never reached onPointerEnd cleanly
+  // (close-button removed from DOM mid-gesture, focus shift, iOS
+  // synthetic-event quirk), `intent` stayed stuck at 'opening' AND
+  // swipe-active stayed on. The 2s poll's `intent === null` check
+  // skipped clearing because state-machine said "gesture in progress."
+  // UI froze for the whole duration the user kept tapping.
+  //
+  // Age-based check eliminates the dependency on the state-machine
+  // self-reporting correctly. If the lock has been on >2s, the
+  // gesture is stuck regardless of what intent says — clear and
+  // reset state. Snap animations are 180ms + slack, so 2s is well
+  // beyond any legitimate in-flight gesture.
   setInterval(() => {
-    if (intent === null && document.body.classList.contains('swipe-active')) {
-      const ageMs = lockSetAt ? Date.now() - lockSetAt : -1;
-      diag('[swipe-lock] clear (poll-2s, ageMs=' + ageMs + ')');
-      document.body.classList.remove('swipe-active');
-      lockSetAt = 0;
-    }
+    if (!document.body.classList.contains('swipe-active')) return;
+    const ageMs = lockSetAt ? Date.now() - lockSetAt : -1;
+    if (ageMs >= 0 && ageMs < 2000) return;
+    diag('[swipe-lock] clear (poll-2s, ageMs=' + ageMs + ', intent=' + intent + ')');
+    document.body.classList.remove('swipe-active');
+    lockSetAt = 0;
+    intent = null;
+    committed = false;
+    pointerId = -1;
   }, 2000);
 }

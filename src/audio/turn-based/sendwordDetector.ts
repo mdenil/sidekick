@@ -174,7 +174,23 @@ function handleEnd(_ev: any): void {
 }
 
 function handleError(ev: any): void {
-  diag('[sendword] SR onerror', ev?.error || ev?.message || ev);
+  const err = ev?.error || ev?.message || String(ev);
+  diag('[sendword] SR onerror', err);
+  // Some errors are fatal — don't auto-restart. Field bug 2026-05-10
+  // (Jonathan, Cap turnbased): `service-not-allowed` is what
+  // WKWebView returns when Web Speech API is gated entirely (the
+  // standalone-SR path is essentially unavailable in Cap). Without
+  // this guard, handleEnd would loop-restart forever, each restart
+  // erroring immediately. The user falls back to silence-only
+  // commit on Cap, which is a valid mode.
+  //
+  // Other fatal errors: `not-allowed` (mic permission denied),
+  // `language-not-supported` (lang misconfigured). The transient
+  // `network` and `aborted` errors should still auto-restart.
+  if (err === 'service-not-allowed' || err === 'not-allowed' || err === 'language-not-supported') {
+    diag(`[sendword] fatal error (${err}) — disabling auto-restart for this session`);
+    stopRequested = true;
+  }
 }
 
 /** Begin listening. Two paths:
