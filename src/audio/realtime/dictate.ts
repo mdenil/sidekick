@@ -616,7 +616,7 @@ function resetUtterance(reason: string): void {
   // events refining the same utterance (which would otherwise re-paste
   // at the new caret and duplicate). New utterances with different
   // content pass the prefix check and process normally.
-  if ((reason === 'user-input' || reason === 'user-cursor-outside') && lastInterimText) {
+  if ((reason === 'user-input' || reason === 'user-cursor-outside' || reason === 'user-focus') && lastInterimText) {
     abandonedAt = Date.now();
     abandonedText = lastInterimText;
   }
