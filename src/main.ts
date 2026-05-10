@@ -1514,6 +1514,13 @@ async function boot() {
         failBubble(msg);
         return;
       }
+      // Tear down any in-progress capture (dictation, memo, call) BEFORE
+      // we clear the textarea. Otherwise an in-flight STT final lands
+      // into the cleared composer and pastes the user's just-sent
+      // utterance back in. dictate.stop() marks the in-flight interim as
+      // abandoned synchronously so the late-event filter catches anything
+      // arriving during the provider-stop await.
+      releaseCaptureIfActive();
       attachments.clear();
       playFeedback('send');
       composerInput.value = '';

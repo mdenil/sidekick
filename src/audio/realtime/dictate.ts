@@ -352,6 +352,17 @@ export async function stop(): Promise<void> {
     return;
   }
   active = false;
+  // Mark the in-flight interim as abandoned BEFORE awaiting provider.stop().
+  // STT providers commonly flush a buffered final between the stop request
+  // and its response; without this, that late final would splice into a
+  // composer the caller has already cleared (sendTypedMessage clears the
+  // textarea after dispatching), leaving a dictation residue. The existing
+  // isLateEventFromAbandoned() check already drops events that match the
+  // abandoned interim's prefix within ABANDON_SUPPRESS_MS.
+  if (lastInterimText) {
+    abandonedAt = Date.now();
+    abandonedText = lastInterimText;
+  }
   const provider = activeProvider;
   activeProvider = null;
   try {
@@ -363,10 +374,12 @@ export async function stop(): Promise<void> {
     try { activeUnsubscribe(); } catch { /* ignore */ }
     activeUnsubscribe = null;
   }
-  // Clear per-session state so a re-start() captures fresh.
+  // Clear per-session state so a re-start() captures fresh. NOTE: we
+  // intentionally leave abandonedAt/abandonedText alone here — they self-
+  // expire via ABANDON_SUPPRESS_MS so any straggler events arriving after
+  // the unsubscribe race (rare but possible if the runtime queues another
+  // tick before tearing down) still get filtered.
   resetUtterance('stop');
-  abandonedAt = 0;
-  abandonedText = '';
   lastInterimText = '';
   lastSetCursor = -1;
   initialCursor = null;
