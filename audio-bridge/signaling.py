@@ -206,6 +206,10 @@ async def handle_offer(request: "web.Request") -> "web.Response":
         # stt_bridge feed_frame call falls through harmlessly). Stream
         # mode skips this entirely — there's no TTS to barge against.
         barge_policy.attach(peer, voice_config=_VOICE_CONFIG)
+        # Peer-scoped persistent subscriber to /api/sidekick/stream.
+        # No-op when chat_id is missing (legacy /v1/responses route
+        # owns its own per-POST SSE inside _dispatch_to_agent).
+        stt_bridge.start_sidekick_stream(peer)
     dispatch_listener.attach(peer)
 
     # Lifecycle logging — useful for postmortems on the bike.

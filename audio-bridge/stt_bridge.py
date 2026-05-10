@@ -433,8 +433,12 @@ async def _handle_transcript(peer, tx: Transcript) -> None:
 async def dispatch_to_agent(peer, utterance: str, *, user_message_id: Optional[str] = None) -> None:
     """Public dispatch entry point invoked by the PWA-driven dispatch listener.
 
-    POSTs *utterance* to the sidekick proxy and streams the agent's
-    reply back over the data channel as assistant transcript envelopes.
+    POSTs *utterance* to the sidekick proxy. For the chat_id (sidekick-
+    platform) route the agent reply arrives on the peer-scoped
+    persistent stream subscriber started at peer-attach
+    (``start_sidekick_stream``); this function is fire-and-forget POST.
+    For the legacy /v1/responses route there is no persistent stream,
+    so we still consume the per-POST SSE inline.
 
     *user_message_id* (when set) is the PWA-minted id riding the
     dispatch envelope. We forward it so the upstream's user_message
@@ -445,6 +449,258 @@ async def dispatch_to_agent(peer, utterance: str, *, user_message_id: Optional[s
         _dispatch_to_agent(peer, utterance, user_message_id=user_message_id),
         name=f"webrtc-agent-{peer.peer_id[:8]}",
     )
+
+
+# ── Persistent sidekick-stream subscriber ───────────────────────────────
+#
+# Long-lived per-peer SSE subscriber to /api/sidekick/stream?chat_id=X.
+# Replaces the legacy per-utterance subscriber that broke out of the
+# stream after the first reply_final and missed every subsequent bubble
+# in the same user turn (post-tool-call results, follow-up nudges, etc.).
+#
+# Architecture: peer has a chat_id and is in talk mode → there's a
+# tts_text_queue → spawn this subscriber at peer-attach time →
+# every reply_delta drains into the queue → tts_bridge consumes →
+# Aura synth → outbound peer audio track. Cancelled on peer.close().
+#
+# Cumulative-text diff is per-message-id. The agent emits multiple
+# bubbles per user turn, each with its own message_id; reply_delta
+# carries cumulative-so-far text for that bubble. We diff against
+# prev cumulative for THAT msgid to extract the speakable delta.
+#
+# `live_only=1` is preserved: the bridge subscribes when the peer
+# attaches and only wants envelopes broadcast AFTER that point —
+# historical envelopes from earlier turns in the same chat would
+# re-feed Aura TTS for already-spoken replies. The PWA's separate
+# subscriber keeps its replay cursor for cross-device sync; only the
+# bridge needs the live-only opt-out.
+
+class _SidekickStreamReader:
+    """Stateful SSE-frame consumer for the sidekick-platform route.
+
+    Holds per-message-id cumulative-text state so reply_delta diffs
+    work correctly when multiple bubbles interleave. Idempotent on
+    duplicate envelopes (cumulative.startswith(prev) catches that).
+    Pushes speakable deltas into ``text_queue`` and forwards to the
+    peer's data channel for PWA-side rendering parity.
+    """
+
+    def __init__(self, peer, text_queue):
+        self.peer = peer
+        self.text_queue = text_queue
+        self._current_event: Optional[str] = None
+        # Per-message-id cumulative accumulators. Cleared on reply_final
+        # for that msgid so completed bubbles don't hold memory forever.
+        self._prev_cumulative: Dict[str, str] = {}
+        self._prev_stripped_for_tts: Dict[str, str] = {}
+
+    def _put_text(self, delta: str) -> None:
+        if not delta or self.text_queue is None:
+            return
+        try:
+            self.text_queue.put_nowait(delta)
+        except asyncio.QueueFull:
+            pass
+
+    def _put_eor(self) -> None:
+        """End-of-reply sentinel — flushes the TTS buffer for this bubble."""
+        if self.text_queue is None:
+            return
+        try:
+            self.text_queue.put_nowait(None)
+        except asyncio.QueueFull:
+            pass
+
+    async def process_line(self, line_bytes) -> None:
+        """Consume one raw SSE line. Side-effects: text_queue push,
+        on_transcript hook, data-channel forward.
+        """
+        line = line_bytes.rstrip(b"\r\n")
+        if not line:
+            self._current_event = None
+            return
+        if line.startswith(b":"):
+            return
+        if line.startswith(b"event:"):
+            self._current_event = line[len(b"event:"):].strip().decode(
+                "utf-8", errors="replace",
+            )
+            return
+        if not line.startswith(b"data:"):
+            return
+        data = line[len(b"data:"):].strip()
+        if not data:
+            return
+        try:
+            import json as _json
+            chunk = _json.loads(data)
+        except (ValueError, TypeError):
+            return
+        event_name = self._current_event or chunk.get("type")
+
+        if event_name == "reply_delta":
+            cumulative = chunk.get("text") or ""
+            if not cumulative:
+                return
+            msgid = str(chunk.get("message_id") or "")
+            prev = self._prev_cumulative.get(msgid, "")
+            if cumulative.startswith(prev):
+                delta = cumulative[len(prev):]
+            else:
+                # Restart — agent sent a non-additive delta (rare).
+                delta = cumulative
+            self._prev_cumulative[msgid] = cumulative
+            if not delta:
+                return
+            new_stripped = _sanitize_for_tts(cumulative)
+            prev_stripped = self._prev_stripped_for_tts.get(msgid, "")
+            if new_stripped.startswith(prev_stripped):
+                tts_delta = new_stripped[len(prev_stripped):]
+            else:
+                tts_delta = new_stripped
+            self._prev_stripped_for_tts[msgid] = new_stripped
+            self._put_text(tts_delta)
+            if self.peer.on_transcript is not None:
+                try: await self.peer.on_transcript(delta, False)
+                except Exception: pass
+            _send_data_channel(self.peer, {
+                "type": "transcript", "text": delta,
+                "is_final": False, "role": "assistant",
+            })
+            return
+
+        if event_name == "reply_final":
+            msgid = str(chunk.get("message_id") or "")
+            cumulative_len = len(self._prev_cumulative.get(msgid, ""))
+            logger.info(
+                "[stt-bridge] peer %s reply_final msgid=%s cumulative_len=%d",
+                self.peer.peer_id, msgid[:32], cumulative_len,
+            )
+            # Flush this bubble's TTS buffer; tts_bridge treats None as
+            # end-of-reply and starts a new synth round on next text.
+            self._put_eor()
+            # Drop completed-bubble state so it doesn't leak. New bubbles
+            # come in with fresh msgids.
+            self._prev_cumulative.pop(msgid, None)
+            self._prev_stripped_for_tts.pop(msgid, None)
+            # Forward end-of-reply to the data channel for the PWA
+            # streaming-cursor drop. (PWA also has its own subscriber;
+            # this is parity with the legacy per-utterance path.)
+            _send_data_channel(self.peer, {
+                "type": "transcript",
+                "text": "",
+                "is_final": True,
+                "role": "assistant",
+            })
+            return
+
+        # Other envelope types (typing, tool_call, tool_result, error,
+        # session_changed, user_message, notification) flow through the
+        # PWA's separate subscriber; we don't need to mirror them since
+        # we're only interested in audio synth.
+
+
+def start_sidekick_stream(peer) -> None:
+    """Start the peer-scoped persistent stream subscriber.
+
+    Caller (signaling.handle_offer) invokes this AFTER tts_bridge.attach
+    has created peer.extra['tts_text_queue'], and only when mode=='talk'
+    AND chat_id is set. No-op if either precondition is missing.
+    """
+    if peer.mode != "talk":
+        return
+    chat_id = peer.extra.get("chat_id")
+    if not chat_id:
+        return
+    text_queue = peer.extra.get("tts_text_queue")
+    if text_queue is None:
+        logger.warning(
+            "[stt-bridge] peer %s start_sidekick_stream: no tts_text_queue (talk mode but TTS attach skipped?)",
+            peer.peer_id,
+        )
+        return
+    if peer.sidekick_stream_task is not None and not peer.sidekick_stream_task.done():
+        return  # idempotent
+    peer.sidekick_stream_task = asyncio.create_task(
+        _run_sidekick_stream(peer, chat_id, text_queue),
+        name=f"webrtc-sidekick-stream-{peer.peer_id[:8]}",
+    )
+
+
+async def _run_sidekick_stream(peer, chat_id: str, text_queue) -> None:
+    """Stay subscribed to /api/sidekick/stream for the peer's lifetime,
+    feeding every reply_delta delta into ``text_queue``. Reconnects with
+    bounded backoff if the connection drops; exits cleanly on
+    cancellation (peer.close).
+    """
+    proxy_url = (peer.extra.get("proxy_url") or "http://127.0.0.1:3001").rstrip("/")
+    stream_url = f"{proxy_url}/api/sidekick/stream?chat_id={chat_id}&live_only=1"
+
+    try:
+        import aiohttp  # type: ignore
+    except ImportError:  # pragma: no cover
+        logger.error("[stt-bridge] aiohttp missing for sidekick stream")
+        return
+
+    reader = _SidekickStreamReader(peer, text_queue)
+    backoff_s = 0.5
+    BACKOFF_MAX = 8.0
+
+    logger.info(
+        "[stt-bridge] peer %s sidekick stream subscriber starting (chat_id=%s)",
+        peer.peer_id, chat_id[:12],
+    )
+    try:
+        async with aiohttp.ClientSession() as sess:
+            while not peer.closed:
+                try:
+                    async with sess.get(
+                        stream_url,
+                        timeout=aiohttp.ClientTimeout(total=None),
+                    ) as resp:
+                        if resp.status != 200:
+                            err = (await resp.text())[:200]
+                            logger.warning(
+                                "[stt-bridge] peer %s sidekick stream open %d: %s (retry in %.1fs)",
+                                peer.peer_id, resp.status, err, backoff_s,
+                            )
+                            await asyncio.sleep(backoff_s)
+                            backoff_s = min(BACKOFF_MAX, backoff_s * 2)
+                            continue
+                        backoff_s = 0.5  # reset on successful connect
+                        async for raw in resp.content:
+                            await reader.process_line(raw)
+                        # EOF without cancellation → server closed the
+                        # stream. Reconnect with a small delay.
+                        if not peer.closed:
+                            logger.info(
+                                "[stt-bridge] peer %s sidekick stream EOF, reconnecting",
+                                peer.peer_id,
+                            )
+                            await asyncio.sleep(0.5)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    logger.warning(
+                        "[stt-bridge] peer %s sidekick stream error: %s (retry in %.1fs)",
+                        peer.peer_id, e, backoff_s,
+                    )
+                    await asyncio.sleep(backoff_s)
+                    backoff_s = min(BACKOFF_MAX, backoff_s * 2)
+    except asyncio.CancelledError:
+        pass
+    finally:
+        logger.info(
+            "[stt-bridge] peer %s sidekick stream subscriber exiting",
+            peer.peer_id,
+        )
+        # Final flush so any tail text in the TTS provider gets
+        # synthesized before the queue idles.
+        if text_queue is not None:
+            try:
+                text_queue.put_nowait(None)
+            except asyncio.QueueFull:
+                pass
 
 
 async def _dispatch_to_agent(peer, utterance: str, *, user_message_id: Optional[str] = None) -> None:
@@ -631,43 +887,28 @@ async def _dispatch_to_agent(peer, utterance: str, *, user_message_id: Optional[
     async with aiohttp.ClientSession() as sess:
         try:
             if route == "sidekick-platform":
-                # Platform-adapter path: POST is fire-and-forget (202).
-                # Reply envelopes arrive on the SEPARATE persistent stream
-                # `/api/sidekick/stream?chat_id=<id>`. Open the stream
-                # FIRST so we don't race the agent's first reply_delta,
-                # then dispatch the message, then drain the stream until
-                # reply_final.
-                # `live_only=1` opts out of the proxy's replay-ring
-                # catch-up. The bridge opens a fresh subscriber PER
-                # turn and only wants envelopes broadcast after this
-                # connection — historical envelopes from prior turns
-                # in the same chat would re-feed Aura TTS and cause
-                # the bridge to break out on a replayed reply_final
-                # before the actual new agent reply arrives. The PWA
-                # path keeps its long-lived subscriber + Last-Event-ID
-                # cursor; only the bridge needs this opt-out.
-                stream_url = f"{proxy_url}/api/sidekick/stream?chat_id={chat_id}&live_only=1"
-                async with sess.get(stream_url, timeout=aiohttp.ClientTimeout(total=None)) as stream_resp:
-                    if stream_resp.status != 200:
-                        err = (await stream_resp.text())[:200]
+                # Platform-adapter path: fire-and-forget POST. Reply
+                # envelopes arrive on the peer-scoped persistent
+                # subscriber started at peer-attach (start_sidekick_stream).
+                # See _run_sidekick_stream for the consumer.
+                async with sess.post(url, json=body, headers=headers) as post_resp:
+                    if post_resp.status not in (200, 202):
+                        err = (await post_resp.text())[:200]
                         logger.warning(
-                            "[stt-bridge] peer %s sidekick stream open %d: %s",
-                            peer.peer_id, stream_resp.status, err,
+                            "[stt-bridge] peer %s agent dispatch %d: %s",
+                            peer.peer_id, post_resp.status, err,
                         )
                         return
-                    async with sess.post(url, json=body, headers=headers) as post_resp:
-                        if post_resp.status not in (200, 202):
-                            err = (await post_resp.text())[:200]
-                            logger.warning(
-                                "[stt-bridge] peer %s agent dispatch %d: %s",
-                                peer.peer_id, post_resp.status, err,
-                            )
-                            return
-                    # Now consume the stream until reply_final.
-                    async for raw in stream_resp.content:
-                        if await _process_sse_frame(raw):
-                            break
+                logger.info(
+                    "[stt-bridge] peer %s dispatch posted (route=sidekick-platform)",
+                    peer.peer_id,
+                )
             else:
+                # Legacy /v1/responses route: no persistent stream
+                # available — consume per-POST SSE inline. Same
+                # break-on-reply_final shape as before; that route is
+                # one-bubble-per-turn by /v1/responses semantics, so
+                # the bug doesn't apply.
                 async with sess.post(url, json=body, headers=headers) as resp:
                     if resp.status != 200:
                         err = (await resp.text())[:200]
@@ -679,29 +920,28 @@ async def _dispatch_to_agent(peer, utterance: str, *, user_message_id: Optional[
                     async for raw in resp.content:
                         if await _process_sse_frame(raw):
                             break
+                # Legacy-route end-of-reply housekeeping. Sidekick-
+                # platform route doesn't run this finally because the
+                # persistent stream owns the lifecycle.
+                if text_queue is not None:
+                    try:
+                        text_queue.put_nowait(None)
+                    except asyncio.QueueFull:
+                        pass
+                _send_data_channel(peer, {
+                    "type": "transcript",
+                    "text": "",
+                    "is_final": True,
+                    "role": "assistant",
+                })
+                logger.info(
+                    "[stt-bridge] peer %s dispatch finally (route=responses cumulative_len=%d)",
+                    peer.peer_id, len(prev_cumulative),
+                )
         except asyncio.CancelledError:
             raise
         except Exception as e:
             logger.warning("[stt-bridge] peer %s agent dispatch error: %s", peer.peer_id, e)
-        finally:
-            logger.info(
-                "[stt-bridge] peer %s dispatch finally (route=%s cumulative_len=%d)",
-                peer.peer_id, route, len(prev_cumulative),
-            )
-            # Tell the TTS bridge to flush any tail buffer.
-            if text_queue is not None:
-                try:
-                    text_queue.put_nowait(None)
-                except asyncio.QueueFull:
-                    pass
-            # Signal end-of-reply on the data channel so the PWA can drop
-            # the streaming-cursor on the assistant bubble.
-            _send_data_channel(peer, {
-                "type": "transcript",
-                "text": "",
-                "is_final": True,
-                "role": "assistant",
-            })
 
 
-__all__ = ["attach", "dispatch_to_agent"]
+__all__ = ["attach", "dispatch_to_agent", "start_sidekick_stream"]
