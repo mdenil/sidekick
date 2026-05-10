@@ -37,7 +37,12 @@ import { getUpstream } from './index.ts';
 import { pushEnvelope } from './stream.ts';
 import type { UpstreamAgent } from './upstream.ts';
 
-const MAX_BODY_BYTES = 1 * 1024 * 1024;
+// Phone photos easily blow past 1 MB once base64-encoded inside the
+// JSON envelope (a 4 MB JPEG → ~5.4 MB base64 → +~10% JSON quoting).
+// Bumped to 50 MB to cover any reasonable single-image attachment;
+// matches client_max_size on the hermes plugin's aiohttp app so the
+// limits don't disagree silently end-to-end.
+const MAX_BODY_BYTES = 50 * 1024 * 1024;
 
 function newMessageId(): string {
   return `sk-msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -72,6 +77,11 @@ export async function handleSidekickMessage(req, res) {
   });
 
   if (aborted) {
+    console.warn(
+      `[sidekick] /api/sidekick/messages aborted: body > ${MAX_BODY_BYTES} bytes ` +
+      `(saw ${raw.length}). If this is a legitimate large attachment, raise MAX_BODY_BYTES ` +
+      `here AND client_max_size on the hermes plugin's aiohttp app.`
+    );
     if (!res.headersSent) {
       res.writeHead(413, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ error: 'request body too large' }));

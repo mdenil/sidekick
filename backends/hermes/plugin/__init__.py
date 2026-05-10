@@ -509,7 +509,11 @@ class SidekickAdapter(BasePlatformAdapter):
         except (ConnectionRefusedError, OSError):
             pass  # port is free
 
-        self._app = web.Application()
+        # client_max_size lifted from aiohttp's 1 MiB default — phone
+        # photos attached via the PWA easily exceed that once base64-
+        # encoded inside the JSON envelope. Match sidekick proxy's
+        # MAX_BODY_BYTES so the bottleneck is consistent end-to-end.
+        self._app = web.Application(client_max_size=50 * 1024 * 1024)
         self._app.router.add_get("/health", self._handle_health)
         # ── Agent contract HTTP routes ────────────────────────────────
         # OAI-Responses-shape surface the proxy talks to. See
