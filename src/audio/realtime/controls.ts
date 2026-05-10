@@ -38,6 +38,12 @@ function resolveCallSession(): { sessionId: string | null; chatId: string | null
 export interface ControlsOpts {
   getSessionId: () => string | null;
   onStatus?: (msg: string, kind?: 'ok' | 'err' | 'live' | null) => void;
+  /** Fires after every WebRTC state transition. Same signal that drives
+   *  `onStatus` internally; exposed so subscribers (e.g. wake-lock
+   *  evaluator in main.ts) can react to call open/close without having
+   *  to poll `isOpen()`. State strings: 'idle' | 'requesting-mic' |
+   *  'connecting' | 'connected' | 'closing' | 'failed'. */
+  onCallStateChange?: (state: string, mode: string | null) => void;
 }
 
 let opts: ControlsOpts | null = null;
@@ -117,6 +123,9 @@ export function init(o: ControlsOpts) {
         );
       }
     }
+    // External subscribers (wake-lock, etc.) — fired after the internal
+    // UI updates above so they observe a consistent view of state.
+    try { opts?.onCallStateChange?.(state, mode); } catch { /* noop */ }
     if (!opts?.onStatus) return;
     if (state === 'requesting-mic') opts.onStatus('Requesting mic…');
     else if (state === 'connecting') opts.onStatus(`Connecting (${mode})…`);

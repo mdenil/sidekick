@@ -93,6 +93,39 @@ let memoActive = false;  // true while voice-memo recording bar is shown
 // reset paths fire.
 let releaseCaptureIfActive: () => void = () => {};
 
+/** True when any call mode is active. Wake-lock + a few other
+ *  decisions key off this. Predicate centralised so adding new call
+ *  modes (e.g. handsfree) doesn't require auditing every site that
+ *  asks "are we in a call?" */
+function isInCall(): boolean {
+  return turnbased.getState() !== 'idle' || webrtcControls.isOpen();
+}
+
+/** Acquire/release the 'setting'-keyed wake-lock based on whether a
+ *  call is active AND the user's wakeLock toggle. Idempotent: the
+ *  ref-counted holders set in wakeLock.ts no-ops when state matches.
+ *
+ *  Field bug 2026-05-10 (Jonathan): pre-fix the lock acquired on boot
+ *  if settings.wakeLock=true, then never released. Phone stayed awake
+ *  outside calls — battery drain. Now the lock is gated on isInCall(),
+ *  so toggling the setting outside a call is a no-op until the next
+ *  call starts.
+ *
+ *  Called from:
+ *    - boot (settings.wakeLock=true + already in call after reload)
+ *    - settings onWakeLockChange (user toggles)
+ *    - webrtcControls onCallStateChange (open/close, mode change)
+ *    - turnbased onState (idle ↔ armed/committing/playing/cooldown)
+ *
+ *  The 'memo' / 'streaming' keys are managed independently in capture.ts. */
+function evaluateWakeLock(): void {
+  if (settings.get().wakeLock && isInCall()) {
+    void wakeLock.acquire('setting');
+  } else {
+    void wakeLock.release('setting');
+  }
+}
+
 /** Toggle the composer send button between idle (grey) and active (green).
  *  Sendable = memo recording in progress, typed text, draft content, or
  *  a pending voice transcript ready to send. */
@@ -572,14 +605,13 @@ async function boot() {
       window.dispatchEvent(new CustomEvent('sidekick:engine-changed'));
     },
     onWakeLockChange: () => {
-      // Decoupled from `listening`: the UI checkbox is labelled
-      // "Pocket Lock / Stay Awake" and users expect it to mean "screen
-      // doesn't sleep" regardless of mic state. Tying acquisition to
-      // listening meant flipping the toggle with mic off did nothing,
-      // and the lock quietly failed to survive in-pocket backgrounding
-      // if listening had paused for any reason in between.
-      if (settings.get().wakeLock) wakeLock.acquire('setting');
-      else wakeLock.release('setting');
+      // Wake-lock is scoped to active calls — see evaluateWakeLock()
+      // for the model. Toggling the setting outside a call is a no-op
+      // (stays released); inside a call the toggle takes effect
+      // immediately. Field bug 2026-05-10 (Jonathan): pre-fix the lock
+      // engaged on boot regardless of call state, draining battery
+      // outside calls.
+      evaluateWakeLock();
     },
     onAutoSendChange: () => {},
     onModelChange: (ref: string, catalog: any[], opts: { silent?: boolean } = {}) => {
@@ -596,10 +628,13 @@ async function boot() {
 
   // Wake lock — the ref-counted holders set in wakeLock.ts is authoritative;
   // watchVisibility re-acquires the OS sentinel on visibility→visible / focus
-  // / resume whenever any key is held. Register the 'setting' key on boot
-  // if the user has Pocket Lock / Stay Awake enabled.
+  // / resume whenever any key is held. The 'setting' key is acquired only
+  // during active calls (see evaluateWakeLock); on boot we evaluate once
+  // so a call-in-progress reload re-acquires correctly. The 'memo' and
+  // 'streaming' keys are owned by capture.ts and acquire/release per
+  // capture session independently.
   wakeLock.watchVisibility();
-  if (settings.get().wakeLock) wakeLock.acquire('setting');
+  evaluateWakeLock();
 
   // Chat
   const transcriptEl = document.getElementById('transcript');
@@ -1023,6 +1058,9 @@ async function boot() {
   webrtcControls.init({
     getSessionId: () => sessionDrawer.getViewed() || backend.getCurrentSessionId?.() || null,
     onStatus: (msg, kind) => status.setStatus(msg, kind ?? null),
+    // Wake-lock follows call lifecycle — connected/closing/failed/idle
+    // transitions all need re-evaluation. evaluateWakeLock is idempotent.
+    onCallStateChange: () => evaluateWakeLock(),
   });
 
   // WebRTC data-channel events: parallel text path that surfaces
@@ -2467,6 +2505,9 @@ async function boot() {
           // path: trash button, stopListen, mic-error fallback.
           restoreComposerActions();
         }
+        // Wake-lock follows call state — release on idle, acquire on
+        // armed/committing/playing/cooldown if user has the toggle on.
+        evaluateWakeLock();
       },
     });
     if (!ok) {
