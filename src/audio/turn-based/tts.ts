@@ -280,8 +280,12 @@ function cleanForTts(text: string): string {
 
 /** Cancel any in-flight TTS fetch + playback. Safe to call when idle. */
 export function cancelReplyTts(reason: string = 'cancel'): void {
-  if (!active) return;
+  if (!active) {
+    diag(`[reply-tts] cancel skip (idle, reason=${reason})`);
+    return;
+  }
   const id = activeReplyId;
+  diag(`[reply-tts] cancel reason=${reason} prevReplyId=${id} prevState=${state} kind=${active.kind}`);
   if (active.kind === 'server') {
     try { active.abort.abort(); } catch { /* noop */ }
     try {
@@ -314,8 +318,13 @@ export async function playReplyTts(
   voice: string,
   replyId?: string,
 ): Promise<void> {
+  const engine = settings.get().ttsEngine || 'server';
   const text = cleanForTts(rawText || '');
-  if (!text) return;
+  diag(`[reply-tts] enter replyId=${replyId} rawLen=${(rawText || '').length} cleanLen=${text.length} voice=${voice} engine=${engine}`);
+  if (!text) {
+    diag('[reply-tts] skip (clean text empty)');
+    return;
+  }
 
   // Engine selector. Local = speechSynthesis (on-device, no /tts hop).
   // Server = HTTP /tts (Deepgram Aura, default). Both fan in to the

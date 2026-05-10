@@ -22,6 +22,7 @@ import * as cmdkPalette from './cmdkPalette.ts';
 import { attachSliderTouchAll } from './sliderTouch.ts';
 import * as sidebarResize from './sidebarResize.ts';
 import * as sidebarSwipe from './sidebarSwipe.ts';
+import * as clickFreezeDiag from './clickFreezeDiag.ts';
 import * as multiSelect from './multiSelect.ts';
 import * as agentSettingsMod from './agentSettings.ts';
 import { primeAudio, getSharedAudioCtx } from './audio/shared/platform.ts';
@@ -403,6 +404,10 @@ async function boot() {
       isExpanded: () => sidebar.classList.contains('expanded'),
     });
   }
+
+  // Capture-phase pointerdown logger for click-freeze diagnosis. Pure
+  // observation — no behavior change. Diag-level only (off in prod).
+  clickFreezeDiag.init();
 
   // Drop a chat we're navigating AWAY from if it's an empty placeholder
   // — 0 messages on the backend AND no unsent draft text AND no
@@ -4460,7 +4465,18 @@ function handleReplyFinal({ replyId, text, content = [], conversation, messageId
     // reconnect re-emits old reply_finals; without this guard the
     // PWA would read the chat aloud from the top every refresh.
     const inListen = turnbased.getState() !== 'idle';
-    if (!isReplay && inListen && !webrtcControls.isOpen()) {
+    const webrtcOpen = webrtcControls.isOpen();
+    // Diagnose TTS-not-firing-after-tool-call: log every reply_final
+    // routing decision so we can see whether the silent paragraph took
+    // the turnbased-tts path, the webrtc-peer path (audio comes from
+    // peer track), or no-audio (replay / call ended). Pair with the
+    // [reply-tts] enter/cancel logs in tts.ts to follow the chain.
+    const route = isReplay ? 'no-audio (replay)'
+      : !inListen ? 'no-audio (call idle)'
+      : webrtcOpen ? 'webrtc-peer'
+      : 'turnbased-tts';
+    diag(`[reply-route] ${route} replyId=${replyId} len=${finalText.length} turnbased=${turnbased.getState()} webrtcOpen=${webrtcOpen} isReplay=${isReplay}`);
+    if (!isReplay && inListen && !webrtcOpen) {
       // Pass replyId so the per-bubble UX (loading bar, played-ratio
       // bar, play↔pause glyph) wires up. Listen-state notifications
       // happen via the centralized tts event subscribers above

@@ -197,6 +197,15 @@ export function forceScrollToBottom(): void {
 let _autoScrollBurstUntil = 0;
 export function autoScroll(): void {
   if (!transcriptEl) return;
+  // Diagnose dictation/streaming auto-scroll regression: log before+after
+  // state so we can see whether autoScroll is being CALLED but failing
+  // (pinned=false because of a stale flip) vs being called but scrolling
+  // to a stale scrollHeight (layout not yet reflowed) vs not being called
+  // at all (the streaming render path skips autoScroll). Read both before
+  // and after the scroll to catch the stale-scrollHeight case.
+  const stBefore = transcriptEl.scrollTop;
+  const shBefore = transcriptEl.scrollHeight;
+  const ch = transcriptEl.clientHeight;
   if (pinnedToBottom) {
     const now = performance.now();
     const inBurst = now < _autoScrollBurstUntil;
@@ -206,8 +215,13 @@ export function autoScroll(): void {
     } else {
       transcriptEl.scrollTop = transcriptEl.scrollHeight;
     }
+    const stAfter = transcriptEl.scrollTop;
+    const shAfter = transcriptEl.scrollHeight;
+    const tail = shAfter - stAfter - ch;
+    diag(`[autoscroll] pinned scrollTop ${stBefore}→${stAfter} scrollHeight ${shBefore}→${shAfter} ch=${ch} tail=${tail} burst=${inBurst}`);
   } else {
     missedWhileScrolled++;
+    diag(`[autoscroll] skipped (not pinned) scrollTop=${stBefore} scrollHeight=${shBefore} ch=${ch} missed=${missedWhileScrolled}`);
     updateButton();
   }
 }
@@ -243,6 +257,10 @@ export async function init(el: HTMLElement | null): Promise<boolean> {
       if (!userInitiated) return;
       const wasPinned = pinnedToBottom;
       pinnedToBottom = isPinned();
+      if (pinnedToBottom !== wasPinned && transcriptEl) {
+        const distance = transcriptEl.scrollHeight - transcriptEl.scrollTop - transcriptEl.clientHeight;
+        diag(`[autoscroll] pinnedToBottom ${wasPinned}→${pinnedToBottom} (user-initiated, distance=${distance})`);
+      }
       if (pinnedToBottom && !wasPinned) missedWhileScrolled = 0;
       updateButton();
     }, { passive: true });
