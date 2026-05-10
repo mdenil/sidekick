@@ -98,23 +98,6 @@ some of the functionality.
   and Cap share the same JS dispatcher. PWA misses BT-headset
   transport granularity (no `togglePlayPause`-only mapping).
 
-### Hardware volume buttons → barge
-
-- **Hidden MPVolumeView** (`WebViewDelegate.swift`) suppresses the
-  iOS system volume HUD popup that would otherwise flash on every
-  press during a call. iOS detects an MPVolumeView in the view
-  hierarchy regardless of its visual state.
-- **AVAudioSession.outputVolume KVO** captures every volume button
-  press globally; each delta posts `{ action: 'volume-button',
-  direction: 'up'|'down' }` to JS. Gated on talk-mode call open in
-  `src/remoteControl.ts` — only fires barge during a call.
-- v1 trade-off: volume change itself is not suppressed. Each barge
-  press also nudges iOS volume. Acceptable for now; reset via the
-  private MPVolumeView UISlider is the well-known fix if drift
-  becomes a real complaint.
-- *PWA fallback:* none. iOS does NOT expose volume button events
-  to web pages. Cap-only feature.
-
 ### Microphone permission auto-grant
 
 - **WKUIDelegate `requestMediaCapturePermissionFor`** (`WebViewDelegate.swift`)
@@ -159,7 +142,6 @@ some of the functionality.
 | Mic survives lock / background | `AppDelegate.swift` keepalive | ✅ | ❌ |
 | Lockscreen play/pause/stop | `AppDelegate.swift` CallControls + `src/remoteControl.ts` | ✅ | ⚠️ partial via Media Session API |
 | BT headset transport buttons | same as lockscreen | ✅ | ⚠️ partial |
-| Hardware volume → barge | `WebViewDelegate.swift` MPVolumeView + KVO | ✅ | ❌ |
 | Auto-grant mic prompt | `WebViewDelegate.swift` UIDelegate | ✅ | ❌ (Safari prompts; with WebKit fragility) |
 | Audio interruption recovery | `AppDelegate.swift` lifecycle | ✅ | ❌ |
 | Lockscreen Now Playing artwork | `CallControls.setActive` | ✅ | ⚠️ partial via Media Session metadata |

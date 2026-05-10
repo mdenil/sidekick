@@ -34,10 +34,8 @@
 import { log } from './util/log.ts';
 import * as ttsModule from './audio/turn-based/tts.ts';
 import * as webrtcControls from './audio/realtime/controls.ts';
-import * as conn from './audio/realtime/realtime.ts';
-import * as suppress from './audio/realtime/suppress.ts';
 
-type RemoteAction = 'play' | 'pause' | 'togglePlayPause' | 'stop' | 'volume-button';
+type RemoteAction = 'play' | 'pause' | 'togglePlayPause' | 'stop';
 
 function dispatch(action: RemoteAction | string): void {
   log(`[remote-control] action=${action}`);
@@ -47,22 +45,6 @@ function dispatch(action: RemoteAction | string): void {
       return;
     }
     try { ttsModule.cancelReplyTts('user-stop'); } catch { /* noop */ }
-    return;
-  }
-  if (action === 'volume-button') {
-    // Cap-only path: hardware volume buttons fire this when pressed.
-    // Use as barge in talk-mode calls (interrupt agent TTS); ignore
-    // outside calls or in stream mode (volume just changes normally).
-    // Note: we don't suppress the volume change itself in v1 — that's
-    // a known trade-off documented in WebViewDelegate.swift.
-    if (!webrtcControls.isOpen() || webrtcControls.currentMode() !== 'talk') {
-      log('[remote-control] volume-button ignored — no talk-mode call open');
-      return;
-    }
-    log('[remote-control] volume-button → manual barge');
-    try { conn.sendBarge(); } catch { /* noop */ }
-    try { conn.cancelRemotePlayback(); } catch { /* noop */ }
-    try { suppress.onBarge(); } catch { /* noop */ }
     return;
   }
   const ttsState = ttsModule.getState();

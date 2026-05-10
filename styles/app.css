@@ -1341,7 +1341,22 @@
     z-index: 10;
     background: color-mix(in srgb, var(--bg, #000) 50%, transparent);
   }
-  .line { margin-bottom: 10px; max-width: 900px; }
+  .line {
+    margin-bottom: 10px; max-width: 900px;
+    /* Long-transcript scroll-jank mitigation. Field bug 2026-05-10
+       (Jonathan, Cap): scroll became janky/borderline-unusable in Cap
+       (less so in PWA) on a chat with ~540k pixels of scrollHeight
+       (~926 viewport-heights of accumulated DOM). content-visibility:
+       auto tells the browser to skip rendering off-screen bubbles
+       until they scroll into view. contain-intrinsic-size provides a
+       stable placeholder so scroll position doesn't jump as bubbles
+       enter/exit the rendered set. Supported in Safari 18+, iOS 18+
+       and all Chromium; older iOS gracefully ignores (no regression).
+       The deeper fix (transcript virtualization / bubble pruning to
+       cap DOM at last N) is backlogged separately. */
+    content-visibility: auto;
+    contain-intrinsic-size: auto 100px;
+  }
 
   /* Atomic-bubble states (Q1). User bubbles start `.pending` after send
      and stay that way until the agent's first reply_delta or typing

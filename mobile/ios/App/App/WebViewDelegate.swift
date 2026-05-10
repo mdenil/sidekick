@@ -14,31 +14,11 @@
 import Foundation
 import Capacitor
 import WebKit
-import AVFoundation
-import MediaPlayer
 
 /// Subclass the Capacitor bridge view controller so we own the WKUIDelegate.
 /// The default Main.storyboard already instantiates `CAPBridgeViewController`;
 /// we re-point it at this subclass below in didFinishLaunching.
 class SidekickBridgeViewController: CAPBridgeViewController, WKUIDelegate {
-
-    // ── Hardware volume buttons → barge bridge ────────────────────────
-    //
-    // Hidden MPVolumeView in the view hierarchy suppresses iOS's volume
-    // HUD popup (a system overlay that would otherwise flash on every
-    // press during a call — annoying mid-conversation). Audio session
-    // outputVolume KVO observation captures button presses globally;
-    // every change posts a 'volume-button' action to JS via the same
-    // remote-control event channel that MPRemoteCommandCenter uses.
-    //
-    // JS-side gates the action: only fires barge if a talk-mode call
-    // is open. Outside calls (or in stream/idle) volume buttons just
-    // change volume normally. iOS volume DOES change on each press —
-    // we don't reset it; that's a known v1 trade-off in exchange for
-    // not hacking the private MPVolumeView slider.
-    private var hiddenVolumeView: MPVolumeView?
-    private var lastObservedVolume: Float = 0
-    private var didStartObservingVolume: Bool = false
 
     /// Cap-specific JS+CSS injected at document_start so the PWA core
     /// (index.html, styles/app.css) has zero Capacitor-conditional code.
@@ -151,59 +131,6 @@ class SidekickBridgeViewController: CAPBridgeViewController, WKUIDelegate {
         // ever recreates the controller; webView is also a weak hop.
         CallControls.shared.webViewProvider = { [weak self] in
             self?.bridge?.webView
-        }
-
-        // Hardware volume buttons → barge. Hidden MPVolumeView
-        // suppresses the iOS HUD that would otherwise flash on every
-        // press during a call. Frame is offscreen + isHidden=true; iOS
-        // detects an MPVolumeView in the hierarchy regardless of its
-        // visual state, suppressing the system HUD (well-known iOS
-        // technique; e.g. used by camera apps for shutter buttons).
-        let mpv = MPVolumeView(frame: CGRect(x: -1000, y: -1000, width: 1, height: 1))
-        mpv.isHidden = true
-        self.view.addSubview(mpv)
-        hiddenVolumeView = mpv
-
-        // KVO on AVAudioSession.outputVolume catches volume button
-        // presses globally. Activate the session first so outputVolume
-        // reads a valid value (otherwise reads 0 until first audio
-        // routes through). The keepalive engine in AppDelegate has
-        // already activated; this is defensive.
-        let session = AVAudioSession.sharedInstance()
-        try? session.setActive(true)
-        lastObservedVolume = session.outputVolume
-        session.addObserver(self, forKeyPath: "outputVolume",
-                            options: [.new, .old], context: nil)
-        didStartObservingVolume = true
-    }
-
-    deinit {
-        if didStartObservingVolume {
-            AVAudioSession.sharedInstance().removeObserver(self, forKeyPath: "outputVolume")
-        }
-    }
-
-    override func observeValue(forKeyPath keyPath: String?, of object: Any?,
-                               change: [NSKeyValueChangeKey: Any]?,
-                               context: UnsafeMutableRawPointer?) {
-        guard keyPath == "outputVolume" else {
-            super.observeValue(forKeyPath: keyPath, of: object, change: change, context: context)
-            return
-        }
-        let newVol = AVAudioSession.sharedInstance().outputVolume
-        let delta = newVol - lastObservedVolume
-        lastObservedVolume = newVol
-        // Filter out spurious tiny changes (route changes can emit
-        // millivolt-scale wobble). Real button presses move volume
-        // by ~0.0625 (1/16 of the slider).
-        if abs(delta) < 0.001 { return }
-        let direction = delta > 0 ? "up" : "down"
-        guard let webView = self.bridge?.webView else { return }
-        let js = """
-        window.dispatchEvent(new CustomEvent('sidekick:remote-control', { detail: { action: 'volume-button', direction: '\(direction)' } }));
-        """
-        DispatchQueue.main.async {
-            webView.evaluateJavaScript(js, completionHandler: nil)
         }
     }
 
