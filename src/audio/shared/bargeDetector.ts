@@ -299,7 +299,21 @@ export class BargeDetector {
     //     fires are post-AEC + hysteresis-filtered upstream; client-side
     //     peak isn't driven for bridge fires so peak reads 0 and would
     //     suppress 100% of fires. Field-confirmed 2026-05-07).
-    if (typeof o.minPeak === 'number' && this.vadSource?.appliesPeakGate()) {
+    // While the page is backgrounded (lockscreen, app switcher), iOS
+    // WKWebView throttles JS Web Audio — the AnalyserNode reads stale
+    // / near-zero values even though the WebRTC mic upstream is still
+    // flowing at full volume (the bridge's Silero correctly classifies
+    // user speech). Field repro 2026-05-10 (Jonathan): peak 0.008 vs
+    // minPeak 0.15 → every barge attempt suppressed until phone unlock.
+    // Skip the peak gate when we're not visible — trust the bridge's
+    // post-AEC Silero classification alone. AEC residual risk is low:
+    // the bridge already runs Silero on POST-AEC audio, so residual
+    // that survives Silero would be a different bug than the one this
+    // gate was designed to catch (Web Audio AnalyserNode amplitude on
+    // pre-AEC mic).
+    const isVisible = typeof document === 'undefined'
+      || document.visibilityState === 'visible';
+    if (isVisible && typeof o.minPeak === 'number' && this.vadSource?.appliesPeakGate()) {
       const peak = speechPeakOverride
         ? speechPeakOverride()
         : (this.vadSource?.getRecentPeak() ?? 0);
@@ -307,6 +321,8 @@ export class BargeDetector {
         log(`[barge-detector] suppressed — peak ${peak.toFixed(3)} < minPeak ${o.minPeak} (likely AEC residual)`);
         return;
       }
+    } else if (!isVisible) {
+      log(`[barge-detector] peak gate skipped (page hidden — trust bridge VAD)`);
     }
     // Fire — set cooldown FIRST so a re-entrant onFire (e.g. the
     // caller synchronously invokes something that loops back here)
