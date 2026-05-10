@@ -425,13 +425,16 @@
         <option value="auto">Match system</option>
       </select>
     </div>
-    <!-- Cap-only: navigates to the bundled bootstrap (capacitor://localhost/?config=1)
-         where the user can pick a different server URL. Hidden in PWA where the
-         server is whatever URL the user typed into Safari. -->
-    <div class="row capacitor-only-row">
+    <!-- Cap-only: posts a webkit.messageHandlers.sidekickReset message
+         which Swift translates into webView.load(URLRequest(bundle))
+         to reach the bootstrap. Hidden in PWA where the server is
+         whatever URL the user typed into Safari. data-platform=cap is
+         the single source of truth — applyPlatformGates() in main.ts
+         removes non-matching rows from DOM at boot. -->
+    <div class="row" data-platform="cap">
       <label>Server URL</label>
       <button type="button" id="set-reset-server" class="settings-action-btn">Reset…</button>
-      <span class="hint">re-pick the backend (Cap only)</span>
+      <span class="hint">re-pick the backend</span>
     </div>
   </div>
     </div><!-- /.settings-content -->

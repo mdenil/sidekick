@@ -799,12 +799,20 @@ export function hydrate(handlers: {
     set('agentActivity', setAgentActivity.value as any);
   };
 
-  // Cap-only "Reset Server URL" — navigates the WebView to the bundled
-  // bootstrap (capacitor://localhost/?config=1) which clears the saved
-  // URL prompt state and shows the form again. PWA users don't see
-  // this row (CSS gates on html.capacitor-app). The bootstrap reads
-  // ?config=1 to suppress its auto-redirect and pre-fill with the
-  // current saved URL so the user can edit incrementally.
+  // Cap-only "Reset Server URL" — the row is removed in PWA by
+  // applyPlatformGates() (data-platform="cap" attribute), so the
+  // getElementById here returns null in PWA and the handler isn't
+  // attached.
+  //
+  // Action: post a webkit.messageHandlers.sidekickReset message to
+  // the native side, which loads the bundled bootstrap with
+  // ?config=1 in the WebView. We can't navigate JS-side to
+  // capacitor://localhost from an HTTPS origin (Cap WebView blocks
+  // that scheme transition for security). The native bridge does
+  // it via webView.load(URLRequest(bundleURL)).
+  //
+  // The bootstrap reads ?config=1 to suppress auto-redirect and
+  // pre-fill with the current saved URL.
   const setResetServer = document.getElementById('set-reset-server') as HTMLButtonElement | null;
   if (setResetServer) {
     setResetServer.addEventListener('click', () => {
@@ -814,13 +822,18 @@ export function hydrate(handlers: {
         + ' as the default — you can keep it or pick a different one.'
       );
       if (!ok) return;
-      // capacitor://localhost is the WKWebView's bundle origin on iOS.
-      // The bootstrap reads ?config=1 and shows the form even when a
-      // saved URL exists. After reload, localStorage at that origin is
-      // intact (we don't wipe — the user might just want to peek).
-      try {
-        window.location.href = 'capacitor://localhost/?config=1';
-      } catch (_) { /* SSR / blocked navigation */ }
+      const handler = (window as any).webkit?.messageHandlers?.sidekickReset;
+      if (handler && typeof handler.postMessage === 'function') {
+        try { handler.postMessage({}); }
+        catch (e: any) { console.warn('[settings] sidekickReset postMessage failed:', e?.message || e); }
+      } else {
+        // No bridge — likely a misconfigured Cap build (or developer
+        // pointed Cap at a URL that bypasses the bundled bootstrap).
+        // Fall back to the JS-side navigation (works in Capacitor's
+        // own dev mode and is harmless in real builds).
+        try { window.location.href = 'capacitor://localhost/?config=1'; }
+        catch (_) { /* noop */ }
+      }
     });
   }
 

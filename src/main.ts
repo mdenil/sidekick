@@ -94,6 +94,37 @@ let memoActive = false;  // true while voice-memo recording bar is shown
 // reset paths fire.
 let releaseCaptureIfActive: () => void = () => {};
 
+/** Remove DOM elements whose `data-platform` attribute doesn't
+ *  match the current runtime. Single source of truth for platform-
+ *  specific UI gating. Replaces ad-hoc CSS class gates that
+ *  specificity wars could leak through.
+ *
+ *  Supported values (single-value only for now — multi-value
+ *  semantics deferred until a real second case justifies the
+ *  parser; see the design discussion 2026-05-10 for context):
+ *    - 'cap'      → only when running inside Cap WKWebView
+ *    - 'pwa'      → only when NOT in Cap (Safari standalone, Chrome, …)
+ *    - 'desktop'  → hover + fine pointer (mouse-having devices)
+ *    - 'mobile'   → not-desktop
+ *
+ *  Removed via el.remove() rather than display:none so they can't
+ *  tab-focus, fire events, or be announced by AT. Platform is
+ *  fixed at boot — no toggle needed. */
+function applyPlatformGates(): void {
+  const isCap = document.documentElement.classList.contains('capacitor-app');
+  const isDesktop = typeof window !== 'undefined'
+    && window.matchMedia?.('(hover: hover) and (pointer: fine)').matches === true;
+  document.querySelectorAll<HTMLElement>('[data-platform]').forEach(el => {
+    const want = el.dataset.platform || '';
+    let visible = true;
+    if (want === 'cap')          visible = isCap;
+    else if (want === 'pwa')     visible = !isCap;
+    else if (want === 'desktop') visible = isDesktop;
+    else if (want === 'mobile')  visible = !isDesktop;
+    if (!visible) el.remove();
+  });
+}
+
 /** Format a hotkey combo string ("Cmd+Shift+C") for tooltip display
  *  ("⌘⇧C"). Same convention used in the static HTML title attributes
  *  in index.html (e.g. `Send · ⏎`). Lower-cases input first so user-
@@ -221,6 +252,14 @@ async function populateMicPicker() {
 // ─── Boot ───────────────────────────────────────────────────────────────────
 
 async function boot() {
+  // Platform gating runs FIRST so settings.load() and downstream
+  // wiring see the post-gate DOM. Otherwise settings.ts's
+  // `document.getElementById('set-reset-server')` returns the
+  // about-to-be-removed button and attaches a click handler to a
+  // dead reference — works (because removal detaches listeners
+  // automatically) but the order is confusing to read.
+  applyPlatformGates();
+
   // Hydrate settings BEFORE any UI wiring reads them. Earlier
   // settings.load() lived ~300 lines down in boot, after toolbar wiring,
   // which made btn-transport's sync() read DEFAULTS instead of the stored

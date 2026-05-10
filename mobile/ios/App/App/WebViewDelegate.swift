@@ -18,7 +18,7 @@ import WebKit
 /// Subclass the Capacitor bridge view controller so we own the WKUIDelegate.
 /// The default Main.storyboard already instantiates `CAPBridgeViewController`;
 /// we re-point it at this subclass below in didFinishLaunching.
-class SidekickBridgeViewController: CAPBridgeViewController, WKUIDelegate {
+class SidekickBridgeViewController: CAPBridgeViewController, WKUIDelegate, WKScriptMessageHandler {
 
     /// Cap-specific JS+CSS injected at document_start so the PWA core
     /// (index.html, styles/app.css) has zero Capacitor-conditional code.
@@ -131,6 +131,64 @@ class SidekickBridgeViewController: CAPBridgeViewController, WKUIDelegate {
         // ever recreates the controller; webView is also a weak hop.
         CallControls.shared.webViewProvider = { [weak self] in
             self?.bridge?.webView
+        }
+        // Reset-server bridge: the in-app "Reset Server URL" button
+        // posts a webkit.messageHandlers.sidekickReset message. We
+        // can't navigate JS-side from an HTTPS origin back to
+        // capacitor:// scheme (Cap blocks it for security), so the
+        // native side must perform the load. JS posts → we receive
+        // → load the bundled bootstrap with ?config=1 to force the
+        // form display.
+        webView.configuration.userContentController.add(self, name: "sidekickReset")
+    }
+
+    // MARK: - WKScriptMessageHandler
+    //
+    // Single dispatch for all named messages from the bundled JS.
+    // Today only `sidekickReset` is registered; future bridges can
+    // add more named handlers in capacitorDidLoad().
+    func userContentController(_ userContentController: WKUserContentController,
+                                didReceive message: WKScriptMessage) {
+        switch message.name {
+        case "sidekickReset":
+            handleSidekickReset()
+        default:
+            NSLog("[Sidekick] unknown JS message: \(message.name)")
+        }
+    }
+
+    /// Load the bundled bootstrap (mobile/webdir/index.html) with
+    /// ?config=1 in the WebView. Used by the in-app "Reset Server URL"
+    /// button to bring the user back to the URL picker without
+    /// reinstalling the app. The ?config=1 query param tells the
+    /// bootstrap to suppress its auto-redirect even when a saved URL
+    /// is present, and pre-fill the field with the prior choice.
+    private func handleSidekickReset() {
+        guard let webView = self.bridge?.webView else {
+            NSLog("[Sidekick] sidekickReset: no webView")
+            return
+        }
+        // The bundled webDir lands as `public/` inside the .app at
+        // sync time. Cap exposes the path via Bundle.main; index.html
+        // is the entry point we want.
+        guard let bundleURL = Bundle.main.url(forResource: "public/index",
+                                               withExtension: "html") else {
+            NSLog("[Sidekick] sidekickReset: bundled index.html not found in app")
+            return
+        }
+        // Append the query param. URLComponents handles the encoding.
+        var components = URLComponents(url: bundleURL, resolvingAgainstBaseURL: false)
+        components?.queryItems = [URLQueryItem(name: "config", value: "1")]
+        guard let target = components?.url else {
+            NSLog("[Sidekick] sidekickReset: URLComponents failed")
+            return
+        }
+        DispatchQueue.main.async {
+            // allowingReadAccessTo: the public/ directory so the
+            // bootstrap can load any sibling assets it might add later.
+            let readDir = bundleURL.deletingLastPathComponent()
+            webView.loadFileURL(target, allowingReadAccessTo: readDir)
+            NSLog("[Sidekick] sidekickReset: loaded bootstrap with ?config=1")
         }
     }
 
