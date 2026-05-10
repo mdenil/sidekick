@@ -23,6 +23,7 @@ import { attachSliderTouchAll } from './sliderTouch.ts';
 import * as sidebarResize from './sidebarResize.ts';
 import * as sidebarSwipe from './sidebarSwipe.ts';
 import * as clickFreezeDiag from './clickFreezeDiag.ts';
+import * as remoteControl from './remoteControl.ts';
 import * as multiSelect from './multiSelect.ts';
 import * as agentSettingsMod from './agentSettings.ts';
 import { primeAudio, getSharedAudioCtx } from './audio/shared/platform.ts';
@@ -468,6 +469,12 @@ async function boot() {
   // Capture-phase pointerdown logger for click-freeze diagnosis. Pure
   // observation — no behavior change. Diag-level only (off in prod).
   clickFreezeDiag.init();
+
+  // Lockscreen + BT-headset remote-control receiver. Cap forwards
+  // MPRemoteCommandCenter callbacks via custom events; PWA uses the
+  // Media Session API. Both feed the same dispatcher (stop = end call,
+  // play/pause = TTS reply pause/resume).
+  remoteControl.init();
 
   // Drop a chat we're navigating AWAY from if it's an empty placeholder
   // — 0 messages on the backend AND no unsent draft text AND no

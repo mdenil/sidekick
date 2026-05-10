@@ -124,6 +124,14 @@ class SidekickBridgeViewController: CAPBridgeViewController, WKUIDelegate {
             forMainFrameOnly: true
         )
         webView.configuration.userContentController.addUserScript(userScript)
+        // Wire up the lockscreen / BT-headset remote-control bridge.
+        // CallControls (singleton in AppDelegate) now uses this closure
+        // to reach the WebView when MPRemoteCommandCenter callbacks
+        // fire. Weak-self on the bridge avoids retain cycles if Cap
+        // ever recreates the controller; webView is also a weak hop.
+        CallControls.shared.webViewProvider = { [weak self] in
+            self?.bridge?.webView
+        }
     }
 
     // iOS 15+ — modern media-capture permission callback.

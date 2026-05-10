@@ -197,18 +197,26 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 /// Phase 1: visibility only (this commit). Widget appears with the
 /// Sidekick brand + dark icon while audio session is active. Play /
 /// pause / stop buttons render but no-op.
-/// Phase 2 (TODO): bidirectional bridge so the buttons actually do
-/// things — stop hangs up active realtime call, play/pause interrupts
-/// the agent's TTS. Will need platform-neutral events emitted from
-/// shared code (sidekick:call-active, sidekick:remote-stop, etc.) +
-/// a Cap WKUserScript that wires webkit.messageHandlers to/from this
-/// class. That preserves the architectural rule (Cap-specific code
-/// stays in mobile/ios/, shared code emits platform-agnostic events).
+/// Phase 2 (2026-05-10): the four MPRemoteCommandCenter callbacks now
+/// fire JS-side `sidekick:remote-control` events via webView.evaluateJS.
+/// JS subscribes (src/remoteControl.ts) and dispatches the matching
+/// action — stop hangs up active call, play/pause toggles agent TTS.
+/// Bluetooth headset transport buttons (BT play/pause/skip) route
+/// through the same callbacks on iOS, so they get this for free.
+///
+/// The `webViewProvider` closure is injected by WebViewDelegate at
+/// capacitorDidLoad time. Keeping the dependency direction one-way
+/// (WebViewDelegate → CallControls) avoids needing CallControls to
+/// import or know about Capacitor's bridge type.
 final class CallControls {
     static let shared = CallControls()
     private init() {}
 
     private var registeredCommands = false
+    /// Set by WebViewDelegate.capacitorDidLoad(). When nil the remote
+    /// commands no-op gracefully (iOS still calls them; we just can't
+    /// reach JS yet).
+    var webViewProvider: (() -> WKWebView?)?
 
     func setActive(title: String = "Sidekick", subtitle: String = "Agent ready") {
         registerRemoteCommandsIfNeeded()
@@ -236,27 +244,55 @@ final class CallControls {
         NSLog("[Sidekick] Now Playing cleared")
     }
 
-    /// Phase 1: handlers no-op. Without a registered handler iOS hides
-    /// the button entirely; we want the placeholder visible so muscle
-    /// memory builds, and Phase 2 will route these to JS.
+    /// Forward a remote-control action to JS as a custom event. Best-
+    /// effort: if the webView isn't yet wired or the eval fails, we
+    /// log and return success to iOS (returning .commandFailed makes
+    /// the lockscreen flash a "failed" indicator which is worse UX).
+    private func postRemoteAction(_ action: String) {
+        NSLog("[Sidekick] remote: \(action) — forwarding to JS")
+        guard let webView = webViewProvider?() else {
+            NSLog("[Sidekick] remote: \(action) — no webView, dropping")
+            return
+        }
+        // Build the JS expression. Action names are hardcoded constants
+        // so no escaping concerns; if that ever changes, switch to
+        // JSONSerialization. CustomEvent + window.dispatchEvent matches
+        // the existing sidekick:engine-changed / hotkeys-changed pattern.
+        let js = """
+        window.dispatchEvent(new CustomEvent('sidekick:remote-control', { detail: { action: '\(action)' } }));
+        """
+        DispatchQueue.main.async {
+            webView.evaluateJavaScript(js) { _, err in
+                if let err = err {
+                    NSLog("[Sidekick] remote: \(action) — JS dispatch failed: \(err)")
+                }
+            }
+        }
+    }
+
+    /// Register the four supported remote commands. iOS hides any
+    /// command without a registered handler from the lockscreen UI,
+    /// so all four are wired even though play+pause are conceptually
+    /// covered by togglePlayPause — some BT controllers fire only the
+    /// specific play/pause variant.
     private func registerRemoteCommandsIfNeeded() {
         guard !registeredCommands else { return }
         registeredCommands = true
         let center = MPRemoteCommandCenter.shared()
-        center.togglePlayPauseCommand.addTarget { _ in
-            NSLog("[Sidekick] remote: togglePlayPause (Phase 2 TODO)")
+        center.togglePlayPauseCommand.addTarget { [weak self] _ in
+            self?.postRemoteAction("togglePlayPause")
             return .success
         }
-        center.playCommand.addTarget { _ in
-            NSLog("[Sidekick] remote: play (Phase 2 TODO)")
+        center.playCommand.addTarget { [weak self] _ in
+            self?.postRemoteAction("play")
             return .success
         }
-        center.pauseCommand.addTarget { _ in
-            NSLog("[Sidekick] remote: pause (Phase 2 TODO)")
+        center.pauseCommand.addTarget { [weak self] _ in
+            self?.postRemoteAction("pause")
             return .success
         }
-        center.stopCommand.addTarget { _ in
-            NSLog("[Sidekick] remote: stop (Phase 2 TODO)")
+        center.stopCommand.addTarget { [weak self] _ in
+            self?.postRemoteAction("stop")
             return .success
         }
     }
