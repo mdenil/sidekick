@@ -1,18 +1,26 @@
-// Pin sidebarSwipe's pointerdown gating. The open-drawer gesture engages
-// anywhere on screen (ChatGPT iOS pattern — no edge requirement), but
-// MUST NOT engage on text inputs, range sliders, or horizontal-scrollable
-// containers — those own horizontal touch natively.
+// Pin sidebarSwipe's gating. Two field bugs shaped this:
 //
-// Field-reported bug 2026-05-09: "swiping right inside the composer
-// textarea opens the drawer, can't text-select." Pre-fix the gesture
-// applied `body.swipe-active` (touch-action:none) on every pointerdown
-// regardless of target, killing iOS's native text selection.
+//   2026-05-09: "swiping right inside the composer textarea opens
+//   the drawer, can't text-select." The pre-fix gesture applied
+//   `body.swipe-active` (touch-action:none) on every pointerdown
+//   regardless of target, killing iOS's native text selection.
+//   Fix: bail at pointerdown on inputs/sliders/h-scrollables.
+//
+//   2026-05-10 (8bb69e8 lazy swipe-lock): "settings-close tap →
+//   any tap → freezes the UI for 2s." `body.swipe-active` was being
+//   set at pointerdown and only cleared at pointerup; if pointerup
+//   was missed (tap on certain regions), the class stuck and froze
+//   touch-action everywhere. Fix: defer setSwipeLock(true) to the
+//   commit transition inside pointermove (after MIN_DISTANCE_PX
+//   horizontal motion is confirmed). Taps never set the class.
 //
 // Asserts (mobile viewport, drawer collapsed):
-//   1. pointerdown anywhere on body (edge OR mid-screen) → swipe-active
-//      applies — this IS the ChatGPT-style open path.
-//   2. pointerdown on textarea → no swipe-active (iOS native selection).
-//   3. pointerdown on range slider → no swipe-active (iOS native drag).
+//   1. pointerdown on textarea → no swipe-active (iOS native selection).
+//   2. pointerdown on range slider → no swipe-active (iOS native drag).
+//   3. pointerdown on body, no follow-up motion → no swipe-active.
+//      This is the lazy-lock invariant — taps must NOT engage.
+//   4. pointerdown on body + horizontal pointermove past MIN_DISTANCE_PX
+//      → swipe-active applies. This is the ChatGPT-style open path.
 
 import { waitForReady, assert } from './lib.mjs';
 
@@ -46,6 +54,21 @@ export default async function run({ page, log }) {
     }, { clientX, clientY, sel });
   };
 
+  // pointermove dispatch — sidebarSwipe listens on `window` for these,
+  // so dispatch on document.body and let bubbling carry it up. The
+  // commit transition fires once dx²+dy² ≥ MIN_DISTANCE_PX² (currently
+  // 30² = 900) AND |dx| > |dy| AND direction matches intent.
+  const fireMove = async (clientX, clientY) => {
+    await page.evaluate(({ clientX, clientY }) => {
+      const evt = new PointerEvent('pointermove', {
+        bubbles: true, cancelable: true, isPrimary: true,
+        pointerId: 1, pointerType: 'touch',
+        clientX, clientY,
+      });
+      document.body.dispatchEvent(evt);
+    }, { clientX, clientY });
+  };
+
   const fireUp = async () => {
     await page.evaluate(() => {
       const evt = new PointerEvent('pointerup', {
@@ -58,7 +81,9 @@ export default async function run({ page, log }) {
   };
 
   // ── Case 1: pointerdown on textarea (would-be-but-no) ─────────────
-  // The textarea-target bail must hold regardless of x position.
+  // The textarea-target bail at pointerdown must hold regardless of
+  // x position — even if a subsequent move would cross MIN_DISTANCE_PX,
+  // intent was never set so the move handler short-circuits.
   await fireDown(200, 420, '#composer-input');
   assert(!(await swipeActive()),
     'pointerdown on composer textarea should NOT apply swipe-active');
@@ -78,19 +103,33 @@ export default async function run({ page, log }) {
   await fireUp();
   log('range-slider pointerdown: gesture inactive ✓');
 
-  // ── Case 3: pointerdown anywhere on body — engages ────────────────
-  // Sanity that the input bails above weren't accidentally so broad
-  // they killed the gesture entirely. Mid-screen on body must engage
-  // (this is the whole point of the ChatGPT-style anywhere-on-screen
-  // affordance).
+  // ── Case 3: pointerdown on body without follow-up motion ──────────
+  // Lazy-lock invariant (8bb69e8): a tap must NEVER apply swipe-active.
+  // The pre-fix code did this and a missed pointerup left the class
+  // stuck, freezing touch-action site-wide for ~2s.
   await page.evaluate(() => {
     document.getElementById('smoke-test-slider')?.remove();
   });
   await fireDown(200, 300, null);
+  assert(!(await swipeActive()),
+    'bare pointerdown on body should NOT apply swipe-active (taps must not engage)');
+  await fireUp();
+  log('bare body pointerdown (tap): no swipe-active ✓');
+
+  // ── Case 4: body pointerdown + horizontal motion past MIN_DISTANCE_PX
+  // ────────────────────────────────────────────────────────────────────
+  // This is the ChatGPT-style open-drawer gesture. swipe-active should
+  // apply once the move handler confirms a horizontal-dominant swipe of
+  // ≥ 30px in the opening direction (positive dx when collapsed).
+  await fireDown(200, 300, null);
+  // Two-step move so onPointerMove sees a delta first, then crosses the
+  // threshold. Real fingers produce many pointermoves; one 40px jump
+  // is enough for the assertion.
+  await fireMove(240, 305);   // dx=40, dy=5 → past threshold, horizontal-dominant
   assert(await swipeActive(),
-    'pointerdown anywhere on body SHOULD apply swipe-active (this IS the open-drawer entry path)');
+    'pointerdown on body + horizontal pointermove > MIN_DISTANCE_PX SHOULD apply swipe-active');
   await fireUp();
   await page.waitForFunction(() => !document.body.classList.contains('swipe-active'),
     null, { timeout: 1000 });
-  log('mid-screen pointerdown on body: gesture engaged then released ✓');
+  log('body pointerdown + horizontal move: gesture engaged at commit then released ✓');
 }
