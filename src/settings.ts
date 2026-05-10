@@ -757,6 +757,7 @@ export function hydrate(handlers: {
         // Clear the binding entirely (user wants no hotkey for this action).
         el.value = '';
         set(settingsKey as any, '');
+        broadcastHotkeyChange();
         el.blur();
         return;
       }
@@ -771,8 +772,19 @@ export function hydrate(handlers: {
       const combo = parts.join('+');
       el.value = combo;
       set(settingsKey as any, combo);
+      broadcastHotkeyChange();
       el.blur();
     });
+  }
+
+  // Tooltips on hotkey-bound buttons (btn-call, btn-mic) cache the
+  // formatted hotkey at render time. When a rebind happens, broadcast
+  // so the tooltip-rendering code in main.ts can re-run. Cheap event;
+  // single subscriber today (applyMicModeUi).
+  function broadcastHotkeyChange(): void {
+    try {
+      window.dispatchEvent(new CustomEvent('sidekick:hotkeys-changed'));
+    } catch { /* SSR / event-disallowed env */ }
   }
   attachHotkeyCapture(setHotkeyCall, 'hotkeyToggleCall');
   attachHotkeyCapture(setHotkeyMic, 'hotkeyToggleMic');

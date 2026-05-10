@@ -93,6 +93,33 @@ let memoActive = false;  // true while voice-memo recording bar is shown
 // reset paths fire.
 let releaseCaptureIfActive: () => void = () => {};
 
+/** Format a hotkey combo string ("Cmd+Shift+C") for tooltip display
+ *  ("⌘⇧C"). Same convention used in the static HTML title attributes
+ *  in index.html (e.g. `Send · ⏎`). Lower-cases input first so user-
+ *  entered casing variations ("CMD+SHIFT+c", "cmd+Shift+C") all
+ *  normalize the same way. Single-character keys uppercased; named
+ *  keys (Enter, Escape, etc) left as-is. */
+function formatHotkey(combo: string): string {
+  if (!combo) return '';
+  const parts = combo.split('+').map(p => p.trim().toLowerCase()).filter(Boolean);
+  let out = '';
+  let key = '';
+  for (const p of parts) {
+    if (p === 'cmd' || p === 'meta') out += '⌘';
+    else if (p === 'ctrl') out += '⌃';
+    else if (p === 'alt' || p === 'option') out += '⌥';
+    else if (p === 'shift') out += '⇧';
+    else key = p;
+  }
+  if (!key) return out;
+  if (key === 'enter') return out + '⏎';
+  if (key === 'escape' || key === 'esc') return out + '⎋';
+  if (key === 'space') return out + '␣';
+  if (key === 'tab') return out + '⇥';
+  // Single-character keys: uppercase. Multi-char (F1, ArrowUp): leave as-is.
+  return out + (key.length === 1 ? key.toUpperCase() : key);
+}
+
 /** True when any call mode is active. Wake-lock + a few other
  *  decisions key off this. Predicate centralised so adding new call
  *  modes (e.g. handsfree) doesn't require auditing every site that
@@ -3183,16 +3210,35 @@ async function boot() {
       callModeWrap.dataset.mode = s.realtime ? 'realtime' : 'turn-based';
     }
     // Dynamic call-button tooltip — only meaningful on hover devices
-    // (setTooltip skips title= on touch).
+    // (setTooltip skips title= on touch). Includes the configured
+    // toggle-call hotkey so desktop users see "⌘⇧C" and any rebind
+    // surfaces here on next applyMicModeUi() trigger.
     const btnCallEl = document.getElementById('btn-call');
     if (btnCallEl) {
       const what = s.realtime
         ? (s.tts ? 'WebRTC call (talk mode)' : 'WebRTC call (stream mode)')
         : 'turn-based call (Listen)';
-      setTooltip(btnCallEl, `Tap to start — ${what}`);
+      const callHk = formatHotkey(s.hotkeyToggleCall || '');
+      setTooltip(btnCallEl, callHk
+        ? `Tap to start — ${what}  ·  ${callHk}`
+        : `Tap to start — ${what}`);
+    }
+    // btn-mic tooltip is static in index.html ("Tap = dictate, hold =
+    // memo  ·  ⌘⇧D"). Override here so user-rebound hotkeys surface
+    // correctly. Same hover-only gating as btn-call.
+    const btnMicEl = document.getElementById('btn-mic');
+    if (btnMicEl) {
+      const micHk = formatHotkey(s.hotkeyToggleMic || '');
+      setTooltip(btnMicEl, micHk
+        ? `Tap = dictate, hold = memo  ·  ${micHk}`
+        : 'Tap = dictate, hold = memo');
     }
   }
   applyMicModeUi();
+  // Hotkey rebinds in the settings panel should refresh tooltips. Fire
+  // applyMicModeUi via a custom event from settings.ts (close handler
+  // dispatches it so any saved hotkey changes propagate).
+  window.addEventListener('sidekick:hotkeys-changed', () => applyMicModeUi());
   // Engine flip (set-streaming-engine select in the Settings panel)
   // → re-render mic/call UI so btn-call hide/show keeps up live.
   window.addEventListener('sidekick:engine-changed', () => applyMicModeUi());
