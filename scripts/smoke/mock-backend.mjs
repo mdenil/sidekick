@@ -214,8 +214,6 @@ export async function installMockBackend(page) {
         chat = { chatId, title: '', messages: [], lastActiveAt: Date.now() };
         chats.set(chatId, chat);
       }
-      chat.messages.push({ role: 'user', content: text, timestamp: Date.now() / 1000 });
-      chat.lastActiveAt = Date.now();
       // Mirror plugin behavior: emit a user_message envelope BEFORE
       // dispatch so cross-device clients render the bubble. Echo back
       // the PWA-supplied user_message_id (if any) so the originating
@@ -223,6 +221,24 @@ export async function installMockBackend(page) {
       const userMsgId = incomingUserMsgId || `umsg_mock_${envelopeId + 1}`;
       const replyText = `[mock] echo: ${text}`;
       const messageId = `mock-msg-${envelopeId + 1}`;
+      // Persist the user+assistant rows with their SSE-shape ids so a
+      // later history-fetch returns sidekick_id matching what the live
+      // user_message / reply_final envelopes carried. Without this, the
+      // smoke's history endpoint mints synthetic ids that DON'T match
+      // the optimistic-bubble or user_message keys — and the smoke
+      // silently exercises a different upsert path than production.
+      // Reproducing field bug 2026-05-11: the user bubble in production
+      // is keyed by umsg_*, the history-replay path ALSO needs to upsert
+      // with umsg_* (via sidekick_id) for the bubble to render after a
+      // switch-away-and-back clear-and-replay.
+      chat.messages.push({
+        role: 'user',
+        content: text,
+        message_id: userMsgId,
+        sidekick_id: userMsgId,
+        timestamp: Date.now() / 1000,
+      });
+      chat.lastActiveAt = Date.now();
       setTimeout(() => {
         broadcast({
           type: 'user_message',
@@ -238,7 +254,13 @@ export async function installMockBackend(page) {
           message_id: messageId,
         });
         broadcast({ type: 'reply_final', chat_id: chatId, message_id: messageId });
-        chat.messages.push({ role: 'assistant', content: replyText, timestamp: Date.now() / 1000 });
+        chat.messages.push({
+          role: 'assistant',
+          content: replyText,
+          message_id: messageId,
+          sidekick_id: messageId,
+          timestamp: Date.now() / 1000,
+        });
         chat.lastActiveAt = Date.now();
       }, 50);
     }
