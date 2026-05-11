@@ -34,7 +34,6 @@
 // adapters work today.
 
 import { getUpstream } from './index.ts';
-import * as inflight from './inflight.ts';
 import { pushEnvelope } from './stream.ts';
 import type { UpstreamAgent } from './upstream.ts';
 
@@ -162,28 +161,10 @@ async function dispatchTurnViaUpstream(
         `[sidekick:dispatch] +${Date.now() - t0}ms envelope #${envelopeCount} ` +
         `type=${envType} chat=${chatId}`,
       );
-      // Record into inflight cache so a mid-turn switch-away client can
-      // see what's happened so far when it switches back (history fetch
-      // surfaces these alongside state.db's persisted-post-turn rows).
-      // Skip purely transient envelopes — `typing` is just an indicator
-      // and `error` is already handled by the catch path below as an
-      // explicit envelope push. `session_changed` is metadata about the
-      // session not a renderable message. Everything else (user_message,
-      // reply_delta, reply_final, tool_call, tool_result, image,
-      // notification) is renderable and should survive a switch-away.
-      if (envType !== 'typing' && envType !== 'session_changed') {
-        inflight.record(chatId, envelope);
-      }
-      // Lifecycle handoff: when the turn completes, state.db has the
-      // canonical rows (hermes-core's post-turn append_to_transcript
-      // fires before reply_final reaches the proxy). Drop the inflight
-      // queue for this chat AFTER recording reply_final itself, so a
-      // brief race-window history-fetch still sees the completion
-      // signal. The next history-fetch after dropChat goes pure
-      // state.db, and dedup-by-id collapses any overlap.
-      if (envType === 'reply_final') {
-        inflight.dropChat(chatId);
-      }
+      // pushEnvelope funnels into both the SSE multiplexer AND the
+      // inflight cache — see its docstring. The cache lets a mid-turn
+      // switch-away client replay on switch-back; reply_final drops
+      // the cache as state.db becomes canonical.
       pushEnvelope(envelope);
     }
     console.log(

@@ -14,6 +14,7 @@
 import { test } from 'node:test';
 import * as assert from 'node:assert/strict';
 
+import * as inflight from '../inflight.ts';
 import { startRig } from './proxy-harness.ts';
 
 /** Subscribe to an SSE endpoint and collect parsed envelopes for `ms`
@@ -628,6 +629,175 @@ test('user_message — POST /api/sidekick/messages forwards user_message_id to u
     // build of `metadata` and plugin/__init__.py read path.
     assert.equal(bodySeen?.metadata?.user_message_id, 'umsg_pwa_pre_minted_42',
       `expected proxy to forward metadata.user_message_id verbatim; saw ${JSON.stringify(bodySeen)}`);
+  } finally {
+    await rig.stop();
+  }
+});
+
+// ────────────────────────────────────────────────────────────────────
+// Inflight cache — survival of mid-turn switch-away.
+//
+// Jonathan reported 2026-05-11 that switching sessions during a tool
+// call still loses the user message + tool row. The earlier mocked-
+// harness smoke (scripts/smoke/inflight-mid-stream-survive.mjs)
+// passed because it pre-seeded mock.setInflight(...) directly,
+// bypassing the proxy entirely. These tests drive the REAL proxy
+// code path so we can actually verify inflight.record fires on every
+// envelope channel the agent emits — both /v1/responses dispatch
+// (messages.ts dispatchTurnViaUpstream) AND /v1/events broadcast
+// (stream.ts runUpstreamEventsLoop).
+// ────────────────────────────────────────────────────────────────────
+
+test('inflight — /v1/responses tool_call envelope surfaces in history-fetch mid-turn', async () => {
+  inflight._test.reset();
+  const rig = await startRig({ mode: 'gateway' });
+  try {
+    // Empty state.db for this chat — simulates the in-flight window
+    // where hermes hasn't yet persisted (post-turn append_to_transcript
+    // hasn't fired). PWA's switch-back must rely entirely on inflight.
+    rig.fakeAgent.setItems('chat-mid-turn-A', []);
+    // Enqueue a turn that emits a tool_call mid-stream but NEVER
+    // completes — simulates the user switching away while the agent
+    // is still running a tool. No response.completed means no
+    // reply_final means inflight.dropChat never fires.
+    rig.fakeAgent.enqueueTurnEvents([
+      { event: 'response.in_progress', data: { type: 'response.in_progress' } },
+      {
+        event: 'response.output_text.delta',
+        data: { delta: 'looking that up…', item_id: 'msg_inflight_001' },
+      },
+      {
+        // Trigger upstream.translateOAIEvent → tool_call envelope.
+        event: 'response.output_item.added' as any,
+        data: {
+          item: {
+            type: 'function_call',
+            id: 'call_test_lookup',
+            name: 'web_search',
+            arguments: '{"q":"weather"}',
+          },
+        },
+      },
+      // (deliberately NO response.completed)
+    ]);
+
+    const post = await fetch(`${rig.proxyUrl}/api/sidekick/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ chat_id: 'chat-mid-turn-A', text: "what's the weather?" }),
+    });
+    assert.equal(post.status, 202);
+    // Give dispatchTurnViaUpstream a tick to consume the queued events.
+    await new Promise<void>((r) => setTimeout(r, 250));
+
+    // History fetch — the in-flight envelopes should ride alongside
+    // (empty) state.db messages so a PWA switching back can replay them.
+    const r = await fetch(`${rig.proxyUrl}/api/sidekick/sessions/chat-mid-turn-A/messages`);
+    assert.equal(r.status, 200);
+    const body = await r.json();
+    assert.equal(body.messages.length, 0,
+      `expected state.db empty mid-turn; got ${JSON.stringify(body.messages)}`);
+    assert.ok(
+      Array.isArray(body.inflight),
+      `expected response.inflight to be present mid-turn; body=${JSON.stringify(body)}`,
+    );
+    const types = body.inflight.map((e: any) => e.type);
+    assert.ok(
+      types.includes('tool_call'),
+      `expected tool_call in inflight; got types=${JSON.stringify(types)}`,
+    );
+    const tc = body.inflight.find((e: any) => e.type === 'tool_call');
+    assert.equal(tc.call_id, 'call_test_lookup');
+    assert.equal(tc.tool_name, 'web_search');
+  } finally {
+    await rig.stop();
+  }
+});
+
+test('inflight — /v1/events out-of-turn envelopes also cache (cross-device tool_call path)', async () => {
+  // This is the suspected bug: hermes broadcasts user_message + tool_call
+  // via the persistent /v1/events SSE channel (so OTHER devices see the
+  // activity too). That path goes through stream.ts runUpstreamEventsLoop
+  // → pushEnvelope, which fans to live PWA subscribers but — pre-fix —
+  // skips inflight.record(). A device that switches away and back finds
+  // no inflight for the chat because nothing was recorded.
+  inflight._test.reset();
+  const rig = await startRig({ mode: 'gateway' });
+  try {
+    rig.fakeAgent.setItems('chat-events-B', []);
+
+    // Push a user_message + tool_call via the /v1/events channel —
+    // mimics how hermes-core broadcasts these out-of-turn for
+    // cross-device fan-out.
+    rig.fakeAgent.pushOutOfTurnEvent({
+      type: 'user_message',
+      chat_id: 'chat-events-B',
+      message_id: 'umsg_test_oot',
+      text: 'check my calendar',
+    });
+    rig.fakeAgent.pushOutOfTurnEvent({
+      type: 'tool_call',
+      chat_id: 'chat-events-B',
+      call_id: 'call_oot_cal',
+      tool_name: 'list_calendar_events',
+      args: { range: '7d' },
+    });
+    // Give the proxy's subscribeEvents loop a tick to ingest both.
+    await new Promise<void>((r) => setTimeout(r, 200));
+
+    const r = await fetch(`${rig.proxyUrl}/api/sidekick/sessions/chat-events-B/messages`);
+    assert.equal(r.status, 200);
+    const body = await r.json();
+    assert.ok(
+      Array.isArray(body.inflight),
+      `expected response.inflight to be present; body=${JSON.stringify(body)}`,
+    );
+    const types = body.inflight.map((e: any) => e.type);
+    assert.ok(
+      types.includes('user_message'),
+      `expected user_message from /v1/events to land in inflight; got ${JSON.stringify(types)}`,
+    );
+    assert.ok(
+      types.includes('tool_call'),
+      `expected tool_call from /v1/events to land in inflight; got ${JSON.stringify(types)}`,
+    );
+  } finally {
+    await rig.stop();
+  }
+});
+
+test('inflight — reply_final clears the cache regardless of source channel', async () => {
+  inflight._test.reset();
+  const rig = await startRig({ mode: 'gateway' });
+  try {
+    rig.fakeAgent.setItems('chat-final-C', []);
+
+    // Build up some inflight via out-of-turn (the path that exposed the bug).
+    rig.fakeAgent.pushOutOfTurnEvent({
+      type: 'tool_call', chat_id: 'chat-final-C',
+      call_id: 'call_to_be_cleared', tool_name: 'noop', args: {},
+    });
+    await new Promise<void>((r) => setTimeout(r, 100));
+    let r1 = await fetch(`${rig.proxyUrl}/api/sidekick/sessions/chat-final-C/messages`);
+    let body1 = await r1.json();
+    assert.ok(
+      Array.isArray(body1.inflight) && body1.inflight.length > 0,
+      'sanity: inflight should be non-empty after the tool_call push',
+    );
+
+    // Now fire reply_final on the same chat — should drop the entire
+    // inflight cache (state.db becomes canonical).
+    rig.fakeAgent.pushOutOfTurnEvent({
+      type: 'reply_final', chat_id: 'chat-final-C',
+      message_id: 'msg_test_final',
+    });
+    await new Promise<void>((r) => setTimeout(r, 100));
+    let r2 = await fetch(`${rig.proxyUrl}/api/sidekick/sessions/chat-final-C/messages`);
+    let body2 = await r2.json();
+    assert.ok(
+      !body2.inflight || body2.inflight.length === 0,
+      `expected inflight cleared after reply_final; got ${JSON.stringify(body2.inflight)}`,
+    );
   } finally {
     await rig.stop();
   }

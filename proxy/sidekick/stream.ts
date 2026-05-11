@@ -49,6 +49,7 @@
 // transcript reconcile path; the ring is best-effort, not durable.
 
 import { getUpstream } from './index.ts';
+import * as inflight from './inflight.ts';
 import type { SidekickEnvelope, UpstreamAgent } from './upstream.ts';
 
 type Envelope = Record<string, unknown> & { type: string; chat_id?: string };
@@ -128,10 +129,34 @@ function detach(sub: Subscriber): void {
 /** Push an envelope into the SSE multiplexer. Used by step-5 callers
  *  (upstream sendMessage iterators + subscribeEvents loop) to feed
  *  envelopes that arrived via the agent contract instead of WS.
- *  Filters non-fanout types the same way the WS wildcard does. */
+ *  Filters non-fanout types the same way the WS wildcard does.
+ *
+ *  Also funnels into the inflight cache so a mid-turn switch-away
+ *  client can replay what happened on switch-back. This is the SINGLE
+ *  recording site — both /v1/responses dispatch (messages.ts) AND
+ *  /v1/events out-of-turn broadcast (runUpstreamEventsLoop below)
+ *  feed through here, so cross-device-broadcast envelopes
+ *  (user_message, tool_call) and the in-turn stream are both cached.
+ *  An earlier version recorded only in dispatch — out-of-turn
+ *  tool_call envelopes broadcast by hermes-core for cross-device
+ *  visibility then silently bypassed the cache and a switch-back
+ *  found nothing. Centralizing here keeps the two channels
+ *  consistent. */
 export function pushEnvelope(env: SidekickEnvelope | Envelope): void {
   if (!env || typeof env.type !== 'string') return;
   if (!FANOUT_TYPES.has(env.type)) return;
+  const chatId = typeof (env as any).chat_id === 'string' ? (env as any).chat_id : '';
+  // Record in inflight BEFORE broadcast: even renderable transient
+  // envelopes (typing) are excluded so the cache stays focused on
+  // bubbles the PWA needs to replay. session_changed is metadata, not
+  // a bubble — also skip. Everything else: record. reply_final
+  // records itself THEN drops the cache (handoff to state.db).
+  if (chatId && env.type !== 'typing' && env.type !== 'session_changed') {
+    inflight.record(chatId, env as SidekickEnvelope);
+    if (env.type === 'reply_final') {
+      inflight.dropChat(chatId);
+    }
+  }
   broadcast(env as Envelope);
 }
 
