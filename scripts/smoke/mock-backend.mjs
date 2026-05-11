@@ -63,6 +63,12 @@ export async function installMockBackend(page) {
    *  on (persistence is instant at POST time, which is wrong vs prod
    *  but convenient for non-timing tests). */
   let postTurnPersistence = false;
+  /** Optional cap on the `limit` param the /messages endpoint honors,
+   *  applied to the FIRST page only (requests without `?before=`).
+   *  Used by load-earlier-history.mjs to force pagination in a small
+   *  fixture without seeding 200+ messages. null = honor whatever the
+   *  PWA sends. */
+  let historyFirstPageLimit = null;
   /** Active SSE responses (real http.ServerResponse objects). */
   const streamSubs = new Set();
   let envelopeId = 0;
@@ -199,9 +205,26 @@ export async function installMockBackend(page) {
     const m = url.pathname.match(/\/sessions\/([^/]+)\/messages/);
     const chatId = m ? decodeURIComponent(m[1]) : '';
     const chat = chats.get(chatId);
-    const messages = chat ? chat.messages.map((m, i) => {
+    // Honor ?limit + ?before for pagination — matches the real proxy's
+    // contract (history.ts). Ids are integer-shape (chat-local i+1000
+    // unless the test sets m.message_id) so the `before` cursor — which
+    // the proxy validator forces to /^\d+$/ — actually works against
+    // the mock. Pre-2026-05-11 the mock used string ids and ignored
+    // the params; this broke load-earlier-history end-to-end coverage.
+    let limit = Math.max(1, Math.min(500, parseInt(url.searchParams.get('limit') || '200', 10)));
+    const beforeRaw = url.searchParams.get('before');
+    const before = beforeRaw && /^\d+$/.test(beforeRaw) ? parseInt(beforeRaw, 10) : null;
+    // Test-controlled cap on the first page (no `before`) so smokes
+    // can force pagination with a small fixture (see
+    // load-earlier-history.mjs). Subsequent loadEarlier requests
+    // carry their own ?before cursor and use the PWA's actual limit.
+    if (before === null && typeof historyFirstPageLimit === 'number' && historyFirstPageLimit > 0) {
+      limit = Math.min(limit, historyFirstPageLimit);
+    }
+    const allMessages = chat ? chat.messages.map((m, i) => {
+      const integerId = 1000 + i;  // chat-local, deterministic for assertions
       const out = {
-        id: m.message_id || `mock-msg-history-${chatId}-${i}`,
+        id: m.message_id != null ? m.message_id : integerId,
         role: m.role,
         content: m.content,
         timestamp: m.timestamp || (chat.lastActiveAt / 1000),
@@ -214,16 +237,27 @@ export async function installMockBackend(page) {
       if (m.sidekick_id) out.sidekick_id = m.sidekick_id;
       return out;
     }) : [];
+    // Apply pagination. `before` is exclusive (return messages with
+    // id < before); no `before` means "newest page". Slice tail-side.
+    const upTo = before != null
+      ? allMessages.findIndex((m) => typeof m.id === 'number' && m.id >= before)
+      : allMessages.length;
+    const sliceEnd = upTo < 0 ? allMessages.length : upTo;
+    const sliceStart = Math.max(0, sliceEnd - limit);
+    const messages = allMessages.slice(sliceStart, sliceEnd);
+    const firstId = messages.length > 0 ? messages[0].id : null;
+    const hasMore = sliceStart > 0;
     // Inflight envelopes — mirror the real proxy's behavior of
     // surfacing envelopes from in-flight turns (the user message +
     // tool calls + streaming reply deltas that haven't been
     // persisted to state.db yet). Tests opt in by calling
-    // mock.setInflight(chatId, [envelopes...]).
-    const inflightEnvelopes = inflightByChat.get(chatId) || [];
+    // mock.setInflight(chatId, [envelopes...]). Only on fresh pages
+    // (before=null) — older pages can't contain inflight by definition.
+    const inflightEnvelopes = before === null ? (inflightByChat.get(chatId) || []) : [];
     const responseBody = {
       messages,
-      firstId: null,
-      hasMore: false,
+      firstId: typeof firstId === 'number' ? firstId : null,
+      hasMore,
       ...(inflightEnvelopes.length > 0 ? { inflight: inflightEnvelopes } : {}),
     };
     await route.fulfill({
@@ -541,6 +575,15 @@ export async function installMockBackend(page) {
      *  where first_user_message is absent until reply_final lands. */
     setPostTurnPersistence(enabled) {
       postTurnPersistence = !!enabled;
+    },
+    /** Cap the FIRST /messages page to at most N messages (default
+     *  unlimited). Used by load-earlier-history.mjs to force pagination
+     *  in a small fixture without seeding 200+ messages. The cap only
+     *  applies to requests without a `?before=` cursor — older pages
+     *  use whatever limit the PWA's loadEarlier path sends. Pass null
+     *  to clear. */
+    setHistoryFirstPageLimit(n) {
+      historyFirstPageLimit = typeof n === 'number' && n > 0 ? n : null;
     },
     /** Configure the /v1/settings/schema response. Pass null to
      *  declare the agent doesn't implement the extension (route
