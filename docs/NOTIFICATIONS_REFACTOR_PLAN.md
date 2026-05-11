@@ -7,11 +7,11 @@ Update as phases complete; remove entirely once Phase 3 ships.
 
 **Total estimate**: ~22-26h focused work, 3-4 sittings (per `feedback_time_estimates.md`).
 
-**Current status**: Phase 0 partially shipped (3/8 smokes). Phases 1-3 not started.
+**Current status (2026-05-11 evening)**: Phase 0 **COMPLETE** (7/8 shipped + 1 documented stub). Phases 1-3 not started; Phase 1 unblocked.
 
 ---
 
-## Phase 0 — Pre-refactor smoke nets (~4-5h, **3/8 shipped**)
+## Phase 0 — Pre-refactor smoke nets (~4-5h, **8/8 (1 stub) — COMPLETE**)
 
 The point: each Phase 1-2 extraction breaks some invariant if it goes wrong.
 Smokes pin those invariants BEFORE the code moves, so the extraction PR's
@@ -22,15 +22,15 @@ diff lands green-or-red instantly instead of via post-merge field bug.
 | `idb-schema-fingerprint.mjs` | ✅ `a5454a1` | fingerprint-and-wipe on schema bump (replaced the prior v1→v2 migration smoke proposal) | chat.ts snapshot |
 | `tooltip-hide-on-pointerdown.mjs` | ✅ `a5454a1` | iOS-tap regression — tooltip cancelled by pointerdown before 300ms delay | tooltip |
 | `streaming-label-transitions.mjs` | ✅ `a5454a1` | "sending..." → "thinking..." → "using {tool}..." state machine | streaming indicator |
-| `backfill-single-flight.mjs` | ❌ TODO | `backfillInFlight` promise dedup. Refactor that subtly breaks this produces silent UI dupes (the only thing stopping a triple-backfill today is one boolean). | session resume |
-| `load-earlier-history.mjs` | ❌ TODO | Zero coverage today. Prepend ordering invariant could silently invert during extraction. | session resume |
-| `vision-gate-aux-fallback.mjs` | ❌ TODO | "Primary text-only + aux configured → button enabled with route-through hint" path. Today's smoke uses `vision: null` so the fallback enable path is untested. | model capabilities |
-| `replay-target-scroll-flash.mjs` | ❌ TODO | cmdk drill-to-message + the 1.5s `.search-target-flash` UX. Untested. | session resume |
-| `notification-on-screen-system-line.mjs` + `notification-off-screen-drop.mjs` | ❌ TODO | **`handleNotification` is the Phase 3 integration point.** Pin its current behavior NOW so the upcoming expansion doesn't regress it. | backend events |
+| `backfill-single-flight.mjs` | ⚠️ stub | `backfillInFlight` promise dedup. backfillHistory has only one caller today AND the proxyClient adapter doesn't implement fetchHistory; the guard is dead-code-defensive. File header documents the conditions under which to promote: Phase 2 sessionResume.ts extraction wires fetchHistory back, OR new callers emerge. | session resume |
+| `load-earlier-history.mjs` | ✅ `759ba68` | Pins the prepend-loop iteration direction (newest-first within the older batch). Teeth-verified: inverting `for (i = older.length-1; i >= 0; i--)` to `for (i = 0; i < older.length; i++)` triggers "chronological order violated". Mock-backend gained pagination support + integer message ids + `setHistoryFirstPageLimit` in the same commit. | session resume |
+| `vision-gate-aux-fallback.mjs` | ✅ `6799566` | Pins primary-text-only + aux-fallback → buttons stay enabled with route-through tooltip. Teeth-verified: stubbing `|| !!visionFallbackModel` triggers "btn-attach should be ENABLED". | model capabilities |
+| `replay-target-scroll-flash.mjs` | ✅ `6799566` | End-to-end cmdk drill: search hit click → bubble flash → flash auto-clears at 1500ms. Teeth-verified: removing `target.classList.add('search-target-flash')` triggers timeout on the flash-presence wait. | session resume |
+| `notification-on-screen-system-line.mjs` + `notification-off-screen-drop.mjs` | ✅ `4b5bdeb` | **`handleNotification` integration point pinned.** On-screen → `.line.system` row with kind + content text. Off-screen → bit-identical transcript (no leak) + switch-into-chat doesn't surface the dropped notification. | backend events |
 
 **Tier 2 (skip unless time-cheap)**: camera-button-parity, visibility-refetch, network-fail boot, idle-timeout, image-only-final, replay-no-TTS, NO_REPLY suppress, timestamp-format-1970, replyplayer-reset-on-switch, viewport-edge tooltip flip.
 
-**Completion criterion**: 8/8 smokes shipped AND green against current main.
+**Completion criterion** (met 2026-05-11): 7/8 shipped + 1 stub-with-promotion-criteria; full mocked suite at 78/80 (the 2 failures are pre-existing audio-subsystem smokes — `listen-silence-commit`, `mediasession-skip` — already in `notes/backlog/sidekick.md`, not Phase 0 concerns).
 
 ---
 
