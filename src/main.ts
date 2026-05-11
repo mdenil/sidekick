@@ -4185,7 +4185,17 @@ function replaySessionMessages(
   // Messages call so we don't loop on stuck divergence.
   const transcriptEl = document.getElementById('transcript');
   if (transcriptEl) {
-    const renderedCount = transcriptEl.querySelectorAll('.line[data-message-id]').length;
+    // Only count SERVER-BACKED bubbles (finalized, non-pending,
+    // non-failed, non-streaming). Optimistic in-flight bubbles
+    // (.pending, .failed for a send the user is about to retry,
+    // .streaming for a delta that hasn't finalized) are LOCAL-ONLY
+    // state and shouldn't trigger the divergence wipe — otherwise a
+    // reconcileActiveChat refetch immediately after a failed send
+    // wipes the .failed bubble + Retry button before the user can
+    // see them (smoke atomic-bubble-pending-failed.mjs).
+    const renderedCount = transcriptEl.querySelectorAll(
+      '.line[data-message-id]:not(.pending):not(.failed):not(.streaming)',
+    ).length;
     // Server count excludes system_meta rows (no content, dropped by
     // renderHistoryMessage). Filter to match.
     const serverContentCount = messages.filter((m: any) => {

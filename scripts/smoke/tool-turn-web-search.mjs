@@ -26,7 +26,12 @@ import { waitForReady, clickNewChat, send, deleteChat, captureNextChatId, SEL, a
 
 export const NAME = 'tool-turn-web-search';
 export const DESCRIPTION = 'web_search tool runs via Tavily, renders, and lands in state.db';
-export const STATUS = 'implemented';
+// install-only: gated on a working Tavily API key + slow real-hermes
+// round-trip. Runs at install / weekly cadence, not on every dev-loop
+// smoke run. Trigger explicitly with
+//   `npm run smoke -- tool-turn-web-search`  (name filter)
+//   `npm run smoke -- --include-install`     (suite-level opt-in)
+export const STATUS = 'install-only';
 // Real backend required — Tavily integration end-to-end is the thing
 // under test. Mock cannot stand in.
 export const BACKEND = 'real';

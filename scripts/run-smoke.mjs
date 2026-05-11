@@ -23,7 +23,14 @@
  * Scenario contract (each file in scripts/smoke/):
  *   export const NAME: string
  *   export const DESCRIPTION: string
- *   export const STATUS: 'implemented' | 'stub'
+ *   export const STATUS: 'implemented' | 'stub' | 'install-only'
+ *     - 'implemented'  → default suite
+ *     - 'stub'         → skipped unless --include-stubs (placeholder)
+ *     - 'install-only' → skipped unless --include-install or explicit name
+ *                        filter. Use for tests gated on third-party API
+ *                        keys or other heavy/expensive integration setup
+ *                        (e.g. Tavily). Run at install / weekly cadence,
+ *                        not on every dev-loop smoke run.
  *   export default async function run(ctx: SmokeContext): Promise<void>
  *
  * Scenarios should THROW on failure (or call ctx.fail). Returning =
@@ -45,6 +52,9 @@ const SMOKE_DIR = path.join(__dirname, 'smoke');
 const argv = process.argv.slice(2);
 const HEADED = argv.includes('--headed');
 const INCLUDE_STUBS = argv.includes('--include-stubs');
+// --include-install opts in to STATUS='install-only' scenarios. Used by
+// the post-install verifier; default dev-loop smoke skips them.
+const INCLUDE_INSTALL = argv.includes('--include-install');
 // --real-backend forces every scenario to run against the live hermes
 // stack regardless of its declared BACKEND. Default mode honors each
 // scenario's BACKEND export ('mocked' | 'real' | 'either').
@@ -133,9 +143,23 @@ async function runOne(scenario, browser) {
 
 async function main() {
   const scenarios = await loadScenarios();
-  let runnable = scenarios.filter(s => INCLUDE_STUBS || s.status === 'implemented');
+  // Status gating:
+  //   - 'implemented' always runs in the default suite.
+  //   - 'stub' runs only with --include-stubs.
+  //   - 'install-only' runs only with --include-install OR explicit name filter
+  //     (e.g. `npm run smoke -- tool-turn-web-search`).
+  let runnable;
   if (filter.length > 0) {
-    runnable = runnable.filter(s => filter.some(f => s.name.includes(f)));
+    // Explicit name filter overrides status — user intent wins. Allows
+    // running install-only scenarios directly by name during dev.
+    runnable = scenarios.filter(s => filter.some(f => s.name.includes(f)));
+  } else {
+    runnable = scenarios.filter(s => {
+      if (s.status === 'implemented') return true;
+      if (s.status === 'stub' && INCLUDE_STUBS) return true;
+      if (s.status === 'install-only' && INCLUDE_INSTALL) return true;
+      return false;
+    });
   }
   if (MOCKED_ONLY) {
     runnable = runnable.filter(s => s.backend !== 'real');
@@ -184,6 +208,8 @@ async function main() {
   for (const s of skipped) {
     if (s.status === 'stub') {
       console.log(`  · ${s.name.padEnd(28)}    skip   ${s.description} [stub]`);
+    } else if (s.status === 'install-only') {
+      console.log(`  · ${s.name.padEnd(28)}    skip   ${s.description} [install-only — use --include-install]`);
     }
   }
   console.log('─'.repeat(60));
