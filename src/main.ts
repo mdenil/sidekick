@@ -6,6 +6,11 @@
 import { loadConfig, getConfig, gwWsUrl, getAgentLabel, getAppName, applySkinning } from './config.ts';
 import { log, diag, setDebugElement } from './util/log.ts';
 import { mountDevPill, isDevMode } from './util/devMode.ts';
+import {
+  waitForSwActivation,
+  initPassiveUpdateDetector,
+  installForceUpdateConsoleHook,
+} from './swLifecycle.ts';
 import { fetchWithTimeout, TimeoutError } from './util/fetchWithTimeout.ts';
 import * as status from './status.ts';
 import * as settings from './settings.ts';
@@ -3877,38 +3882,8 @@ async function boot() {
     };
   }
 
-  // Passive update detector: when the browser's periodic update check
-  // (or the visibilitychange one in index.html) finds a new SW and it
-  // installs into a `waiting` state instead of auto-activating (e.g.
-  // because the OLD SW didn't call clients.claim or skipWaiting), flag
-  // it in the version label so the user knows clicking Refresh will
-  // jump them forward. Without this the only signal is the version
-  // string — and if the user hasn't memorized the latest, they can't
-  // tell they're stale.
-  if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.getRegistration().then((reg) => {
-      if (!reg) return;
-      const checkUpdateAvailable = () => {
-        if (reg.waiting && reg.active) {
-          markUpdateAvailable();
-        }
-      };
-      // Initial check: a previous SW may already be sitting in
-      // `waiting` state from a prior visibility-change update tick.
-      checkUpdateAvailable();
-      // updatefound fires whenever reg.installing is set (an update
-      // begins). Track it through to `installed`.
-      reg.addEventListener('updatefound', () => {
-        const installing = reg.installing;
-        if (!installing) return;
-        installing.addEventListener('statechange', () => {
-          if (installing.state === 'installed' && navigator.serviceWorker.controller) {
-            markUpdateAvailable();
-          }
-        });
-      });
-    }).catch(() => {});
-  }
+  // SW passive-update detector — see swLifecycle.ts.
+  initPassiveUpdateDetector();
 
   // Listen mode bootstrap — URL flag for headless smoke tests. Auto-arms
   // Listen on boot when ?listen=1 is present so the smoke can drive
@@ -3926,35 +3901,9 @@ async function boot() {
 
   log('page loaded, UA:', navigator.userAgent);
 
-  // Console-typeable nuclear reset for when SW updates get stuck
-  // ("update ready" toast but reload doesn't pick up the new code,
-  // Jonathan, 2026-05-05). Type `__forceUpdate()` in DevTools console:
-  // unregisters every SW, deletes every Cache, then hard-reloads with
-  // a cache-bust query. Deterministic. The normal refresh flow above
-  // SHOULD handle this; this is the escape hatch for when it doesn't.
-  (window as any).__forceUpdate = async () => {
-    log('[__forceUpdate] starting nuclear SW + cache reset');
-    try {
-      if ('serviceWorker' in navigator) {
-        const regs = await navigator.serviceWorker.getRegistrations();
-        for (const reg of regs) {
-          const ok = await reg.unregister();
-          log(`[__forceUpdate] unregister SW ${reg.scope}: ${ok}`);
-        }
-      }
-      if ('caches' in window) {
-        const keys = await caches.keys();
-        for (const k of keys) {
-          await caches.delete(k);
-          log(`[__forceUpdate] cache.delete ${k}`);
-        }
-      }
-    } catch (e: any) {
-      log(`[__forceUpdate] cleanup error: ${e?.message}`);
-    }
-    log('[__forceUpdate] reloading…');
-    location.replace(location.pathname + '?fresh=' + Date.now());
-  };
+  // Console-typeable nuclear reset for stuck SW updates — see
+  // swLifecycle.ts. Exposes `__forceUpdate()` on window.
+  installForceUpdateConsoleHook();
 
   // Background prefetch of the VAD assets so the first BargeDetector.start()
   // doesn't pay the ~14.7 MB download cost mid-tap.
@@ -4018,77 +3967,6 @@ async function boot() {
       }
     });
   }
-}
-
-/** Wait for a newly-detected SW to install + activate (signaled by a
- *  `controllerchange` event on the registration). Posts SKIP_WAITING
- *  on the new worker once it reaches the `installed` state — handles
- *  the race where the new SW's own install handler may or may not
- *  call self.skipWaiting() depending on its version.
- *
- *  Returns true if controllerchange fired (caller should NOT manually
- *  reload — index.html's controllerchange listener will), false on
- *  timeout (caller should reload manually).
- */
-async function waitForSwActivation(newWorker: ServiceWorker, timeoutMs: number): Promise<boolean> {
-  const postSkipWaitingIfReady = () => {
-    // Only the SW in `waiting` state honors SKIP_WAITING. `installing`
-    // becomes `installed` becomes `waiting` (or `activating` if claim
-    // is in flight). Send to whichever is non-null.
-    if (newWorker.state === 'installed') {
-      newWorker.postMessage({ type: 'SKIP_WAITING' });
-    }
-  };
-  postSkipWaitingIfReady();  // in case it's already installed
-
-  const stateChangeP = new Promise<void>((resolve) => {
-    const onChange = () => {
-      postSkipWaitingIfReady();
-      if (newWorker.state === 'redundant') {
-        // Install failed entirely (rare with the resilient install
-        // handler but possible). Give up gracefully.
-        newWorker.removeEventListener('statechange', onChange);
-        resolve();
-      }
-    };
-    newWorker.addEventListener('statechange', onChange);
-  });
-
-  const controllerChangeP = new Promise<boolean>((resolve) => {
-    const onChange = () => {
-      navigator.serviceWorker.removeEventListener('controllerchange', onChange);
-      resolve(true);
-    };
-    navigator.serviceWorker.addEventListener('controllerchange', onChange);
-  });
-
-  const timeoutP = new Promise<boolean>((resolve) => {
-    setTimeout(() => resolve(false), timeoutMs);
-  });
-
-  // Race controllerchange against the timeout. stateChangeP is just
-  // there to keep firing skip-waiting attempts as the worker progresses.
-  void stateChangeP;
-  return Promise.race([controllerChangeP, timeoutP]);
-}
-
-/** Surface a "new version available" hint in the version label. The
- *  user clicks Refresh to apply (which triggers the
- *  installed→activated flip). Idempotent. */
-function markUpdateAvailable(): void {
-  const el = document.getElementById('app-version');
-  if (!el) return;
-  if (el.dataset.updateAvailable === '1') return;
-  el.dataset.updateAvailable = '1';
-  // Append a small hint after the existing version text rather than
-  // overwriting — that way the user can still see which version they're
-  // on AND that an update is waiting.
-  const hint = document.createElement('span');
-  hint.className = 'version-update-hint';
-  hint.textContent = ' · update ready';
-  hint.title = 'Click Refresh to apply';
-  el.appendChild(hint);
-  diag('refresh: update available — added hint to version label');
 }
 
 // ─── Session resume (drawer tap) ────────────────────────────────────────────
