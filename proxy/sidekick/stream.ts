@@ -50,6 +50,12 @@
 
 import { getUpstream } from './index.ts';
 import * as inflight from './inflight.ts';
+import {
+  dispatchPush,
+  envelopeToPayload,
+  isPushEligibleType,
+} from './notifications/dispatch.ts';
+import { isConfigured as isNotificationsConfigured } from './notifications/index.ts';
 import type { SidekickEnvelope, UpstreamAgent } from './upstream.ts';
 
 type Envelope = Record<string, unknown> & { type: string; chat_id?: string };
@@ -126,6 +132,43 @@ function detach(sub: Subscriber): void {
   subscribers.delete(sub);
 }
 
+/** True if any SSE subscriber is currently attached to `chatId`. Used
+ *  by the push-dispatch gate to decide whether the user is "offline
+ *  for this chat" and should receive an OS notification. */
+function hasActiveSubFor(chatId: string): boolean {
+  if (!chatId) return false;
+  for (const sub of subscribers) {
+    // Diagnostic firehose subscribers (no chatId filter) DO count as
+    // viewing every chat — push would be redundant for them.
+    if (sub.chatId === null || sub.chatId === chatId) return true;
+  }
+  return false;
+}
+
+/** Fire-and-forget push delivery for push-eligible envelopes when the
+ *  user has no live SSE subscriber for the chat. Logs but doesn't throw
+ *  on failure — push is best-effort and shouldn't impact broadcast. */
+function maybeDispatchPush(env: Envelope): void {
+  if (!isNotificationsConfigured()) return;
+  if (!isPushEligibleType(env.type)) return;
+  const chatId = typeof env.chat_id === 'string' ? env.chat_id : '';
+  if (!chatId) return;
+  if (hasActiveSubFor(chatId)) return;  // user is live; SSE handles it
+  const payload = envelopeToPayload(env as Record<string, any>);
+  // Don't await — dispatch can take seconds (push services round-trip)
+  // and we don't want to block the next envelope.
+  dispatchPush(payload).then((result) => {
+    if (result.dispatched > 0 || result.pruned > 0) {
+      console.log(
+        `[notifications] dispatched type=${env.type} chat=${chatId} ` +
+        `→ delivered=${result.dispatched} pruned=${result.pruned} failed=${result.failed}`,
+      );
+    }
+  }).catch((e) => {
+    console.warn('[notifications] dispatchPush threw:', e?.message ?? e);
+  });
+}
+
 /** Push an envelope into the SSE multiplexer. Used by step-5 callers
  *  (upstream sendMessage iterators + subscribeEvents loop) to feed
  *  envelopes that arrived via the agent contract instead of WS.
@@ -158,6 +201,10 @@ export function pushEnvelope(env: SidekickEnvelope | Envelope): void {
     }
   }
   broadcast(env as Envelope);
+  // Push dispatch runs AFTER broadcast so live tabs see the message
+  // first (no double-render race), and so the hasActiveSubFor check
+  // sees the up-to-date subscriber set just before deciding.
+  maybeDispatchPush(env as Envelope);
 }
 
 /** Wired ONCE at proxy startup so envelope fan-out is in place before

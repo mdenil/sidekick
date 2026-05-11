@@ -26,6 +26,7 @@ import {
   removeSubscription,
   listSubscriptions,
 } from './storage.ts';
+import { dispatchPush } from './dispatch.ts';
 
 const MAX_BODY_BYTES = 8 * 1024;  // subscriptions are tiny, generous
 
@@ -117,22 +118,25 @@ export async function handleSidekickUnsubscribe(req: any, res: any): Promise<voi
 }
 
 /** POST /api/sidekick/notifications/test
- *  Phase 3a stub. Dispatch lands in 3c — for now the endpoint just
- *  acknowledges the request so the client + smoke tests have a stable
- *  surface to point at. Returns the count of subscriptions that WOULD
- *  receive a push, but doesn't actually send one. */
+ *  Dispatch a synthetic push to every stored subscription. Body is
+ *  optional:
+ *    { title?, body? }
+ *  Defaults to a "Test from Sidekick" payload. Returns counts of
+ *  delivered / failed / pruned subscriptions. Pruned subscriptions are
+ *  the ones the push service reported as gone (404/410) — storage
+ *  removes them so future dispatches don't waste a roundtrip. */
 export async function handleSidekickTest(req: any, res: any): Promise<void> {
   if (!isConfigured()) {
     return sendJson(res, 503, { error: 'vapid_unconfigured' });
   }
-  // Drain the body so the socket doesn't stall, but don't validate yet.
-  try { await readJsonBody(req); } catch { /* ignore — test endpoint is tolerant */ }
-  const total = listSubscriptions().length;
-  sendJson(res, 200, {
-    ok: true,
-    dispatched: 0,
-    failed: 0,
-    eligible: total,
-    note: 'dispatch lands in Phase 3c — endpoint is a stub today',
-  });
+  let body: any = null;
+  try { body = await readJsonBody(req); }
+  catch { /* tolerate empty / malformed body — test endpoint is forgiving */ }
+  const title = (body && typeof body.title === 'string' && body.title)
+    || 'Test from Sidekick';
+  const text = (body && typeof body.body === 'string' && body.body)
+    || 'Web Push is wired end-to-end ✓';
+  const eligible = listSubscriptions().length;
+  const result = await dispatchPush({ title, body: text });
+  sendJson(res, 200, { ok: true, eligible, ...result });
 }
