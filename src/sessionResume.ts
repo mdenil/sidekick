@@ -37,6 +37,7 @@ import * as replyNavigator from './audio/turn-based/replyNavigator.ts';
 import * as sessionDrawer from './sessionDrawer.ts';
 import * as backend from './backend.ts';
 import { showThinking } from './streamingIndicator.ts';
+import { getScrollPosition } from './chatScrollPositions.ts';
 
 /** Pattern for assistant replies the plugin signals as "no reply" (the
  *  agent chose to stay silent). We drop them from the rendered
@@ -247,7 +248,25 @@ export function replaySessionMessages(
   if (inflight && inflightSignalsMidTurn(inflight)) {
     showThinking();
   }
-  chat.forceScrollToBottom();
+  // Restore scroll: if a saved position exists for this chat AND the
+  // user wasn't pinned to bottom, land them where they left off.
+  // Otherwise scroll to bottom (cache miss, or atBottom=true → use
+  // forceScrollToBottom so iOS reflow + paint cases are handled).
+  // Saved by chat.ts's scroll listener on every user-initiated scroll.
+  const saved = getScrollPosition(id);
+  if (saved && !saved.atBottom && !targetMessageId) {
+    const transcriptEl2 = document.getElementById('transcript');
+    if (transcriptEl2) {
+      // Clamp to the current scrollHeight in case the chat shrank
+      // (messages deleted, compaction). Browser would clamp anyway,
+      // but explicit is clearer.
+      const maxTop = Math.max(0, transcriptEl2.scrollHeight - transcriptEl2.clientHeight);
+      transcriptEl2.scrollTop = Math.min(saved.scrollTop, maxTop);
+      log(`[chat-resume] restored scrollTop=${saved.scrollTop} (clamped to ${transcriptEl2.scrollTop})`);
+    }
+  } else {
+    chat.forceScrollToBottom();
+  }
 }
 
 /** True if the inflight set indicates the agent's turn is still in

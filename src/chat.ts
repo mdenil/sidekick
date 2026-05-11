@@ -11,6 +11,10 @@ import {
   saveSnapshot,
   clearSnapshot,
 } from './chatSnapshot.ts';
+import {
+  hydrateScrollPositions,
+  saveScrollPosition,
+} from './chatScrollPositions.ts';
 
 let transcriptEl: HTMLElement | null = null;
 let scrollToBottomBtn: HTMLElement | null = null;
@@ -177,6 +181,11 @@ export async function init(el: HTMLElement | null): Promise<boolean> {
   // before any reader path runs. Avoids racing a delete against a
   // concurrent loadSnapshot. See SCHEMA_VERSION comment for policy.
   await ensureSchemaFresh();
+  // Hydrate per-chat scroll positions from IDB into an in-memory
+  // cache so sessionResume can branch synchronously on switch-in
+  // (restore vs scroll-to-bottom). Best-effort — failures just mean
+  // every chat takes the scroll-to-bottom fallback path.
+  void hydrateScrollPositions();
 
   // Jump-to-bottom button wiring. The button lives outside the transcript
   // scroller (as a sibling inside .chat-column) so it stays fixed while
@@ -208,6 +217,18 @@ export async function init(el: HTMLElement | null): Promise<boolean> {
         diag(`[autoscroll] pinnedToBottom ${wasPinned}→${pinnedToBottom} (user-initiated, distance=${distance})`);
       }
       if (pinnedToBottom && !wasPinned) missedWhileScrolled = 0;
+      // Persist the per-chat scroll position. Save is debounced inside
+      // the helper (500ms per chat) so streaming-reply scroll cadence
+      // doesn't hammer IDB. atBottom is the load-bearing field — it
+      // tells the restore path to call forceScrollToBottom (which
+      // handles iOS WebKit's paint-after-reflow case) rather than
+      // setting a stale scrollTop.
+      if (transcriptEl && viewedSessionIdRef) {
+        saveScrollPosition(viewedSessionIdRef, {
+          scrollTop: transcriptEl.scrollTop,
+          atBottom: pinnedToBottom,
+        });
+      }
       updateButton();
     }, { passive: true });
   }
