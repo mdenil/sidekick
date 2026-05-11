@@ -5,6 +5,13 @@
 import * as backend from './backend.ts';
 import * as agentSettings from './agentSettings.ts';
 import { log } from './util/log.ts';
+import {
+  isPushSupported,
+  getActiveSubscription,
+  subscribe as pushSubscribe,
+  unsubscribe as pushUnsubscribe,
+  getPermission as getPushPermission,
+} from './notifications/index.ts';
 
 const STORAGE_KEY = 'sidekick.settings.v2';
 
@@ -519,6 +526,8 @@ export function hydrate(handlers: {
   const setFontSizeVal = $any('set-fontsize-val');
   const setTheme = $sel('set-theme');
   const setAgentActivity = $sel('set-agent-activity');
+  const setPush = $inp('set-push');
+  const setPushHint = $any('set-push-hint');
 
   // Apply `current` snapshot to every form control + label. Called
   // once at hydrate time and again on the cross-tab `sidekick:settings-
@@ -698,6 +707,58 @@ export function hydrate(handlers: {
     set('wakeLock', setWake.checked);
     if (handlers.onWakeLockChange) handlers.onWakeLockChange();
   };
+  // Push notifications — toggle is NOT a localStorage-backed setting;
+  // PushManager is the source of truth (a subscription survives across
+  // localStorage clears, doesn't survive a permission revoke). We
+  // re-derive the toggle state from getActiveSubscription() on every
+  // panel render + after each on-change action.
+  async function refreshPushUi(): Promise<void> {
+    if (!setPush) return;
+    if (!isPushSupported()) {
+      setPush.disabled = true;
+      setPush.checked = false;
+      if (setPushHint) setPushHint.textContent =
+        'not available — install as a PWA to enable';
+      return;
+    }
+    const perm = getPushPermission();
+    if (perm === 'denied') {
+      setPush.disabled = true;
+      setPush.checked = false;
+      if (setPushHint) setPushHint.textContent =
+        'blocked at OS level — re-enable in browser / device settings';
+      return;
+    }
+    setPush.disabled = false;
+    const sub = await getActiveSubscription();
+    setPush.checked = !!sub;
+    if (setPushHint) setPushHint.textContent = sub
+      ? 'on — replies will arrive as OS notifications'
+      : 'deliver replies via OS notifications when the app is closed';
+  }
+  // Run once on hydrate; the panel-open paths re-run via the
+  // settings-changed event below (since it re-applies DOM).
+  void refreshPushUi();
+  if (setPush) setPush.onchange = async () => {
+    // Disable during the async dance to prevent a double-click from
+    // spawning two subscribe calls. The PushManager handles concurrent
+    // calls safely, but the UX is cleaner.
+    setPush.disabled = true;
+    const targetOn = setPush.checked;
+    try {
+      if (targetOn) await pushSubscribe();
+      else await pushUnsubscribe();
+    } catch (e: any) {
+      log('[notifications] toggle failed:', e?.message ?? e);
+      if (setPushHint) setPushHint.textContent = `failed: ${e?.message ?? e}`;
+    }
+    await refreshPushUi();
+  };
+  // Cross-tab sync — refresh whenever any settings change fires.
+  // Cheap: getActiveSubscription is a single SW lookup. Without this,
+  // a subscribe done in tab A wouldn't surface in tab B's toggle until
+  // the user re-opened the panel.
+  window.addEventListener('sidekick:settings-changed', () => { void refreshPushUi(); });
   if (setCommitPhrase) setCommitPhrase.onchange = () => {
     // Empty string = commit-word disabled. Non-empty = that phrase.
     set('commitPhrase', setCommitPhrase.value.trim().toLowerCase());

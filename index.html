@@ -408,6 +408,15 @@
       </select>
       <span class="hint">show what tools the agent runs during a turn</span>
     </div>
+    <!-- Push notifications row. Disabled when the API isn't available
+         (non-PWA Safari, browsers without PushManager) or permission is
+         denied at OS level; the toggle drives subscribe()/unsubscribe()
+         in src/notifications/. -->
+    <div class="row">
+      <label for="set-push">Push notifications</label>
+      <input type="checkbox" id="set-push" disabled>
+      <span class="hint" id="set-push-hint">checking support…</span>
+    </div>
   </div>
 
   <div class="settings-group" data-section="display" hidden>
