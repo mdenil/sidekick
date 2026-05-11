@@ -3584,6 +3584,12 @@ async function boot() {
       // the long minting + rotation sequence.
       const btn = document.getElementById('sb-new-chat') as HTMLButtonElement | null;
       if (btn && !btn.disabled) btn.click();
+      // Hotkey path is desktop-only — focusing the composer is the
+      // natural next action so the user can start typing immediately
+      // without a second click. Mouse-click path on the same button
+      // deliberately does NOT auto-focus, since that would surface the
+      // soft keyboard on mobile.
+      composerInput.focus();
       return;
     }
     if (matches(s.hotkeyToggleMic)) {
