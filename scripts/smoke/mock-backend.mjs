@@ -157,16 +157,24 @@ export async function installMockBackend(page) {
       // mock.setPostTurnPersistence(true).
       const hasAssistantReply = c.messages.some(m => m.role === 'assistant');
       const firstUser = c.messages.find(m => m.role === 'user');
-      const firstUserMessage = firstUser && (!postTurnPersistence || hasAssistantReply)
+      const visiblePostTurn = !postTurnPersistence || hasAssistantReply;
+      const firstUserMessage = firstUser && visiblePostTurn
         ? String(firstUser.content || '').slice(0, 80)
         : null;
+      // message_count is also gated: real hermes' append_to_transcript
+      // fires post-turn, so /v1/gateway/conversations returns 0 until
+      // reply_final lands. Both `first_user_message` AND `message_count`
+      // need the same gate or the PWA's cleanup heuristic (messageCount
+      // > 0 → "server knows", spare from cleanup) misbehaves only in
+      // production, not in tests.
+      const messageCount = visiblePostTurn ? c.messages.length : 0;
       return {
         chat_id: c.chatId,
         session_id: `mock-${c.chatId}`,
         source: c.source || 'sidekick',
         title: c.title,
         last_active_at: new Date(c.lastActiveAt).toISOString(),
-        message_count: c.messages.length,
+        message_count: messageCount,
         created_at: new Date(c.lastActiveAt).toISOString(),
         first_user_message: firstUserMessage,
       };

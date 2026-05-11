@@ -527,6 +527,31 @@ async function boot() {
   function cleanupAbandonedChat(leavingId: string | null): void {
     if (!leavingId) return;
     if (draft.hasContent() || attachments.hasPending()) return;
+    // In-flight skip: if the user just sent a message and hermes hasn't
+    // yet persisted (post-turn append_to_transcript), `cached.messageCount`
+    // is still 0 — the cleanup heuristic below would treat this as an
+    // unsent orphan and wipe the local IDB row. On switch-back,
+    // resumeSession.hydrate(id) recreates the row with default 'New chat',
+    // erasing the snippet we stamped on send AND (post-reply, after
+    // inflight cache drops) leaving the transcript empty. Field bug
+    // 2026-05-11 — TEST #1 + TEST #4 in /tmp/real-timer-flow.mjs.
+    //
+    // Signal: proxyClient.sendMessage stamps the IDB title with the
+    // user's first message snippet. If the title is anything other than
+    // the 'New chat' placeholder, the user sent SOMETHING — never
+    // auto-clean. Async IDB read, fire-and-forget the rest of the work
+    // so the switch UI isn't blocked.
+    void (async () => {
+      const local = await conversations.get(leavingId).catch(() => null);
+      if (local && local.title && local.title !== 'New chat') {
+        diag(`navigate-away: skipping cleanup of ${leavingId} — IDB title=${JSON.stringify(local.title)} indicates user content`);
+        return;
+      }
+      cleanupAbandonedChatInner(leavingId);
+    })();
+  }
+
+  function cleanupAbandonedChatInner(leavingId: string): void {
     // CONTRACT (post-v0.383 unification, 2026-05-03):
     // Auto-cleanup is LOCAL-IDB-ONLY. backend.deleteSession is reserved
     // for explicit user actions (menu delete, multi-select bulk).
