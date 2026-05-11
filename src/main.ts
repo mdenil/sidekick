@@ -11,6 +11,7 @@ import {
   initPassiveUpdateDetector,
   installForceUpdateConsoleHook,
 } from './swLifecycle.ts';
+import { handleNotification, handleUserMessage } from './backendEvents.ts';
 import { fetchWithTimeout, TimeoutError } from './util/fetchWithTimeout.ts';
 import * as status from './status.ts';
 import * as settings from './settings.ts';
@@ -4769,61 +4770,6 @@ function handleToolEvent({ kind, payload, conversation }: any) {
     log('canvas.show event from agent');
     attachCardToLatestAgentBubble(payload);
   }
-}
-
-/** Push notification handler — cron output, /background results,
- *  scheduled reminders. Backends that support out-of-band push (today:
- *  hermes-gateway via /api/sidekick/notifications) call this; others
- *  never fire it. v1: append a styled system row in the targeted chat
- *  if it's currently being viewed. Off-screen chats get a no-op for
- *  now (a future iteration adds a drawer-side unread badge). Browser
- *  Push API / APNS / Web Push integration is a separate sprint. */
-function handleNotification({ chatId, kind, content }: any) {
-  // Off-screen chat — drop for v1. The drawer doesn't yet have an
-  // unread-badge surface; refresh on switch will pick up the message
-  // via the next listSessions / resumeSession round-trip.
-  if (chatId && chatId !== sessionDrawer.getViewed()) {
-    log(`notification (off-screen) chat=${chatId} kind=${kind}`);
-    return;
-  }
-  const label = kind ? `notification — ${kind}` : 'notification';
-  const text = content ? `(${label}) ${content}` : `(${label})`;
-  chat.addSystemLine(text);
-}
-
-/** Cross-device user-message broadcast handler. The upstream emits a
- *  `user_message` envelope as soon as a /v1/responses POST lands —
- *  every connected device receives it, including the originator.
- *
- *  Dedup: the originating device pre-minted `messageId` for its
- *  optimistic bubble (see sendTypedMessage) and registered it in
- *  renderedMessages. The upsert below is idempotent on that key, so
- *  for the originator this is a no-op (entry exists; status doesn't
- *  change; text doesn't change). For every OTHER device the entry
- *  doesn't exist yet — upsert creates a fresh user bubble.
- *
- *  Off-screen filtering: like reply_delta, drop only when the
- *  conversation is explicitly different from the viewed one. When
- *  getViewed() is null (boot races), render — there's no on-screen
- *  session to protect. */
-function handleUserMessage({ conversation, text, messageId }: any) {
-  if (!messageId) return;
-  const viewed = sessionDrawer.getViewed();
-  if (viewed && conversation && conversation !== viewed) {
-    log(`user_message (off-screen) chat=${conversation} msgId=${messageId}`);
-    return;
-  }
-  // Idempotent — originating device's optimistic bubble is already
-  // registered under this id, so this collapses to a no-op upsert
-  // (text is unchanged, status stays 'finalized'). Other devices
-  // create the bubble for the first time.
-  renderedMessages.upsert(messageId, {
-    role: 'user',
-    text: text || '',
-    status: 'finalized',
-    speaker: 'You',
-    cls: 's0',
-  });
 }
 
 // ─── Go ─────────────────────────────────────────────────────────────────────
