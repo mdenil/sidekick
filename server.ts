@@ -24,7 +24,6 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer, WebSocket } from 'ws';
 import YAML from 'yaml';
-import { validators } from './src/cards/validators.ts';
 import * as sidekick from './proxy/sidekick/index.ts';
 import {
   FRONTEND_SETTINGS,
@@ -1057,7 +1056,6 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && req.url === '/api/keyterms') return handleKeytermsGet(req, res);
   if (req.method === 'POST' && req.url.startsWith('/tts')) return handleTts(req, res);
   if (req.method === 'POST' && req.url.startsWith('/gen-image')) return handleGenImage(req, res);
-  if (req.method === 'POST' && req.url === '/canvas/show') return handleCanvasShow(req, res);
   if (req.method === 'POST' && (req.url === '/transcribe' || req.url.startsWith('/transcribe?'))) return handleTranscribe(req, res);
   if (req.method === 'GET' && req.url.startsWith('/weather')) return handleWeather(req, res);
   if (req.method === 'GET' && req.url.startsWith('/link-preview')) return handleLinkPreview(req, res);
@@ -1073,7 +1071,6 @@ const server = http.createServer(async (req, res) => {
 // streaming STT now flows through the audio-bridge WebRTC path, batch STT
 // through POST /transcribe → audio-bridge /v1/transcribe.)
 
-const canvasWss = new WebSocketServer({ noServer: true });
 const zcWss = new WebSocketServer({ noServer: true });
 
 // ── ZeroClaw gateway proxy config ──────────────────────────────────────────
@@ -1084,73 +1081,21 @@ const ZC_UPSTREAM = cfgVal('SIDEKICK_ZEROCLAW_WS', 'backend.zeroclaw.ws_url',
   'ws://127.0.0.1:42617/ws/chat') as string;
 const ZC_TOKEN = process.env.SIDEKICK_ZEROCLAW_TOKEN || '';  // secret — env only
 
-// ── Canvas broadcast: POST /canvas/show → all connected /ws/canvas clients ──
-// The canvas CLI tool POSTs a CanvasCard JSON here. We validate the envelope
-// and broadcast to all connected browser clients.
-const canvasClients = new Set<WebSocket>();
-
-canvasWss.on('connection', (ws) => {
-  canvasClients.add(ws);
-  console.log(`canvas ws: client connected (${canvasClients.size} total)`);
-  ws.on('close', () => { canvasClients.delete(ws); });
-  ws.on('error', () => { canvasClients.delete(ws); });
-});
-
-function broadcastCanvas(card) {
-  const msg = JSON.stringify(card);
-  for (const ws of canvasClients) {
-    if (ws.readyState === WebSocket.OPEN) ws.send(msg);
-  }
-}
-
-async function handleCanvasShow(req, res) {
-  let body = '';
-  req.on('data', c => { body += c; if (body.length > 1e5) req.destroy(); });
-  req.on('end', () => {
-    let card;
-    try { card = JSON.parse(body); } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: false, errors: ['invalid JSON'] }));
-      return;
-    }
-
-    // Envelope validation (v, kind, payload)
-    const errors = [];
-    if (card.v !== 1) errors.push(`unsupported version: ${card.v}`);
-    if (typeof card.kind !== 'string' || !card.kind) errors.push('missing kind');
-    if (!card.payload || typeof card.payload !== 'object') errors.push('missing payload');
-
-    // Per-kind payload validation (so the agent sees specific field errors)
-    if (errors.length === 0 && validators[card.kind]) {
-      errors.push(...validators[card.kind](card.payload));
-    }
-
-    if (errors.length > 0) {
-      console.error('canvas.show validation failed:', errors.join('; '));
-      res.writeHead(422, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: false, errors }));
-      return;
-    }
-
-    // Ensure meta.source is set
-    if (!card.meta) card.meta = {};
-    if (!card.meta.source) card.meta.source = 'agent';
-
-    broadcastCanvas(card);
-    console.log(`canvas.show: broadcast ${card.kind} to ${canvasClients.size} client(s)`);
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: true, kind: card.kind, clients: canvasClients.size }));
-  });
-  req.on('error', () => { if (!res.headersSent) res.writeHead(500); res.end(); });
-}
+// Canvas card delivery: agents emit `tool_event` envelopes with
+// `kind: 'canvas.show'` through the normal SSE channel — see
+// proxyClient.ts's stream router + main.ts:handleToolEvent. The
+// previous `POST /canvas/show` + `/ws/canvas` standalone-panel path
+// was a leftover from openclaw's deployment model where the canvas
+// rendered in its own browser window separate from the chat shell.
+// Sidekick never wired a `/ws/canvas` subscriber, so every POST to
+// that endpoint silently returned `clients: 0`. Both removed
+// 2026-05-11 — one delivery path, less confusion when a skill
+// reports "I emitted a canvas card." The cards/validators.ts module
+// is still around for whoever wants envelope-shape validation on
+// the SSE side; it's just not imported here anymore.
 
 server.on('upgrade', (req, socket, head) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
-
-  if (url.pathname === '/ws/canvas') {
-    canvasWss.handleUpgrade(req, socket, head, (ws) => canvasWss.emit('connection', ws, req));
-    return;
-  }
 
   if (url.pathname === '/ws/zeroclaw') {
     // Forward an optional session id so the browser can resume across page

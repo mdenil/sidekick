@@ -957,8 +957,8 @@ async function boot() {
   // ── Backend ────────────────────────────────────────────────────────────
   // Whichever adapter is configured (openclaw by default, openai-compat
   // for a minimal cloud-LLM deploy, future: geminilive) — same interface.
-  // Tool-event side channels (e.g. openclaw's /ws/canvas) are opened by
-  // the adapter as part of connect(); the shell just subscribes.
+  // Tool events including canvas.show flow through the regular SSE
+  // stream; the shell subscribes via onToolEvent below.
   await backend.connect({
     onStatus: async (connected) => {
       if (connected) {

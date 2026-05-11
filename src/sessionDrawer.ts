@@ -17,6 +17,7 @@
  */
 
 import * as backend from './backend.ts';
+import * as conversations from './conversations.ts';
 import * as sessionCache from './sessionCache.ts';
 import { log, diag } from './util/log.ts';
 import { parseQuery, applyFilter } from './sessionFilter.ts';
@@ -1330,19 +1331,60 @@ export function init(opts: {
  *  (the next refresh tick covers the gap). */
 export function handleSessionAnnounced(ev: { id?: string; snippet?: string; source?: string; started_at?: string }) {
   if (!ev?.id) return;
-  // Race guards: skip if the persisted row already exists OR we've already
-  // got a pending entry. Both ways the same row is already in the merged
-  // render output; firing again would just re-render needlessly.
-  if (cachedSessions.some(s => s.id === ev.id)) return;
-  if (pendingSessions.has(ev.id)) return;
-  // Synthesize a row matching listSessions shape. messageCount defaults
-  // to 1 (the user's first turn — the agent reply hasn't persisted yet).
-  // lastMessageAt is in seconds (the same epoch unit fmtRelativeTime uses).
+  const snippet = typeof ev.snippet === 'string' ? ev.snippet : '';
+  const listEl = document.getElementById('sessions-list');
+  const active = () => optimisticActiveId || viewedSessionId || backend.getCurrentSessionId?.() || '';
+
+  // Case 1 — the chat is already in cachedSessions (lazy-create flow:
+  // conversations.create() writes IDB with title='New chat', drawer
+  // refresh() merges that into cachedSessions before the user even
+  // types). If the cached row's title/snippet are still the placeholder
+  // ('New chat' / empty), patch them with the supplied snippet so the
+  // drawer shows the user's actual message text rather than a
+  // misleading "New chat 0 msgs" line. The server-side session_changed
+  // envelope still wins later (hermes-derived title overrides snippet).
+  const cached = cachedSessions.find(s => s.id === ev.id);
+  if (cached) {
+    if (snippet) {
+      const titlePlaceholder = !cached.title || cached.title === 'New chat';
+      const snippetEmpty = !cached.snippet;
+      if (titlePlaceholder && snippetEmpty) {
+        cached.snippet = snippet;
+        // Persist to IDB too — reload otherwise hydrates the stale
+        // 'New chat' title back from conversations.ts and the snippet
+        // is lost. updateTitle treats whatever string we pass as the
+        // display name; session_changed later overwrites it again
+        // with the canonical hermes-generated title.
+        void conversations.updateTitle(ev.id, snippet).catch(() => {});
+        if (listEl) renderListFiltered(listEl, active());
+      }
+    }
+    return;
+  }
+
+  // Case 2 — already pending. Refresh the snippet if it's getting more
+  // informative (first announce might have been title-less; second one
+  // can carry the actual user text).
+  if (pendingSessions.has(ev.id)) {
+    if (snippet) {
+      const p = pendingSessions.get(ev.id)!;
+      if (!p.snippet) {
+        p.snippet = snippet;
+        if (listEl) renderListFiltered(listEl, active());
+      }
+    }
+    return;
+  }
+
+  // Case 3 — net-new row. Synthesize matching the listSessions shape.
+  // messageCount defaults to 1 (the user's first turn — agent reply
+  // hasn't persisted yet). lastMessageAt is in seconds (same epoch
+  // unit fmtRelativeTime uses).
   const startedSec = ev.started_at ? Math.floor(Date.parse(ev.started_at) / 1000) : Math.floor(Date.now() / 1000);
   pendingSessions.set(ev.id, {
     id: ev.id,
     title: null,
-    snippet: typeof ev.snippet === 'string' ? ev.snippet : '',
+    snippet,
     source: ev.source || 'api_server',
     messageCount: 1,
     lastMessageAt: startedSec,
@@ -1351,10 +1393,7 @@ export function handleSessionAnnounced(ev: { id?: string; snippet?: string; sour
     // ring; this is when *this client* first heard about the row.
     _addedAt: Date.now(),
   });
-  const listEl = document.getElementById('sessions-list');
-  if (!listEl) return;
-  const active = optimisticActiveId || viewedSessionId || backend.getCurrentSessionId?.() || '';
-  renderListFiltered(listEl, active);
+  if (listEl) renderListFiltered(listEl, active());
 }
 
 /** Called after the user changes the sessions-filter setting. Drops the
