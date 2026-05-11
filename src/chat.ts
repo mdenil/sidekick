@@ -20,44 +20,59 @@ let speakerCount = 0;
 const DB_NAME = 'sidekick-chat';
 const STORE = 'transcripts';
 const SNAPSHOT_KEY = 'current';
-// Legacy sessionStorage key from before the IDB migration. The read
-// path was dropped 2026-05-01; only the cleanup `removeItem` in
-// clearSnapshot remains to evict stale entries on long-installed
-// PWAs (Jonathan's mom's iPhone). After 2026-07-01, delete the
-// constant + the `removeItem` line entirely.
-const LEGACY_SS_KEY = 'sidekick.transcript.v1';
 
-// IDB schema version. Bump to force a one-time wipe of cached
-// snapshots written by older PWA bundles.
+// Schema fingerprint. Bump SCHEMA_VERSION any time the on-disk format of
+// snapshots, bubble dedup keys, or the dom-shape persisted via persist()
+// would diverge between an older PWA bundle's writes and the current
+// reader. On boot, a mismatch between the stored fingerprint and this
+// constant triggers a one-shot IDB delete + reload-from-server. NO
+// migration path — fresh state is correct. Clients on the old version
+// get a single blank-transcript first paint (~200ms) then full server-
+// driven rebuild.
 //
 // History:
-//   v1 — initial; transcript HTML keyed by SNAPSHOT_KEY.
-//   v2 (2026-05-10) — bubble dedup keys changed from SSE-shape
-//        (umsg_*/msg_*) to plugin-supplied sidekick_id (which falls
-//        back to canonical integer id for pre-link-table rows). Old
-//        snapshots have stale keys that don't match what the new
-//        replaySessionMessages emits → would duplicate every reload
-//        until the user starts a fresh chat. The v2 upgrade clears
-//        the snapshot store so the first cold boot post-upgrade
-//        re-renders cleanly from the server. Cost: one ~200ms blank
-//        transcript on first reload after deploy.
-const DB_VERSION = 2;
+//   2026-05-11 — current. Bubble dedup keyed by plugin-supplied
+//                sidekick_id with integer fallback; control envelopes
+//                (approval prompts, etc.) persist to state.db and arrive
+//                through history fetch instead of the deprecated
+//                IDB-only addSystemLine path.
+const SCHEMA_VERSION = '2026-05-11';
+const SCHEMA_VERSION_KEY = 'sidekick.idb-schema-version';
+
+/** Detect a stale-schema IDB and nuke it. Runs once per page load,
+ *  BEFORE the first dbOpen(). LocalStorage holds the last-known-good
+ *  fingerprint; mismatch → indexedDB.deleteDatabase + write the new
+ *  fingerprint. On the next dbOpen the fresh database is created
+ *  cleanly. The reader path stays simple — no onupgradeneeded
+ *  branches, no version-juggling logic to maintain.
+ *
+ *  Why localStorage for the fingerprint: synchronous read at boot
+ *  means we can decide whether to nuke BEFORE any open(), avoiding
+ *  the race where an in-flight tx blocks the delete. Browsers that
+ *  evict localStorage (rare; Safari's 7-day inactivity case) will
+ *  read undefined → trigger one extra nuke. Acceptable.
+ */
+async function ensureSchemaFresh(): Promise<void> {
+  let stored: string | null = null;
+  try { stored = localStorage.getItem(SCHEMA_VERSION_KEY); } catch { /* private mode */ }
+  if (stored === SCHEMA_VERSION) return;
+  diag(`[chat] IDB schema ${stored ?? '(none)'} → ${SCHEMA_VERSION}: wiping cached transcript`);
+  await new Promise<void>((resolve) => {
+    const req = indexedDB.deleteDatabase(DB_NAME);
+    req.onsuccess = () => resolve();
+    req.onerror = () => resolve();        // best-effort; ignore failures
+    req.onblocked = () => resolve();      // some other tab holds it open
+  });
+  try { localStorage.setItem(SCHEMA_VERSION_KEY, SCHEMA_VERSION); } catch { /* private mode */ }
+}
 
 function dbOpen(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, DB_VERSION);
-    req.onupgradeneeded = (ev) => {
+    const req = indexedDB.open(DB_NAME, 1);
+    req.onupgradeneeded = () => {
       const db = req.result;
-      const oldVersion = (ev as IDBVersionChangeEvent).oldVersion ?? 0;
       if (!db.objectStoreNames.contains(STORE)) {
         db.createObjectStore(STORE, { keyPath: 'key' });
-      } else if (oldVersion < 2) {
-        // Existing store from v1 — wipe its contents so stale snapshots
-        // don't cause dedup-key mismatch on first boot of v2 code. The
-        // store object itself stays; only the records are dropped.
-        const tx = req.transaction!;
-        const store = tx.objectStore(STORE);
-        store.clear();
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -121,7 +136,6 @@ async function clearSnapshot(): Promise<void> {
     await reqP(db.transaction(STORE, 'readwrite').objectStore(STORE).delete(SNAPSHOT_KEY));
     db.close();
   } catch {}
-  try { sessionStorage.removeItem(LEGACY_SS_KEY); } catch {}
 }
 
 /** Pixels from bottom within which the user is considered "pinned" to the
@@ -257,6 +271,10 @@ export function autoScroll(): void {
  *  can't be synchronous; the cold-boot flash is sub-frame on modern devices. */
 export async function init(el: HTMLElement | null): Promise<boolean> {
   transcriptEl = el;
+  // Schema check FIRST — if the on-disk format is stale, nuke IDB
+  // before any reader path runs. Avoids racing a delete against a
+  // concurrent loadSnapshot. See SCHEMA_VERSION comment for policy.
+  await ensureSchemaFresh();
 
   // Jump-to-bottom button wiring. The button lives outside the transcript
   // scroller (as a sibling inside .chat-column) so it stays fixed while

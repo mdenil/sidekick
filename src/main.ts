@@ -1473,6 +1473,25 @@ async function boot() {
         list.push(bubble);
         pendingBubblesByChat.set(sendChatId, list);
       }
+      // Optimistic sidebar entry — show this chat in the drawer with
+      // the user's text as the snippet IMMEDIATELY, before the agent
+      // replies. Without this, the user fires off a message and the
+      // drawer shows "New chat" with 0 msgs until the server-side turn
+      // completes (which can be 30s+ on long tool-using turns). With
+      // it, multiple back-to-back new chats stack as the user expects.
+      // handleSessionAnnounced is idempotent: if the chat already has
+      // a cached row OR a pending row, it no-ops. The server-side
+      // session_changed envelope replaces the pending entry with the
+      // canonical title later.
+      if (sendChatId && text) {
+        const snippet = text.slice(0, 80);
+        sessionDrawer.handleSessionAnnounced({
+          id: sendChatId,
+          snippet,
+          source: 'sidekick',
+          started_at: new Date().toISOString(),
+        });
+      }
       const sendOpts: Record<string, any> = { userMessageId };
       if (hasAttachments) sendOpts.attachments = attachments.toSendPayload();
       // sendMessage is async (POST + await !res.ok rejection), so a
@@ -3365,6 +3384,13 @@ async function boot() {
         ? `Tap = dictate, hold = memo  ·  ${micHk}`
         : 'Tap = dictate, hold = memo');
     }
+    // sb-new-chat tooltip — hotkey hint for Cmd+Shift+O. Hardcoded for
+    // now (not yet a user-bindable setting; matches the hardcoded
+    // branch in the global hotkey handler below).
+    const btnNewChatEl = document.getElementById('sb-new-chat');
+    if (btnNewChatEl) {
+      setTooltip(btnNewChatEl, `New chat  ·  ${formatHotkey('Cmd+Shift+O')}`);
+    }
   }
   applyMicModeUi();
   // Hotkey rebinds in the settings panel should refresh tooltips. Fire
@@ -3700,6 +3726,16 @@ async function boot() {
     // toggles (PTT memo always sends; tap dictation never auto-sends).
     // The setting key + hotkey are dropped silently; old user-bound
     // values stay in localStorage but are no longer wired anywhere.
+    if (matches('Cmd+Shift+O')) {
+      claim();
+      // Hotkey route to the sidebar "New chat" button. Hardcoded
+      // binding for now (not yet user-configurable); same body as
+      // btnNewChat.onclick — synthesize a click so we don't duplicate
+      // the long minting + rotation sequence.
+      const btn = document.getElementById('sb-new-chat') as HTMLButtonElement | null;
+      if (btn && !btn.disabled) btn.click();
+      return;
+    }
     if (matches(s.hotkeyToggleMic)) {
       claim();
       // Toggle MIC specifically — startMicMode (memo/dictate). Not
