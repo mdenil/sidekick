@@ -1,6 +1,5 @@
 // Transcript snapshot persistence — IDB facade for chat.ts. Extracted
-// 2026-05-11 for the Phase 1 / pre-notifications refactor (see
-// docs/NOTIFICATIONS_REFACTOR_PLAN.md).
+// 2026-05-11 for the Phase 1 / pre-notifications refactor.
 //
 // Pure storage layer. No DOM access, no chat-state state. chat.ts
 // owns the in-memory `viewedSessionIdRef` + `restoredViewedSessionId`

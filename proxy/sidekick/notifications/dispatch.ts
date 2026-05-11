@@ -9,11 +9,9 @@
 //
 // Eligibility policy today: `reply_final` and `notification` envelopes
 // get pushed when no live SSE subscriber for that chat_id is attached.
-// The plan's longer-term goal is plugin-driven `should_push: true`
-// flag (decision #2 from NOTIFICATIONS_REFACTOR_PLAN.md); when the
-// plugin lands the flag, replace isPushEligibleType() with a flag
-// check. Until then, hardcoded type policy keeps this PR
-// pure-sidekick.
+// The longer-term goal is a plugin-driven `should_push: true` flag;
+// when the plugin lands the flag, replace isPushEligibleType() with a
+// flag check. Until then, hardcoded type policy keeps this pure-sidekick.
 
 import webpush from 'web-push';
 import { getVapidConfig } from './index.ts';

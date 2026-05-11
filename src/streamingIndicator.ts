@@ -1,6 +1,6 @@
 // Streaming indicator — the in-flight reply bubble state machine.
 // Extracted from main.ts 2026-05-11 for the Phase 2 / pre-notifications
-// refactor (see docs/NOTIFICATIONS_REFACTOR_PLAN.md).
+// refactor.
 //
 // One bubble at a time: there's at most one ".line.streaming" in the
 // transcript. The bubble walks through three states:

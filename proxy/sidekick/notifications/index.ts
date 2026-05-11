@@ -1,4 +1,4 @@
-// Web Push (VAPID) module facade — Phase 3 of NOTIFICATIONS_REFACTOR_PLAN.md.
+// Web Push (VAPID) module facade — Phase 3 of the notifications work.
 //
 // Owns the application-server identity (VAPID keypair), the subscription
 // store, the route handlers, and (in Phase 3c) the dispatch path that

@@ -1,7 +1,7 @@
-// Web Push (notifications) — client facade. Phase 3a of
-// docs/NOTIFICATIONS_REFACTOR_PLAN.md ships subscribe / unsubscribe /
-// permission roundtrip + feature probes. Phase 3b builds the settings-
-// panel toggle on top; 3c wires server-side dispatch from SSE.
+// Web Push (notifications) — client facade. Phase 3a ships subscribe /
+// unsubscribe / permission roundtrip + feature probes. Phase 3b builds
+// the settings-panel toggle on top; 3c wires server-side dispatch from
+// SSE.
 //
 // What lives here:
 //   init()                 — wired once from main.ts boot. Currently a

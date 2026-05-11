@@ -2,7 +2,7 @@
 // switches into a chat (initial replay, drawer click, cmdk search hit,
 // service-worker resume) and when they scroll to top to load earlier.
 // Extracted from main.ts 2026-05-11 for the Phase 2 / pre-notifications
-// refactor (see docs/NOTIFICATIONS_REFACTOR_PLAN.md).
+// refactor.
 //
 // Three exports + an init for plumbing:
 //

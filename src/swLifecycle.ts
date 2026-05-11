@@ -1,6 +1,6 @@
 // Service-worker lifecycle helpers — the SW-related code main.ts used
 // to inline. Extracted 2026-05-11 for the Phase 1 / pre-notifications
-// refactor (see docs/NOTIFICATIONS_REFACTOR_PLAN.md).
+// refactor.
 //
 // Three pieces here:
 //

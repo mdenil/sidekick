@@ -1,6 +1,6 @@
 // Adapter-envelope handlers — the inbound side of the BackendAdapter
 // contract. Extracted 2026-05-11 for the Phase 1 / pre-notifications
-// refactor (see docs/NOTIFICATIONS_REFACTOR_PLAN.md).
+// refactor.
 //
 // Scope intentionally narrow: only `handleNotification` and
 // `handleUserMessage` live here today. The streaming-bubble cluster —
@@ -31,8 +31,8 @@ import * as sessionDrawer from './sessionDrawer.ts';
  *  never fire it. v1: append a styled system row in the targeted chat
  *  if it's currently being viewed. Off-screen chats get a no-op for
  *  now (a future iteration adds a drawer-side unread badge). Browser
- *  Push API / APNS / Web Push integration is a separate sprint
- *  (Phase 3 — see docs/NOTIFICATIONS_REFACTOR_PLAN.md). */
+ *  Push API / APNS / Web Push integration ships in Phase 3 (see
+ *  src/notifications/ + proxy/sidekick/notifications/). */
 export function handleNotification({ chatId, kind, content }: any): void {
   // Off-screen chat — drop for v1. The drawer doesn't yet have an
   // unread-badge surface; refresh on switch will pick up the message

@@ -22,8 +22,7 @@
 //      multi-caller scenarios.
 //
 // When to revisit:
-//   - Phase 2's sessionResume.ts extraction (per
-//     docs/NOTIFICATIONS_REFACTOR_PLAN.md). If that refactor wires
+//   - Phase 2's sessionResume.ts extraction. If that refactor wires
 //     fetchHistory back into the proxyClient adapter, OR adds new
 //     callers of backfillHistory, the single-flight guard becomes
 //     load-bearing again — re-stub this file then.
