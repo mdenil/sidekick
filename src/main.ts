@@ -30,6 +30,13 @@ import {
   untrackPendingBubble,
   finalizeOldestPending,
 } from './streamingIndicator.ts';
+import {
+  initSessionResume,
+  replaySessionMessages,
+  renderHistoryMessage,
+  loadEarlierHistory,
+  NO_REPLY_RE,
+} from './sessionResume.ts';
 import { fetchWithTimeout, TimeoutError } from './util/fetchWithTimeout.ts';
 import * as status from './status.ts';
 import * as settings from './settings.ts';
@@ -92,9 +99,6 @@ import markdownCard from './cards/kinds/markdown.ts';
 import loadingCard from './cards/kinds/loading.ts';
 
 // ─── State ──────────────────────────────────────────────────────────────────
-
-/** Matches NO_REPLY and variants the agent sometimes emits when deciding not to reply. */
-const NO_REPLY_RE = /^\s*NO[-_]?(?:REPL(?:Y)?)?\.?\s*$/i;
 
 /** Re-render memo cards from IndexedDB into the transcript. Idempotent — render skips existing. */
 async function restoreMemoCards() {
@@ -922,6 +926,15 @@ async function boot() {
   // Streaming-bubble module — needs the agent-label callback wired
   // before backend.onSend(() => showThinking()) fires on the first send.
   initStreamingIndicator({ getAgentLabel });
+
+  // Session-resume rendering — drives the transcript on chat switch /
+  // resume / load-earlier. Needs agent-label + composer-ro callbacks
+  // plus a hook to flip the historyLoaded flag in main.ts.
+  initSessionResume({
+    getAgentLabel,
+    setComposerReadOnly,
+    setHistoryLoaded: () => { historyLoaded = true; },
+  });
 
   // Drive the mic-button peak indicator on the composer mic (the
   // toolbar #btn-mic is gone; the composer mic is now the single
@@ -3763,282 +3776,6 @@ async function boot() {
 }
 
 // ─── Session resume (drawer tap) ────────────────────────────────────────────
-
-/** Replay a transcript into the chat UI after the adapter resumes a session.
- *  Clears current chat (on a real session switch), re-renders the
- *  messages, and marks history as loaded so backfillHistory doesn't
- *  double-append. resume() can fire onResumeCb multiple times for the
- *  same id (cache-cb + server-cb when results match); when the viewed
- *  id is unchanged we skip the clear so renderedMessages.upsert can
- *  reconcile in place without the blank-and-repaint flicker. */
-function replaySessionMessages(
-  id: string,
-  messages: any[],
-  pagination?: { firstId: number | null; hasMore: boolean },
-  targetMessageId?: string,
-  inflight?: any[],
-) {
-  const viewed = sessionDrawer.getViewed();
-  const sameSession = viewed === id;
-  diag(
-    `[render-dupe] replaySessionMessages enter chat_id=${id} ` +
-    `viewed=${viewed ?? ''} sameSession=${sameSession} ` +
-    `msgCount=${messages.length} ` +
-    `mode=${sameSession ? 'merge-existing' : 'clear-and-repopulate'} ` +
-    `targetMessageId=${targetMessageId ?? ''} ` +
-    `firstId=${pagination?.firstId ?? ''} hasMore=${pagination?.hasMore ?? ''}`,
-  );
-  if (!sameSession) {
-    renderedMessages.clear();
-    // Activity rows belong to the previous chat's transcript; only
-    // clear when actually switching sessions. A same-session resume
-    // (visibility flip, SSE reconnect, post-turn drawer refresh)
-    // would otherwise wipe the just-rendered tool-call summary,
-    // leaving no record of what the agent did.
-    activityRow.clearAll();
-    // Reset the per-reply playback pointer + cancel any in-flight
-    // replay so a stale `.replaying` highlight doesn't survive into
-    // the new transcript and BT skip-fwd starts from the new chat's
-    // most-recent reply.
-    replyNavigator.reset();
-  }
-  historyLoaded = true;  // we just populated history ourselves; skip backfill
-  // Tell the drawer which session is ACTUALLY on screen — covers edge
-  // cases where the adapter's conversationName diverges from what the
-  // user is reading (superseded tokens, failed resumes, boot paths).
-  sessionDrawer.setViewed(id);
-  // Composer read-only when viewing a non-sidekick chat (cross-platform
-  // send isn't supported — would route through the wrong adapter).
-  const source = sessionDrawer.getSourceForChat(id);
-  setComposerReadOnly(source !== 'sidekick', source);
-  // Refresh server-side session list — handleReplyFinal also refreshes
-  // when a turn completes, but if the user switches sessions mid-flight
-  // (which aborts the SSE stream client-side), response.completed never
-  // arrives here even though the server keeps computing + persisting.
-  // Refreshing on switch catches that case so a now-persisted-but-not-
-  // yet-shown session appears in the drawer without a page reload.
-  // Coalesced: replaySessionMessages may be invoked multiple times in
-  // rapid succession (cache-cb + server-cb in resume()), and each
-  // independently-rendered drawer is wasted work + visible flicker.
-  sessionDrawer.scheduleRefresh();
-  // Persist the session id into the chat snapshot so a page reload can
-  // re-seed the drawer highlight to this session even though adapter
-  // state (conversationName) resets to default on reload.
-  chat.trackViewedSession(id);
-  viewedSessionForLoadEarlier = id;
-  const label = getAgentLabel();
-  // Batch-render: skip per-line autoScroll + persist (O(N²) without
-  // batching). One flush at end does the same work O(N).
-  const tRender0 = performance.now();
-  for (const m of messages) {
-    renderHistoryMessage(m, label, 'append', /*batch*/ true);
-  }
-  const tFlush0 = performance.now();
-  chat.flushBatchedRender();
-  const tEnd = performance.now();
-  log(
-    `[chat-resume] rendered ${messages.length} msgs ` +
-    `loop=${Math.round(tFlush0 - tRender0)}ms ` +
-    `flush=${Math.round(tEnd - tFlush0)}ms ` +
-    `total=${Math.round(tEnd - tRender0)}ms`,
-  );
-
-  // Divergence-detection self-heal. After a server-driven replay,
-  // the on-screen bubble count should match the server's message
-  // set (modulo system_meta rows the server hides + filtered-out
-  // CONTEXT-COMPACTION lines we silently drop in renderHistoryMessage).
-  // If the count is materially higher, an earlier render path leaked
-  // stale bubbles — most commonly the sidekick_id ↔ integer-id dedup-
-  // mismatch this code is designed to prevent. Clear and re-render
-  // once to recover. The check is O(1) on the happy path (DOM length
-  // count + comparison); the heal path is a fresh batch render of
-  // up to 200 messages (~10ms). Fires at most once per replaySession-
-  // Messages call so we don't loop on stuck divergence.
-  const transcriptEl = document.getElementById('transcript');
-  if (transcriptEl) {
-    // Only count SERVER-BACKED bubbles (finalized, non-pending,
-    // non-failed, non-streaming). Optimistic in-flight bubbles
-    // (.pending, .failed for a send the user is about to retry,
-    // .streaming for a delta that hasn't finalized) are LOCAL-ONLY
-    // state and shouldn't trigger the divergence wipe — otherwise a
-    // reconcileActiveChat refetch immediately after a failed send
-    // wipes the .failed bubble + Retry button before the user can
-    // see them (smoke atomic-bubble-pending-failed.mjs).
-    const renderedCount = transcriptEl.querySelectorAll(
-      '.line[data-message-id]:not(.pending):not(.failed):not(.streaming)',
-    ).length;
-    // Server count excludes system_meta rows (no content, dropped by
-    // renderHistoryMessage). Filter to match.
-    const serverContentCount = messages.filter((m: any) => {
-      const t = (m?.content || '').trim();
-      return t && !t.startsWith('[CONTEXT COMPACTION');
-    }).length;
-    // Tolerance of +1 covers an in-flight streaming bubble that the
-    // server hasn't persisted yet (rare during replay, but possible
-    // on tightly-timed reconnects). Higher delta = real divergence.
-    if (renderedCount > serverContentCount + 1) {
-      log(
-        `[chat-resume] divergence detected: DOM has ${renderedCount} ` +
-        `bubbles vs server ${serverContentCount} — clearing + re-rendering`,
-      );
-      renderedMessages.clear();
-      activityRow.clearAll();
-      replyNavigator.reset();
-      // Re-render from server. Don't recurse — we've already cleared
-      // the entries map so the upserts here are guaranteed to create.
-      for (const m of messages) {
-        renderHistoryMessage(m, label, 'append', /*batch*/ true);
-      }
-      chat.flushBatchedRender();
-      log(`[chat-resume] divergence healed: re-rendered ${messages.length} msgs from server`);
-    }
-  }
-  // Register pagination state AFTER messages land so the scroll listener
-  // doesn't fire mid-render. hasMore=false (or missing) disables lazy-load.
-  chat.setPaginationState(pagination?.firstId ?? null, !!pagination?.hasMore);
-  // If the resume was driven by a message-search hit, find the matching
-  // bubble and scroll it into view + flash. Best-effort: if the hit
-  // predates the initial replay window (older than the first ~200
-  // messages), the bubble isn't in the DOM and we fall back to the
-  // standard scroll-to-bottom. Drill-to-message via load-earlier is
-  // a separate backlog item — see backlog.md.
-  if (targetMessageId) {
-    const transcriptEl = document.getElementById('transcript');
-    const target = transcriptEl?.querySelector(
-      `.line[data-message-id="${CSS.escape(targetMessageId)}"]`,
-    ) as HTMLElement | null;
-    if (target) {
-      target.scrollIntoView({ block: 'center', behavior: 'smooth' });
-      target.classList.add('search-target-flash');
-      setTimeout(() => target.classList.remove('search-target-flash'), 1500);
-      return;
-    }
-    // Fallthrough to scroll-to-bottom if not found — don't leave the
-    // user stranded on a random scroll position. A future backlog
-    // item drives load-earlier until the target is located.
-    log(`[cmdk] target message ${targetMessageId} not in initial replay; load-earlier drill not yet implemented`);
-  }
-  // Replay any inflight envelopes from the proxy's in-memory cache —
-  // user message + tool calls + reply deltas for an in-flight turn
-  // that hermes-core hasn't yet persisted to state.db. Replay happens
-  // AFTER the state.db render+clear+divergence-heal so the just-
-  // rendered state.db bubbles aren't wiped by the clear path. Each
-  // envelope goes through the same handler the live SSE stream uses
-  // (handleReplyDelta / handleUserMessage / activityRow.appendToolCall
-  // etc.) — keyed by stable id so live SSE arrival during this window
-  // collapses to the same bubble idempotently. See
-  // proxy/sidekick/inflight.ts for the server-side lifecycle.
-  if (inflight && inflight.length > 0) {
-    log(`[chat-resume] replaying ${inflight.length} inflight envelope(s)`);
-    backend.replayInflight?.(id, inflight);
-  }
-  chat.forceScrollToBottom();
-}
-
-/** Shared rendering for both initial replay (append) and load-earlier
- *  (prepend, batched). The caller owns scroll behavior + persist. */
-function renderHistoryMessage(m: any, label: string, mode: 'append' | 'prepend' = 'append', batch: boolean = false) {
-  const raw = (m.content || '').trim();
-  const text = raw;
-  if (!text) return;
-  // Hermes state.db stores timestamp as float UNIX seconds. chat.addLine's
-  // formatTime passes through new Date(ts) which expects milliseconds, so
-  // without the *1000 it'd render 1970. If ts is already >= 1e12 it's
-  // probably ms already (openclaw / openai-compat backends), so pass
-  // through unchanged.
-  const rawTs = m.timestamp || m.created_at || m.at;
-  const ts = typeof rawTs === 'number' && rawTs < 1e12 ? rawTs * 1000 : rawTs;
-  const prepend = mode === 'prepend';
-  // Stamp data-message-id on history-rendered bubbles so a subsequent
-  // SSE re-delivery for the same message can be deduped at the handler
-  // level (see handleReplyDelta / handleReplyFinal).
-  //
-  // Key selection: prefer `sidekick_id` (the SSE-shape id the plugin
-  // emitted live via user_message / reply_final) over the raw integer
-  // `id` from state.db. Without this preference the IDB-cached bubble
-  // (keyed by umsg_*/msg_*) won't match the history-replay upsert
-  // (keyed by integer), causing every reload to duplicate the entire
-  // transcript. See backends/hermes/plugin's _write_msg_links_after_turn
-  // for the link table the plugin populates after each turn. Falls
-  // back to integer id for legacy rows persisted before the link table
-  // existed and for messages from other channels (telegram, slack, ...).
-  const messageId = m.sidekick_id
-    ? String(m.sidekick_id)
-    : (m.id != null ? String(m.id) : undefined);
-  // Caller may force batching even for append (resume-loop case);
-  // prepend always batches because chat.prependHistory wraps the loop.
-  const useBatch = prepend || batch;
-  if (m.role === 'assistant') {
-    if (NO_REPLY_RE.test(text)) return;
-    if (messageId) {
-      renderedMessages.upsert(messageId, {
-        role: 'assistant',
-        text,
-        status: 'finalized',
-        speaker: label,
-        cls: 'agent',
-        markdown: true,
-        timestamp: ts,
-        prepend,
-        batch: useBatch,
-        // replyNavigator (BT skip-fwd / skip-back, per-bubble play
-        // chips) keys off data-reply-id. For history-rendered bubbles
-        // there's no separate replyId from the live SSE path, so reuse
-        // messageId — same stable identifier, same dedup semantics.
-        replyId: messageId,
-      });
-    } else {
-      chat.addLine(label, text, 'agent', {
-        markdown: true, timestamp: ts, prepend, batch: useBatch,
-      });
-    }
-  } else if (m.role === 'user') {
-    if (messageId) {
-      renderedMessages.upsert(messageId, {
-        role: 'user',
-        text,
-        status: 'finalized',
-        speaker: 'You',
-        cls: 's0',
-        timestamp: ts,
-        prepend,
-        batch: useBatch,
-      });
-    } else {
-      chat.addLine('You', text, 's0', {
-        timestamp: ts, prepend, batch: useBatch,
-      });
-    }
-  }
-  // Tool role / system role: skip for now; UI has no slot for them.
-}
-
-/** Session id the chat is currently viewing — used by the load-earlier
- *  callback so it knows which session to fetch older messages for.
- *  Updated by replaySessionMessages. */
-let viewedSessionForLoadEarlier: string | null = null;
-
-async function loadEarlierHistory(beforeId: number) {
-  const id = viewedSessionForLoadEarlier;
-  if (!id) return;
-  const result: any = await backend.loadEarlier(id, beforeId);
-  const older = result.messages || [];
-  if (!older.length) {
-    chat.setPaginationState(null, false);
-    return;
-  }
-  const label = getAgentLabel();
-  chat.prependHistory(() => {
-    // Iterate oldest→newest. Each prepend inserts at firstChild, so the
-    // LAST call ends up topmost — which is what we want since older
-    // messages should sit above newer ones that were already on screen.
-    // (The returned `messages` array is chronological oldest→newest.)
-    for (let i = older.length - 1; i >= 0; i--) {
-      renderHistoryMessage(older[i], label, 'prepend');
-    }
-  });
-  chat.setPaginationState(result.firstId ?? null, !!result.hasMore);
-}
 
 // ─── Session history backfill ────────────────────────────────────────────────
 
