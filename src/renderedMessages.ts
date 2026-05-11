@@ -143,9 +143,19 @@ function updateExisting(entry: Entry, partial: UpsertPartial): HTMLElement {
 }
 
 function escapeText(s: string): string {
-  return s.replace(/[&<>"']/g, ch => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', '\'': '&#39;',
-  }[ch]!));
+  // HTML-escape first (neutralizes any < > & " ' in the user text), then
+  // convert real newlines to <br>. Matches chat.addLine's plain-text
+  // render path at chat.ts:456. Without the newline conversion an
+  // update-existing upsert (e.g. user_message echo from the upstream
+  // round-trip overwriting the freshly-created optimistic bubble) would
+  // wipe the <br>s that chat.addLine inserted at create time and the
+  // user's multi-line prompt collapses into a wall of text. Field bug
+  // 2026-05-11.
+  return s
+    .replace(/[&<>"']/g, ch => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', '\'': '&#39;',
+    }[ch]!))
+    .replace(/\n/g, '<br>');
 }
 
 /** Wipe both the in-memory map and the transcript DOM children. */
