@@ -2275,6 +2275,21 @@ class SidekickAdapter(BasePlatformAdapter):
             return web.json_response(
                 {"error": "model query param required"}, status=400,
             )
+        # PWA-side picker values are composite ids: bare `<vendor>/<name>`
+        # (OpenRouter) or `<provider-slug>:<name>` (e.g.
+        # `openai-codex:gpt-5.5`, `copilot:gpt-5.4`). models.dev is keyed
+        # by bare model id, so when we see a `<slug>:<model>` shape AND
+        # no explicit provider was passed, decode it BEFORE the lookup.
+        # Pre-2026-05-11 the prefix was passed verbatim and models.dev
+        # missed every lookup for non-OpenRouter selections — PWA fell
+        # through to the vision_fallback advertisement even for natively-
+        # vision-capable models like openai-codex:gpt-5.5. The same
+        # slash-vs-colon-prefix detection lives in _apply_model_setting
+        # (line ~2626) — both call sites use it now.
+        if not provider and ":" in model and "/" not in model.split(":", 1)[0]:
+            slug, _, mid = model.partition(":")
+            provider = slug.strip()
+            model = mid.strip()
         try:
             from agent.models_dev import (
                 get_model_capabilities,
