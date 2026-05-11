@@ -7,7 +7,7 @@ Update as phases complete; remove entirely once Phase 3 ships.
 
 **Total estimate**: ~22-26h focused work, 3-4 sittings (per `feedback_time_estimates.md`).
 
-**Current status (2026-05-11 evening)**: Phase 0 **COMPLETE** (7/8 shipped + 1 documented stub). Phases 1-3 not started; Phase 1 unblocked.
+**Current status (2026-05-11 evening)**: Phase 0 **COMPLETE** (7/8 shipped + 1 documented stub). Phase 1 **COMPLETE** (3 commits: `4f4e11e` swLifecycle, `6dbe4be` backendEvents partial, `4941c2f` chatSnapshot). Phase 2 unblocked.
 
 ---
 
@@ -34,12 +34,13 @@ diff lands green-or-red instantly instead of via post-merge field bug.
 
 ---
 
-## Phase 1 — Pre-notifications refactors (~3-4h, blocker for Phase 3)
+## Phase 1 — Pre-notifications refactors (~3-4h, **COMPLETE** 2026-05-11)
 
-The two extractions that directly enable Phase 3's wiring, plus the migration
-code that moves naturally with them.
+Three extractions shipped as 3 separate commits, each independently rollback-safe (per `feedback_refactor_commit_style.md`). main.ts: 4863 → 4780 LOC. chat.ts: 785 → 655 LOC. Full mocked suite stayed at 78/80 throughout.
 
-### `src/swLifecycle.ts` (~180 LOC, from main.ts:3730-4024)
+The streaming-handler cluster — `handleReplyDelta`, `handleReplyFinal`, `handleActivity`, `handleToolEvent` + `showStreamingIndicator`/`finalizeOldestPending`/`clearStreamingIndicator`/`pendingStreamingKey`/`streamingIdleTimer` — stayed in main.ts. They share mutable state that's coherent only as one unit, and they're the natural cohort for Phase 2's `streamingIndicator.ts` extraction. Phase 3 doesn't need them split off.
+
+### `src/swLifecycle.ts` (~180 LOC, from main.ts:3730-4024) — `4f4e11e` ✓
 
 Existing pieces to extract:
 - `waitForSwActivation`
@@ -51,27 +52,24 @@ Why notifications needs this: Web Push registration uses
 `navigator.serviceWorker.getRegistration()` + `reg.pushManager.subscribe()`.
 Having a single owner of SW lifecycle gives those hooks a clean home.
 
-### `src/backendEvents.ts` (~270 LOC, from main.ts:4581-4856)
+### `src/backendEvents.ts` (~80 LOC, partial — `6dbe4be` ✓)
 
-Existing pieces to extract:
-- `handleReplyDelta`
-- `handleReplyFinal`
-- `handleToolEvent`
-- `handleNotification` ← **Phase 3 integration point at line 4810**
+Shipped pieces:
+- `handleNotification` ← **Phase 3 integration point**
 - `handleUserMessage`
-- `handleActivity`
 
-Why first: `handleNotification` is a stub today. The Phase 3 expansion
-(`show OS notification when off-screen + badge update`) lands inside the
-extracted file with full test coverage from the two notification smokes.
+Deferred to Phase 2's `streamingIndicator.ts` extraction (shared mutable state forces them to move together):
+- `handleReplyDelta`, `handleReplyFinal`, `handleActivity`, `handleToolEvent`
+- `showStreamingIndicator`, `finalizeOldestPending`, `clearStreamingIndicator`
+- `pendingStreamingKey`, `streamingIdleTimer`, `pendingBubblesByChat`
 
-### `src/chatSnapshot.ts` (lift IDB persistence from chat.ts:20-148)
+Phase 3's Web Push expansion only needs `handleNotification` to have its own owner, which it does now. The deferred handlers move when the streaming-state cluster moves.
 
-Why now: the schema-fingerprint smoke already pins the migration behavior
-(Phase 0 ✓). The lift is mechanical with the smoke as backstop.
+### `src/chatSnapshot.ts` (~140 LOC, from chat.ts:20-148) — `4941c2f` ✓
 
-**Completion criterion**: three files extracted, main.ts shrinks by ~600 LOC, all existing smokes still green, each file committed separately (per
-`feedback_refactor_commit_style.md`: structural + behavioral commits separate, each rollback-safe).
+Schema-fingerprint smoke already pinned the migration behavior in Phase 0 (`idb-schema-fingerprint.mjs`), so the lift was mechanical. chat.ts went 785 → 655 LOC.
+
+**Completion criterion** (met 2026-05-11): three files extracted; main.ts shrunk by ~80 LOC + chat.ts shrunk by ~130 LOC (remaining target ~600 LOC lives with the streaming-handler cluster moved in Phase 2); all existing smokes still green; each file committed separately per `feedback_refactor_commit_style.md`.
 
 ---
 
