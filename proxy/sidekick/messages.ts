@@ -120,6 +120,19 @@ export async function handleSidekickMessage(req, res) {
   // hermes' vision tools can read them; raw OAI third-party upstreams
   // ignore the unknown field.
   const messageId = newMessageId();
+  // Field-bug diagnostic (Jonathan 2026-05-11): user reported that
+  // messages typed into the PWA never reach state.db despite the
+  // optimistic bubble showing as sent. State.db ends up with the
+  // chat row but 0 messages, and gateway logs only show GET history
+  // requests — no /v1/responses POST. Surface every step of the
+  // dispatch so the next repro pins where in the pipeline the
+  // message gets dropped.
+  console.log(
+    `[sidekick:messages] POST chat=${chatId} ` +
+    `text=${JSON.stringify(text.slice(0, 80))} ` +
+    `userMsgId=${userMessageId || '(none)'} ` +
+    `attachCount=${attachments?.length || 0}`,
+  );
   void dispatchTurnViaUpstream(upstream, chatId, text, attachments, voice, userMessageId);
   res.writeHead(202, { 'content-type': 'application/json' });
   res.end(JSON.stringify({ ok: true, message_id: messageId }));
@@ -133,15 +146,32 @@ async function dispatchTurnViaUpstream(
   voice?: boolean,
   userMessageId?: string,
 ): Promise<void> {
+  const t0 = Date.now();
+  let envelopeCount = 0;
+  console.log(`[sidekick:dispatch] start chat=${chatId}`);
   try {
     for await (const envelope of upstream.sendMessage(chatId, text, {
       ...(attachments && attachments.length > 0 ? { attachments } : {}),
       ...(voice ? { voice: true } : {}),
       ...(userMessageId ? { userMessageId } : {}),
     })) {
+      envelopeCount += 1;
+      console.log(
+        `[sidekick:dispatch] +${Date.now() - t0}ms envelope #${envelopeCount} ` +
+        `type=${(envelope as any).type} chat=${chatId}`,
+      );
       pushEnvelope(envelope);
     }
+    console.log(
+      `[sidekick:dispatch] end chat=${chatId} ` +
+      `envelopeCount=${envelopeCount} elapsed=${Date.now() - t0}ms`,
+    );
   } catch (e: any) {
+    console.error(
+      `[sidekick:dispatch] FAILED chat=${chatId} ` +
+      `envelopeCount=${envelopeCount} elapsed=${Date.now() - t0}ms ` +
+      `err=${e?.message || String(e)}`,
+    );
     pushEnvelope({
       type: 'error',
       chat_id: chatId,
