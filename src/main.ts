@@ -12,6 +12,7 @@ import {
   installForceUpdateConsoleHook,
 } from './swLifecycle.ts';
 import { handleNotification, handleUserMessage } from './backendEvents.ts';
+import { initAppTooltip } from './util/tooltip.ts';
 import { fetchWithTimeout, TimeoutError } from './util/fetchWithTimeout.ts';
 import * as status from './status.ts';
 import * as settings from './settings.ts';
@@ -898,80 +899,9 @@ async function boot() {
   // a button lands the event on the child, which has no `title`.
   // Without the walk-up, those buttons fall back to the native
   // ~1.5s tooltip. closest() finds the button up the tree.
-  const TOOLTIP_DELAY_MS = 300;
-  let tipEl: HTMLDivElement | null = null;
-  let tipTarget: HTMLElement | null = null;
-  let tipShowTimer: number | null = null;
-  function clearShowTimer() {
-    if (tipShowTimer != null) {
-      clearTimeout(tipShowTimer);
-      tipShowTimer = null;
-    }
-  }
-  function hideTip() {
-    clearShowTimer();
-    if (tipEl) { tipEl.remove(); tipEl = null; }
-    tipTarget = null;
-  }
-  function showTip(target: HTMLElement, text: string) {
-    if (tipEl) tipEl.remove();
-    const el = document.createElement('div');
-    el.className = 'app-tooltip';
-    el.textContent = text;
-    document.body.appendChild(el);
-    const r = target.getBoundingClientRect();
-    const er = el.getBoundingClientRect();
-    let top = r.top - er.height - 6;
-    if (top < 4) {
-      el.classList.add('below');
-      top = r.bottom + 6;
-    }
-    let left = r.left + r.width / 2 - er.width / 2;
-    if (left < 4) left = 4;
-    if (left + er.width > window.innerWidth - 4) {
-      left = window.innerWidth - 4 - er.width;
-    }
-    el.style.top = `${top}px`;
-    el.style.left = `${left}px`;
-    tipEl = el;
-    tipTarget = target;
-  }
-  document.body.addEventListener('mouseover', (e) => {
-    const t = (e.target as HTMLElement | null)?.closest?.('[title]') as HTMLElement | null;
-    if (!t) return;
-    if (t === tipTarget) return;  // already scheduled / shown
-    const v = t.getAttribute('title');
-    if (!v) return;
-    // Suppress native tooltip while ours pends.
-    t.setAttribute('data-tip', v);
-    t.removeAttribute('title');
-    clearShowTimer();
-    tipShowTimer = window.setTimeout(() => {
-      tipShowTimer = null;
-      showTip(t, v);
-    }, TOOLTIP_DELAY_MS) as unknown as number;
-  }, true);
-  document.body.addEventListener('mouseout', (e) => {
-    const t = (e.target as HTMLElement | null)?.closest?.('[data-tip]') as HTMLElement | null;
-    if (!t) return;
-    const related = (e as MouseEvent).relatedTarget as Node | null;
-    if (related && t.contains(related)) return;  // moving within the same tipped element
-    const v = t.getAttribute('data-tip');
-    if (v) { t.setAttribute('title', v); t.removeAttribute('data-tip'); }
-    if (tipTarget === t || tipShowTimer != null) hideTip();
-  }, true);
-  // Hide tip on scroll/resize since the bounding rect we computed is stale.
-  window.addEventListener('scroll', hideTip, true);
-  window.addEventListener('resize', hideTip);
-  // Hide tip on any pointerdown / touchstart — iOS synthesizes mouseover
-  // from a tap, so a tap on (e.g.) the pocket-lock button schedules the
-  // tooltip; by the time it fires 300ms later, the button's action has
-  // launched (lockscreen overlay) and the tooltip ends up rendered on
-  // top of it. Pointer / touch events fire BEFORE the synthesized mouse
-  // events on tap, so killing the tooltip here lands ahead of any
-  // schedule.
-  window.addEventListener('pointerdown', hideTip, true);
-  window.addEventListener('touchstart', hideTip, { capture: true, passive: true });
+  // Custom tooltip — replaces the native ~1.5s tooltip with a styled,
+  // viewport-aware bubble that hides on iOS tap. See util/tooltip.ts.
+  initAppTooltip();
 
   // Drive the mic-button peak indicator on the composer mic (the
   // toolbar #btn-mic is gone; the composer mic is now the single
