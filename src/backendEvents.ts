@@ -68,13 +68,26 @@ export function handleUserMessage({ conversation, text, messageId }: any): void 
     log(`user_message (off-screen) chat=${conversation} msgId=${messageId}`);
     return;
   }
+  // Defensive: an empty/missing text on a user_message envelope must
+  // not WIPE an existing populated bubble. The upsert below is keyed
+  // by messageId, so a second envelope for the same id with text=""
+  // would otherwise overwrite the bubble's text and the user sees
+  // their own message vanish. Production hermes envelopes always
+  // carry text, but a serialization race, a future codepath that
+  // emits a metadata-only ping, or a partial replay must not clobber
+  // the user's words. Pinned by
+  // scripts/smoke/user-message-empty-text-noop.mjs.
+  if (!text) {
+    log(`user_message (empty text) chat=${conversation} msgId=${messageId} — skip to preserve existing bubble`);
+    return;
+  }
   // Idempotent — originating device's optimistic bubble is already
   // registered under this id, so this collapses to a no-op upsert
   // (text is unchanged, status stays 'finalized'). Other devices
   // create the bubble for the first time.
   renderedMessages.upsert(messageId, {
     role: 'user',
-    text: text || '',
+    text,
     status: 'finalized',
     speaker: 'You',
     cls: 's0',

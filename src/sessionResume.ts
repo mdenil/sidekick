@@ -36,6 +36,7 @@ import * as activityRow from './activityRow.ts';
 import * as replyNavigator from './audio/turn-based/replyNavigator.ts';
 import * as sessionDrawer from './sessionDrawer.ts';
 import * as backend from './backend.ts';
+import { showThinking } from './streamingIndicator.ts';
 
 /** Pattern for assistant replies the plugin signals as "no reply" (the
  *  agent chose to stay silent). We drop them from the rendered
@@ -232,7 +233,38 @@ export function replaySessionMessages(
     log(`[chat-resume] replaying ${inflight.length} inflight envelope(s)`);
     backend.replayInflight?.(id, inflight);
   }
+  // Mid-flight restoration: if the inflight set says the agent's turn
+  // is still in progress (a user_message envelope exists but no matching
+  // reply_final has fired), re-show the thinking indicator so the user
+  // knows the turn is still pending. showThinking() is a no-op when a
+  // streaming bubble already exists (replayInflight would have created
+  // one if reply_delta envelopes were in the set). Without this, an
+  // early-window switch — user sends, switches away before the agent
+  // emits ANY reply envelopes, then switches back — drops the in-flight
+  // indicator entirely; user sees their own message + silence and
+  // assumes the agent hung. Pinned by
+  // scripts/smoke/inflight-thinking-survives-switch.mjs.
+  if (inflight && inflightSignalsMidTurn(inflight)) {
+    showThinking();
+  }
   chat.forceScrollToBottom();
+}
+
+/** True if the inflight set indicates the agent's turn is still in
+ *  flight: there's at least one user_message envelope and no matching
+ *  reply_final. The proxy's inflight cache lingers for 30s after
+ *  reply_final (grace window), so a "just-finalized" chat will have
+ *  BOTH envelope types — we don't want to re-show thinking in that
+ *  window. */
+function inflightSignalsMidTurn(envelopes: any[]): boolean {
+  let hasUser = false;
+  let hasFinal = false;
+  for (const env of envelopes) {
+    const t = env?.type;
+    if (t === 'user_message') hasUser = true;
+    else if (t === 'reply_final') hasFinal = true;
+  }
+  return hasUser && !hasFinal;
 }
 
 /** Shared rendering for both initial replay (append) and load-earlier
