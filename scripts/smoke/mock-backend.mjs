@@ -46,6 +46,13 @@ export async function installMockBackend(page) {
    *  not yet persisted in state.db (e.g. an in-flight turn). The
    *  history-fetch handler appends these as the `inflight` field. */
   const inflightByChat = new Map();
+  /** When true (default), POST /api/sidekick/messages auto-emits a
+   *  reply via SSE 50ms later. Tests that want to drive envelopes
+   *  manually (e.g. assert the thinking-dots label transitions
+   *  across typing → tool_call → canvas.show) call
+   *  mock.setAutoReplyEnabled(false) to suppress the auto-reply
+   *  and push their own envelopes via pushEnvelope. */
+  let autoReplyEnabled = true;
   /** Active SSE responses (real http.ServerResponse objects). */
   const streamSubs = new Set();
   let envelopeId = 0;
@@ -256,6 +263,19 @@ export async function installMockBackend(page) {
         timestamp: Date.now() / 1000,
       });
       chat.lastActiveAt = Date.now();
+      if (!autoReplyEnabled) {
+        // Test wants to drive envelopes manually — skip the auto-
+        // reply but still broadcast user_message so cross-device
+        // optimistic-bubble dedup works.
+        setTimeout(() => {
+          broadcast({
+            type: 'user_message',
+            chat_id: chatId,
+            message_id: userMsgId,
+            text,
+          });
+        }, 0);
+      } else {
       setTimeout(() => {
         broadcast({
           type: 'user_message',
@@ -280,6 +300,7 @@ export async function installMockBackend(page) {
         });
         chat.lastActiveAt = Date.now();
       }, 50);
+      }
     }
     await route.fulfill({
       status: 202,
@@ -478,6 +499,14 @@ export async function installMockBackend(page) {
       } else {
         inflightByChat.set(chatId, envelopes);
       }
+    },
+    /** Suppress the auto-reply on POST /messages. Tests that drive
+     *  envelopes by hand (label-transition state machines, manual
+     *  reply timing) call setAutoReplyEnabled(false). The
+     *  user_message broadcast still fires (cross-device dedup
+     *  expects it); the typing + reply envelopes do not. */
+    setAutoReplyEnabled(enabled) {
+      autoReplyEnabled = !!enabled;
     },
     /** Configure the /v1/settings/schema response. Pass null to
      *  declare the agent doesn't implement the extension (route
