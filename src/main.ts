@@ -583,7 +583,11 @@ async function boot() {
 
   // Session list inside the sidebar — renders when backend supports browsing.
   sessionDrawer.init({
-    onResume: replaySessionMessages,
+    // sessionDrawer's onResumeCb shape passes inflight as the 4th arg
+    // (no targetMessageId concept here); replaySessionMessages's slot
+    // for targetMessageId is between pagination and inflight, so adapt.
+    onResume: (id: string, messages: any[], pagination?: any, inflight?: any[]) =>
+      replaySessionMessages(id, messages, pagination, undefined, inflight),
     onBeforeSwitch: cleanupAbandonedChat,
     onMultiSelectChange: (ids: string[]) => multiSelect.update(ids),
     // Stale-foreground recovery: if the session the user is currently
@@ -986,9 +990,10 @@ async function boot() {
             // (idempotent).
             if (restoredSid) sessionDrawer.setViewed(restoredSid);
             try {
-              const { messages } = await backend.resumeSession(sid);
+              const result: any = await backend.resumeSession(sid);
+              const messages = result.messages || [];
               if (messages.length) {
-                replaySessionMessages(sid, messages);
+                replaySessionMessages(sid, messages, undefined, undefined, result.inflight);
                 bootRendered = true;
               }
             } catch (e: any) {
@@ -1013,6 +1018,8 @@ async function boot() {
                   mostRecent.id,
                   result.messages || [],
                   { firstId: result.firstId ?? null, hasMore: !!result.hasMore },
+                  undefined,
+                  result.inflight,
                 );
               }
             } catch (e: any) {
@@ -4073,6 +4080,7 @@ function replaySessionMessages(
   messages: any[],
   pagination?: { firstId: number | null; hasMore: boolean },
   targetMessageId?: string,
+  inflight?: any[],
 ) {
   const viewed = sessionDrawer.getViewed();
   const sameSession = viewed === id;
@@ -4203,6 +4211,20 @@ function replaySessionMessages(
     // user stranded on a random scroll position. A future backlog
     // item drives load-earlier until the target is located.
     log(`[cmdk] target message ${targetMessageId} not in initial replay; load-earlier drill not yet implemented`);
+  }
+  // Replay any inflight envelopes from the proxy's in-memory cache —
+  // user message + tool calls + reply deltas for an in-flight turn
+  // that hermes-core hasn't yet persisted to state.db. Replay happens
+  // AFTER the state.db render+clear+divergence-heal so the just-
+  // rendered state.db bubbles aren't wiped by the clear path. Each
+  // envelope goes through the same handler the live SSE stream uses
+  // (handleReplyDelta / handleUserMessage / activityRow.appendToolCall
+  // etc.) — keyed by stable id so live SSE arrival during this window
+  // collapses to the same bubble idempotently. See
+  // proxy/sidekick/inflight.ts for the server-side lifecycle.
+  if (inflight && inflight.length > 0) {
+    log(`[chat-resume] replaying ${inflight.length} inflight envelope(s)`);
+    backend.replayInflight?.(id, inflight);
   }
   chat.forceScrollToBottom();
 }

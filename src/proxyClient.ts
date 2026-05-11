@@ -955,16 +955,44 @@ export const proxyClientAdapter = {
         return { messages: [], firstId: null, hasMore: false };
       }
       const d = await r.json();
+      // Inflight envelopes — proxy's in-memory cache of envelopes
+      // from an in-flight turn (user message + tool calls + reply
+      // deltas that hermes-core hasn't yet persisted to state.db,
+      // because it persists post-turn). Surfaced through the
+      // returned result so the SHELL can replay them AFTER
+      // replaySessionMessages has cleared+rendered state.db
+      // messages — otherwise the clear path wipes the just-
+      // replayed bubbles. See proxy/sidekick/inflight.ts for the
+      // server-side lifecycle.
+      const inflightEnvelopes = Array.isArray(d.inflight) ? d.inflight : [];
       const result = {
         messages: d.messages || [],
         firstId: d.firstId ?? null,
         hasMore: !!d.hasMore,
+        inflight: inflightEnvelopes,
       };
-      log(`proxy-client: resumed (chat_id=${id}, ${result.messages.length} messages, hasMore=${result.hasMore})`);
+      log(`proxy-client: resumed (chat_id=${id}, ${result.messages.length} messages, ${inflightEnvelopes.length} inflight, hasMore=${result.hasMore})`);
       return result;
     } catch (e: any) {
       diag(`proxy-client.resumeSession: ${e.message}`);
-      return { messages: [], firstId: null, hasMore: false };
+      return { messages: [], firstId: null, hasMore: false, inflight: [] };
+    }
+  },
+
+  /** Replay inflight envelopes through the live-SSE router. Called
+   *  by the shell AFTER replaySessionMessages has finished rendering
+   *  state.db messages (otherwise the clear path inside it would
+   *  wipe the replayed bubbles). Idempotent via envelope stable ids
+   *  — if the same envelope ALSO arrives via live SSE during this
+   *  window, renderedMessages.upsert + activityRow.upsert collapse
+   *  it to a single bubble. */
+  replayInflight(chatId: string, envelopes: any[]): void {
+    if (!envelopes || envelopes.length === 0) return;
+    diag(`proxy-client: replaying ${envelopes.length} inflight envelopes for ${chatId}`);
+    for (const env of envelopes) {
+      const t = typeof env?.type === 'string' ? env.type : '';
+      if (!t) continue;
+      handleEnvelope(t, env, chatId);
     }
   },
 

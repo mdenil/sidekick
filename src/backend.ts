@@ -127,6 +127,15 @@ export async function loadEarlier(id, beforeId) {
   return a.loadEarlier(id, beforeId);
 }
 
+// Replay inflight envelopes through the live-SSE router. Called from
+// replaySessionMessages AFTER state.db render+clear, so the clear
+// path doesn't wipe the replayed bubbles. See proxy/sidekick/
+// inflight.ts for the server-side lifecycle.
+export async function replayInflight(id, envelopes) {
+  const a = await loadAdapter();
+  a.replayInflight?.(id, envelopes);
+}
+
 export async function renameSession(id, title) {
   const a = await loadAdapter();
   if (!a.renameSession) throw new Error(`backend ${a.name} does not support session rename`);

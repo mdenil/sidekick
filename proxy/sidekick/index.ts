@@ -18,6 +18,7 @@
 //   if (req.method === 'DELETE' && url.match(/^\/api\/sidekick\/sessions\/.+/))
 //     return sidekick.handleSidekickSessionDelete(req, res, chatId);
 
+import { startPruneSweep as startInflightPrune } from './inflight.ts';
 import { init as initStream } from './stream.ts';
 import { HTTPAgentUpstream, type UpstreamAgent } from './upstream.ts';
 
@@ -60,6 +61,11 @@ export function init(opts: { token: string; url: string }): void {
   // BEFORE the first PWA tab attaches — we'd otherwise miss any
   // envelope that arrives during the startup window.
   initStream();
+  // Start TTL sweep for the inflight envelope cache (in-memory; entries
+  // older than 10 min get pruned every 60s). See inflight.ts for the
+  // lifecycle model. Idempotent — safe if init() is somehow called
+  // twice during a hot-reload edge case.
+  startInflightPrune();
 }
 
 /** Returns the upstream singleton, or null if SIDEKICK_PLATFORM_TOKEN

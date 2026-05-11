@@ -25,7 +25,7 @@ import { getFilter as getStoredFilter, putFilter as putStoredFilter, clearFilter
 import { deleteSelected as bulkDeleteSelected } from './multiSelect.ts';
 import { markRecentlyDeleted, isRecentlyDeleted, recentlyDeletedSize } from './sessionOps.ts';
 
-let onResumeCb: ((id: string, messages: any[], pagination?: { firstId: number | null; hasMore: boolean }) => void) | null = null;
+let onResumeCb: ((id: string, messages: any[], pagination?: { firstId: number | null; hasMore: boolean }, inflight?: any[]) => void) | null = null;
 
 /** Sidebar multi-selection — chat_ids the user has selected via
  *  shift-click (range) or ctrl/cmd-click (toggle). When `size >= 2`
@@ -1134,8 +1134,9 @@ async function resume(id: string) {
         return;
       }
       t?.trace('server-render-start');
-      log(`sessionDrawer: resumed ${id} (${messages.length} messages, hasMore=${pagination.hasMore})`);
-      onResumeCb?.(id, messages, pagination);
+      const inflight = Array.isArray(result.inflight) ? result.inflight : [];
+      log(`sessionDrawer: resumed ${id} (${messages.length} messages, ${inflight.length} inflight, hasMore=${pagination.hasMore})`);
+      onResumeCb?.(id, messages, pagination, inflight);
       t?.trace('server-render-end');
       scheduleRefresh();
     } catch (e: any) {

@@ -41,6 +41,11 @@ import * as http from 'node:http';
 
 export async function installMockBackend(page) {
   const chats = new Map();          // chat_id → MockChat
+  /** Mirrors the real proxy's inflight cache. Tests opt in via
+   *  setInflight(chatId, [...]) to simulate a chat with envelopes
+   *  not yet persisted in state.db (e.g. an in-flight turn). The
+   *  history-fetch handler appends these as the `inflight` field. */
+  const inflightByChat = new Map();
   /** Active SSE responses (real http.ServerResponse objects). */
   const streamSubs = new Set();
   let envelopeId = 0;
@@ -175,10 +180,22 @@ export async function installMockBackend(page) {
       if (m.sidekick_id) out.sidekick_id = m.sidekick_id;
       return out;
     }) : [];
+    // Inflight envelopes — mirror the real proxy's behavior of
+    // surfacing envelopes from in-flight turns (the user message +
+    // tool calls + streaming reply deltas that haven't been
+    // persisted to state.db yet). Tests opt in by calling
+    // mock.setInflight(chatId, [envelopes...]).
+    const inflightEnvelopes = inflightByChat.get(chatId) || [];
+    const responseBody = {
+      messages,
+      firstId: null,
+      hasMore: false,
+      ...(inflightEnvelopes.length > 0 ? { inflight: inflightEnvelopes } : {}),
+    };
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify({ messages, firstId: null, hasMore: false }),
+      body: JSON.stringify(responseBody),
     });
   });
 
@@ -448,6 +465,20 @@ export async function installMockBackend(page) {
      *  include a `type` field; `chat_id` is also required by the PWA's
      *  router. */
     pushEnvelope(env) { broadcast(env); },
+    /** Set the inflight envelope list for a chat. The next
+     *  /api/sidekick/sessions/<chatId>/messages GET will include
+     *  these as the `inflight` field, mirroring the real proxy's
+     *  in-memory inflight cache. Pass `null` or an empty array to
+     *  clear. Tests use this to simulate the "switch-back during
+     *  in-flight turn" scenario without needing the real proxy.
+     */
+    setInflight(chatId, envelopes) {
+      if (!envelopes || envelopes.length === 0) {
+        inflightByChat.delete(chatId);
+      } else {
+        inflightByChat.set(chatId, envelopes);
+      }
+    },
     /** Configure the /v1/settings/schema response. Pass null to
      *  declare the agent doesn't implement the extension (route
      *  returns 404). The handler also recognizes POST /settings/{id}

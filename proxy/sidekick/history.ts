@@ -6,6 +6,7 @@
 // PWA renderer consumes today.
 
 import { getUpstream } from './index.ts';
+import * as inflight from './inflight.ts';
 import type { UpstreamAgent } from './upstream.ts';
 
 export async function handleSidekickSessionMessages(req, res, chatId: string) {
@@ -75,13 +76,21 @@ async function handleSessionMessagesViaUpstream(
       // legacy rows / other-channel rows / tool+system rows.
       ...(it.sidekick_id ? { sidekick_id: it.sidekick_id } : {}),
     }));
+    // Inflight envelopes — envelopes the proxy has forwarded during
+    // an in-flight turn that haven't been persisted to state.db yet
+    // (hermes-core persists post-turn). Empty for any chat that
+    // isn't currently mid-turn. Only included for fresh history
+    // fetches (before-cursor paging skips it — older pages can't
+    // contain inflight by definition).
+    const inflightEnvelopes = before === null ? inflight.getForChat(chatId) : [];
     trace('serialize-start');
     const body = JSON.stringify({
       messages,
       firstId: r.first_id,
       hasMore: r.has_more,
+      ...(inflightEnvelopes.length > 0 ? { inflight: inflightEnvelopes } : {}),
     });
-    trace('serialize-end', `bytes=${body.length}`);
+    trace('serialize-end', `bytes=${body.length}${inflightEnvelopes.length ? ` inflight=${inflightEnvelopes.length}` : ''}`);
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(body);
     trace('response-sent');
