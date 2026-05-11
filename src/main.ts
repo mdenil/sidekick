@@ -19,6 +19,17 @@ import {
   fetchModelCaps,
   getVisionFallbackModel,
 } from './modelCapabilities.ts';
+import {
+  initStreamingIndicator,
+  showThinking,
+  showStreamingIndicator,
+  finalizeStreamingBubble,
+  clearStreamingIndicator,
+  resetStreamingIdleTimer,
+  trackPendingBubble,
+  untrackPendingBubble,
+  finalizeOldestPending,
+} from './streamingIndicator.ts';
 import { fetchWithTimeout, TimeoutError } from './util/fetchWithTimeout.ts';
 import * as status from './status.ts';
 import * as settings from './settings.ts';
@@ -51,7 +62,6 @@ import { setMicPeakListener } from './audio/shared/micMeter.ts';
 import { attachCard } from './cards/attach.ts';
 import { registerCard } from './cards/registry.ts';
 import { parseCardsFromText, extractImageBlocks } from './cards/fallback.ts';
-import { miniMarkdown } from './util/markdown.ts';
 import * as ambient from './ambient.ts';
 import { playFeedback } from './audio/shared/feedback.ts';
 import * as memo from './audio/shared/memo.ts';
@@ -909,6 +919,10 @@ async function boot() {
   // viewport-aware bubble that hides on iOS tap. See util/tooltip.ts.
   initAppTooltip();
 
+  // Streaming-bubble module — needs the agent-label callback wired
+  // before backend.onSend(() => showThinking()) fires on the first send.
+  initStreamingIndicator({ getAgentLabel });
+
   // Drive the mic-button peak indicator on the composer mic (the
   // toolbar #btn-mic is gone; the composer mic is now the single
   // voice-input affordance). Smooth raw worklet peaks with a light
@@ -1443,9 +1457,7 @@ async function boot() {
       });
       const sendChatId = backend.getCurrentSessionId?.() ?? null;
       if (bubble && sendChatId) {
-        const list = pendingBubblesByChat.get(sendChatId) || [];
-        list.push(bubble);
-        pendingBubblesByChat.set(sendChatId, list);
+        trackPendingBubble(sendChatId, bubble);
       }
       // Optimistic sidebar entry — show this chat in the drawer with
       // the user's text as the snippet IMMEDIATELY, before the agent
@@ -1485,11 +1497,7 @@ async function boot() {
             },
           });
           if (sendChatId) {
-            const list = pendingBubblesByChat.get(sendChatId);
-            if (list) {
-              const idx = list.indexOf(bubble);
-              if (idx >= 0) list.splice(idx, 1);
-            }
+            untrackPendingBubble(sendChatId, bubble);
           }
         }
       };
@@ -4099,64 +4107,7 @@ async function backfillHistory() {
   finally { backfillInFlight = null; }
 }
 
-// ─── Streaming indicator — shows partial text while agent is thinking ────────
-
-let streamingIdleTimer = null;
-
-/** Max time we'll leave a "thinking…" / streaming box on screen with no new
- *  events before assuming the reply is stuck. 90s is generous — tool calls
- *  (calendar scans, web fetches) can run long before any text arrives. */
-const STREAMING_IDLE_TIMEOUT_MS = 90_000;
-
-/** Synthetic key under which a pending-thinking bubble is registered in
- *  the renderedMessages map before any real message_id is known.
- *  Migrated to the real id on the first reply_delta carrying one. The
- *  in-flight bubble itself is recovered via renderedMessages.getStreaming()
- *  — no module-level ref needed. */
-let pendingStreamingKey: string | null = null;
-
-/** Create a tentative "the agent is working on it" bubble. Fired the instant
- *  the user sends a message, BEFORE any backend events arrive. Prevents the
- *  silent-chat problem where the agent jumps straight to tool calls without
- *  streaming text first — user would otherwise stare at a blank screen and
- *  wonder if anything happened.
- *
- *  On the first onDelta, `showStreamingIndicator` transitions this bubble
- *  into the real streaming reply (adopts a fresh replyId, populates text,
- *  wires the play-bar + TTS event stream). On onFinal with empty text or
- *  a 90s no-event timeout, `clearStreamingIndicator` removes it. */
-function showThinking() {
-  const transcriptEl = document.getElementById('transcript');
-  if (!transcriptEl) return;
-  if (renderedMessages.getStreaming()) return;  // already showing; don't stack
-  // Sweep any orphan streaming bubbles that escaped the map (e.g. an
-  // interrupt aborted a stream mid-flight without going through
-  // finalize). Invariant: at most one streaming bubble visible.
-  transcriptEl.querySelectorAll('.line.streaming').forEach(el => el.remove());
-  // Use a temporary replyId so the bubble has a data-reply-id from the
-  // start (needed for TTS / DOM lookup); will be swapped out by the
-  // adapter's real id on first delta.
-  const tempId = `r-pending-${Date.now()}`;
-  pendingStreamingKey = `pending:${tempId}`;
-  const el = renderedMessages.upsert(pendingStreamingKey, {
-    role: 'assistant',
-    text: '',
-    status: 'streaming',
-    speaker: getAgentLabel(),
-    cls: 'agent streaming pending',
-    markdown: true,
-    replyId: tempId,
-  });
-  if (el) {
-    const dots = document.createElement('span');
-    dots.className = 'thinking-dots';
-    dots.textContent = 'sending…';
-    el.appendChild(dots);
-  }
-  chat.autoScroll();
-  if (streamingIdleTimer) clearTimeout(streamingIdleTimer);
-  streamingIdleTimer = setTimeout(clearStreamingIndicator, STREAMING_IDLE_TIMEOUT_MS);
-}
+// ─── Activity handler — drives the streaming bubble's dot label ─────────────
 
 /** Activity signal from the backend — positive evidence that the agent
  *  has acknowledged our send and is actively working. Transitions the
@@ -4187,134 +4138,7 @@ function handleActivity({ working, detail, conversation }: any) {
   dots.textContent = label;
   // Reset idle timer on every real signal — an active agent shouldn't
   // time out while it's visibly working.
-  if (streamingIdleTimer) clearTimeout(streamingIdleTimer);
-  streamingIdleTimer = setTimeout(clearStreamingIndicator, STREAMING_IDLE_TIMEOUT_MS);
-}
-
-/** Show or update the in-flight agent bubble. Called on onDelta events.
- *  If showThinking() already created a tentative bubble, this upgrades it
- *  in place — migrates the map key to the real message_id, adopts the
- *  real replyId + populates text. Otherwise creates a fresh bubble
- *  (e.g. agent-initiated messages where there was no user send to
- *  trigger the thinking bubble).
- */
-function showStreamingIndicator(partialText, replyId, messageId?: string | null) {
-  const transcriptEl = document.getElementById('transcript');
-  if (!transcriptEl) return;
-
-  let el = renderedMessages.getStreaming();
-  // Resolve the renderedMessages key. Prefer the real message_id; fall
-  // back to the pending key if showThinking already minted one and the
-  // adapter hasn't surfaced a message_id yet.
-  const key = messageId || pendingStreamingKey || `live:${replyId}`;
-
-  if (!el) {
-    // Sweep any stragglers before creating a new bubble — one streaming
-    // indicator at a time, no exceptions.
-    transcriptEl.querySelectorAll('.line.streaming').forEach(elt => elt.remove());
-    el = renderedMessages.upsert(key, {
-      role: 'assistant',
-      text: partialText || '',
-      status: 'streaming',
-      speaker: getAgentLabel(),
-      cls: 'agent streaming',
-      markdown: true,
-      replyId,
-    });
-    if (el) {
-      const dots = document.createElement('span');
-      dots.className = 'thinking-dots';
-      dots.textContent = 'thinking…';
-      if (partialText) dots.classList.add('hidden');
-      el.appendChild(dots);
-    }
-  } else {
-    // Pending-thinking bubble exists — promote it: migrate the map key
-    // to the real message_id, adopt the real reply id, populate text.
-    if (pendingStreamingKey && messageId && pendingStreamingKey !== messageId) {
-      renderedMessages.migrate(pendingStreamingKey, messageId);
-      pendingStreamingKey = null;
-    }
-    el.classList.remove('pending');
-    if (partialText) {
-      renderedMessages.upsert(key, {
-        role: 'assistant',
-        text: partialText,
-        status: 'streaming',
-        speaker: getAgentLabel(),
-        cls: 'agent streaming',
-        markdown: true,
-        replyId,
-      });
-      const dots = el.querySelector('.thinking-dots');
-      if (dots) dots.classList.add('hidden');
-    } else {
-      // No text yet — still update replyId/messageId on the existing
-      // bubble so downstream lookups work.
-      el.dataset.replyId = replyId;
-      if (messageId) el.dataset.messageId = messageId;
-    }
-  }
-  chat.autoScroll();
-
-  // Safety net: if a reply gets stuck with no more events, auto-clear.
-  if (streamingIdleTimer) clearTimeout(streamingIdleTimer);
-  streamingIdleTimer = setTimeout(clearStreamingIndicator, STREAMING_IDLE_TIMEOUT_MS);
-}
-
-/** Promote the streaming bubble to its final form: update text, remove
- *  thinking dots, strip the .streaming class, open links in new tabs.
- *  Returns the bubble element (already in the DOM) or null if no
- *  streaming bubble existed. */
-function finalizeStreamingBubble(finalText, messageId?: string | null) {
-  if (streamingIdleTimer) { clearTimeout(streamingIdleTimer); streamingIdleTimer = null; }
-  const el = renderedMessages.getStreaming();
-  if (!el) return null;
-  // Resolve the map key for this bubble. messageId wins if known; else
-  // fall back to whatever synthetic key the streaming bubble was
-  // registered under.
-  const key = messageId
-    || el.dataset.messageId
-    || pendingStreamingKey
-    || (el.dataset.replyId ? `live:${el.dataset.replyId}` : null);
-  if (key) {
-    if (pendingStreamingKey && messageId && pendingStreamingKey !== messageId) {
-      renderedMessages.migrate(pendingStreamingKey, messageId);
-    }
-    renderedMessages.upsert(key, {
-      role: 'assistant',
-      text: finalText,
-      status: 'finalized',
-      speaker: getAgentLabel(),
-      cls: 'agent',
-      markdown: true,
-      replyId: el.dataset.replyId,
-    });
-  } else {
-    // Defensive fallback: bubble somehow not in the map. Mirror the
-    // original in-place finalize so behavior matches pre-refactor.
-    const textSpan = el.querySelector('.text');
-    if (textSpan) textSpan.innerHTML = miniMarkdown(finalText);
-    el.dataset.text = finalText;
-    const dots = el.querySelector('.thinking-dots');
-    if (dots) dots.remove();
-    el.classList.remove('streaming');
-    el.querySelectorAll('a').forEach(a => { a.target = '_blank'; (a as HTMLAnchorElement).rel = 'noopener'; });
-  }
-  pendingStreamingKey = null;
-  return el;
-}
-
-function clearStreamingIndicator() {
-  if (streamingIdleTimer) { clearTimeout(streamingIdleTimer); streamingIdleTimer = null; }
-  const el = renderedMessages.getStreaming();
-  if (!el) return;
-  if (pendingStreamingKey) {
-    renderedMessages.remove(pendingStreamingKey);
-    pendingStreamingKey = null;
-  } else {
-    el.remove();
-  }
+  resetStreamingIdleTimer();
 }
 
 /** Find the most-recent non-streaming agent bubble and attach a card.
@@ -4344,21 +4168,6 @@ function attachCardToLatestAgentBubble(card) {
  *  defensively filter them here. With per-turn replay machinery gutted,
  *  the bubble is purely a text surface: TTS is owned by the WebRTC
  *  talk-mode track on the server side and arrives as audio independently. */
-/** Q1 atomic-bubble: outstanding pending user bubbles per chat_id, in
- *  send order. Drained oldest-first when an agent envelope (typing /
- *  reply_delta) arrives for that chat — that envelope is the proof
- *  the agent received our message. Cleared on chat.clear(). */
-const pendingBubblesByChat = new Map<string, HTMLElement[]>();
-
-function finalizeOldestPending(conversation: string | null | undefined): void {
-  if (!conversation) return;
-  const list = pendingBubblesByChat.get(conversation);
-  if (!list || list.length === 0) return;
-  const bubble = list.shift()!;
-  if (list.length === 0) pendingBubblesByChat.delete(conversation);
-  chat.markBubbleFinalized(bubble);
-}
-
 function handleReplyDelta({ replyId, cumulativeText, conversation, messageId }: any) {
   if (!cumulativeText) return;
   // Drop deltas only for explicitly off-screen conversations: getViewed()
