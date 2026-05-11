@@ -53,6 +53,16 @@ export async function installMockBackend(page) {
    *  mock.setAutoReplyEnabled(false) to suppress the auto-reply
    *  and push their own envelopes via pushEnvelope. */
   let autoReplyEnabled = true;
+  /** Mirror hermes-core's post-turn persistence semantics. When true,
+   *  the sessions list endpoint suppresses `first_user_message` for
+   *  chats that have no assistant message yet — i.e. mid-turn, hermes
+   *  hasn't fired `append_to_transcript` and the server-side state.db
+   *  is empty for that chat. Tests that exercise the in-flight window
+   *  (drawer snippets, mid-turn switch-away) flip this to `true`. The
+   *  default `false` matches the legacy mock behavior most tests rely
+   *  on (persistence is instant at POST time, which is wrong vs prod
+   *  but convenient for non-timing tests). */
+  let postTurnPersistence = false;
   /** Active SSE responses (real http.ServerResponse objects). */
   const streamSubs = new Set();
   let envelopeId = 0;
@@ -137,8 +147,17 @@ export async function installMockBackend(page) {
       // Mirror the proxy's first_user_message derivation: pick the
       // first role='user' message and truncate to 80 chars. Lets the
       // drawer fall back to a snippet when title is still empty.
+      //
+      // Post-turn persistence mode (real hermes behavior): suppress
+      // first_user_message until at least one assistant message has
+      // landed — production hermes' append_to_transcript fires AFTER
+      // agent_result is computed, so during the in-flight window the
+      // server-side state.db has nothing for this chat. Tests that
+      // verify drawer behavior during in-flight turns set
+      // mock.setPostTurnPersistence(true).
+      const hasAssistantReply = c.messages.some(m => m.role === 'assistant');
       const firstUser = c.messages.find(m => m.role === 'user');
-      const firstUserMessage = firstUser
+      const firstUserMessage = firstUser && (!postTurnPersistence || hasAssistantReply)
         ? String(firstUser.content || '').slice(0, 80)
         : null;
       return {
@@ -507,6 +526,13 @@ export async function installMockBackend(page) {
      *  expects it); the typing + reply envelopes do not. */
     setAutoReplyEnabled(enabled) {
       autoReplyEnabled = !!enabled;
+    },
+    /** Toggle the in-flight persistence semantics. Default `false`
+     *  (legacy: chats are visible in /sessions immediately on POST).
+     *  Set `true` for tests that need to mirror real hermes behavior
+     *  where first_user_message is absent until reply_final lands. */
+    setPostTurnPersistence(enabled) {
+      postTurnPersistence = !!enabled;
     },
     /** Configure the /v1/settings/schema response. Pass null to
      *  declare the agent doesn't implement the extension (route

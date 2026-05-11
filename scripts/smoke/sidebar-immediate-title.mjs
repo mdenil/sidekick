@@ -35,8 +35,24 @@ export const DESCRIPTION = 'New chat sidebar entry appears with user-text snippe
 export const STATUS = 'implemented';
 export const BACKEND = 'mocked';
 
-export function MOCK_SETUP(_mock) {
-  // No pre-populated chats — scenario creates them via the PWA flow.
+export function MOCK_SETUP(mock) {
+  // Suppress mock auto-reply so the in-flight window stays open long
+  // enough to test the drawer-refresh path. Without this, the 50ms
+  // auto-reply lands a reply_final almost immediately, which causes
+  // hermes-style session_changed flow to fire — the bug we're pinning
+  // here (Jonathan, 2026-05-11) is that during the in-flight window
+  // BEFORE session_changed arrives, the drawer shows 'New chat'
+  // because mergePending drops the pending row when the chat enters
+  // cachedSessions via listSessions' local-only-row path.
+  mock.setAutoReplyEnabled(false);
+  // Mirror real hermes persistence semantics: first_user_message is
+  // NOT surfaced in the sessions list until an assistant reply has
+  // landed. Without this the mock cheats and serves the user's text
+  // as first_user_message immediately at POST, masking the field
+  // bug. With it, the listSessions response carries title:null +
+  // first_user_message:null mid-turn — identical to what production
+  // hermes returns.
+  mock.setPostTurnPersistence(true);
 }
 
 const MARKER_1 = `first-marker-${Math.random().toString(36).slice(2, 8)}`;
@@ -91,6 +107,31 @@ export default async function run({ page, log }) {
   log(`minted chat 2: ${chatId2}`);
 
   await send(page, MARKER_2);
+  // Give pending + listSessions enough time to settle, then dump
+  // sidebar state before asserting — without this the timeout error
+  // doesn't tell us WHY the assertion failed (was the row missing?
+  // present with the wrong text?).
+  await page.waitForTimeout(500);
+  const sidebarBefore = await sidebarRowsBySnippet(page);
+  log(`sidebar after both sends: ${JSON.stringify(sidebarBefore)}`);
+  // Diagnostic — what's actually in IDB for these chats?
+  const idbState = await page.evaluate(async () => {
+    return new Promise((resolve) => {
+      const req = indexedDB.open('sidekick-conversations');
+      req.onsuccess = () => {
+        const db = req.result;
+        const tx = db.transaction('conversations', 'readonly');
+        const r = tx.objectStore('conversations').getAll();
+        r.onsuccess = () => {
+          resolve(r.result.map(c => ({ id: c.chat_id, title: c.title, userTitle: c.userTitle })));
+          db.close();
+        };
+        r.onerror = () => { resolve('err'); db.close(); };
+      };
+      req.onerror = () => resolve('open-err');
+    });
+  });
+  log(`IDB conversations after both sends: ${JSON.stringify(idbState)}`);
   await page.waitForFunction(
     ({ id1, id2, m1, m2 }) => {
       const rows = Array.from(document.querySelectorAll('#sessions-list li[data-chat-id]'));
@@ -104,6 +145,35 @@ export default async function run({ page, log }) {
     { timeout: 3_000, polling: 50 },
   );
   log(`both sidebar entries visible with their respective snippets ✓`);
+
+  // === Step 2b: pin the mid-turn survival case ===
+  // Pre-fix, the snippet appeared in step 1/2 (handleSessionAnnounced
+  // creates the pending row synchronously) but was OVERWRITTEN by the
+  // next drawer refresh: listSessions' local-only-row path returned
+  // {title:'New chat', snippet:''} from IDB, mergePending dropped the
+  // pending entry because the chat was now in cachedSessions, and the
+  // drawer reverted to 'New chat'. Fix: proxyClient.sendMessage stamps
+  // the IDB title with the snippet on send via stampPlaceholderTitle
+  // so the local-only-row path carries it forward. Trigger a refresh
+  // by dispatching visibilitychange (the OS-lifecycle handler that
+  // refreshes the drawer on foregrounding), then assert snippets
+  // survived.
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true, get() { return 'visible'; },
+    });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await page.waitForTimeout(800);
+  const midTurn = await sidebarRowsBySnippet(page);
+  log(`mid-turn drawer (post-refresh, pre-reload): ${JSON.stringify(midTurn)}`);
+  const r1Mid = midTurn.find(r => r.chatId === chatId1);
+  const r2Mid = midTurn.find(r => r.chatId === chatId2);
+  assert(r1Mid && r1Mid.text.includes(MARKER_1),
+    `mid-turn: chat 1 should still show "${MARKER_1}" after refresh; got ${JSON.stringify(r1Mid)}`);
+  assert(r2Mid && r2Mid.text.includes(MARKER_2),
+    `mid-turn: chat 2 should still show "${MARKER_2}" after refresh; got ${JSON.stringify(r2Mid)}`);
+  log(`snippets survive mid-turn drawer refresh ✓`);
 
   // Inspect the drawer state for the assertion-error message in case
   // the reload assertion fails — clearer debugging.

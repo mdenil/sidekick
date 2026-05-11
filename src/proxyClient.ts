@@ -640,7 +640,21 @@ export const proxyClientAdapter = {
     // merge can surface it immediately (its server-side state.db
     // row also lands during this turn). Idempotent no-op for
     // existing rows.
-    try { await conversations.hydrate(chatId); }
+    //
+    // Pass the truncated text as the seed title so a brand-new chat's
+    // first IDB row carries the user's message text — without this,
+    // listSessions' local-only-row path returns title='New chat' and
+    // mergePending drops the snippet-bearing pending row, leaving the
+    // drawer showing 'New chat' for the full duration of long
+    // tool-using turns (Jonathan field bug 2026-05-11: 20-second tool
+    // call showed 'New chat' until reply landed). stampPlaceholderTitle
+    // catches the second-message-in-an-untitled-chat case (hydrate
+    // no-ops on existing rows by design).
+    const seedTitle = text.slice(0, 80);
+    try {
+      await conversations.hydrate(chatId, seedTitle);
+      if (seedTitle) await conversations.stampPlaceholderTitle(chatId, seedTitle);
+    }
     catch (e: any) { diag(`proxy-client.sendMessage: IDB hydrate failed: ${e.message}`); }
 
     const body: Record<string, any> = { chat_id: chatId, text };

@@ -222,6 +222,32 @@ export async function updateLastMessageAt(chat_id: string, ts: number): Promise<
   }
 }
 
+/** Patch the title ONLY when it's still the 'New chat' placeholder
+ *  (or empty) AND no userTitle has been set. Used by the send flow to
+ *  surface the user's first-message text in the drawer for in-flight
+ *  new chats — server-side state.db is empty until hermes' post-turn
+ *  append_to_transcript fires, so the drawer's listSessions merge
+ *  for a brand-new chat falls back to local IDB; without this, a
+ *  20-second tool-using turn would show 'New chat' the whole time.
+ *  Idempotent: a row that already has a real title (hermes-generated
+ *  or user-renamed) is left alone. */
+export async function stampPlaceholderTitle(chat_id: string, title: string): Promise<void> {
+  if (!title) return;
+  const db = await openDB();
+  try {
+    const tx = db.transaction(STORE_CONV, 'readwrite');
+    const store = tx.objectStore(STORE_CONV);
+    const existing: any = await reqP(store.get(chat_id));
+    if (!existing) return;
+    if (existing.userTitle) return;
+    if (existing.title && existing.title !== 'New chat') return;
+    existing.title = title;
+    await reqP(store.put(existing));
+  } finally {
+    db.close();
+  }
+}
+
 /** Same shape as updateLastMessageAt. Used when `session_changed`
  *  arrives with a new title (e.g. compression auto-numbered "My
  *  project" → "My project #2"). */
