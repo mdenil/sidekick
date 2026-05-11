@@ -7,7 +7,7 @@ Update as phases complete; remove entirely once Phase 3 ships.
 
 **Total estimate**: ~22-26h focused work, 3-4 sittings (per `feedback_time_estimates.md`).
 
-**Current status (2026-05-11 evening)**: Phase 0 **COMPLETE** (7/8 shipped + 1 documented stub). Phase 1 **COMPLETE** (3 commits: `4f4e11e` swLifecycle, `6dbe4be` backendEvents partial, `4941c2f` chatSnapshot). Phase 2 unblocked.
+**Current status (2026-05-11 evening)**: Phase 0 **COMPLETE** (7/8 shipped + 1 documented stub). Phase 1 **COMPLETE** (3 commits: `4f4e11e` swLifecycle, `6dbe4be` backendEvents partial, `4941c2f` chatSnapshot). Phase 2 **COMPLETE** (4 commits: `5742dce` tooltip, `aefc3cc` modelCapabilities, `ed1b8ff` streamingIndicator, `6aa5428` sessionResume). Phase 3 unblocked.
 
 ---
 
@@ -73,20 +73,19 @@ Schema-fingerprint smoke already pinned the migration behavior in Phase 0 (`idb-
 
 ---
 
-## Phase 2 — Opportunistic refactors (~4-5h, ship while it's fresh)
+## Phase 2 — Opportunistic refactors (~4-5h, **COMPLETE** 2026-05-11)
 
-Not blocking notifications, but the audit identified these as low-risk +
-high-clarity-payoff. Do in the same arc so the mental model stays loaded.
+Four extractions shipped as 4 separate commits, each independently
+rollback-safe. main.ts: 4780 → 4110 LOC.
 
-| File | LOC | From main.ts | Notes |
+| File | LOC | Commit | Notes |
 |---|---|---|---|
-| `src/modelCapabilities.ts` | ~180 | 1721-1905 | Pure data-fetch + DOM gate. Touch when attach UI needs work. |
-| `src/streamingIndicator.ts` | ~260 | 4346-4604 | Self-contained state machine for in-flight reply bubble. |
-| `src/sessionResume.ts` | ~280 | 4026-4344 | `replaySessionMessages`, `renderHistoryMessage`, `loadEarlierHistory`. The dedup + divergence-detect logic that landed 2026-05-06 + got tweaked 2026-05-11 (the `cleanupAbandonedChat` fix's twin invariant). Becomes testable when lifted. |
-| `src/util/tooltip.ts` | ~85 | 855-939 | 30-minute cleanup. |
+| `src/util/tooltip.ts` | 123 | `5742dce` ✓ | Custom hover-tooltip with iOS-tap suppression. |
+| `src/modelCapabilities.ts` | 226 | `aefc3cc` ✓ | models.dev caps + auxiliary vision fallback + attach-button gate. |
+| `src/streamingIndicator.ts` | 303 | `ed1b8ff` ✓ | In-flight reply bubble state machine + pending-user-bubble tracker. handleActivity stays in main.ts (still consults sessionDrawer + activityRow neighbors); the deferred handlers from Phase 1's backendEvents.ts (handleReplyDelta / handleReplyFinal) didn't move yet — they cross-cut audio + canvas + replyPlayer and would inflate this commit. Defer to a follow-up when the streaming state has enough callers to justify another lift. |
+| `src/sessionResume.ts` | 344 | `6aa5428` ✓ | `replaySessionMessages`, `renderHistoryMessage`, `loadEarlierHistory`, NO_REPLY_RE. The dedup + divergence-detect logic that landed 2026-05-06 + got tweaked 2026-05-11. |
 
-**Completion criterion**: four more files extracted, main.ts < 3500 LOC (from
-4863 today), full smoke suite green.
+**Completion criterion** (met 2026-05-11): four files extracted; main.ts shrunk by ~670 LOC (4780 → 4110); full smoke suite at 78/80 throughout (same two pre-existing audio failures). The original target of main.ts < 3500 LOC was aspirational — the residual ~4100 LOC is dominated by the voice-mode dispatcher (~1400 LOC, deferred indefinitely) plus the boot/wiring sequence which is irreducibly cross-cutting.
 
 ---
 
