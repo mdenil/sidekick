@@ -67,11 +67,47 @@ interface InflightEntry {
 
 const store = new Map<string, InflightEntry[]>();
 
+/** Grace window between reply_final and the actual drop. State.db's
+ *  post-turn append_to_transcript fires AFTER reply_final reaches the
+ *  proxy; if a client switches in/out during that gap, an immediate
+ *  drop leaves the user with neither inflight nor state.db data —
+ *  bubbles vanish (field bug 2026-05-11, Jonathan's notion-planner
+ *  chat). 30s comfortably covers the typical post-turn persist
+ *  latency we've seen (sub-second to ~2s) with margin for slow disks
+ *  / heavy gateway load.
+ *
+ *  Trade-off: during the grace window, a fresh history-fetch returns
+ *  BOTH state.db rows (now present) AND inflight envelopes. The PWA
+ *  dedups them via stable id when sidekick_msg_links has recorded
+ *  the umsg_X / msg_X to integer_id pairing. When the link table
+ *  misses (e.g. interrupted turns that don't fire post-turn
+ *  link-write), both copies render - preferable to neither. */
+const DROP_GRACE_MS = 30_000;
+
+/** Per-chat pending drop handles. dropChat() schedules; subsequent
+ *  record() calls cancel (chat is active again); the actual delete
+ *  runs DROP_GRACE_MS after the LAST dropChat() call. */
+const pendingDrops = new Map<string, ReturnType<typeof setTimeout>>();
+
+function cancelPendingDrop(chatId: string): void {
+  const t = pendingDrops.get(chatId);
+  if (t !== undefined) {
+    clearTimeout(t);
+    pendingDrops.delete(chatId);
+  }
+}
+
 /** Append an envelope to a chat's inflight queue. Idempotency is
  *  the caller's concern — we record every call. Dedup happens at
  *  render time via the envelope's stable id. */
 export function record(chatId: string, envelope: SidekickEnvelope): void {
   if (!chatId) return;
+  // If a drop is pending (the chat was about to be cleared after a
+  // recent reply_final), a new envelope means the turn is still
+  // active — cancel the drop. Common case: the agent emits a
+  // reply_final for one bubble, then another reply_delta for a
+  // follow-up bubble. Without this the cache would wipe between.
+  cancelPendingDrop(chatId);
   let arr = store.get(chatId);
   if (!arr) {
     arr = [];
@@ -87,13 +123,23 @@ export function record(chatId: string, envelope: SidekickEnvelope): void {
   }
 }
 
-/** Drop all inflight entries for a chat. Called on `reply_final` —
- *  state.db now has the canonical persisted turn. Continuing to
- *  surface the inflight copies would race with state.db's data on
- *  the next history fetch. */
+/** Schedule a chat's inflight entries for deletion after DROP_GRACE_MS.
+ *  Called on `reply_final` — state.db's persist is in flight but hasn't
+ *  necessarily completed; the grace period lets it catch up before we
+ *  invalidate the inflight bridge. If another envelope arrives during
+ *  the grace window, the pending drop is cancelled (chat is active). */
 export function dropChat(chatId: string): void {
   if (!chatId) return;
-  store.delete(chatId);
+  // Reset the timer — most recent reply_final wins. Without the reset,
+  // a rapid succession of reply_finals (multi-bubble turns) would have
+  // their grace windows overlap awkwardly.
+  cancelPendingDrop(chatId);
+  const t = setTimeout(() => {
+    store.delete(chatId);
+    pendingDrops.delete(chatId);
+  }, DROP_GRACE_MS);
+  if (typeof t.unref === 'function') t.unref();
+  pendingDrops.set(chatId, t);
 }
 
 /** Return envelopes for a chat in arrival order (oldest first).
@@ -134,7 +180,22 @@ export function startPruneSweep(): void {
 
 /** Test-only helpers. */
 export const _test = {
-  reset(): void { store.clear(); },
+  reset(): void {
+    for (const t of pendingDrops.values()) clearTimeout(t);
+    pendingDrops.clear();
+    store.clear();
+  },
+  /** Force the pending dropChat for `chatId` to run immediately
+   *  (cancels the grace timer, runs the delete). Used by tests that
+   *  want to assert the post-drop state without waiting DROP_GRACE_MS. */
+  forceDrop(chatId: string): void {
+    const t = pendingDrops.get(chatId);
+    if (t !== undefined) {
+      clearTimeout(t);
+      pendingDrops.delete(chatId);
+    }
+    store.delete(chatId);
+  },
   size(): number {
     let n = 0;
     for (const arr of store.values()) n += arr.length;

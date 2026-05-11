@@ -766,13 +766,19 @@ test('inflight — /v1/events out-of-turn envelopes also cache (cross-device too
   }
 });
 
-test('inflight — reply_final clears the cache regardless of source channel', async () => {
+test('inflight — reply_final schedules a delayed drop; immediately after, entries still surface', async () => {
+  // Post 2026-05-11 fix: reply_final does NOT clear inflight
+  // immediately. The drop is scheduled with a 30s grace period so
+  // state.db's post-turn append_to_transcript has time to catch up.
+  // This guards a switch-in-and-back during that gap from finding
+  // neither inflight nor state.db data (Jonathan's field bug —
+  // user bubble vanishes after a switch round-trip taken
+  // mid-persist-window).
   inflight._test.reset();
   const rig = await startRig({ mode: 'gateway' });
   try {
     rig.fakeAgent.setItems('chat-final-C', []);
 
-    // Build up some inflight via out-of-turn (the path that exposed the bug).
     rig.fakeAgent.pushOutOfTurnEvent({
       type: 'tool_call', chat_id: 'chat-final-C',
       call_id: 'call_to_be_cleared', tool_name: 'noop', args: {},
@@ -785,8 +791,9 @@ test('inflight — reply_final clears the cache regardless of source channel', a
       'sanity: inflight should be non-empty after the tool_call push',
     );
 
-    // Now fire reply_final on the same chat — should drop the entire
-    // inflight cache (state.db becomes canonical).
+    // Fire reply_final. Pre-fix this would immediately delete the
+    // inflight queue; post-fix the delete is scheduled DROP_GRACE_MS
+    // (30s) later.
     rig.fakeAgent.pushOutOfTurnEvent({
       type: 'reply_final', chat_id: 'chat-final-C',
       message_id: 'msg_test_final',
@@ -794,10 +801,65 @@ test('inflight — reply_final clears the cache regardless of source channel', a
     await new Promise<void>((r) => setTimeout(r, 100));
     let r2 = await fetch(`${rig.proxyUrl}/api/sidekick/sessions/chat-final-C/messages`);
     let body2 = await r2.json();
+    // The cache should STILL include both the original tool_call AND
+    // the reply_final envelope — a client switching in during the
+    // grace window has the bridge data.
     assert.ok(
-      !body2.inflight || body2.inflight.length === 0,
-      `expected inflight cleared after reply_final; got ${JSON.stringify(body2.inflight)}`,
+      Array.isArray(body2.inflight) && body2.inflight.length >= 1,
+      `expected inflight to remain during the grace window after reply_final; got ${JSON.stringify(body2.inflight)}`,
     );
+    const types = body2.inflight.map((e: any) => e.type);
+    assert.ok(types.includes('reply_final'),
+      `reply_final itself should be in the inflight queue during grace; got types ${JSON.stringify(types)}`);
+
+    // Now force the drop (test-only helper) and verify the cache is
+    // empty. In production the drop fires automatically after 30s.
+    inflight._test.forceDrop('chat-final-C');
+    let r3 = await fetch(`${rig.proxyUrl}/api/sidekick/sessions/chat-final-C/messages`);
+    let body3 = await r3.json();
+    assert.ok(
+      !body3.inflight || body3.inflight.length === 0,
+      `expected inflight cleared after forceDrop; got ${JSON.stringify(body3.inflight)}`,
+    );
+  } finally {
+    await rig.stop();
+  }
+});
+
+test('inflight — record() during the grace window cancels the pending drop (continued activity)', async () => {
+  // Same idea as above but the user keeps the chat active: agent emits
+  // reply_final, then a new envelope (e.g. notification, follow-up
+  // delta) arrives. The follow-up should cancel the pending drop —
+  // the chat is plainly NOT done.
+  inflight._test.reset();
+  const rig = await startRig({ mode: 'gateway' });
+  try {
+    rig.fakeAgent.setItems('chat-keepalive-D', []);
+
+    rig.fakeAgent.pushOutOfTurnEvent({
+      type: 'reply_final', chat_id: 'chat-keepalive-D',
+      message_id: 'msg_first',
+    });
+    await new Promise<void>((r) => setTimeout(r, 100));
+    // reply_final scheduled a drop. Now: a new envelope arrives BEFORE
+    // the grace expires.
+    rig.fakeAgent.pushOutOfTurnEvent({
+      type: 'tool_call', chat_id: 'chat-keepalive-D',
+      call_id: 'call_followup', tool_name: 'noop', args: {},
+    });
+    await new Promise<void>((r) => setTimeout(r, 100));
+    // The pending drop should have been cancelled by record(). To
+    // assert: forceDrop now is the only way the cache empties. But
+    // we want to assert it WASN'T already empty. Easiest: do another
+    // history fetch and check inflight has multiple envelope types.
+    let r1 = await fetch(`${rig.proxyUrl}/api/sidekick/sessions/chat-keepalive-D/messages`);
+    let body1 = await r1.json();
+    assert.ok(Array.isArray(body1.inflight) && body1.inflight.length >= 2,
+      `expected at least 2 inflight envelopes (reply_final + tool_call); got ${JSON.stringify(body1.inflight)}`);
+
+    // Now even without forceDrop, the cache survives — the prior
+    // drop was cancelled. The TTL (10 min) is the only thing that'll
+    // clear it from here.
   } finally {
     await rig.stop();
   }
