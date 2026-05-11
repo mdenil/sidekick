@@ -2437,16 +2437,41 @@ class SidekickAdapter(BasePlatformAdapter):
         existing `wildcards*` pass through. Tokens containing FTS5
         operator chars (parens, colons) pass through verbatim — power
         users get raw FTS5 syntax; everyone else gets prefix matching.
+
+        Special-char tokens (e.g. `@s.whatsapp.net`, `foo-bar-baz`,
+        `user@example.com`) are wrapped in double quotes so FTS5
+        doesn't parse `-` as NOT, `.`/`@` as separators with prefix-*
+        producing junk, etc. Quoted phrases match the unicode61-
+        tokenized subwords as a NEAR-style consecutive run, which
+        recovers indexability of these tokens. No prefix-* on quoted
+        phrases (FTS5 doesn't allow it inside quotes; users typing
+        these strings want exact substring anyway).
+
+        Field-driven additions 2026-05-11: `@s.whatsapp.net` returned
+        zero hits because `s.net` got tokenized weirdly with the prefix
+        wildcard. Quoting fixes it. Same for dashed tokens — `-` is
+        the FTS5 NOT operator and a bare token like `smoke-search-marker`
+        was parsing as `smoke AND NOT search AND NOT marker`.
         """
         import re
         tokens = []
         for token in re.findall(r'"[^"]*"|\S+', q.strip()):
+            # Power-user passthroughs: existing quotes, existing
+            # wildcard, or any of (, ), : which the original logic
+            # treated as raw-FTS5-syntax markers.
             if (token.startswith('"')
                     or token.endswith("*")
                     or any(c in token for c in '():')):
                 tokens.append(token)
-            else:
-                tokens.append(token + "*")
+                continue
+            # Wrap any token with non-word characters in quotes so
+            # FTS5 operator chars (-, +, etc.) and unicode61 splitters
+            # (@, ., /) don't corrupt the query. Escape embedded
+            # quotes by doubling per FTS5 convention.
+            if any(not (c.isalnum() or c == '_') for c in token):
+                tokens.append('"' + token.replace('"', '""') + '"')
+                continue
+            tokens.append(token + "*")
         return " ".join(tokens) or q.strip()
 
     async def _handle_list_commands(self, request: "web.Request") -> "web.Response":
