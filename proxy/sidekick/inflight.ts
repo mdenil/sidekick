@@ -44,13 +44,21 @@
 import type { SidekickEnvelope } from './upstream.ts';
 
 /** TTL for inflight envelopes — entries older than this get pruned
- *  on the next sweep. 10 minutes covers normal tool chains (calendar
- *  walks, multi-source web searches) without growing unbounded for
- *  abandoned turns. */
-const INFLIGHT_TTL_MS = 10 * 60 * 1000;
+ *  on the next sweep. 30 minutes gives a comfortable "send + walk
+ *  away" window for the PWA: the user fires off a turn, switches
+ *  chats (or backgrounds the app), and on return the in-flight
+ *  indicator + envelopes are still here ready to replay (field bug
+ *  2026-05-11, Jonathan multi-session juggling). Memory cost is
+ *  negligible (a busy turn is dozens of ~1KB envelopes; abandoned
+ *  turns past TTL get evicted on the next sweep). 10-min default was
+ *  conservative-not-correct; the constraint is "long enough that the
+ *  user doesn't lose the indicator after a coffee break", and 30 min
+ *  comfortably exceeds that. */
+const INFLIGHT_TTL_MS = 30 * 60 * 1000;
 
-/** Sweep interval. 60s is plenty for a TTL of 10 min — worst case
- *  an entry lives ~11 minutes before pruning, which is fine. */
+/** Sweep interval. 60s is fine even for the 30-min TTL — worst case
+ *  an entry lives ~31 minutes before pruning, which is fine; we're
+ *  bounded by MAX_PER_CHAT either way. */
 const PRUNE_INTERVAL_MS = 60 * 1000;
 
 /** Hard cap on envelopes per chat. A pathological turn that emits
