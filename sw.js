@@ -11,7 +11,7 @@
  * network-first, so first-load pulls anything missed and caches on the
  * way through.
  */
-const CACHE_NAME = 'v0.477';
+const CACHE_NAME = 'v0.478';
 
 // Dedicated cache for VAD assets. Key insight (Jonathan, 2026-05-04):
 // VAD assets are 14.7 MB and don't change with every app deploy — the
@@ -198,4 +198,67 @@ self.addEventListener('message', (e) => {
   if (e.data?.type === 'SKIP_WAITING') {
     self.skipWaiting();
   }
+});
+
+// ─── Web Push (Phase 3) ──────────────────────────────────────────────────
+// Display incoming push payloads as system notifications + focus the
+// matching chat on click. Payload shape (set server-side by
+// proxy/sidekick/notifications/dispatch.ts in Phase 3c):
+//   { title, body, chat_id?, tag?, icon?, url? }
+// chat_id + tag both default to a synthetic id so coalescing still works
+// when the dispatcher hasn't supplied them. Bodies that fail to parse
+// fall back to "Sidekick" / payload-text so we never silently drop a
+// delivery.
+self.addEventListener('push', (e) => {
+  let payload = {};
+  if (e.data) {
+    try { payload = e.data.json(); }
+    catch { payload = { title: 'Sidekick', body: e.data.text() || 'New message' }; }
+  }
+  const title = payload.title || 'Sidekick';
+  const body = payload.body || '';
+  const chatId = payload.chat_id || '';
+  // tag coalesces per-thread: same tag replaces the prior notification
+  // instead of stacking. Fall back to chat_id, then a stable per-payload
+  // synthetic so unrelated pushes don't accidentally overwrite each other.
+  const tag = payload.tag || (chatId ? `chat:${chatId}` : `push:${Date.now()}`);
+  const url = payload.url || (chatId ? `/?chat=${encodeURIComponent(chatId)}` : '/');
+  e.waitUntil(
+    self.registration.showNotification(title, {
+      body,
+      tag,
+      icon: payload.icon || '/icons/icon-192.png',
+      badge: '/icons/icon-192.png',
+      data: { chatId, url },
+      // Renotify=true means a same-tag replacement still vibrates / sounds
+      // on platforms that respect the flag. iOS PWA honors it; helps the
+      // user notice an update vs a silent overwrite.
+      renotify: true,
+    })
+  );
+});
+
+// Notification click: focus an existing tab on the target URL if one
+// exists, else open a new tab. Falls back gracefully if clients.openWindow
+// isn't available (some older WebKit builds).
+self.addEventListener('notificationclick', (e) => {
+  e.notification.close();
+  const target = e.notification.data?.url || '/';
+  e.waitUntil((async () => {
+    const all = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    // Prefer an already-focused or same-origin tab — reuse it via
+    // navigate() so we don't accumulate orphan PWA windows.
+    for (const c of all) {
+      try {
+        await c.focus();
+        if ('navigate' in c) {
+          try { await c.navigate(target); } catch { /* cross-origin or unsupported */ }
+        }
+        return;
+      } catch { /* tab vanished mid-loop — try the next */ }
+    }
+    if (self.clients.openWindow) {
+      await self.clients.openWindow(target);
+    }
+  })());
 });

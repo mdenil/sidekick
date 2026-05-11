@@ -37,6 +37,7 @@ import {
   loadEarlierHistory,
   NO_REPLY_RE,
 } from './sessionResume.ts';
+import { initNotifications } from './notifications/index.ts';
 import { fetchWithTimeout, TimeoutError } from './util/fetchWithTimeout.ts';
 import * as status from './status.ts';
 import * as settings from './settings.ts';
@@ -935,6 +936,12 @@ async function boot() {
     setComposerReadOnly,
     setHistoryLoaded: () => { historyLoaded = true; },
   });
+
+  // Web Push (Phase 3a) — currently a no-op init seam; subscribe is
+  // user-gesture driven from the settings panel (lands in 3b). Wired
+  // here so the import is established + 3b can rely on a single
+  // boot-time hook.
+  initNotifications().catch((e) => log('[notifications] init failed:', e?.message ?? e));
 
   // Drive the mic-button peak indicator on the composer mic (the
   // toolbar #btn-mic is gone; the composer mic is now the single

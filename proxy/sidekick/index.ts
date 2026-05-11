@@ -20,6 +20,7 @@
 
 import { startPruneSweep as startInflightPrune } from './inflight.ts';
 import { init as initStream } from './stream.ts';
+import { init as initNotifications } from './notifications/index.ts';
 import { HTTPAgentUpstream, type UpstreamAgent } from './upstream.ts';
 
 export { handleSidekickMessage } from './messages.ts';
@@ -40,6 +41,12 @@ export {
 } from './settings.ts';
 export { handleSidekickCommands } from './commands.ts';
 export { handleSidekickSearch } from './search.ts';
+export {
+  handleSidekickVapidPublicKey,
+  handleSidekickSubscribe,
+  handleSidekickUnsubscribe,
+  handleSidekickTest,
+} from './notifications/routes.ts';
 
 let upstream: UpstreamAgent | null = null;
 
@@ -66,6 +73,14 @@ export function init(opts: { token: string; url: string }): void {
   // lifecycle model. Idempotent — safe if init() is somehow called
   // twice during a hot-reload edge case.
   startInflightPrune();
+  // Web Push (Phase 3). Async init — fire-and-forget; the routes gate
+  // on configured-ness via getVapidConfig() returning null, so
+  // subscribe calls during the (sub-millisecond) init window get a
+  // clean 503 rather than crashing. Storage init is what makes this
+  // async (mkdir + cache prime); VAPID env-read is sync.
+  initNotifications().catch((e) => {
+    console.warn('[sidekick] notifications init failed:', e?.message ?? e);
+  });
 }
 
 /** Returns the upstream singleton, or null if SIDEKICK_PLATFORM_TOKEN

@@ -1024,6 +1024,22 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && /^\/api\/sidekick\/search(?:\?.*)?$/.test(req.url)) {
       return sidekick.handleSidekickSearch(req, res);
     }
+    // Web Push (Phase 3) — VAPID public-key probe + subscribe /
+    // unsubscribe / test. Routes implemented in
+    // proxy/sidekick/notifications/routes.ts; the 503-on-unconfigured
+    // gate lives inside each handler so this dispatch stays uniform.
+    if (req.method === 'GET' && req.url === '/api/sidekick/notifications/vapid-public-key') {
+      return sidekick.handleSidekickVapidPublicKey(req, res);
+    }
+    if (req.method === 'POST' && req.url === '/api/sidekick/notifications/subscribe') {
+      return sidekick.handleSidekickSubscribe(req, res);
+    }
+    if (req.method === 'POST' && req.url === '/api/sidekick/notifications/unsubscribe') {
+      return sidekick.handleSidekickUnsubscribe(req, res);
+    }
+    if (req.method === 'POST' && req.url === '/api/sidekick/notifications/test') {
+      return sidekick.handleSidekickTest(req, res);
+    }
     const sidekickSettingsUpdate = req.method === 'POST'
       && req.url.match(/^\/api\/sidekick\/settings\/([^/?]+)(?:\?.*)?$/);
     if (sidekickSettingsUpdate) {
