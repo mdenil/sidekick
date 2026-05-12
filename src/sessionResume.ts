@@ -261,39 +261,89 @@ export function replaySessionMessages(
   // scrollTop=0.
   const saved = getScrollPosition(id);
   if (saved && !targetMessageId) {
-    suppressSavesFor(500);
-    const transcriptEl2 = document.getElementById('transcript');
-    if (transcriptEl2) {
-      // scrollTo({behavior:'instant'}) bypasses CSS scroll-behavior:
-      // smooth on the transcript. A raw `scrollTop = N` assignment on
-      // a smooth-CSS element starts a smooth animation FROM current
-      // toward N; reading scrollTop synchronously after the assignment
-      // returns the in-progress animation position (still 0), which
-      // looked like the assignment was being ignored entirely
-      // (Jonathan dev log 2026-05-12). 'instant' jumps with no
-      // animation — what we want for "return to where I was."
-      const doRestore = (phase: string) => {
-        if (!transcriptEl2) return;
-        const before = transcriptEl2.scrollTop;
-        const sh = transcriptEl2.scrollHeight;
-        const ch = transcriptEl2.clientHeight;
-        transcriptEl2.scrollTo({ top: saved.scrollTop, behavior: 'instant' as ScrollBehavior });
-        const after = transcriptEl2.scrollTop;
-        log(`[chat-resume] restore (${phase}) wanted=${saved.scrollTop} before=${before} after=${after} sh=${sh} ch=${ch} maxTop=${sh - ch}`);
-      };
-      doRestore('sync');
-      // One rAF retry — at rAF time, post-render lazy content (image
-      // natural-size resolution, inflight envelope replays) may have
-      // grown scrollHeight enough that an earlier clamped value now
-      // fits. Trace confirmed: sync had sh=2270, rAF+1 had sh=6909.
-      requestAnimationFrame(() => doRestore('rAF'));
+    suppressSavesFor(800);
+    if (saved.atBottom) {
+      // At-bottom restoration: forceScrollToBottom + watch for async
+      // DOM-enhancement-driven scrollHeight growth (play-bars, copy
+      // buttons, etc.) for a brief window after restore. ResizeObserver
+      // re-snaps to the new bottom each time scrollHeight grows, until
+      // the window closes or the user manually scrolls up. Without
+      // this, a chat whose scrollHeight grows ~2200px post-render
+      // (smoke: 5276 → 7514) leaves the user at the OLD bottom = NEW
+      // mid-chat. Pinned by smoke
+      // scripts/smoke/scroll-position-persists-on-switch.mjs.
+      log(`[chat-resume] restore atBottom → forceScrollToBottom + repin`);
+      chat.forceScrollToBottom();
+      scheduleAtBottomRepin();
     } else {
-      log(`[chat-resume] restore: transcriptEl missing`);
+      // Mid-chat restoration: scrollTo({behavior:'instant'}) bypasses
+      // CSS scroll-behavior: smooth so the assignment is immediate.
+      const transcriptEl2 = document.getElementById('transcript');
+      if (transcriptEl2) {
+        const doRestore = (phase: string) => {
+          if (!transcriptEl2) return;
+          const before = transcriptEl2.scrollTop;
+          const sh = transcriptEl2.scrollHeight;
+          const ch = transcriptEl2.clientHeight;
+          transcriptEl2.scrollTo({ top: saved.scrollTop, behavior: 'instant' as ScrollBehavior });
+          const after = transcriptEl2.scrollTop;
+          log(`[chat-resume] restore (${phase}) wanted=${saved.scrollTop} before=${before} after=${after} sh=${sh} ch=${ch} maxTop=${sh - ch}`);
+        };
+        doRestore('sync');
+        requestAnimationFrame(() => doRestore('rAF'));
+      } else {
+        log(`[chat-resume] restore: transcriptEl missing`);
+      }
     }
   } else if (!targetMessageId) {
     log(`[chat-resume] no saved position for ${id.slice(-12)} → forceScrollToBottom`);
     chat.forceScrollToBottom();
+    scheduleAtBottomRepin();
   }
+}
+
+/** Re-pin to the bottom of the transcript whenever scrollHeight grows
+ *  during a brief window after a forceScrollToBottom restore. Handles
+ *  async DOM enhancement (play-bars, copy buttons, etc.) that add
+ *  height after the initial render — without this, the user lands at
+ *  the (smaller) post-render bottom and drifts mid-chat as content
+ *  grows. Disconnects on first user scroll-up so we don't fight an
+ *  intentional reading position. 1.5s window covers the common
+ *  cases without lingering. */
+const REPIN_WINDOW_MS = 1500;
+function scheduleAtBottomRepin(): void {
+  const transcriptEl = document.getElementById('transcript');
+  if (!transcriptEl || typeof ResizeObserver === 'undefined') return;
+  let userScrolledUp = false;
+  let lastScrollTop = transcriptEl.scrollTop;
+  const onUserScroll = () => {
+    // The user moved scrollTop UPWARD by more than the autoScroll
+    // pin threshold → stop fighting them.
+    const sh = transcriptEl.scrollHeight;
+    const ch = transcriptEl.clientHeight;
+    const distanceFromBottom = sh - transcriptEl.scrollTop - ch;
+    if (distanceFromBottom > 100) userScrolledUp = true;
+    lastScrollTop = transcriptEl.scrollTop;
+  };
+  transcriptEl.addEventListener('touchmove', onUserScroll, { passive: true });
+  transcriptEl.addEventListener('wheel', onUserScroll, { passive: true });
+  const ro = new ResizeObserver(() => {
+    if (userScrolledUp) return;
+    transcriptEl.scrollTo({ top: transcriptEl.scrollHeight, behavior: 'instant' as ScrollBehavior });
+  });
+  ro.observe(transcriptEl);
+  // Also observe direct children — scrollHeight changes when a CHILD
+  // grows (e.g. a bubble has a play-bar appended), and the parent's
+  // ResizeObserver fires for its own size only, not children's. Watch
+  // each child for the same window.
+  for (const child of Array.from(transcriptEl.children)) {
+    if (child instanceof HTMLElement) ro.observe(child);
+  }
+  setTimeout(() => {
+    ro.disconnect();
+    transcriptEl.removeEventListener('touchmove', onUserScroll);
+    transcriptEl.removeEventListener('wheel', onUserScroll);
+  }, REPIN_WINDOW_MS);
 }
 
 /** True if the inflight set indicates the agent's turn is still in

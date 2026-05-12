@@ -23,8 +23,21 @@ const PERSIST_DEBOUNCE_MS = 500;
 export interface SavedScrollPosition {
   chatId: string;
   scrollTop: number;
+  /** True when scrollTop was within AT_BOTTOM_THRESHOLD_PX of the
+   *  live edge at save time. Restore uses this to call
+   *  forceScrollToBottom (which re-pins after async height growth)
+   *  instead of setting a stale scrollTop. Without this, a chat
+   *  whose scrollHeight grows after restore (lazy DOM enhancement —
+   *  play-bars, copy buttons, timestamps added after initial layout)
+   *  leaves the user at the old bottom = new middle. Smoke pins this
+   *  via scripts/smoke/scroll-position-persists-on-switch.mjs. */
+  atBottom: boolean;
   savedAt: number;
 }
+
+/** Threshold for "at the live edge" — matches autoScroll's pinned
+ *  threshold in chat.ts. */
+export const AT_BOTTOM_THRESHOLD_PX = 300;
 
 const cache = new Map<string, SavedScrollPosition>();
 let hydrated = false;
@@ -94,14 +107,19 @@ export function getScrollPosition(chatId: string): SavedScrollPosition | null {
     return null;
   }
   const v = cache.get(chatId);
-  diag(`[chat-scroll] get(${chatId.slice(-12)}) → ${v ? `scrollTop=${v.scrollTop} age=${Math.round((Date.now() - v.savedAt) / 1000)}s` : 'MISS'}`);
+  diag(`[chat-scroll] get(${chatId.slice(-12)}) → ${v ? `scrollTop=${v.scrollTop} atBottom=${v.atBottom} age=${Math.round((Date.now() - v.savedAt) / 1000)}s` : 'MISS'}`);
   return v || null;
 }
 
 /** Update the cached position for `chatId`. Writes through to IDB
  *  on a per-chat 500ms debounce — high-frequency scroll events
- *  during a streaming reply collapse to one disk write. */
-export function saveScrollPosition(chatId: string, scrollTop: number): void {
+ *  during a streaming reply collapse to one disk write. atBottom is
+ *  derived from current scrollTop vs maxTop at the call site. */
+export function saveScrollPosition(
+  chatId: string,
+  scrollTop: number,
+  atBottom: boolean,
+): void {
   if (!chatId) {
     diag(`[chat-scroll] save: empty chatId, skip`);
     return;
@@ -118,12 +136,13 @@ export function saveScrollPosition(chatId: string, scrollTop: number): void {
   // (already at bottom, scrollHeight grew but scrollTop pinned). Cuts
   // signal/noise without losing the "user scrolled to X" event.
   const prev = cache.get(chatId);
-  if (!prev || Math.abs(prev.scrollTop - floored) >= 50) {
-    diag(`[chat-scroll] save(${chatId.slice(-12)}) scrollTop=${floored}${prev ? ` (was ${prev.scrollTop})` : ' [new]'}`);
+  if (!prev || Math.abs(prev.scrollTop - floored) >= 50 || prev.atBottom !== atBottom) {
+    diag(`[chat-scroll] save(${chatId.slice(-12)}) scrollTop=${floored} atBottom=${atBottom}${prev ? ` (was ${prev.scrollTop} atBottom=${prev.atBottom})` : ' [new]'}`);
   }
   const record: SavedScrollPosition = {
     chatId,
     scrollTop: floored,
+    atBottom,
     savedAt: Date.now(),
   };
   cache.set(chatId, record);

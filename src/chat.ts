@@ -14,6 +14,7 @@ import {
 import {
   hydrateScrollPositions,
   saveScrollPosition,
+  AT_BOTTOM_THRESHOLD_PX,
 } from './chatScrollPositions.ts';
 
 let transcriptEl: HTMLElement | null = null;
@@ -213,9 +214,15 @@ export async function init(el: HTMLElement | null): Promise<boolean> {
       // scroll-near-top, not user vs JS.
       maybeLoadEarlier();
       // Save per-chat scroll position on every scroll. 500ms debounce
-      // in the helper keeps streaming-reply cadence cheap.
+      // in the helper keeps streaming-reply cadence cheap. atBottom is
+      // the load-bearing field: on switch-back, we re-pin to the
+      // (then-current) bottom if true, which handles async DOM
+      // enhancement that grows scrollHeight post-render (play-bars,
+      // copy buttons added after initial layout).
       if (transcriptEl && viewedSessionIdRef) {
-        saveScrollPosition(viewedSessionIdRef, transcriptEl.scrollTop);
+        const distance = transcriptEl.scrollHeight - transcriptEl.scrollTop - transcriptEl.clientHeight;
+        const atBottom = distance <= AT_BOTTOM_THRESHOLD_PX;
+        saveScrollPosition(viewedSessionIdRef, transcriptEl.scrollTop, atBottom);
       } else if (transcriptEl && !viewedSessionIdRef) {
         // Diagnostic: a scroll fired but no viewedSessionIdRef means
         // either we're in the boot window before trackViewedSession or
