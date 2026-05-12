@@ -2685,6 +2685,24 @@ class SidekickAdapter(BasePlatformAdapter):
         switch via switch_model's `explicit_provider` arg so we don't
         have to detect-by-name. Provider names with colons in them
         would break this — none today."""
+        # Diagnostic INFO log (Jonathan, 2026-05-12): hermes config.yaml
+        # has been silently flipping from gpt-5 to haiku and we haven't
+        # been able to locate the writer. /tmp/hermes-config-writes.log
+        # (cron model-watcher) catches the *moment* of change with PID
+        # context, but not the call chain that drove it. Logging the
+        # incoming value + caller frames here triangulates the plugin's
+        # /v1/settings POST path vs other writers (cli /model, gateway
+        # /handle_model_switch). Strip when the cause is identified.
+        try:
+            import traceback as _tb
+            frames = _tb.format_stack(limit=8)
+            logger.info(
+                "[sidekick] _apply_model_setting called value=%r frames=%s",
+                value,
+                " <- ".join(f.strip().splitlines()[0] for f in frames[:-1]),
+            )
+        except Exception:
+            pass
         if not isinstance(value, str) or not value.strip():
             raise _SettingsValidationError("model value must be a non-empty string")
         raw_value = value.strip()
