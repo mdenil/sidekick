@@ -103,6 +103,21 @@ interface Subscriber {
 }
 const subscribers = new Set<Subscriber>();
 
+// Per-chat timestamp of the most recent broadcast for that chat. Used
+// by the push-dispatch idle gate to distinguish "user has SSE attached
+// AND is actively engaged" from "user has SSE attached but the channel
+// has been quiet long enough that they've probably backgrounded the tab."
+// Cleared opportunistically when entries become very stale via the
+// QUIET_WINDOW_MS scan in maybeDispatchPush (no separate sweep thread).
+const lastBroadcastAt = new Map<string, number>();
+// Threshold beyond which a chat with an attached SSE subscriber is
+// nonetheless treated as "offline" for push purposes. 30s comfortably
+// exceeds intra-turn delta cadence (sub-second) and tool-call gaps
+// (most tools <10s), so an actively-watched chat stays "active." A
+// chat the user pulled up but then walked away from will fall past
+// the threshold within half a minute.
+const QUIET_WINDOW_MS = 30_000;
+
 function broadcast(env: Envelope): void {
   // Defense in depth: every envelope on this channel MUST carry chat_id
   // so the PWA can route. Any plugin envelope missing it is a contract
@@ -125,6 +140,12 @@ function broadcast(env: Envelope): void {
   // path. Bound the ring at RECENT_CAP entries.
   recent.push({ id, env });
   if (recent.length > RECENT_CAP) recent.shift();
+  // Track per-chat broadcast cadence for the push-dispatch idle gate
+  // (see maybeDispatchPush). Updated AFTER fanout so the timestamp
+  // reflects "this envelope's broadcast time" — pushEnvelope reads
+  // the PRIOR value before calling broadcast() so the gate compares
+  // "was the channel active before this arrival?" not "after."
+  lastBroadcastAt.set(env.chat_id, Date.now());
 }
 
 function detach(sub: Subscriber): void {
@@ -146,14 +167,28 @@ function hasActiveSubFor(chatId: string): boolean {
 }
 
 /** Fire-and-forget push delivery for push-eligible envelopes when the
- *  user has no live SSE subscriber for the chat. Logs but doesn't throw
- *  on failure — push is best-effort and shouldn't impact broadcast. */
-function maybeDispatchPush(env: Envelope): void {
+ *  user has no live SSE subscriber for the chat, OR has one but the
+ *  channel has been quiet long enough to suspect the tab is backgrounded.
+ *  Logs but doesn't throw on failure — push is best-effort and shouldn't
+ *  impact broadcast.
+ *
+ *  `prevBroadcastAt` is the per-chat lastBroadcastAt value captured BEFORE
+ *  the current envelope's broadcast() updated it — see pushEnvelope. The
+ *  caller passes 0 when no prior broadcast for the chat exists, which we
+ *  treat as "infinitely idle" (push). */
+function maybeDispatchPush(env: Envelope, prevBroadcastAt: number): void {
   if (!isNotificationsConfigured()) return;
   if (!isPushEligibleType(env.type)) return;
   const chatId = typeof env.chat_id === 'string' ? env.chat_id : '';
   if (!chatId) return;
-  if (hasActiveSubFor(chatId)) return;  // user is live; SSE handles it
+  if (hasActiveSubFor(chatId)) {
+    // Subscriber attached. Was the channel actively producing envelopes
+    // within the quiet window before this arrival? If so, the user is
+    // probably watching — SSE delivery is enough, skip the OS push.
+    // Quiet beyond the window = likely backgrounded; push so they notice.
+    const idleMs = Date.now() - prevBroadcastAt;
+    if (idleMs < QUIET_WINDOW_MS) return;
+  }
   const payload = envelopeToPayload(env as Record<string, any>);
   // Don't await — dispatch can take seconds (push services round-trip)
   // and we don't want to block the next envelope.
@@ -200,11 +235,18 @@ export function pushEnvelope(env: SidekickEnvelope | Envelope): void {
       inflight.dropChat(chatId);
     }
   }
+  // Capture the per-chat last-broadcast timestamp BEFORE broadcast()
+  // updates it — the idle-gate in maybeDispatchPush wants to know "was
+  // the channel active before this envelope?" not "after." Guard against
+  // missing chat_id (broadcast() also guards but defense in depth here).
+  const broadcastChatId = typeof (env as any).chat_id === 'string' ? (env as any).chat_id : '';
+  const prevBroadcastAt = broadcastChatId ? (lastBroadcastAt.get(broadcastChatId) || 0) : 0;
+
   broadcast(env as Envelope);
   // Push dispatch runs AFTER broadcast so live tabs see the message
   // first (no double-render race), and so the hasActiveSubFor check
   // sees the up-to-date subscriber set just before deciding.
-  maybeDispatchPush(env as Envelope);
+  maybeDispatchPush(env as Envelope, prevBroadcastAt);
 }
 
 /** Wired ONCE at proxy startup so envelope fan-out is in place before
