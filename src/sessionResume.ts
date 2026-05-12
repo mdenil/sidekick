@@ -248,23 +248,17 @@ export function replaySessionMessages(
   if (inflight && inflightSignalsMidTurn(inflight)) {
     showThinking();
   }
-  // Restore scroll: if a saved position exists for this chat AND the
-  // user wasn't pinned to bottom, land them where they left off.
-  // Otherwise scroll to bottom (cache miss, or atBottom=true → use
-  // forceScrollToBottom so iOS reflow + paint cases are handled).
-  // Saved by chat.ts's scroll listener on every user-initiated scroll.
+  // Restore scroll: saved position → land where the user left off;
+  // cache miss → scroll to bottom. cmdk message-hit drills
+  // (targetMessageId) bypass this path entirely.
   const saved = getScrollPosition(id);
-  if (saved && !saved.atBottom && !targetMessageId) {
+  if (saved && !targetMessageId) {
     const transcriptEl2 = document.getElementById('transcript');
     if (transcriptEl2) {
-      // Clamp to the current scrollHeight in case the chat shrank
-      // (messages deleted, compaction). Browser would clamp anyway,
-      // but explicit is clearer.
-      const maxTop = Math.max(0, transcriptEl2.scrollHeight - transcriptEl2.clientHeight);
-      transcriptEl2.scrollTop = Math.min(saved.scrollTop, maxTop);
-      log(`[chat-resume] restored scrollTop=${saved.scrollTop} (clamped to ${transcriptEl2.scrollTop})`);
+      transcriptEl2.scrollTop = saved.scrollTop;
+      log(`[chat-resume] restored scrollTop=${saved.scrollTop}`);
     }
-  } else {
+  } else if (!targetMessageId) {
     chat.forceScrollToBottom();
   }
 }

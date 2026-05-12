@@ -1,10 +1,9 @@
 // Per-chat scroll-position memory.
 //
-// On switch-back to a chat, restore the user's last known scroll
-// position so the experience is "land where I left off" rather than
-// "always jump to bottom" (which silently breaks when async content
-// reflow shifts scrollHeight after the synchronous scroll fires —
-// see chat.ts forceScrollToBottom for the gory iOS WebKit details).
+// "Wherever the user last was in this session, else bottom" — the
+// behavior every chat / messaging app defaults to, emulated for the
+// single-page sidekick. Save scrollTop on scroll, restore on switch-
+// back. No flags, no observers, no special cases.
 //
 // Storage:
 //   - In-memory Map (chatId → SavedPosition) is the read source so
@@ -14,13 +13,6 @@
 //     write-through (debounced 500ms per chat) on save.
 //   - Cache miss → caller scrolls to bottom (per Jonathan, 2026-05-11:
 //     "if there's a cache miss in IDB make it scroll to bottom").
-//
-// "At bottom" is a distinct flag from raw scrollTop because:
-//   - Native PWA users expect "I was at the bottom → next visit, I'm
-//     at the bottom" regardless of intervening reflow.
-//   - Reflow during agent replies grows scrollHeight; a saved
-//     scrollTop reads stale. forceScrollToBottom() is the correct
-//     restore action for atBottom=true.
 
 import { diag } from './util/log.ts';
 
@@ -31,7 +23,6 @@ const PERSIST_DEBOUNCE_MS = 500;
 export interface SavedScrollPosition {
   chatId: string;
   scrollTop: number;
-  atBottom: boolean;
   savedAt: number;
 }
 
@@ -90,15 +81,11 @@ export function getScrollPosition(chatId: string): SavedScrollPosition | null {
 /** Update the cached position for `chatId`. Writes through to IDB
  *  on a per-chat 500ms debounce — high-frequency scroll events
  *  during a streaming reply collapse to one disk write. */
-export function saveScrollPosition(
-  chatId: string,
-  pos: { scrollTop: number; atBottom: boolean },
-): void {
+export function saveScrollPosition(chatId: string, scrollTop: number): void {
   if (!chatId) return;
   const record: SavedScrollPosition = {
     chatId,
-    scrollTop: Math.max(0, Math.floor(pos.scrollTop)),
-    atBottom: !!pos.atBottom,
+    scrollTop: Math.max(0, Math.floor(scrollTop)),
     savedAt: Date.now(),
   };
   cache.set(chatId, record);
