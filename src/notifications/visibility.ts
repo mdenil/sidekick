@@ -2,7 +2,7 @@
 // to the proxy so the dispatch gate knows whether the user is actively
 // engaged with a chat (within a 2s engagement window).
 //
-// Two fire conditions:
+// Three fire conditions:
 //
 //   1. document.visibilitychange — PWA foregrounds / backgrounds.
 //      The current `sessionDrawer.getViewed()` is the chat the user
@@ -14,6 +14,12 @@
 //      visibility-=-visible event for that chat (the PWA is already
 //      foregrounded, but the chat-in-focus just changed).
 //
+//   3. Heartbeat — every HEARTBEAT_MS while page.visibilityState is
+//      'visible' AND a chat is viewed. Without this, sitting on the
+//      same chat for >2s with no events lets the server-side
+//      timestamp age past ENGAGED_WINDOW_MS and the very next reply
+//      gets a spurious push banner (Jonathan field bug 2026-05-12).
+//
 // Failures are deliberately swallowed (best-effort): a missed report
 // just means the gate falls back to the legacy SSE-attached +
 // 30s-idle heuristic. We don't want push-notification quality issues
@@ -23,9 +29,17 @@ import { log } from '../util/log.ts';
 
 type VisibilityState = 'visible' | 'hidden';
 
+// Heartbeat cadence — must be strictly less than the proxy-side
+// ENGAGED_WINDOW_MS (notifications/visibility.ts, currently 2000ms)
+// so a single dropped request can't open a window where the server
+// thinks the user isn't engaged. 1500ms leaves a 500ms safety margin.
+const HEARTBEAT_MS = 1500;
+
 let lastReportedState: VisibilityState | null = null;
 let lastReportedChat: string | null = null;
 let initialized = false;
+let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+let getViewedRef: (() => string | null) | null = null;
 
 async function postVisibility(state: VisibilityState, chatId: string): Promise<void> {
   try {
@@ -57,6 +71,7 @@ function maybeReport(state: VisibilityState, chatId: string): void {
 export function initVisibilityReporting(getViewed: () => string | null): void {
   if (initialized) return;
   initialized = true;
+  getViewedRef = getViewed;
 
   const compute = (): { state: VisibilityState; chatId: string } => {
     const state: VisibilityState =
@@ -76,6 +91,22 @@ export function initVisibilityReporting(getViewed: () => string | null): void {
     const { state, chatId } = compute();
     maybeReport(state, chatId);
   });
+
+  // Heartbeat — keeps the proxy's engagement timestamp fresh while the
+  // user sits on a chat. Without this, the timestamp ages past the 2s
+  // server window and any new reply gets a spurious push banner
+  // (Jonathan field bug 2026-05-12). Bypasses maybeReport's dedup
+  // gating so the timestamp REFRESHES each tick — that's the entire
+  // point. Suppressed while page is hidden (the 'hidden' state from
+  // visibilitychange already informs the server) and when no chat is
+  // viewed.
+  heartbeatTimer = setInterval(() => {
+    if (typeof document === 'undefined') return;
+    if (document.visibilityState !== 'visible') return;
+    const chatId = getViewedRef?.() || '';
+    if (!chatId) return;
+    void postVisibility('visible', chatId);
+  }, HEARTBEAT_MS);
 }
 
 /** Reports the user switched to chat `chatId`. Called from
