@@ -529,6 +529,24 @@ export async function installMockBackend(page) {
       const id = messageId || `mock-msg-${envelopeId + 1}`;
       broadcast({ type: 'reply_delta', chat_id: chatId, text, message_id: id });
       broadcast({ type: 'reply_final', chat_id: chatId, message_id: id });
+      // Persist to chat.messages so the next /messages fetch includes
+      // the reply — mirrors real hermes' post-turn append_to_transcript
+      // which writes assistant messages to state.db after reply_final.
+      // Without this, a test that switches away after pushReply and
+      // back again finds the reply gone from the cache + server,
+      // looking like the PWA dropped it (false-positive vs the real
+      // behavior where the reply IS persisted by then).
+      const chat = chats.get(chatId);
+      if (chat) {
+        chat.messages.push({
+          role: 'assistant',
+          content: text,
+          message_id: id,
+          sidekick_id: id,
+          timestamp: Date.now() / 1000,
+        });
+        chat.lastActiveAt = Date.now();
+      }
     },
     /** Push a session_changed envelope (e.g. for title-update tests).
      *  Also updates the in-memory chat's title to match — mimics what
