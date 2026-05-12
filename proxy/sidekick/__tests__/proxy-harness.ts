@@ -398,6 +398,14 @@ export async function startRig(opts: { mode?: FakeMode } = {}): Promise<ProxyRig
       const r = await import('../notifications/routes.ts');
       return r.handleSidekickTest(req, res);
     }
+    if (method === 'GET' && path === '/api/sidekick/notifications/mutes') {
+      const r = await import('../notifications/routes.ts');
+      return r.handleSidekickListMutes(req, res);
+    }
+    if (method === 'POST' && path === '/api/sidekick/notifications/mute') {
+      const r = await import('../notifications/routes.ts');
+      return r.handleSidekickSetMute(req, res);
+    }
     res.writeHead(404, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ error: 'no route' }));
   });

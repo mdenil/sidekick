@@ -56,6 +56,7 @@ import {
   isPushEligible,
 } from './notifications/dispatch.ts';
 import { isConfigured as isNotificationsConfigured } from './notifications/index.ts';
+import { isMuted } from './notifications/mutes.ts';
 import type { SidekickEnvelope, UpstreamAgent } from './upstream.ts';
 
 type Envelope = Record<string, unknown> & { type: string; chat_id?: string };
@@ -181,6 +182,11 @@ function maybeDispatchPush(env: Envelope, prevBroadcastAt: number): void {
   if (!isPushEligible(env as Record<string, any>)) return;
   const chatId = typeof env.chat_id === 'string' ? env.chat_id : '';
   if (!chatId) return;
+  // Per-chat mute — user explicitly silenced this chat's pushes via the
+  // sidebar 3-dots menu. Checked AFTER type/should_push eligibility so
+  // the mute decision is independent of envelope-class (mute everything
+  // from this chat, not just replies).
+  if (isMuted(chatId)) return;
   if (hasActiveSubFor(chatId)) {
     // Subscriber attached. Was the channel actively producing envelopes
     // within the quiet window before this arrival? If so, the user is

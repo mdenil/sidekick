@@ -27,6 +27,7 @@ import {
   listSubscriptions,
 } from './storage.ts';
 import { dispatchPush } from './dispatch.ts';
+import { setMuted, listMutedChats } from './mutes.ts';
 
 const MAX_BODY_BYTES = 8 * 1024;  // subscriptions are tiny, generous
 
@@ -115,6 +116,44 @@ export async function handleSidekickUnsubscribe(req: any, res: any): Promise<voi
   }
   const removed = await removeSubscription(body.endpoint);
   sendJson(res, 200, { ok: true, removed });
+}
+
+/** GET /api/sidekick/notifications/mutes
+ *  Return the list of currently-muted chat_ids. PWA reads this at boot
+ *  + after toggling so the 3-dots menu can show the right label
+ *  ("Mute" vs "Unmute") per chat. */
+export function handleSidekickListMutes(req: any, res: any): void {
+  if (!isConfigured()) {
+    return sendJson(res, 503, { error: 'vapid_unconfigured' });
+  }
+  sendJson(res, 200, { muted_chats: listMutedChats() });
+}
+
+/** POST /api/sidekick/notifications/mute
+ *  Toggle a chat's mute state. Body:
+ *    { chat_id: string, muted: boolean }
+ *  Idempotent: setting an already-muted chat to muted=true returns the
+ *  same result. Mute is GLOBAL across all subscriptions in v1. */
+export async function handleSidekickSetMute(req: any, res: any): Promise<void> {
+  if (!isConfigured()) {
+    return sendJson(res, 503, { error: 'vapid_unconfigured' });
+  }
+  let body: any;
+  try { body = await readJsonBody(req); }
+  catch (e: any) { return sendJson(res, 400, { error: 'bad_body', detail: e.message }); }
+  if (!body || typeof body.chat_id !== 'string' || !body.chat_id
+      || typeof body.muted !== 'boolean') {
+    return sendJson(res, 400, {
+      error: 'invalid_body',
+      detail: 'Expected { chat_id: string, muted: boolean }',
+    });
+  }
+  try {
+    const result = await setMuted(body.chat_id, body.muted);
+    sendJson(res, 200, { ok: true, ...result });
+  } catch (e: any) {
+    sendJson(res, 500, { error: 'mute_failed', detail: e?.message });
+  }
 }
 
 /** POST /api/sidekick/notifications/test

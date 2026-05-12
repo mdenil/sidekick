@@ -25,6 +25,7 @@ import { getFilter as getStoredFilter, putFilter as putStoredFilter, clearFilter
 import { deleteSelected as bulkDeleteSelected } from './multiSelect.ts';
 import { markRecentlyDeleted, isRecentlyDeleted, recentlyDeletedSize } from './sessionOps.ts';
 import * as badge from './notifications/badge.ts';
+import { isMuted as isChatMuted, setMuted as setChatMuted } from './notifications/mutes.ts';
 
 let onResumeCb: ((id: string, messages: any[], pagination?: { firstId: number | null; hasMore: boolean }, inflight?: any[]) => void) | null = null;
 
@@ -897,6 +898,21 @@ function openMenu(li: HTMLLIElement, s: any) {
   renameBtn.textContent = 'Rename';
   renameBtn.onclick = (e) => { e.stopPropagation(); menu.remove(); promptRename(s); };
 
+  // Per-chat push-notification mute. Label reflects current state via
+  // the in-memory mutes cache (loaded at boot). Toggle does optimistic
+  // local update + POST to the proxy; on failure the mutes module
+  // rolls back and we surface a log line for diagnostics.
+  const muteBtn = document.createElement('button');
+  const muted = isChatMuted(s.id);
+  muteBtn.textContent = muted ? 'Unmute notifications' : 'Mute notifications';
+  muteBtn.onclick = (e) => {
+    e.stopPropagation();
+    menu.remove();
+    setChatMuted(s.id, !muted).catch((err) => {
+      log(`[sess-menu] mute toggle failed for ${s.id}: ${err?.message ?? err}`);
+    });
+  };
+
   const deleteBtn = document.createElement('button');
   deleteBtn.textContent = 'Delete';
   deleteBtn.className = 'danger';
@@ -904,6 +920,7 @@ function openMenu(li: HTMLLIElement, s: any) {
 
   menu.appendChild(infoBtn);
   menu.appendChild(renameBtn);
+  menu.appendChild(muteBtn);
   menu.appendChild(deleteBtn);
   // Swallow clicks on the menu container itself (e.g. padding between
   // buttons). The button onclick handlers all stopPropagation, but a

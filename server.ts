@@ -1040,6 +1040,12 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && req.url === '/api/sidekick/notifications/test') {
       return sidekick.handleSidekickTest(req, res);
     }
+    if (req.method === 'GET' && req.url === '/api/sidekick/notifications/mutes') {
+      return sidekick.handleSidekickListMutes(req, res);
+    }
+    if (req.method === 'POST' && req.url === '/api/sidekick/notifications/mute') {
+      return sidekick.handleSidekickSetMute(req, res);
+    }
     const sidekickSettingsUpdate = req.method === 'POST'
       && req.url.match(/^\/api\/sidekick\/settings\/([^/?]+)(?:\?.*)?$/);
     if (sidekickSettingsUpdate) {

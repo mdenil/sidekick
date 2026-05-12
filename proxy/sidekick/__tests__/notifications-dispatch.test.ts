@@ -378,6 +378,127 @@ test('error: sender 410 Gone → subscription pruned automatically', async () =>
   }
 });
 
+// ── Per-chat mute gate ─────────────────────────────────────────────
+
+test('mute: muted chat skips dispatch even for push-eligible envelope', async () => {
+  const g = await startGateRig({ subscriptionSuffix: 'mute-1' });
+  try {
+    const mutedChat = 'chat-quiet-please';
+    const r = await fetch(`${g.rig.proxyUrl}/api/sidekick/notifications/mute`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ chat_id: mutedChat, muted: true }),
+    });
+    assert.equal(r.status, 200);
+
+    await g.pushEnv({
+      type: 'reply_final',
+      chat_id: mutedChat,
+      should_push: true,
+      text: 'should not push',
+    });
+    assert.equal(g.sent.length, 0,
+      'muted chat must skip dispatch regardless of should_push / type / subscriber state');
+
+    // Confirm an UNRELATED chat still pushes normally.
+    await g.pushEnv({
+      type: 'reply_final',
+      chat_id: 'chat-not-muted',
+      should_push: true,
+      text: 'should push',
+    });
+    assert.equal(g.sent.length, 1,
+      'unmuted chat unaffected by another chat being muted');
+  } finally {
+    await g.stop();
+  }
+});
+
+test('mute: unmute restores dispatch for the same chat', async () => {
+  const g = await startGateRig({ subscriptionSuffix: 'mute-2' });
+  try {
+    const chat = 'chat-toggle';
+    // Mute, push, expect 0 dispatched.
+    await fetch(`${g.rig.proxyUrl}/api/sidekick/notifications/mute`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ chat_id: chat, muted: true }),
+    });
+    await g.pushEnv({ type: 'reply_final', chat_id: chat, should_push: true });
+    assert.equal(g.sent.length, 0);
+
+    // Unmute, push again, expect 1 dispatched.
+    await fetch(`${g.rig.proxyUrl}/api/sidekick/notifications/mute`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ chat_id: chat, muted: false }),
+    });
+    await g.pushEnv({ type: 'reply_final', chat_id: chat, should_push: true });
+    assert.equal(g.sent.length, 1, 'unmute should restore dispatch');
+  } finally {
+    await g.stop();
+  }
+});
+
+test('mute: GET /mutes returns the current list', async () => {
+  const g = await startGateRig({ subscriptionSuffix: 'mute-list' });
+  try {
+    // Initially empty.
+    const r1 = await fetch(`${g.rig.proxyUrl}/api/sidekick/notifications/mutes`);
+    assert.equal(r1.status, 200);
+    assert.deepEqual((await r1.json()).muted_chats, []);
+
+    // Mute two chats, verify list reflects them (sorted).
+    for (const c of ['chat-b', 'chat-a']) {
+      await fetch(`${g.rig.proxyUrl}/api/sidekick/notifications/mute`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ chat_id: c, muted: true }),
+      });
+    }
+    const r2 = await fetch(`${g.rig.proxyUrl}/api/sidekick/notifications/mutes`);
+    const body: any = await r2.json();
+    assert.deepEqual(body.muted_chats, ['chat-a', 'chat-b'],
+      'list should be sorted for stable client-side rendering');
+
+    // Idempotent re-mute returns the same total.
+    const r3 = await fetch(`${g.rig.proxyUrl}/api/sidekick/notifications/mute`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ chat_id: 'chat-a', muted: true }),
+    });
+    const body3: any = await r3.json();
+    assert.equal(body3.total, 2, 'idempotent mute should leave total unchanged');
+  } finally {
+    await g.stop();
+  }
+});
+
+test('mute: invalid bodies return 400', async () => {
+  const g = await startGateRig({ subscriptionSuffix: 'mute-bad' });
+  try {
+    const bad = [
+      {},
+      { chat_id: 'x' },                 // no muted field
+      { muted: true },                   // no chat_id
+      { chat_id: 'x', muted: 'yes' },    // wrong type
+      { chat_id: '', muted: true },      // empty chat_id
+      { chat_id: 42, muted: true },      // non-string chat_id
+    ];
+    for (const b of bad) {
+      const r = await fetch(`${g.rig.proxyUrl}/api/sidekick/notifications/mute`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(b),
+      });
+      assert.equal(r.status, 400,
+        `expected 400 for ${JSON.stringify(b)}, got ${r.status}`);
+    }
+  } finally {
+    await g.stop();
+  }
+});
+
 test('error: sender transient 5xx → counted as failed, subscription kept', async () => {
   const g = await startGateRig({ subscriptionSuffix: 'transient' });
   try {
