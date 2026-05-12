@@ -53,7 +53,7 @@ import * as inflight from './inflight.ts';
 import {
   dispatchPush,
   envelopeToPayload,
-  isPushEligibleType,
+  isPushEligible,
 } from './notifications/dispatch.ts';
 import { isConfigured as isNotificationsConfigured } from './notifications/index.ts';
 import type { SidekickEnvelope, UpstreamAgent } from './upstream.ts';
@@ -178,7 +178,7 @@ function hasActiveSubFor(chatId: string): boolean {
  *  treat as "infinitely idle" (push). */
 function maybeDispatchPush(env: Envelope, prevBroadcastAt: number): void {
   if (!isNotificationsConfigured()) return;
-  if (!isPushEligibleType(env.type)) return;
+  if (!isPushEligible(env as Record<string, any>)) return;
   const chatId = typeof env.chat_id === 'string' ? env.chat_id : '';
   if (!chatId) return;
   if (hasActiveSubFor(chatId)) {

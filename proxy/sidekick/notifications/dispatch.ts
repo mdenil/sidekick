@@ -102,12 +102,38 @@ export async function dispatchPush(payload: PushPayload): Promise<DispatchResult
   return { dispatched, failed, pruned };
 }
 
-/** Envelope-types that are eligible for push delivery. Conservative
- *  list — only user-facing turn outputs (the final assistant reply)
- *  and explicit `notification` envelopes from the plugin. Streaming
- *  deltas / typing / tool events deliberately don't push. */
+/** Envelope-types eligible for push delivery — fallback policy when an
+ *  envelope arrives WITHOUT an explicit `should_push` flag from the
+ *  plugin. Newer plugins set the flag directly per envelope and
+ *  preempt this list (see isPushEligible). Conservative list — only
+ *  user-facing turn outputs (the final assistant reply) and explicit
+ *  `notification` envelopes. Streaming deltas / typing / tool events
+ *  deliberately don't push. */
 const PUSH_ELIGIBLE_TYPES = new Set<string>(['reply_final', 'notification']);
 
+/** Decide whether an envelope should be pushed. Plugin-driven flag
+ *  takes precedence; falls back to the type allowlist when the flag
+ *  isn't present (backwards compat with plugin versions that haven't
+ *  adopted should_push yet).
+ *
+ *  Truthy `should_push` → eligible regardless of type. Lets the plugin
+ *  promote a tool-summary `notification` or suppress a chatty
+ *  `reply_final` based on content the proxy can't see.
+ *
+ *  Boolean false `should_push: false` → NOT eligible, even if the
+ *  type would otherwise qualify. Lets the plugin opt out of push for
+ *  a `reply_final` that's just a tool acknowledgement.
+ *
+ *  Absent / non-boolean → consult PUSH_ELIGIBLE_TYPES. Old plugins
+ *  keep working unchanged. */
+export function isPushEligible(env: Record<string, any>): boolean {
+  if (typeof env.should_push === 'boolean') return env.should_push;
+  return PUSH_ELIGIBLE_TYPES.has(env.type);
+}
+
+/** @deprecated Use isPushEligible(env) — the type-only variant ignores
+ *  the plugin's should_push flag. Kept as a thin shim during the
+ *  flag-adoption window so any external caller doesn't break. */
 export function isPushEligibleType(envelopeType: string): boolean {
   return PUSH_ELIGIBLE_TYPES.has(envelopeType);
 }

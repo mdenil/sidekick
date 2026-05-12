@@ -3356,6 +3356,21 @@ class SidekickAdapter(BasePlatformAdapter):
         in_turn_types = {"reply_delta", "reply_final", "tool_call",
                           "tool_result", "typing"}
 
+        # Stamp `should_push` so the sidekick proxy can decide push
+        # delivery without having to reverse-engineer it from type +
+        # content. Plugin owns "what is user-actionable":
+        #   - reply_final + notification → True (the user-facing
+        #     surfaces; the proxy's isPushEligible defaults to these
+        #     types anyway, but explicit is better than implicit).
+        #   - everything else → False (streaming deltas, typing,
+        #     tool envelopes, session_changed metadata).
+        # Caller can override by setting should_push explicitly before
+        # calling _safe_send_envelope — useful for the (eventual)
+        # notification kind='debug' carve-out or for a chatty
+        # reply_final that's just a tool acknowledgement.
+        if "should_push" not in env:
+            env = {**env, "should_push": env_type in ("reply_final", "notification")}
+
         # Replace hermes' misleading "No <provider> credentials stored"
         # wrapper with a chat message that names the actual problem
         # (quota exhausted, reset time) and points the user at the UI
