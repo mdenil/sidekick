@@ -42,6 +42,7 @@ import {
 } from './subscription.ts';
 import { getPermission } from './permission.ts';
 import { log } from '../util/log.ts';
+import { hydrateMarkedUnread } from './badge.ts';
 
 /** Initialize notifications. If the browser has ALREADY granted push
  *  permission AND no subscription is currently active, auto-subscribe
@@ -59,6 +60,16 @@ import { log } from '../util/log.ts';
  *    - Apple's relay can evict subscriptions after long PWA dormancy;
  *      re-opening the PWA auto-re-subscribes. */
 export async function initNotifications(): Promise<void> {
+  // Hydrate the persisted mark-unread set BEFORE we yield to the
+  // subscribe roundtrip below — sessionDrawer's first refresh paints
+  // row indicators synchronously from badge.unreadFor(), and we want
+  // marked-unread chats to render with the sticky indicator on the
+  // first paint, not flash-in once IDB resolves. The hydrate itself
+  // is non-blocking IDB work (~few ms); we await it to make the
+  // first-paint contract clean. Independent of push support — even
+  // without VAPID, mark-unread state should still restore.
+  await hydrateMarkedUnread();
+
   if (!isPushSupported()) return;
   const perm = getPermission();
   if (perm !== 'granted') return;
