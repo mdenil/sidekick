@@ -123,6 +123,11 @@ CREATE TABLE messages (
     timestamp REAL NOT NULL
 );
 CREATE INDEX idx_messages_session ON messages(session_id, timestamp);
+
+CREATE TABLE sidekick_msg_links (
+    state_db_id INTEGER PRIMARY KEY,
+    sidekick_id TEXT NOT NULL
+);
 """
 
 
@@ -352,6 +357,80 @@ def test_drawer_includes_compression_forks_via_user_id(plugin, state_db):
     assert mcount == 2
     assert created == 1000.0
     assert last_active == 2001.0
+
+
+def test_drawer_rolls_up_compacted_null_user_id_child(plugin, state_db):
+    """Field bug 2026-05-12 (Jonathan, neck-strain chat): hermes
+    compaction creates child sessions with user_id=NULL, breaking
+    the upstream contract that "rotated sessions inherit user_id."
+    The recursive CTE walks parent_session_id chains so the child's
+    messages get rolled up under the root's user_id.
+
+    Pre-CTE: drawer query filters WHERE user_id IS NOT NULL → child
+    invisible → mcount=2 only (root's messages). Drawer-list shows
+    a chat that's "missing" the compacted continuation.
+
+    Post-CTE: child resolves to root_user_id via parent chain →
+    mcount=5 (both root + child). Drawer-list shows the full chat."""
+    _insert_session(state_db, "root", "sidekick", "u", 1000.0, title="root")
+    _insert_message(state_db, "root", "user", "before compaction", 1001.0)
+    _insert_message(state_db, "root", "assistant", "reply 1", 1002.0)
+    # Compacted child — user_id IS NULL (the broken upstream invariant).
+    _insert_session(state_db, "compacted", "sidekick", None, 2000.0,
+                    title="root #2", parent="root")
+    _insert_message(state_db, "compacted", "user", "post compaction", 2001.0)
+    _insert_message(state_db, "compacted", "assistant", "reply 2", 2002.0)
+    _insert_message(state_db, "compacted", "assistant", "reply 3", 2003.0)
+
+    adapter = _make_adapter(plugin, state_db)
+    rows = adapter._summaries_by_user_id(("sidekick",), 50)
+    assert len(rows) == 1
+    chat_id, _src, _ctype, title, mcount, _turn, _tool, last_active, created, _first = rows[0]
+    assert chat_id == "u"
+    assert title == "root #2"  # latest started_at wins
+    assert mcount == 5  # 2 root + 3 compacted child
+    assert created == 1000.0
+    assert last_active == 2003.0
+
+
+def test_history_walks_compacted_null_user_id_child(plugin, state_db):
+    """Twin of the drawer test for `_items_by_user_id`: transcript
+    fetch must return messages from BOTH the root and compacted
+    child sessions when the child has user_id=NULL. Pre-CTE: only
+    root's messages appear. Post-CTE: both."""
+    _insert_session(state_db, "root", "sidekick", "u", 1000.0)
+    _insert_message(state_db, "root", "user", "root msg 1", 1001.0)
+    _insert_message(state_db, "root", "assistant", "root reply 1", 1002.0)
+    _insert_session(state_db, "compacted", "sidekick", None, 2000.0,
+                    parent="root")
+    _insert_message(state_db, "compacted", "user", "child msg 1", 2001.0)
+    _insert_message(state_db, "compacted", "assistant", "child reply 1", 2002.0)
+
+    adapter = _make_adapter(plugin, state_db)
+    result = adapter._items_by_user_id("u", "sidekick", 200, None)
+    assert result is not None
+    items, _first_id, _has_more = result
+    assert len(items) == 4
+    contents = [it["content"] for it in items]
+    assert contents == ["root msg 1", "root reply 1", "child msg 1", "child reply 1"]
+
+
+def test_history_walks_multi_level_compaction_chain(plugin, state_db):
+    """Compaction can rotate multiple times. The CTE must walk the
+    full parent_session_id chain, not just one level."""
+    _insert_session(state_db, "root", "sidekick", "u", 1000.0)
+    _insert_message(state_db, "root", "user", "root msg", 1001.0)
+    _insert_session(state_db, "child1", "sidekick", None, 2000.0, parent="root")
+    _insert_message(state_db, "child1", "user", "child1 msg", 2001.0)
+    _insert_session(state_db, "child2", "sidekick", None, 3000.0, parent="child1")
+    _insert_message(state_db, "child2", "user", "child2 msg", 3001.0)
+
+    adapter = _make_adapter(plugin, state_db)
+    result = adapter._items_by_user_id("u", "sidekick", 200, None)
+    assert result is not None
+    items, _first_id, _has_more = result
+    contents = [it["content"] for it in items]
+    assert contents == ["root msg", "child1 msg", "child2 msg"]
 
 
 def test_index_migration_idempotent(plugin, state_db):

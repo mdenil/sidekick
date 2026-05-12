@@ -1471,12 +1471,20 @@ class SidekickAdapter(BasePlatformAdapter):
         signal (room id parsing) which lives in the platform adapters,
         not here.
 
-        ``parent_session_id`` chains (compression forks) are not
-        deduplicated — they inherit the same ``user_id`` from the
-        root, so SUM(message_count) and the title/first_user_message
-        subqueries already dispatch by ``user_id`` correctly. Where it
-        DOES matter: ``ORDER BY started_at DESC LIMIT 1`` for the
-        title pulls the *latest* session for the chat (whatever
+        ``parent_session_id`` chains (compression forks) are walked
+        via a recursive CTE that maps every session to its root
+        user_id. The upstream hermes contract claims rotated sessions
+        inherit user_id from the root, but in practice compaction
+        creates child sessions with user_id=NULL (Jonathan field bug
+        2026-05-12: neck-strain chat's compacted continuation invisible
+        in the drawer because filtered out by the old
+        ``WHERE user_id IS NOT NULL``). The CTE resolves the effective
+        user_id by walking parent_session_id chains until we hit a
+        session with user_id set; that root user_id is then used as
+        the GROUP BY key for the drawer row.
+
+        Where ORDER BY matters: ``ORDER BY started_at DESC LIMIT 1`` for
+        the title pulls the *latest* session for the chat (whatever
         compression and session_reset did), which is what the drawer
         wants.
         """
@@ -1485,17 +1493,35 @@ class SidekickAdapter(BasePlatformAdapter):
         if not sources:
             return []
         src_csv = ",".join(["?"] * len(sources))
-        # One pass per user_id+source pair:
+        # Recursive CTE: session_root maps every session to its
+        # effective (root_user_id, root_source) by walking
+        # parent_session_id chains. Sessions with their own user_id
+        # are their own root; sessions without inherit from their
+        # parent's root. Hermes's compaction creates child sessions
+        # with user_id=NULL, so this is the only way to roll them up
+        # under the parent's user_id for drawer + history rendering.
+        #
+        # One row per resolved (root_user_id, source) pair:
         #   * MIN(started_at) — oldest session = drawer "created_at"
         #   * MAX over message timestamps — drawer "last_active_at"
         #   * SUM(COUNT(messages)) — total message_count across rotations
         #   * latest session's title (ORDER BY started_at DESC LIMIT 1)
         #   * very first user message ever (ORDER BY timestamp ASC LIMIT 1
-        #     across all sessions for this user_id+source)
+        #     across all sessions that resolve to this user_id+source)
         sql = f"""
+            WITH RECURSIVE session_root(id, root_user_id, root_source) AS (
+                SELECT id, user_id, source
+                  FROM sessions
+                 WHERE user_id IS NOT NULL
+                UNION ALL
+                SELECT s.id, sr.root_user_id, sr.root_source
+                  FROM sessions s
+                  JOIN session_root sr ON s.parent_session_id = sr.id
+                 WHERE s.user_id IS NULL
+            )
             SELECT
-                s.user_id,
-                s.source,
+                sr.root_user_id AS user_id,
+                sr.root_source AS source,
                 MIN(COALESCE(s.started_at, 0)) AS created_at,
                 COALESCE(MAX(
                     (SELECT COALESCE(MAX(m.timestamp), s.started_at)
@@ -1514,19 +1540,23 @@ class SidekickAdapter(BasePlatformAdapter):
                        WHERE m.session_id = s.id AND m.role = 'tool')
                 ) AS tool_count,
                 (SELECT COALESCE(s2.title, '')
-                   FROM sessions s2
-                   WHERE s2.user_id = s.user_id AND s2.source = s.source
+                   FROM session_root sr2
+                   JOIN sessions s2 ON s2.id = sr2.id
+                   WHERE sr2.root_user_id = sr.root_user_id
+                     AND sr2.root_source = sr.root_source
                    ORDER BY s2.started_at DESC LIMIT 1) AS title,
-                (SELECT m.content FROM messages m
-                   JOIN sessions s3 ON m.session_id = s3.id
-                   WHERE s3.user_id = s.user_id AND s3.source = s.source
+                (SELECT m.content
+                   FROM messages m
+                   JOIN session_root sr3 ON m.session_id = sr3.id
+                   WHERE sr3.root_user_id = sr.root_user_id
+                     AND sr3.root_source = sr.root_source
                      AND m.role = 'user'
                    ORDER BY m.timestamp ASC, m.id ASC LIMIT 1
                 ) AS first_user_message
-            FROM sessions s
-            WHERE s.user_id IS NOT NULL
-              AND s.source IN ({src_csv})
-            GROUP BY s.user_id, s.source
+            FROM session_root sr
+            JOIN sessions s ON s.id = sr.id
+            WHERE sr.root_source IN ({src_csv})
+            GROUP BY sr.root_user_id, sr.root_source
             ORDER BY last_active_at DESC
             LIMIT ?
         """
@@ -1604,17 +1634,31 @@ class SidekickAdapter(BasePlatformAdapter):
         """
         if self._state_db_path is None or not self._state_db_path.exists():
             return None
+        # Recursive CTE: walk parent_session_id chains so compacted
+        # child sessions (user_id=NULL) get rolled up under the
+        # requested chat_id. Without this, the transcript returns
+        # only the root session's messages — any messages persisted
+        # to a compaction-rotated child are invisible (Jonathan
+        # field bug 2026-05-12).
         sql = """
+            WITH RECURSIVE session_root(id) AS (
+                SELECT id FROM sessions
+                 WHERE user_id = ? AND source = ?
+                UNION ALL
+                SELECT s.id
+                  FROM sessions s
+                  JOIN session_root sr ON s.parent_session_id = sr.id
+                 WHERE s.user_id IS NULL
+            )
             SELECT m.id, m.role, m.content, m.tool_name, m.timestamp,
                    sml.sidekick_id
             FROM messages m
-            JOIN sessions s ON m.session_id = s.id
+            JOIN session_root sr ON m.session_id = sr.id
             LEFT JOIN sidekick_msg_links sml ON sml.state_db_id = m.id
-            WHERE s.user_id = ? AND s.source = ?
         """
         params: list = [chat_id, source]
         if before_id is not None:
-            sql += " AND m.id < ?"
+            sql += " WHERE m.id < ?"
             params.append(before_id)
         sql += " ORDER BY m.timestamp ASC, m.id ASC"
         uri = f"file:{self._state_db_path}?mode=ro"
@@ -1624,7 +1668,9 @@ class SidekickAdapter(BasePlatformAdapter):
             # Existence check first so we can return 404 vs. an empty
             # but valid transcript. A user_id with no messages yet
             # (e.g. just-created chat that hasn't sent its first turn)
-            # still exists; the items list will be empty.
+            # still exists; the items list will be empty. We check the
+            # root sessions table directly — if the chat_id has at
+            # least one session with that user_id, it exists.
             exists_row = conn.execute(
                 "SELECT 1 FROM sessions WHERE user_id = ? AND source = ? LIMIT 1",
                 (chat_id, source),
@@ -1691,11 +1737,24 @@ class SidekickAdapter(BasePlatformAdapter):
             with contextlib.closing(sqlite3.connect(self._state_db_path, timeout=5.0)) as conn:
                 conn.execute("PRAGMA foreign_keys = ON")
                 with conn:
-                    rows = conn.execute(
-                        "SELECT id FROM sessions "
-                        "WHERE user_id = ? AND source = ?",
-                        (chat_id, source),
-                    ).fetchall()
+                    # Recursive CTE walks parent_session_id chains so
+                    # compacted child sessions (user_id=NULL) are
+                    # included in the cascade — otherwise a delete
+                    # leaves orphan child sessions in state.db,
+                    # consuming disk + occasionally surfacing
+                    # ghost rows.
+                    rows = conn.execute("""
+                        WITH RECURSIVE session_root(id) AS (
+                            SELECT id FROM sessions
+                             WHERE user_id = ? AND source = ?
+                            UNION ALL
+                            SELECT s.id
+                              FROM sessions s
+                              JOIN session_root sr ON s.parent_session_id = sr.id
+                             WHERE s.user_id IS NULL
+                        )
+                        SELECT id FROM session_root
+                    """, (chat_id, source)).fetchall()
                     fork_sids = [r[0] for r in rows]
                     if not fork_sids:
                         return "not_found"
