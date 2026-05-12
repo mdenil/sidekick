@@ -82,7 +82,63 @@ async function handleSessionMessagesViaUpstream(
     // isn't currently mid-turn. Only included for fresh history
     // fetches (before-cursor paging skips it — older pages can't
     // contain inflight by definition).
-    const inflightEnvelopes = before === null ? inflight.getForChat(chatId) : [];
+    //
+    // Dedup against state.db: any inflight envelope whose msgId is
+    // already canonical (has a sidekick_id in the state.db rows we
+    // just fetched) is redundant — the PWA would render it twice
+    // (once from state.db, once from inflight replay) or, worse,
+    // re-surface "old" envelopes the user already saw and the system
+    // already finalized.
+    //
+    // Why this is the structural fix (vs filtering at record() time
+    // or warmup-window heuristics): the inflight cache is allowed to
+    // accumulate from any source — live-turn dispatch, gateway events
+    // ring replay on reconnect, the record()-cancels-pendingDrop edge
+    // case for cron-active chats. None of those sources need to know
+    // about each other if the boundary check is "filter at serve."
+    // Field bug 2026-05-12 (chat 99298465, Jonathan): cron-response
+    // bubbles from 1-2 hours ago kept reappearing on switch-in because
+    // sidekick restarts re-seeded the inflight cache from the gateway
+    // ring; the boundary filter makes that whole class of accumulation
+    // bug invisible.
+    const allInflight = before === null ? inflight.getForChat(chatId) : [];
+    const canonicalIds = new Set<string>();
+    for (const it of r.items) {
+      if (it.sidekick_id) canonicalIds.add(it.sidekick_id);
+    }
+    // Secondary defense: msgId-prefix-encoded age. The primary dedup
+    // above catches every envelope whose msgId matches a state.db
+    // sidekick_id, but the cron-fire code path mints reply envelopes
+    // with `sk-<unix_sec>-<seq>` ids that DON'T match the assistant
+    // state.db row's `msg_<hash>` sidekick_id (different namespaces).
+    // For those, fall back to the timestamp embedded in the msgId.
+    // The two patterns we care about:
+    //   umsg_<unix_ms>_<hash>   — PWA-minted user messages
+    //   sk-<unix_sec>-<seq>     — cron / gateway-minted replies
+    // Anything older than INFLIGHT_FRESHNESS_S is by definition NOT
+    // an in-flight envelope — it's leftover ring-replay state. Drop.
+    // 5 minutes generously exceeds the longest plausible in-flight
+    // turn while still being a hard upper bound the cron stragglers
+    // can't survive.
+    const INFLIGHT_FRESHNESS_S = 5 * 60;
+    const nowSec = Math.floor(Date.now() / 1000);
+    const ageFromMsgId = (mid: string): number | null => {
+      let m = /^umsg_(\d+)_/.exec(mid);
+      if (m) return nowSec - Math.floor(Number(m[1]) / 1000);
+      m = /^sk-(\d+)-/.exec(mid);
+      if (m) return nowSec - Number(m[1]);
+      return null;
+    };
+    const inflightEnvelopes = allInflight.filter((env) => {
+      const mid = typeof (env as any).message_id === 'string'
+        ? (env as any).message_id
+        : '';
+      if (!mid) return true;  // can't dedup without id — pass through
+      if (canonicalIds.has(mid)) return false;  // structural match
+      const age = ageFromMsgId(mid);
+      if (age !== null && age > INFLIGHT_FRESHNESS_S) return false;
+      return true;
+    });
     trace('serialize-start');
     const body = JSON.stringify({
       messages,
