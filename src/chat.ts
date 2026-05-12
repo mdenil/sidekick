@@ -127,6 +127,52 @@ export function forceScrollToBottom(): void {
   pinnedToBottom = true;
   missedWhileScrolled = 0;
   updateButton();
+  // Re-pin during the 2s window after this call to catch async content
+  // reflow (image natural-size resolution, code-block syntax highlight,
+  // link-preview card render) that grows scrollHeight AFTER the
+  // synchronous scrolls fire. Without this, switching to a chat with
+  // images near the bottom lands the user mid-chat instead of at the
+  // live edge (Jonathan, 2026-05-12 field bug). Bounded so we don't
+  // fight a user who manually scrolls up immediately after the call.
+  scheduleReflowRepin();
+}
+
+/** Re-pin to bottom during async reflow. Watches the transcript for
+ *  scrollHeight growth in the 2s window after a forceScrollToBottom
+ *  call; if it grows AND the user hasn't manually scrolled up, fire
+ *  another scrollTo(scrollHeight). Disposed automatically at window
+ *  end so it doesn't fight a steady-state user scroll-up. */
+let reflowRepinObserver: ResizeObserver | null = null;
+let reflowRepinTimer: ReturnType<typeof setTimeout> | null = null;
+const REFLOW_REPIN_WINDOW_MS = 2000;
+function scheduleReflowRepin(): void {
+  if (!transcriptEl) return;
+  if (typeof ResizeObserver === 'undefined') return;
+  // Tear down any prior watcher — only one window active at a time.
+  if (reflowRepinObserver) { reflowRepinObserver.disconnect(); reflowRepinObserver = null; }
+  if (reflowRepinTimer) { clearTimeout(reflowRepinTimer); reflowRepinTimer = null; }
+  // Capture user-scroll baseline so we don't override an explicit
+  // upward scroll initiated during the window.
+  const repinStartedAt = Date.now();
+  const ro = new ResizeObserver(() => {
+    if (!transcriptEl) return;
+    // If the user scrolled by hand since the repin started, stop —
+    // we'd otherwise yank their reading position back to the bottom.
+    if (lastUserScrollAt > repinStartedAt) {
+      if (reflowRepinObserver) { reflowRepinObserver.disconnect(); reflowRepinObserver = null; }
+      return;
+    }
+    // Still pinned (within threshold) — re-snap to the new bottom.
+    if (pinnedToBottom) {
+      transcriptEl.scrollTo({ top: transcriptEl.scrollHeight, behavior: 'instant' as ScrollBehavior });
+    }
+  });
+  ro.observe(transcriptEl);
+  reflowRepinObserver = ro;
+  reflowRepinTimer = setTimeout(() => {
+    if (reflowRepinObserver) { reflowRepinObserver.disconnect(); reflowRepinObserver = null; }
+    reflowRepinTimer = null;
+  }, REFLOW_REPIN_WINDOW_MS);
 }
 
 /** Scroll to the live edge ONLY if the user is already pinned. If they've
@@ -209,6 +255,22 @@ export async function init(el: HTMLElement | null): Promise<boolean> {
       // Lazy-load older history runs regardless — it cares about
       // scroll-near-top, not user vs JS.
       maybeLoadEarlier();
+      // Save per-chat scroll position on EVERY scroll (user or JS).
+      // isPinned() at this moment is the source of truth — touch
+      // inertia past USER_SCROLL_GRACE_MS, jump-to-bottom button,
+      // streaming auto-scroll, and forceScrollToBottom all fire JS-
+      // initiated scrolls that nonetheless represent the user's
+      // intended position. Gating on userInitiated dropped at-bottom
+      // restoration entirely for those paths (Jonathan, 2026-05-12:
+      // "i scroll to bottom - switch away - switch back - still at
+      // middle. i literally can't even do that."). 500ms debounce
+      // inside the helper keeps streaming-cadence cheap.
+      if (transcriptEl && viewedSessionIdRef) {
+        saveScrollPosition(viewedSessionIdRef, {
+          scrollTop: transcriptEl.scrollTop,
+          atBottom: isPinned(),
+        });
+      }
       if (!userInitiated) return;
       const wasPinned = pinnedToBottom;
       pinnedToBottom = isPinned();
@@ -217,18 +279,6 @@ export async function init(el: HTMLElement | null): Promise<boolean> {
         diag(`[autoscroll] pinnedToBottom ${wasPinned}→${pinnedToBottom} (user-initiated, distance=${distance})`);
       }
       if (pinnedToBottom && !wasPinned) missedWhileScrolled = 0;
-      // Persist the per-chat scroll position. Save is debounced inside
-      // the helper (500ms per chat) so streaming-reply scroll cadence
-      // doesn't hammer IDB. atBottom is the load-bearing field — it
-      // tells the restore path to call forceScrollToBottom (which
-      // handles iOS WebKit's paint-after-reflow case) rather than
-      // setting a stale scrollTop.
-      if (transcriptEl && viewedSessionIdRef) {
-        saveScrollPosition(viewedSessionIdRef, {
-          scrollTop: transcriptEl.scrollTop,
-          atBottom: pinnedToBottom,
-        });
-      }
       updateButton();
     }, { passive: true });
   }
