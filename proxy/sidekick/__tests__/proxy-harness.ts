@@ -457,6 +457,10 @@ export async function startRig(opts: { mode?: FakeMode } = {}): Promise<ProxyRig
         const v = await import('../notifications/visibility.ts');
         v.__resetVisibilityForTest();
       } catch { /* visibility module not loaded — fine */ }
+      try {
+        const dg = await import('../notifications/digest.ts');
+        dg.__resetDigestForTest();
+      } catch { /* digest module not loaded — fine */ }
       await new Promise<void>((resolve) => proxyServer.close(() => resolve()));
       await fakeAgent.stop();
     },

@@ -59,6 +59,10 @@ import { isConfigured as isNotificationsConfigured } from './notifications/index
 import { isMuted } from './notifications/mutes.ts';
 import { isUserEngaged } from './notifications/visibility.ts';
 import { inQuietHours } from './notifications/prefs.ts';
+import {
+  recordPushAndGetCount,
+  decorateTitleForCount,
+} from './notifications/digest.ts';
 import type { SidekickEnvelope, UpstreamAgent } from './upstream.ts';
 
 type Envelope = Record<string, unknown> & { type: string; chat_id?: string };
@@ -212,6 +216,13 @@ function maybeDispatchPush(env: Envelope, prevBroadcastAt: number): void {
     if (idleMs < QUIET_WINDOW_MS) return;
   }
   const payload = envelopeToPayload(env as Record<string, any>);
+  // Bundle digest: count this push against the chat's burst window
+  // and decorate the title with `(N) ` when we're inside a multi-push
+  // burst. Apple's tag-replace coalescing handles the visual stacking;
+  // the title prefix surfaces the count so the user knows how many
+  // arrived without having to scroll the notification stack.
+  const burstCount = recordPushAndGetCount(chatId);
+  payload.title = decorateTitleForCount(payload.title, burstCount);
   // Don't await — dispatch can take seconds (push services round-trip)
   // and we don't want to block the next envelope.
   dispatchPush(payload).then((result) => {
