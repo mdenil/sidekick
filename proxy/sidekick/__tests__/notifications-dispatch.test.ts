@@ -249,8 +249,8 @@ test('payload: envelope → push payload mapping (title, body, tag, url)', async
     });
     assert.equal(g.sent.length, 1);
     const sent = g.sent[0];
-    assert.equal(sent.body.title, 'Clawdian',
-      'title defaults to speaker label when no explicit title');
+    assert.equal(sent.body.title, '💬 Clawdian',
+      'reply_final title is speaker label prefixed with the reply emoji');
     assert.equal(sent.body.body, 'A short reply');
     assert.equal(sent.body.chat_id, 'chat-payload');
     assert.equal(sent.body.tag, 'chat:chat-payload',
@@ -297,9 +297,96 @@ test('payload: notification envelope uses content field over text', async () => 
       should_push: true,
     });
     assert.equal(g.sent.length, 1);
-    assert.equal(g.sent[0].body.title, 'Notion',
-      'explicit title field wins over speaker fallback');
+    assert.equal(g.sent[0].body.title, '⏰ Notion',
+      'explicit title field wins over speaker fallback; cron kind adds the clock emoji');
     assert.equal(g.sent[0].body.body, 'Daily rollover complete');
+  } finally {
+    await g.stop();
+  }
+});
+
+test('payload: reply_final body preview is pulled from buffered reply_delta text', async () => {
+  // The hermes plugin spec is explicit: reply_final carries
+  // {type, chat_id, message_id} — no text. Without buffering, every
+  // reply push had an empty body and the OS banner just showed
+  // "Sidekick" with nothing under it (Jonathan field report
+  // 2026-05-12). stream.ts threads the cumulative reply_delta text
+  // through as a body override so the banner shows a preview.
+  const g = await startGateRig();
+  try {
+    // Stream a couple of reply_deltas, then the reply_final. The
+    // dispatch gate only fires for reply_final (reply_delta is
+    // not push-eligible), so we expect exactly one sent push.
+    await g.pushEnv({
+      type: 'reply_delta',
+      chat_id: 'chat-preview',
+      message_id: 'msg-preview',
+      text: 'Hello',
+      should_push: false,
+    });
+    await g.pushEnv({
+      type: 'reply_delta',
+      chat_id: 'chat-preview',
+      message_id: 'msg-preview',
+      text: 'Hello, the weather today is sunny.',
+      should_push: false,
+    });
+    await g.pushEnv({
+      type: 'reply_final',
+      chat_id: 'chat-preview',
+      message_id: 'msg-preview',
+      speaker: 'Clawdian',
+      should_push: true,
+    });
+    assert.equal(g.sent.length, 1, 'only reply_final triggers a push');
+    assert.equal(g.sent[0].body.title, '💬 Clawdian');
+    assert.equal(
+      g.sent[0].body.body,
+      'Hello, the weather today is sunny.',
+      'body preview comes from the latest buffered reply_delta text',
+    );
+  } finally {
+    await g.stop();
+  }
+});
+
+test('payload: reply_final without preceding reply_delta has empty body (no buffered text)', async () => {
+  // Edge case: proxy started mid-turn, or reply_final raced ahead of
+  // the first reply_delta. Falls back to empty body; OS banner
+  // shows "💬 Sidekick" with nothing under it. That's the original
+  // pre-buffer behavior preserved as a graceful fallback.
+  const g = await startGateRig();
+  try {
+    await g.pushEnv({
+      type: 'reply_final',
+      chat_id: 'chat-naked-final',
+      message_id: 'msg-naked',
+      should_push: true,
+    });
+    assert.equal(g.sent.length, 1);
+    assert.equal(g.sent[0].body.title, '💬 Sidekick',
+      'no speaker → falls back to the default Sidekick label');
+    assert.equal(g.sent[0].body.body, '',
+      'no buffered reply text + no envelope text → empty body');
+  } finally {
+    await g.stop();
+  }
+});
+
+test('payload: notification envelope without kind gets the generic bell emoji', async () => {
+  const g = await startGateRig();
+  try {
+    await g.pushEnv({
+      type: 'notification',
+      chat_id: 'chat-generic-notif',
+      title: 'Reminder',
+      content: 'pick up the kids',
+      should_push: true,
+    });
+    assert.equal(g.sent.length, 1);
+    assert.equal(g.sent[0].body.title, '🔔 Reminder',
+      'notification without specific kind gets the generic bell emoji');
+    assert.equal(g.sent[0].body.body, 'pick up the kids');
   } finally {
     await g.stop();
   }

@@ -181,8 +181,13 @@ export function isPushEligibleType(envelopeType: string): boolean {
  *  the sw.js push listener's expectations:
  *    { title, body, chat_id?, tag?, icon?, url? }
  *  Falls back to "Sidekick" / empty body when the envelope is missing
- *  the obvious fields — the receive side handles those gracefully. */
-export function envelopeToPayload(env: Record<string, any>): PushPayload {
+ *  the obvious fields — the receive side handles those gracefully.
+ *
+ *  `bodyOverride` lets the caller supply text the envelope itself
+ *  doesn't carry. Used for reply_final, which has no `text`/`content`
+ *  field; stream.ts drains the per-chat replyBuffer (accumulated from
+ *  preceding reply_delta envelopes) and threads the result through. */
+export function envelopeToPayload(env: Record<string, any>, bodyOverride?: string): PushPayload {
   const chatId = typeof env.chat_id === 'string' ? env.chat_id : '';
   const speaker = typeof env.speaker === 'string' && env.speaker
     ? env.speaker
@@ -196,12 +201,23 @@ export function envelopeToPayload(env: Record<string, any>): PushPayload {
   // Take the first ~140 chars of the content; long replies hit the
   // OS-level truncation anyway, and shorter payloads ride the push
   // service's compact path on iOS.
-  const raw = typeof env.content === 'string' ? env.content
+  const raw = typeof bodyOverride === 'string' && bodyOverride ? bodyOverride
+    : typeof env.content === 'string' ? env.content
     : typeof env.text === 'string' ? env.text
     : '';
   const body = raw.length > 140 ? raw.slice(0, 137) + '…' : raw;
+  // Emoji title prefix by envelope kind. iOS PWA ignores the icon
+  // field on the lock-screen banner (always shows the app icon), so a
+  // prefix is the only category cue that actually renders. Branches
+  // ordered most-specific → most-generic; unknown types fall through
+  // with no prefix.
+  const prefix =
+    env.type === 'reply_final' ? '💬 '
+    : env.type === 'notification' && env.kind === 'cron' ? '⏰ '
+    : env.type === 'notification' ? '🔔 '
+    : '';
   return {
-    title,
+    title: prefix + title,
     body,
     chat_id: chatId,
     // tag coalesces per-chat: same chat = same tag = OS replaces the

@@ -67,6 +67,7 @@ import {
   recordDecision,
   recordDispatchOutcome,
 } from './notifications/diagnostics.ts';
+import * as replyBuffer from './notifications/replyBuffer.ts';
 import type { SidekickEnvelope, UpstreamAgent } from './upstream.ts';
 
 type Envelope = Record<string, unknown> & { type: string; chat_id?: string };
@@ -187,7 +188,7 @@ function hasActiveSubFor(chatId: string): boolean {
  *  the current envelope's broadcast() updated it — see pushEnvelope. The
  *  caller passes 0 when no prior broadcast for the chat exists, which we
  *  treat as "infinitely idle" (push). */
-function maybeDispatchPush(env: Envelope, prevBroadcastAt: number): void {
+function maybeDispatchPush(env: Envelope, prevBroadcastAt: number, bodyOverride?: string): void {
   // Observability: every gate decision logs a single line so the
   // journal can answer "why didn't push fire for envelope X?" without
   // re-reading the code. The skipReason variable is the source of
@@ -267,7 +268,7 @@ function maybeDispatchPush(env: Envelope, prevBroadcastAt: number): void {
     decision: 'dispatch',
     urgent,
   });
-  const payload = envelopeToPayload(env as Record<string, any>);
+  const payload = envelopeToPayload(env as Record<string, any>, bodyOverride);
   // Bundle digest: count this push against the chat's burst window
   // and decorate the title with `(N) ` when we're inside a multi-push
   // burst. Apple's tag-replace coalescing handles the visual stacking;
@@ -321,6 +322,21 @@ export function pushEnvelope(env: SidekickEnvelope | Envelope): void {
       inflight.dropChat(chatId);
     }
   }
+  // Reply-text buffering for push body previews. reply_delta carries
+  // the cumulative reply text; reply_final carries none. Stash on
+  // delta, drain on final — independent of the eventual dispatch
+  // decision so suppressed (user_engaged etc.) finals still clear the
+  // buffer instead of leaking. The drained text is threaded through
+  // maybeDispatchPush → envelopeToPayload as a body override.
+  let replyBody: string | undefined;
+  if (chatId) {
+    if (env.type === 'reply_delta') {
+      const txt = (env as any).text;
+      if (typeof txt === 'string') replyBuffer.setLatest(chatId, txt);
+    } else if (env.type === 'reply_final') {
+      replyBody = replyBuffer.takeAndClear(chatId);
+    }
+  }
   // Capture the per-chat last-broadcast timestamp BEFORE broadcast()
   // updates it — the idle-gate in maybeDispatchPush wants to know "was
   // the channel active before this envelope?" not "after." Guard against
@@ -332,7 +348,7 @@ export function pushEnvelope(env: SidekickEnvelope | Envelope): void {
   // Push dispatch runs AFTER broadcast so live tabs see the message
   // first (no double-render race), and so the hasActiveSubFor check
   // sees the up-to-date subscriber set just before deciding.
-  maybeDispatchPush(env as Envelope, prevBroadcastAt);
+  maybeDispatchPush(env as Envelope, prevBroadcastAt, replyBody);
 }
 
 /** Wired ONCE at proxy startup so envelope fan-out is in place before
@@ -413,6 +429,9 @@ export function __resetForTest(): void {
   // legacy 30s-idle gate sees stale timestamps from a prior test's
   // broadcasts and incorrectly suppresses push in the next rig.
   lastBroadcastAt.clear();
+  // Drop any accumulated reply-text buffers so the next rig's
+  // reply_final body previews start clean.
+  replyBuffer.__resetForTest();
 }
 
 export function handleSidekickStream(req, res): void {

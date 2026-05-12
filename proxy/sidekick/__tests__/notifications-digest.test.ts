@@ -78,8 +78,8 @@ test('digest: single push has plain title (no prefix)', async () => {
       should_push: true,
     });
     assert.equal(g.sent.length, 1);
-    assert.equal(g.sent[0].body.title, 'Clawdian',
-      'first push in a burst window has plain title — no count prefix');
+    assert.equal(g.sent[0].body.title, '💬 Clawdian',
+      'first push in a burst window has the reply-emoji prefix but no count prefix');
   } finally {
     await g.stop();
   }
@@ -91,9 +91,9 @@ test('digest: 2nd push within window prefixes title with (2)', async () => {
     await g.pushEnv({ type: 'reply_final', chat_id: 'chat-burst', speaker: 'Clawdian', text: 'one', should_push: true });
     await g.pushEnv({ type: 'reply_final', chat_id: 'chat-burst', speaker: 'Clawdian', text: 'two', should_push: true });
     assert.equal(g.sent.length, 2);
-    assert.equal(g.sent[0].body.title, 'Clawdian');
-    assert.equal(g.sent[1].body.title, '(2) Clawdian',
-      'second push in burst window prefixes title with count');
+    assert.equal(g.sent[0].body.title, '💬 Clawdian');
+    assert.equal(g.sent[1].body.title, '(2) 💬 Clawdian',
+      'second push in burst window prefixes title with count (after the reply-emoji prefix)');
   } finally {
     await g.stop();
   }
@@ -114,11 +114,11 @@ test('digest: 5-push burst counts up to (5)', async () => {
     assert.equal(g.sent.length, 5);
     const titles = g.sent.map(s => s.body.title);
     assert.deepEqual(titles, [
-      'Clawdian',
-      '(2) Clawdian',
-      '(3) Clawdian',
-      '(4) Clawdian',
-      '(5) Clawdian',
+      '💬 Clawdian',
+      '(2) 💬 Clawdian',
+      '(3) 💬 Clawdian',
+      '(4) 💬 Clawdian',
+      '(5) 💬 Clawdian',
     ], 'burst count climbs monotonically while within the 30s window');
   } finally {
     await g.stop();
@@ -133,10 +133,10 @@ test('digest: per-chat isolation — chat B counter unaffected by chat A burst',
     await g.pushEnv({ type: 'reply_final', chat_id: 'chat-B', speaker: 'B', text: 'b1', should_push: true });
     await g.pushEnv({ type: 'reply_final', chat_id: 'chat-A', speaker: 'A', text: 'a3', should_push: true });
     assert.equal(g.sent.length, 4);
-    assert.equal(g.sent[0].body.title, 'A',     '1st A');
-    assert.equal(g.sent[1].body.title, '(2) A', '2nd A');
-    assert.equal(g.sent[2].body.title, 'B',     '1st B — chat A burst shouldnt prefix B');
-    assert.equal(g.sent[3].body.title, '(3) A', '3rd A — chat B push shouldnt reset A counter');
+    assert.equal(g.sent[0].body.title, '💬 A',     '1st A');
+    assert.equal(g.sent[1].body.title, '(2) 💬 A', '2nd A');
+    assert.equal(g.sent[2].body.title, '💬 B',     '1st B — chat A burst shouldnt prefix B');
+    assert.equal(g.sent[3].body.title, '(3) 💬 A', '3rd A — chat B push shouldnt reset A counter');
   } finally {
     await g.stop();
   }
@@ -147,7 +147,7 @@ test('digest: window expiry resets counter to 1', async () => {
   try {
     await g.pushEnv({ type: 'reply_final', chat_id: 'chat-decay', speaker: 'X', text: '1', should_push: true });
     await g.pushEnv({ type: 'reply_final', chat_id: 'chat-decay', speaker: 'X', text: '2', should_push: true });
-    assert.equal(g.sent[1].body.title, '(2) X');
+    assert.equal(g.sent[1].body.title, '(2) 💬 X');
 
     // Simulate 31s elapsing without sleeping.
     const dg = await import('../notifications/digest.ts');
@@ -155,7 +155,7 @@ test('digest: window expiry resets counter to 1', async () => {
 
     await g.pushEnv({ type: 'reply_final', chat_id: 'chat-decay', speaker: 'X', text: '3', should_push: true });
     assert.equal(g.sent.length, 3);
-    assert.equal(g.sent[2].body.title, 'X',
+    assert.equal(g.sent[2].body.title, '💬 X',
       'after 31s of inactivity, the burst window closed → counter resets to 1');
   } finally {
     await g.stop();
@@ -177,7 +177,7 @@ test('digest: sustained activity keeps the counter alive (window slides)', async
     await g.pushEnv({ type: 'reply_final', chat_id: 'chat-sus', speaker: 'Y', text: '4', should_push: true });
     assert.deepEqual(
       g.sent.map(s => s.body.title),
-      ['Y', '(2) Y', '(3) Y', '(4) Y'],
+      ['💬 Y', '(2) 💬 Y', '(3) 💬 Y', '(4) 💬 Y'],
       'sliding window — each push extends 30s out from now',
     );
   } finally {
@@ -205,9 +205,10 @@ test('digest: notification envelope title (kind-based) gets the prefix too', asy
       content: 'second',
       should_push: true,
     });
-    assert.equal(g.sent[0].body.title, 'Notion');
-    assert.equal(g.sent[1].body.title, '(2) Notion',
-      'notification envelopes also get the digest prefix');
+    assert.equal(g.sent[0].body.title, '⏰ Notion',
+      'notification kind=cron gets the clock emoji prefix');
+    assert.equal(g.sent[1].body.title, '(2) ⏰ Notion',
+      'notification envelopes also get the digest count prefix');
   } finally {
     await g.stop();
   }
