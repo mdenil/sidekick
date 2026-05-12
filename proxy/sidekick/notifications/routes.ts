@@ -29,6 +29,7 @@ import {
 import { dispatchPush } from './dispatch.ts';
 import { setMuted, listMutedChats } from './mutes.ts';
 import { recordVisibility } from './visibility.ts';
+import { getPrefs, updatePrefs, type Prefs } from './prefs.ts';
 
 const MAX_BODY_BYTES = 8 * 1024;  // subscriptions are tiny, generous
 
@@ -154,6 +155,33 @@ export async function handleSidekickSetMute(req: any, res: any): Promise<void> {
     sendJson(res, 200, { ok: true, ...result });
   } catch (e: any) {
     sendJson(res, 500, { error: 'mute_failed', detail: e?.message });
+  }
+}
+
+/** GET /api/sidekick/notifications/preferences
+ *  Return current user prefs (quiet_hours today; more knobs as wave 2
+ *  fills in digest + per-kind toggles). Always 200 — defaults are
+ *  returned even when no prefs file exists. */
+export function handleSidekickGetPreferences(req: any, res: any): void {
+  sendJson(res, 200, getPrefs());
+}
+
+/** POST /api/sidekick/notifications/preferences
+ *  Update one or more preference fields. Partial — fields not in the
+ *  body keep their current values. Returns the updated prefs blob.
+ *  400 on malformed body (non-HH:MM times etc). */
+export async function handleSidekickSetPreferences(req: any, res: any): Promise<void> {
+  let body: any;
+  try { body = await readJsonBody(req); }
+  catch (e: any) { return sendJson(res, 400, { error: 'bad_body', detail: e.message }); }
+  if (!body || typeof body !== 'object') {
+    return sendJson(res, 400, { error: 'invalid_body', detail: 'Expected an object' });
+  }
+  try {
+    const updated = await updatePrefs(body as Partial<Prefs>);
+    sendJson(res, 200, updated);
+  } catch (e: any) {
+    sendJson(res, 400, { error: 'invalid_preference', detail: e?.message });
   }
 }
 

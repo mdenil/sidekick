@@ -58,6 +58,7 @@ import {
 import { isConfigured as isNotificationsConfigured } from './notifications/index.ts';
 import { isMuted } from './notifications/mutes.ts';
 import { isUserEngaged } from './notifications/visibility.ts';
+import { inQuietHours } from './notifications/prefs.ts';
 import type { SidekickEnvelope, UpstreamAgent } from './upstream.ts';
 
 type Envelope = Record<string, unknown> & { type: string; chat_id?: string };
@@ -188,6 +189,11 @@ function maybeDispatchPush(env: Envelope, prevBroadcastAt: number): void {
   // the mute decision is independent of envelope-class (mute everything
   // from this chat, not just replies).
   if (isMuted(chatId)) return;
+  // Quiet hours — global override, respects the urgent flag. Envelopes
+  // can opt out with `urgent: true` (approval prompts, future critical
+  // alerts). Default = non-urgent, so a normal reply during 22:00-07:00
+  // sits silent until the user opens the app.
+  if (inQuietHours() && (env as any).urgent !== true) return;
   // Visibility-state gate (the most direct user-engagement signal,
   // wins over the legacy SSE+idle fallback below). PWA reports
   // visibility=visible + viewed-chat=X on every document.visibilitychange

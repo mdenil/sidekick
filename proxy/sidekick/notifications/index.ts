@@ -27,6 +27,7 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import { initStorage } from './storage.ts';
 import { initMutes, __resetMutesForTest } from './mutes.ts';
+import { initPrefs, __resetPrefsForTest } from './prefs.ts';
 
 interface VapidConfig {
   publicKey: string;
@@ -56,6 +57,7 @@ export async function init(opts?: {
     || path.join(os.homedir(), '.sidekick', 'notifications');
   await initStorage({ dataDir });
   await initMutes({ dataDir });
+  await initPrefs({ dataDir });
 
   if (!publicKey || !privateKey || !subject) {
     console.log('[notifications] VAPID config incomplete — push disabled');
@@ -87,4 +89,5 @@ export function __resetForTest(): void {
   vapid = null;
   ready = false;
   __resetMutesForTest();
+  __resetPrefsForTest();
 }
