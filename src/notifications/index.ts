@@ -35,11 +35,39 @@ export {
   type PushPermission,
 } from './permission.ts';
 
-/** Phase 3a no-op init seam. Lands here ahead of 3b's settings-panel
- *  toggle so main.ts only ever imports `initNotifications` from this
- *  single facade — when the passive "subscription rotated, re-register"
- *  check arrives in 3b, no main.ts touch needed. */
+import {
+  isPushSupported,
+  getActiveSubscription,
+  subscribe,
+} from './subscription.ts';
+import { getPermission } from './permission.ts';
+import { log } from '../util/log.ts';
+
+/** Initialize notifications. If the browser has ALREADY granted push
+ *  permission AND no subscription is currently active, auto-subscribe
+ *  silently (no OS prompt — permission is already granted, this is
+ *  just regenerating the subscription endpoint). Otherwise no-op:
+ *  the user opts in via the Settings toggle, which fires its own
+ *  request-permission flow.
+ *
+ *  The auto-subscribe path covers two cases worth keeping working
+ *  by default:
+ *    - The user previously toggled push ON, granted permission, then
+ *      cleared local storage / lost the subscription somehow. Without
+ *      auto-subscribe, the toggle would still LOOK on (permission
+ *      granted), but pushes wouldn't arrive.
+ *    - Apple's relay can evict subscriptions after long PWA dormancy;
+ *      re-opening the PWA auto-re-subscribes. */
 export async function initNotifications(): Promise<void> {
-  // Reserved for 3b: passive subscription-state probe + rotation
-  // detection. Intentionally inert today.
+  if (!isPushSupported()) return;
+  const perm = getPermission();
+  if (perm !== 'granted') return;
+  const sub = await getActiveSubscription();
+  if (sub) return;
+  try {
+    await subscribe();
+    log('[notifications] auto-subscribed (permission already granted, no active subscription)');
+  } catch (e: any) {
+    log(`[notifications] auto-subscribe failed: ${e?.message ?? e}`);
+  }
 }

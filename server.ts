@@ -1055,6 +1055,9 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && req.url === '/api/sidekick/notifications/preferences') {
       return sidekick.handleSidekickSetPreferences(req, res);
     }
+    if (req.method === 'GET' && req.url && req.url.startsWith('/api/sidekick/notifications/diagnostics')) {
+      return sidekick.handleSidekickDiagnostics(req, res);
+    }
     const sidekickSettingsUpdate = req.method === 'POST'
       && req.url.match(/^\/api\/sidekick\/settings\/([^/?]+)(?:\?.*)?$/);
     if (sidekickSettingsUpdate) {

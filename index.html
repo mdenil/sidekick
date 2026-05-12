@@ -239,6 +239,7 @@
       <button type="button" class="settings-nav-btn" data-target="voice-output">Voice output</button>
       <button type="button" class="settings-nav-btn" data-target="voice-phrases">Voice phrases</button>
       <button type="button" class="settings-nav-btn" data-target="interaction">Interaction</button>
+      <button type="button" class="settings-nav-btn" data-target="notifications">Notifications</button>
       <button type="button" class="settings-nav-btn" data-target="display">Display</button>
     </nav>
     <div class="settings-content">
@@ -384,11 +385,9 @@
       <input type="checkbox" id="set-wake" checked>
       <span class="hint">keep screen on while listening</span>
     </div>
-    <div class="row">
-      <label for="set-audio-feedback">Audio feedback</label>
-      <input type="range" id="set-audio-feedback" min="0" max="100" step="10" value="50">
-      <span class="val" id="set-audio-feedback-val">50%</span>
-    </div>
+    <!-- Audio feedback ("Chime volume") + Push notifications moved to
+         the Notifications section — both are "stuff that may disturb me"
+         knobs and group naturally there. -->
     <div class="row">
       <label for="set-hotkey-call">Toggle call mode</label>
       <input type="text" id="set-hotkey-call" class="hotkey-input" readonly placeholder="click + press keys">
@@ -408,6 +407,13 @@
       </select>
       <span class="hint">show what tools the agent runs during a turn</span>
     </div>
+  </div>
+
+  <!-- Notifications — push delivery, audio chimes, quiet hours, last-decision
+       diagnostic, and a fire-test-push affordance. All the "what disturbs me
+       and when" knobs in one place. -->
+  <div class="settings-group" data-section="notifications" hidden>
+    <div class="group-label">Notifications</div>
     <!-- Push notifications row. Disabled when the API isn't available
          (non-PWA Safari, browsers without PushManager) or permission is
          denied at OS level; the toggle drives subscribe()/unsubscribe()
@@ -416,6 +422,39 @@
       <label for="set-push">Push notifications</label>
       <input type="checkbox" id="set-push" disabled>
       <span class="hint" id="set-push-hint">checking support…</span>
+    </div>
+    <div class="row">
+      <label for="set-audio-feedback">Chime volume</label>
+      <input type="range" id="set-audio-feedback" min="0" max="100" step="10" value="50">
+      <span class="val" id="set-audio-feedback-val">50%</span>
+    </div>
+    <div class="row">
+      <label for="set-quiet-hours-enabled">Quiet hours</label>
+      <input type="checkbox" id="set-quiet-hours-enabled">
+      <span class="hint">suppress non-urgent push during the window below</span>
+    </div>
+    <div class="row" id="set-quiet-hours-times-row">
+      <label for="set-quiet-hours-start">&nbsp;&nbsp;Start / end</label>
+      <span>
+        <input type="time" id="set-quiet-hours-start" value="22:00" step="60">
+        &nbsp;–&nbsp;
+        <input type="time" id="set-quiet-hours-end" value="07:00" step="60">
+      </span>
+    </div>
+    <div class="row">
+      <label for="set-push-test">Send test push</label>
+      <button type="button" id="set-push-test" class="settings-btn">Fire test</button>
+      <span class="hint" id="set-push-test-hint">delivers to every subscribed device</span>
+    </div>
+    <div class="row">
+      <label for="set-push-diagnostics">Recent dispatch decisions</label>
+      <span>
+        <button type="button" id="set-push-diagnostics" class="settings-btn">Refresh</button>
+      </span>
+    </div>
+    <div class="row">
+      <span></span>
+      <pre id="set-push-diagnostics-out" class="settings-diagnostics" style="font-family: ui-monospace, monospace; font-size: 11px; max-height: 180px; overflow-y: auto; white-space: pre-wrap; margin: 0; opacity: 0.85;">(click Refresh to load)</pre>
     </div>
   </div>
 

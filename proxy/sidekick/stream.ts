@@ -63,6 +63,10 @@ import {
   recordPushAndGetCount,
   decorateTitleForCount,
 } from './notifications/digest.ts';
+import {
+  recordDecision,
+  recordDispatchOutcome,
+} from './notifications/diagnostics.ts';
 import type { SidekickEnvelope, UpstreamAgent } from './upstream.ts';
 
 type Envelope = Record<string, unknown> & { type: string; chat_id?: string };
@@ -222,10 +226,35 @@ function maybeDispatchPush(env: Envelope, prevBroadcastAt: number): void {
     return { decision: 'dispatch', chatId: cid };
   };
   const { decision, chatId } = decide();
+  const decisionTs = Date.now();
+  const urgent = (env as any).urgent === true;
+  // The diagnostics ring should reflect "decisions the user might
+  // want to debug" — primarily push-eligible envelopes that did or
+  // didn't dispatch. `not_eligible` (typing / tool_call / typing
+  // envelopes that never push by design) and `vapid_unconfigured`
+  // (system-level state, not per-envelope) are noise; skip recording.
+  // The journal still logs ALL skips for shell-side debugging.
+  const noisyDecisions = decision === 'not_eligible' || decision === 'vapid_unconfigured';
   if (decision !== 'dispatch') {
     console.log(`[notifications] skip type=${env.type} chat=${chatId} reason=${decision}`);
+    if (!noisyDecisions) {
+      recordDecision({
+        ts: decisionTs,
+        envelope_type: typeof env.type === 'string' ? env.type : 'unknown',
+        chat_id: chatId,
+        decision,
+        urgent,
+      });
+    }
     return;
   }
+  recordDecision({
+    ts: decisionTs,
+    envelope_type: typeof env.type === 'string' ? env.type : 'unknown',
+    chat_id: chatId,
+    decision: 'dispatch',
+    urgent,
+  });
   const payload = envelopeToPayload(env as Record<string, any>);
   // Bundle digest: count this push against the chat's burst window
   // and decorate the title with `(N) ` when we're inside a multi-push
@@ -237,14 +266,13 @@ function maybeDispatchPush(env: Envelope, prevBroadcastAt: number): void {
   // Don't await — dispatch can take seconds (push services round-trip)
   // and we don't want to block the next envelope.
   dispatchPush(payload).then((result) => {
-    // Always log the outcome — silence when result is zero across the
-    // board hid the "I dispatched but had 0 subscriptions" case from
-    // the journal and made it impossible to distinguish from the
-    // "skip — vapid unconfigured" case at trace time.
     console.log(
       `[notifications] dispatched type=${env.type} chat=${chatId} ` +
       `→ delivered=${result.dispatched} pruned=${result.pruned} failed=${result.failed}`,
     );
+    recordDispatchOutcome(decisionTs, chatId,
+      typeof env.type === 'string' ? env.type : 'unknown',
+      { delivered: result.dispatched, failed: result.failed, pruned: result.pruned });
   }).catch((e) => {
     console.warn('[notifications] dispatchPush threw:', e?.message ?? e);
   });

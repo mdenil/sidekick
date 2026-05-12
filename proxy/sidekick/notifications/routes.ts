@@ -30,6 +30,7 @@ import { dispatchPush } from './dispatch.ts';
 import { setMuted, listMutedChats } from './mutes.ts';
 import { recordVisibility } from './visibility.ts';
 import { getPrefs, updatePrefs, type Prefs } from './prefs.ts';
+import { getRecentDecisions } from './diagnostics.ts';
 
 const MAX_BODY_BYTES = 8 * 1024;  // subscriptions are tiny, generous
 
@@ -220,6 +221,22 @@ export async function handleSidekickVisibility(req: any, res: any): Promise<void
   const chatId = typeof body.chat_id === 'string' ? body.chat_id : '';
   recordVisibility(body.state, chatId);
   sendJson(res, 200, { ok: true });
+}
+
+/** GET /api/sidekick/notifications/diagnostics
+ *  Return the recent dispatch decisions (in-process ring, capped at
+ *  50 entries). Used by the Notifications settings panel for the
+ *  "last decisions" readout — lets users see "why didn't my last
+ *  push fire" without having to tail the proxy journal. Optional
+ *  `?limit=N` to clip the result. */
+export function handleSidekickDiagnostics(req: any, res: any): void {
+  let limit = 10;
+  try {
+    const u = new URL(req.url, 'http://x');
+    const raw = u.searchParams.get('limit');
+    if (raw) limit = Math.max(1, Math.min(50, parseInt(raw, 10) || 10));
+  } catch { /* fall through to default */ }
+  sendJson(res, 200, { decisions: getRecentDecisions(limit) });
 }
 
 /** POST /api/sidekick/notifications/test

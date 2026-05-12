@@ -528,6 +528,17 @@ export function hydrate(handlers: {
   const setAgentActivity = $sel('set-agent-activity');
   const setPush = $inp('set-push');
   const setPushHint = $any('set-push-hint');
+  // Notifications panel — controls landed 2026-05-12. Quiet hours +
+  // test-push button + last-decision readout wire to the proxy's
+  // /api/sidekick/notifications/* endpoints (no local persistence —
+  // prefs and decision ring live server-side; UI just renders).
+  const setQuietHoursEnabled = $inp('set-quiet-hours-enabled');
+  const setQuietHoursStart = $inp('set-quiet-hours-start');
+  const setQuietHoursEnd = $inp('set-quiet-hours-end');
+  const setPushTest = $any('set-push-test');
+  const setPushTestHint = $any('set-push-test-hint');
+  const setPushDiagnostics = $any('set-push-diagnostics');
+  const setPushDiagnosticsOut = $any('set-push-diagnostics-out');
 
   // Apply `current` snapshot to every form control + label. Called
   // once at hydrate time and again on the cross-tab `sidekick:settings-
@@ -759,6 +770,121 @@ export function hydrate(handlers: {
   // a subscribe done in tab A wouldn't surface in tab B's toggle until
   // the user re-opened the panel.
   window.addEventListener('sidekick:settings-changed', () => { void refreshPushUi(); });
+
+  // ── Quiet hours — server-side prefs at /api/sidekick/notifications/preferences.
+  // The UI is GLOBAL (matches Option A: applies to all subscriptions).
+  // Initial hydrate fetches current state; toggle/time edits POST the
+  // partial update.
+  async function loadQuietHoursUi(): Promise<void> {
+    if (!setQuietHoursEnabled) return;
+    try {
+      const r = await fetch('/api/sidekick/notifications/preferences');
+      if (!r.ok) return;
+      const prefs = await r.json();
+      const qh = prefs?.quiet_hours;
+      if (qh) {
+        setQuietHoursEnabled.checked = !!qh.enabled;
+        if (setQuietHoursStart) setQuietHoursStart.value = qh.start || '22:00';
+        if (setQuietHoursEnd) setQuietHoursEnd.value = qh.end || '07:00';
+      }
+    } catch (e: any) {
+      log('[notifications] quiet-hours load failed:', e?.message ?? e);
+    }
+  }
+  void loadQuietHoursUi();
+  async function pushQuietHours(): Promise<void> {
+    if (!setQuietHoursEnabled) return;
+    const body = {
+      quiet_hours: {
+        enabled: setQuietHoursEnabled.checked,
+        start: setQuietHoursStart?.value || '22:00',
+        end: setQuietHoursEnd?.value || '07:00',
+      },
+    };
+    try {
+      const r = await fetch('/api/sidekick/notifications/preferences', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) {
+        log(`[notifications] quiet-hours save failed: HTTP ${r.status}`);
+      }
+    } catch (e: any) {
+      log('[notifications] quiet-hours save failed:', e?.message ?? e);
+    }
+  }
+  if (setQuietHoursEnabled) setQuietHoursEnabled.onchange = () => { void pushQuietHours(); };
+  if (setQuietHoursStart) setQuietHoursStart.onchange = () => { void pushQuietHours(); };
+  if (setQuietHoursEnd) setQuietHoursEnd.onchange = () => { void pushQuietHours(); };
+
+  // ── Send test push — fires the proxy /test endpoint synchronously.
+  // The button stays disabled mid-dispatch to prevent double-fire on
+  // rapid clicks. Hint surfaces the result counts so the user can see
+  // "delivered=2 pruned=0" without tailing the journal.
+  if (setPushTest) setPushTest.onclick = async () => {
+    setPushTest.setAttribute('disabled', 'true');
+    if (setPushTestHint) setPushTestHint.textContent = 'sending…';
+    try {
+      const r = await fetch('/api/sidekick/notifications/test', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          title: 'Sidekick test',
+          body: 'Test push from the Notifications settings panel.',
+        }),
+      });
+      const body = await r.json();
+      if (setPushTestHint) {
+        setPushTestHint.textContent = body?.ok
+          ? `delivered=${body.dispatched} failed=${body.failed} pruned=${body.pruned}`
+          : `error: ${body?.error || `HTTP ${r.status}`}`;
+      }
+    } catch (e: any) {
+      if (setPushTestHint) setPushTestHint.textContent = `error: ${e?.message ?? e}`;
+    } finally {
+      setPushTest.removeAttribute('disabled');
+    }
+  };
+
+  // ── Last-decision diagnostics — fetches the in-memory ring of recent
+  // gate decisions from the proxy. Pure diagnostic; no state mutation.
+  // Format each row as a compact line so 10 decisions fit in a small
+  // pre block.
+  if (setPushDiagnostics) setPushDiagnostics.onclick = async () => {
+    if (!setPushDiagnosticsOut) return;
+    setPushDiagnosticsOut.textContent = 'loading…';
+    try {
+      const r = await fetch('/api/sidekick/notifications/diagnostics?limit=10');
+      if (!r.ok) {
+        setPushDiagnosticsOut.textContent = `error: HTTP ${r.status}`;
+        return;
+      }
+      const body = await r.json();
+      const rows: any[] = body?.decisions || [];
+      if (!rows.length) {
+        setPushDiagnosticsOut.textContent = '(no decisions yet — try sending a message or the test push)';
+        return;
+      }
+      // Newest-first ordering reads better in a small box.
+      const formatted = rows.slice().reverse().map((d: any) => {
+        const t = new Date(d.ts);
+        const hh = String(t.getHours()).padStart(2, '0');
+        const mm = String(t.getMinutes()).padStart(2, '0');
+        const ss = String(t.getSeconds()).padStart(2, '0');
+        const chat = (d.chat_id || '').slice(-12) || '-';
+        const outcome = d.decision === 'dispatch'
+          ? `delivered=${d.delivered ?? '?'}${d.pruned ? ` pruned=${d.pruned}` : ''}${d.failed ? ` failed=${d.failed}` : ''}`
+          : `reason=${d.decision}`;
+        const urgent = d.urgent ? ' urgent' : '';
+        return `${hh}:${mm}:${ss}  ${d.envelope_type.padEnd(14)}  ${chat.padEnd(12)}  ${outcome}${urgent}`;
+      }).join('\n');
+      setPushDiagnosticsOut.textContent = formatted;
+    } catch (e: any) {
+      setPushDiagnosticsOut.textContent = `error: ${e?.message ?? e}`;
+    }
+  };
+
   if (setCommitPhrase) setCommitPhrase.onchange = () => {
     // Empty string = commit-word disabled. Non-empty = that phrase.
     set('commitPhrase', setCommitPhrase.value.trim().toLowerCase());

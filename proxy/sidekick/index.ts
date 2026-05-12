@@ -51,6 +51,7 @@ export {
   handleSidekickVisibility,
   handleSidekickGetPreferences,
   handleSidekickSetPreferences,
+  handleSidekickDiagnostics,
 } from './notifications/routes.ts';
 
 let upstream: UpstreamAgent | null = null;
