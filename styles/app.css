@@ -1615,6 +1615,96 @@
   .line .copy-btn svg { width: 18px; height: 18px; }
   .line .copy-btn:hover { opacity: 0.8; color: var(--primary); }
 
+  /* ── Pin button — sits to the LEFT of the copy button at top-right.
+   * Two SVGs in DOM (outline + filled); CSS swaps visibility based on
+   * .pinned state so the global sidekick:pins-changed listener can
+   * stay class-only without rebuilding innerHTML per repaint. */
+  .line .pin-btn {
+    position: absolute; top: 4px; right: 28px;
+    background: none; border: none; color: var(--muted);
+    cursor: pointer; opacity: 0.3; padding: 4px;
+    transition: opacity 0.15s ease, color 0.15s ease;
+    display: flex; align-items: center; justify-content: center;
+    z-index: 2;
+  }
+  .line .pin-btn svg { width: 18px; height: 18px; }
+  .line .pin-btn:hover { opacity: 0.8; color: var(--primary); }
+  .line .pin-btn.pinned { opacity: 0.85; color: var(--primary); }
+  .line .pin-btn .pin-filled { display: none; }
+  .line .pin-btn.pinned .pin-outline { display: none; }
+  .line .pin-btn.pinned .pin-filled { display: inline-block; }
+  /* Pinned bubble — subtle left border so the user can scan and find
+   * pinned content in a long transcript at a glance, without it being
+   * loud enough to disrupt reading. */
+  .line.pinned { border-left: 2px solid var(--primary); padding-left: 6px; }
+
+  /* ── Right-side pin drawer ───────────────────────────────────────
+   * Symmetric mirror of the left sidebar's open/close machinery, with
+   * pinned messages aggregated across all chats. Slides in from the
+   * right; full-width overlay on mobile, fixed-width column on
+   * desktop (no main-chat-shift in this iteration — keeps the layout
+   * change small while we feel out the surface).
+   */
+  .pin-drawer {
+    position: fixed; top: 0; right: 0; bottom: 0;
+    width: 360px; max-width: 92vw;
+    background: var(--panel-bg);
+    color: var(--text);
+    border-left: 1px solid var(--border);
+    box-shadow: -4px 0 24px rgba(0,0,0,0.18);
+    display: flex; flex-direction: column;
+    z-index: 60;
+    transform: translateX(0);
+    transition: transform 0.22s ease;
+  }
+  .pin-drawer.collapsed { transform: translateX(100%); pointer-events: none; }
+  .pin-drawer-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 14px; border-bottom: 1px solid var(--border);
+  }
+  .pin-drawer-title { margin: 0; font-size: 14px; font-weight: 600; letter-spacing: 0.02em; }
+  .pin-drawer-list {
+    list-style: none; margin: 0; padding: 6px 0;
+    overflow-y: auto; flex: 1;
+  }
+  .pin-drawer-item {
+    padding: 10px 14px; border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    transition: background 0.12s ease;
+  }
+  .pin-drawer-item:hover { background: var(--hover-bg, rgba(255,255,255,0.04)); }
+  .pin-item-meta {
+    display: flex; justify-content: space-between; gap: 8px;
+    font-size: 11px; color: var(--muted); margin-bottom: 4px;
+  }
+  .pin-item-role { font-weight: 600; }
+  .pin-item-body {
+    font-size: 13px; line-height: 1.4; color: var(--text);
+    overflow: hidden; text-overflow: ellipsis;
+    display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+  }
+  .pin-item-chat {
+    margin-top: 6px; font-size: 11px; color: var(--muted);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  .pin-drawer-empty {
+    padding: 32px 20px; text-align: center;
+    color: var(--muted); font-size: 13px;
+  }
+  .pin-drawer-hint { font-size: 11px; opacity: 0.7; }
+
+  /* Toggle button banner — small count chip overlapping the icon's
+   * upper-right corner, like an app icon badge. Hidden when count=0. */
+  #btn-pin-drawer { position: relative; }
+  .pin-count-banner {
+    position: absolute; top: -2px; right: -2px;
+    min-width: 16px; height: 16px; padding: 0 4px;
+    border-radius: 8px;
+    background: var(--primary); color: var(--bg, #000);
+    font-size: 10px; font-weight: 700; line-height: 16px;
+    text-align: center;
+  }
+
   /* ── Per-bubble TTS playback controls (agent lines) ──
    * Ported from the classic pipeline (08f50ac:styles/app.css ~900-985).
    * Two-layer playhead bar at the top edge of the bubble:

@@ -54,6 +54,7 @@ import * as backend from './backend.ts';
 import * as conversations from './conversations.ts';
 import * as sessionDrawer from './sessionDrawer.ts';
 import * as cmdkPalette from './cmdkPalette.ts';
+import { initPinDrawer } from './pins/drawer.ts';
 import { attachSliderTouchAll } from './sliderTouch.ts';
 import * as sidebarResize from './sidebarResize.ts';
 import * as sidebarSwipe from './sidebarSwipe.ts';
@@ -667,6 +668,27 @@ async function boot() {
   cmdkPalette.init({
     onResume: replaySessionMessages,
     onBeforeSwitch: cleanupAbandonedChat,
+  });
+  // Pin drawer — right-side surface aggregating pinned messages across
+  // every chat. Click handler reuses the cmdk drill-to-message path:
+  // resumeSession to fetch + render, then targetMessageId so the
+  // replaySessionMessages scrolls + flashes the pinned bubble.
+  initPinDrawer({
+    onPinClick: async (chatId: string, msgId: string) => {
+      const leaving = backend.getCurrentSessionId?.() ?? null;
+      if (leaving !== chatId) {
+        try { cleanupAbandonedChat(leaving); }
+        catch (e: any) { diag(`pin-drawer: cleanupAbandonedChat threw: ${e?.message ?? e}`); }
+      }
+      try {
+        const result: any = await backend.resumeSession(chatId);
+        const messages = result.messages || [];
+        const pagination = { firstId: result.firstId ?? null, hasMore: !!result.hasMore };
+        replaySessionMessages(chatId, messages, pagination, msgId);
+      } catch (e: any) {
+        diag(`pin-drawer: resume ${chatId} failed: ${e?.message ?? e}`);
+      }
+    },
   });
   // Sidebar-top search button → opens the cmd+K palette. Lives next to
   // the hamburger as the rightmost icon in .sidebar-top-row (Gemini-style

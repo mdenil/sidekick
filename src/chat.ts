@@ -16,6 +16,7 @@ import {
   saveScrollPosition,
   AT_BOTTOM_THRESHOLD_PX,
 } from './chatScrollPositions.ts';
+import { isPinned, pinMessage, unpinMessage, hydrate as hydratePins } from './pins/store.ts';
 
 let transcriptEl: HTMLElement | null = null;
 let scrollToBottomBtn: HTMLElement | null = null;
@@ -190,6 +191,32 @@ export async function init(el: HTMLElement | null): Promise<boolean> {
   hydrateScrollPositions().then(() => {
     diag(`[chat-scroll] hydrate finished ${Math.round(performance.now() - t0)}ms after chat.init`);
   });
+  // Hydrate the pinned-messages store so the per-bubble pin button
+  // paints with correct state on the first render. Fire-and-forget —
+  // IDB is fast (~few ms); a bubble rendered before hydrate finishes
+  // just gets a momentary "unpinned" indicator that flips via the
+  // sidekick:pins-changed listener once hydrate resolves.
+  void hydratePins();
+  // Repaint all bubble pin indicators when the pin set changes.
+  // Fires on: hydrate completion (catches bubbles that rendered
+  // before IDB resolved), explicit pinMessage / unpinMessage from
+  // anywhere, and the future cross-tab sync path. Cheap — walks
+  // .pin-btn elements only (most bubbles don't have one — only those
+  // with a stable msgId), reads isPinned() synchronously.
+  if (typeof window !== 'undefined') {
+    window.addEventListener('sidekick:pins-changed', () => {
+      if (!transcriptEl || !viewedSessionIdRef) return;
+      const chatId = viewedSessionIdRef;
+      transcriptEl.querySelectorAll<HTMLElement>('.line[data-message-id]').forEach((line) => {
+        const msgId = line.dataset.messageId || '';
+        if (!msgId) return;
+        const pinned = isPinned(chatId, msgId);
+        line.classList.toggle('pinned', pinned);
+        const btn = line.querySelector<HTMLButtonElement>('.pin-btn');
+        if (btn) btn.classList.toggle('pinned', pinned);
+      });
+    });
+  }
 
   // Jump-to-bottom button wiring. The button lives outside the transcript
   // scroller (as a sibling inside .chat-column) so it stays fixed while
@@ -419,6 +446,62 @@ export function addLine(speaker: string, text: string, cls = '', opts: {
     });
   };
   div.appendChild(copyBtn);
+
+  // Per-bubble pin toggle — adds the bubble to the pinned-messages
+  // store (drives the right-side pins drawer's cross-chat aggregation).
+  // Only shown when we know which chat this belongs to AND the bubble
+  // carries a stable message id (without an id, we can't key the pin
+  // and the round-trip after reload wouldn't find the bubble again).
+  //
+  // Icon swap is CSS-driven (.pin-btn.pinned hides outline, shows
+  // filled) so the global sidekick:pins-changed listener at init()
+  // only needs to toggle the `.pinned` class — no innerHTML rebuild
+  // per repaint cycle.
+  if (opts.messageId && viewedSessionIdRef) {
+    const chatId = viewedSessionIdRef;
+    const msgId = String(opts.messageId);
+    const pinBtn = document.createElement('button');
+    pinBtn.className = 'pin-btn';
+    pinBtn.innerHTML = `
+      <svg class="pin-icon pin-outline" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M10.5 1.5l4 4-2 1-3 3 1.5 1.5-1 1-5-5 1-1L7.5 7.5l3-3z"/><path d="M6 9.5L1.5 14.5"/></svg>
+      <svg class="pin-icon pin-filled" viewBox="0 0 16 16" fill="currentColor"><path d="M10.5 1.5l4 4-2 1-3 3 1.5 1.5-1 1-5-5 1-1L7.5 7.5l3-3z"/></svg>
+    `;
+    const initiallyPinned = isPinned(chatId, msgId);
+    pinBtn.classList.toggle('pinned', initiallyPinned);
+    pinBtn.title = initiallyPinned ? 'Unpin message' : 'Pin message';
+    if (initiallyPinned) div.classList.add('pinned');
+    pinBtn.onclick = (e) => {
+      e.stopPropagation();
+      const currentlyPinned = isPinned(chatId, msgId);
+      if (currentlyPinned) {
+        void unpinMessage(chatId, msgId);
+        pinBtn.classList.remove('pinned');
+        pinBtn.title = 'Pin message';
+        div.classList.remove('pinned');
+      } else {
+        // Pull the live text — same lossless source the copy button
+        // uses (dataset.text for streaming agent lines, .text span
+        // otherwise). Truncate to ~280 chars so the drawer doesn't
+        // store entire pasted documents.
+        const liveText = div.dataset.text
+          || (div.querySelector('.text') as HTMLElement | null)?.textContent
+          || '';
+        const preview = liveText.length > 280 ? liveText.slice(0, 277) + '…' : liveText;
+        const role = cls.includes('agent') ? 'assistant'
+          : cls.includes('system') ? 'system'
+          : 'user';
+        const ts = typeof opts.timestamp === 'number' ? opts.timestamp
+          : opts.timestamp instanceof Date ? opts.timestamp.getTime()
+          : typeof opts.timestamp === 'string' ? Date.parse(opts.timestamp)
+          : Date.now();
+        void pinMessage({ chatId, msgId, role, text: preview, timestamp: ts });
+        pinBtn.classList.add('pinned');
+        pinBtn.title = 'Unpin message';
+        div.classList.add('pinned');
+      }
+    };
+    div.appendChild(pinBtn);
+  }
 
   // Per-bubble play/pause chip + playback bar for AGENT lines. The
   // DOM is emitted here; ALL interaction (click, scrub, class-flip,

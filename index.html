@@ -98,10 +98,36 @@
          2026-05-05 to match the desktop affordance. -->
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><line x1="9" y1="4" x2="9" y2="20"/></svg>
   </button>
-  <button id="btn-lock" class="toolbar-btn" style="margin-left:auto" title="Pocket lock (swipe to unlock)">
+  <button id="btn-pin-drawer" class="toolbar-btn" style="margin-left:auto" title="Pinned messages" aria-label="Pinned messages">
+    <!-- Pin (paperclip-style) — symmetric mirror of the sidebar
+         toggle on the LEFT; opens the right-side drawer aggregating
+         pinned messages across all chats. Banner shows the total
+         count when > 0. -->
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10.5l-7-7-2 1-4 4 2 2-2 2-3-1-1 1 5 5 1-1-1-3 2-2 2 2 4-4 1-2z"/></svg>
+    <span id="pin-drawer-count" class="pin-count-banner" hidden>0</span>
+  </button>
+  <button id="btn-lock" class="toolbar-btn" title="Pocket lock (swipe to unlock)">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
   </button>
 </div>
+
+<!-- Right-side drawer: pinned messages aggregated across all chats.
+     Mirrors the left sidebar in structure (aside + collapsed state +
+     slide animation), with pin items in place of session rows. Click
+     an item drills to its chat and scrolls to the message. Wired in
+     src/pins/drawer.ts. -->
+<aside id="pin-drawer" class="pin-drawer collapsed" aria-expanded="false" aria-label="Pinned messages">
+  <div class="pin-drawer-header">
+    <h3 class="pin-drawer-title">Pinned</h3>
+    <button id="pin-drawer-close" class="sb-icon-btn" title="Close" aria-label="Close pinned messages">
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    </button>
+  </div>
+  <ul id="pin-drawer-list" class="pin-drawer-list"></ul>
+  <div id="pin-drawer-empty" class="pin-drawer-empty" hidden>
+    No pinned messages.<br><span class="pin-drawer-hint">Tap the pin icon on any message to add it here.</span>
+  </div>
+</aside>
 
 <!-- Info popup (one-time icon + feature guide) -->
 <div id="info-panel" class="info-panel hidden" aria-hidden="true">
