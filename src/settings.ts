@@ -535,6 +535,8 @@ export function hydrate(handlers: {
   const setQuietHoursEnabled = $inp('set-quiet-hours-enabled');
   const setQuietHoursStart = $inp('set-quiet-hours-start');
   const setQuietHoursEnd = $inp('set-quiet-hours-end');
+  const setKindAgentReply = $inp('set-kind-agent-reply');
+  const setKindNotification = $inp('set-kind-notification');
   const setPushTest = $any('set-push-test');
   const setPushTestHint = $any('set-push-test-hint');
   const setPushDiagnostics = $any('set-push-diagnostics');
@@ -775,48 +777,64 @@ export function hydrate(handlers: {
   // The UI is GLOBAL (matches Option A: applies to all subscriptions).
   // Initial hydrate fetches current state; toggle/time edits POST the
   // partial update.
-  async function loadQuietHoursUi(): Promise<void> {
-    if (!setQuietHoursEnabled) return;
+  // Single hydrate for the prefs blob — covers quiet hours + per-kind
+  // toggles. Pushes for each control go through pushPrefs which posts
+  // the whole snapshot (partial-update semantics on the server side
+  // make this safe).
+  async function loadPrefsUi(): Promise<void> {
     try {
       const r = await fetch('/api/sidekick/notifications/preferences');
       if (!r.ok) return;
       const prefs = await r.json();
       const qh = prefs?.quiet_hours;
-      if (qh) {
+      if (qh && setQuietHoursEnabled) {
         setQuietHoursEnabled.checked = !!qh.enabled;
         if (setQuietHoursStart) setQuietHoursStart.value = qh.start || '22:00';
         if (setQuietHoursEnd) setQuietHoursEnd.value = qh.end || '07:00';
       }
+      const kinds = prefs?.kinds;
+      if (kinds) {
+        if (setKindAgentReply) setKindAgentReply.checked = kinds.agent_reply !== false;
+        if (setKindNotification) setKindNotification.checked = kinds.notification !== false;
+      }
     } catch (e: any) {
-      log('[notifications] quiet-hours load failed:', e?.message ?? e);
+      log('[notifications] prefs load failed:', e?.message ?? e);
     }
   }
-  void loadQuietHoursUi();
-  async function pushQuietHours(): Promise<void> {
+  void loadPrefsUi();
+  async function pushPrefs(update: any): Promise<void> {
+    try {
+      const r = await fetch('/api/sidekick/notifications/preferences', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(update),
+      });
+      if (!r.ok) {
+        log(`[notifications] prefs save failed: HTTP ${r.status}`);
+      }
+    } catch (e: any) {
+      log('[notifications] prefs save failed:', e?.message ?? e);
+    }
+  }
+  const pushQuietHours = () => {
     if (!setQuietHoursEnabled) return;
-    const body = {
+    void pushPrefs({
       quiet_hours: {
         enabled: setQuietHoursEnabled.checked,
         start: setQuietHoursStart?.value || '22:00',
         end: setQuietHoursEnd?.value || '07:00',
       },
-    };
-    try {
-      const r = await fetch('/api/sidekick/notifications/preferences', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      if (!r.ok) {
-        log(`[notifications] quiet-hours save failed: HTTP ${r.status}`);
-      }
-    } catch (e: any) {
-      log('[notifications] quiet-hours save failed:', e?.message ?? e);
-    }
-  }
-  if (setQuietHoursEnabled) setQuietHoursEnabled.onchange = () => { void pushQuietHours(); };
-  if (setQuietHoursStart) setQuietHoursStart.onchange = () => { void pushQuietHours(); };
-  if (setQuietHoursEnd) setQuietHoursEnd.onchange = () => { void pushQuietHours(); };
+    });
+  };
+  if (setQuietHoursEnabled) setQuietHoursEnabled.onchange = pushQuietHours;
+  if (setQuietHoursStart) setQuietHoursStart.onchange = pushQuietHours;
+  if (setQuietHoursEnd) setQuietHoursEnd.onchange = pushQuietHours;
+  if (setKindAgentReply) setKindAgentReply.onchange = () => {
+    void pushPrefs({ kinds: { agent_reply: setKindAgentReply.checked } });
+  };
+  if (setKindNotification) setKindNotification.onchange = () => {
+    void pushPrefs({ kinds: { notification: setKindNotification.checked } });
+  };
 
   // ── Send test push — fires the proxy /test endpoint synchronously.
   // The button stays disabled mid-dispatch to prevent double-fire on

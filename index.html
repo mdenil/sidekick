@@ -441,6 +441,20 @@
         <input type="time" id="set-quiet-hours-end" value="07:00" step="60">
       </span>
     </div>
+    <!-- Per-category toggles. agent_reply = the agent finishing a turn.
+         notification = out-of-band events (cron output, /background results,
+         scheduled reminders, approval prompts). Defaults ON; toggle off to
+         suppress without muting individual chats. -->
+    <div class="row">
+      <label for="set-kind-agent-reply">Push agent replies</label>
+      <input type="checkbox" id="set-kind-agent-reply">
+      <span class="hint">banner when the agent finishes a turn</span>
+    </div>
+    <div class="row">
+      <label for="set-kind-notification">Push notifications</label>
+      <input type="checkbox" id="set-kind-notification">
+      <span class="hint">cron output, background tasks, scheduled reminders</span>
+    </div>
     <div class="row">
       <label for="set-push-test">Send test push</label>
       <button type="button" id="set-push-test" class="settings-btn">Fire test</button>

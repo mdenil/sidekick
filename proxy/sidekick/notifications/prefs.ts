@@ -25,8 +25,22 @@ export interface QuietHours {
   end: string;
 }
 
+/** Push-eligible envelope categories the user can toggle individually.
+ *  v1 (2026-05-12): two top-level kinds. `agent_reply` covers
+ *  `reply_final` envelopes (the agent finishing a turn). `notification`
+ *  covers `notification` envelopes (cron output, /background results,
+ *  approval prompts, etc.) — sub-kind discrimination (cron vs
+ *  approval) is a future refinement once we see real per-kind volume. */
+export interface PushKinds {
+  /** Agent finished a reply turn (reply_final envelope). */
+  agent_reply: boolean;
+  /** Out-of-band notification (cron, /background, approval, etc.). */
+  notification: boolean;
+}
+
 export interface Prefs {
   quiet_hours: QuietHours;
+  kinds: PushKinds;
 }
 
 const DEFAULT_PREFS: Prefs = {
@@ -34,6 +48,10 @@ const DEFAULT_PREFS: Prefs = {
     enabled: false,
     start: '22:00',
     end: '07:00',
+  },
+  kinds: {
+    agent_reply: true,
+    notification: true,
   },
 };
 
@@ -63,11 +81,17 @@ export async function initPrefs(opts: { dataDir: string }): Promise<void> {
  *  old prefs files load with the new defaults filling the gaps. */
 function mergeWithDefaults(parsed: any): Prefs {
   const out: Prefs = structuredClone(DEFAULT_PREFS);
-  if (parsed && typeof parsed === 'object' && parsed.quiet_hours) {
-    const qh = parsed.quiet_hours;
-    if (typeof qh.enabled === 'boolean') out.quiet_hours.enabled = qh.enabled;
-    if (typeof qh.start === 'string' && HHMM_RE.test(qh.start)) out.quiet_hours.start = qh.start;
-    if (typeof qh.end === 'string' && HHMM_RE.test(qh.end)) out.quiet_hours.end = qh.end;
+  if (parsed && typeof parsed === 'object') {
+    if (parsed.quiet_hours) {
+      const qh = parsed.quiet_hours;
+      if (typeof qh.enabled === 'boolean') out.quiet_hours.enabled = qh.enabled;
+      if (typeof qh.start === 'string' && HHMM_RE.test(qh.start)) out.quiet_hours.start = qh.start;
+      if (typeof qh.end === 'string' && HHMM_RE.test(qh.end)) out.quiet_hours.end = qh.end;
+    }
+    if (parsed.kinds && typeof parsed.kinds === 'object') {
+      if (typeof parsed.kinds.agent_reply === 'boolean') out.kinds.agent_reply = parsed.kinds.agent_reply;
+      if (typeof parsed.kinds.notification === 'boolean') out.kinds.notification = parsed.kinds.notification;
+    }
   }
   return out;
 }
@@ -99,8 +123,23 @@ export async function updatePrefs(update: Partial<Prefs>): Promise<Prefs> {
       cache.quiet_hours.end = qh.end;
     }
   }
+  if (update.kinds) {
+    if (typeof update.kinds.agent_reply === 'boolean') cache.kinds.agent_reply = update.kinds.agent_reply;
+    if (typeof update.kinds.notification === 'boolean') cache.kinds.notification = update.kinds.notification;
+  }
   await persist();
   return getPrefs();
+}
+
+/** True if push for the given envelope kind is enabled (i.e. user
+ *  hasn't toggled this kind off in Settings). Defaults to true when
+ *  prefs are uninitialized — never silently swallow pushes during
+ *  startup or migration. Unknown kinds fall through to true too —
+ *  conservative: a plugin emitting a new kind we don't know about
+ *  yet still gets pushed until the UI catches up. */
+export function isKindEnabled(kind: keyof PushKinds): boolean {
+  if (!cache) return true;
+  return cache.kinds[kind] !== false;
 }
 
 /** True if the current server-local clock falls inside the user's

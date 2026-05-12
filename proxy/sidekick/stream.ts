@@ -58,7 +58,7 @@ import {
 import { isConfigured as isNotificationsConfigured } from './notifications/index.ts';
 import { isMuted } from './notifications/mutes.ts';
 import { isUserEngaged } from './notifications/visibility.ts';
-import { inQuietHours } from './notifications/prefs.ts';
+import { inQuietHours, isKindEnabled, type PushKinds } from './notifications/prefs.ts';
 import {
   recordPushAndGetCount,
   decorateTitleForCount,
@@ -201,6 +201,18 @@ function maybeDispatchPush(env: Envelope, prevBroadcastAt: number): void {
     }
     const cid = typeof env.chat_id === 'string' ? env.chat_id : '';
     if (!cid) return { decision: 'missing_chat_id', chatId: '' };
+    // Per-kind filter — user toggled this category off in Settings →
+    // Notifications. Map envelope.type → PushKinds key:
+    //   reply_final  → 'agent_reply'
+    //   notification → 'notification'
+    // Anything else falls through to enabled-by-default (kind=unknown).
+    const kind: keyof PushKinds | null =
+      env.type === 'reply_final' ? 'agent_reply'
+      : env.type === 'notification' ? 'notification'
+      : null;
+    if (kind && !isKindEnabled(kind)) {
+      return { decision: `kind_disabled:${kind}`, chatId: cid };
+    }
     // Per-chat mute — user explicitly silenced this chat's pushes via
     // the sidebar 3-dots menu. Checked AFTER type/should_push so the
     // decision is independent of envelope-class (mute everything from
