@@ -170,6 +170,17 @@ export function init(opts: SwipeOptions): void {
     if (!isMobile()) return;
     if (e.pointerType === 'mouse' && e.button !== 0) return;
 
+    // If the touch started on the right-side pin drawer, the gesture
+    // is its concern — not ours. Without this, swipes on the pin
+    // drawer (when both panels are open) fall through to the sidebar
+    // open-from-anywhere handler and post the sidebar underneath
+    // (Jonathan field bug 2026-05-12). Mirrors Jonathan's invariant
+    // ("whoever came out most recently is on top, swipes act on the
+    // top panel") — once the pin drawer has its own swipe-to-close
+    // handler, this bail lets that handler receive the gesture cleanly.
+    const targetEl = e.target as Element | null;
+    if (targetEl?.closest?.('#pin-drawer')) return;
+
     // Bail on inputs / sliders / horizontal-scrollables BEFORE applying
     // the swipe-lock CSS class. Otherwise the lock disables iOS's
     // native text-selection / range-drag / horizontal-scroll, even if
