@@ -268,20 +268,21 @@ export function mountDevPill(): void {
       const next = !isDevMode();
       log(`[dev-mode] long-press fired → setDevMode(${next})`);
       setDevMode(next);
-      // The runtime flags in log.ts / dictate.ts are computed at module
-      // load, so a reload is needed for them to pick up the change.
-      // Render the pill state change immediately so the toggle FEELS
-      // responsive, then ask the user to reload to actually flip
-      // diagnostics. (Alternative: hot-rewire the flags via setters,
-      // but that's more code than it's worth for an easter-egg toggle.)
-      renderPill();
-      const msg = next
-        ? 'Dev mode ON. Reload to start streaming logs to /tmp/sidekick-debug/.'
-        : 'Dev mode OFF. Reload to stop log relay.';
-      // alert is ugly but reliable on iOS PWA where toasts may be
-      // hidden by the soft keyboard or fail to show. Acceptable for
-      // an easter-egg admin toggle.
-      try { alert(msg); } catch {}
+      // Auto-reload so the runtime flags in log.ts / dictate.ts (which
+      // are computed at module load) pick up the new state. When
+      // turning OFF, also strip the ?debug=1/debug-relay=1/dictate-
+      // debug=1 URL flags — isDevMode reads them BEFORE localStorage,
+      // so without stripping, the toggle has zero effect (Jonathan
+      // 2026-05-12: "i hold and get popup, but it doesn't change modes
+      // and refresh and hard reload don't fix"). When turning ON, no
+      // URL change needed — localStorage alone is enough.
+      const url = new URL(location.href);
+      if (!next) {
+        url.searchParams.delete('debug');
+        url.searchParams.delete('debug-relay');
+        url.searchParams.delete('dictate-debug');
+      }
+      location.replace(url.toString());
     }, HOLD_MS);
   });
   versionEl.addEventListener('pointerup', cancel);
