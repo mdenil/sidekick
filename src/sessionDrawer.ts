@@ -313,7 +313,13 @@ function navigateByKey(direction: -1 | 1): boolean {
   if (listEl) {
     listEl.querySelectorAll('li.active').forEach(el => el.classList.remove('active'));
     const targetLi = listEl.querySelector(`li[data-chat-id="${CSS.escape(targetId)}"]`);
-    if (targetLi) targetLi.classList.add('active');
+    if (targetLi) {
+      targetLi.classList.add('active');
+      // Keep the keyboard focus visible — scrollIntoView with
+      // block:'nearest' no-ops when the row is already in the viewport
+      // and otherwise nudges just enough to bring it back in.
+      (targetLi as HTMLElement).scrollIntoView({ block: 'nearest' });
+    }
   }
   // Async resume — fetch transcript + render. Same path the click
   // handler uses, so behavior (chat.clear + replay + drawer refresh)
