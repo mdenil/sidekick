@@ -429,6 +429,10 @@ export async function startRig(opts: { mode?: FakeMode } = {}): Promise<ProxyRig
         const n = await import('../notifications/index.ts');
         n.__resetForTest();
       } catch { /* notifications module not loaded in this rig — fine */ }
+      try {
+        const d = await import('../notifications/dispatch.ts');
+        d.__resetDispatchForTest();
+      } catch { /* dispatch module not loaded in this rig — fine */ }
       await new Promise<void>((resolve) => proxyServer.close(() => resolve()));
       await fakeAgent.stop();
     },

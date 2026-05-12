@@ -23,16 +23,55 @@ import {
 
 let vapidApplied = false;
 
-/** Lazily apply VAPID details to the web-push module on first send.
- *  Cheaper than running on every dispatch + avoids a startup-order
- *  dependency between notifications.init() and the module load. */
-function ensureVapid(): boolean {
-  if (vapidApplied) return true;
-  const vapid = getVapidConfig();
-  if (!vapid) return false;
-  webpush.setVapidDetails(vapid.subject, vapid.publicKey, vapid.privateKey);
-  vapidApplied = true;
-  return true;
+/** Per-subscription send function. The default wraps webpush.sendNotification
+ *  (real network call to Apple/FCM/Mozilla relay) and is gated by lazy
+ *  setVapidDetails on first call. Tests replace this via __setSenderForTest
+ *  so the proxy/dispatch chain can be smoked without hitting external
+ *  services AND without needing real (65-byte-decoded) VAPID keys — every
+ *  gate decision becomes pinnable.
+ *
+ *  Errors should throw with `.statusCode` (number) so the dispatch loop's
+ *  404/410-prune branch still works. Other failures don't need a statusCode. */
+export type PushSender = (
+  target: { endpoint: string; keys: { p256dh: string; auth: string } },
+  body: string,
+  opts: { TTL: number },
+) => Promise<void>;
+
+const defaultSender: PushSender = async (target, body, opts) => {
+  if (!vapidApplied) {
+    const vapid = getVapidConfig();
+    if (!vapid) throw new Error('VAPID not configured');
+    webpush.setVapidDetails(vapid.subject, vapid.publicKey, vapid.privateKey);
+    vapidApplied = true;
+  }
+  await webpush.sendNotification(target, body, opts);
+};
+
+let sender: PushSender = defaultSender;
+
+/** Cheap configured-vs-not check for the dispatch gate. The real
+ *  VAPID-key-validation happens inside defaultSender on first use;
+ *  a mocked sender bypasses it entirely. */
+function ensureConfigured(): boolean {
+  return getVapidConfig() !== null;
+}
+
+/** Test-only seam: swap the sender for a stub. Production never calls
+ *  this. Returns a restore-callback for symmetry with patch/unpatch
+ *  patterns elsewhere. */
+export function __setSenderForTest(fn: PushSender): () => void {
+  const prev = sender;
+  sender = fn;
+  return () => { sender = prev; };
+}
+
+/** Test-only seam: reset module-level state. Mirrors the
+ *  notifications/index.ts __resetForTest pattern so a test rig can
+ *  start each case from a clean slate. */
+export function __resetDispatchForTest(): void {
+  sender = defaultSender;
+  vapidApplied = false;
 }
 
 export interface PushPayload {
@@ -56,7 +95,7 @@ export interface DispatchResult {
  *  storage so future dispatches don't keep trying it. Other failures
  *  (timeouts, transient 5xx) are counted as failed but the row stays. */
 export async function dispatchPush(payload: PushPayload): Promise<DispatchResult> {
-  if (!ensureVapid()) {
+  if (!ensureConfigured()) {
     console.warn('[notifications] dispatchPush called but VAPID unconfigured');
     return { dispatched: 0, failed: 0, pruned: 0 };
   }
@@ -70,7 +109,7 @@ export async function dispatchPush(payload: PushPayload): Promise<DispatchResult
 
   await Promise.all(subs.map(async (sub) => {
     try {
-      await webpush.sendNotification(
+      await sender(
         { endpoint: sub.endpoint, keys: sub.keys },
         body,
         // 30s TTL — push services hold for delivery up to this long if
