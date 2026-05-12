@@ -462,9 +462,12 @@ export function addLine(speaker: string, text: string, cls = '', opts: {
     const msgId = String(opts.messageId);
     const pinBtn = document.createElement('button');
     pinBtn.className = 'pin-btn';
+    // Thumbtack — recognizable as a pin (vs the abstract paperclip
+     // shape used pre-2026-05-12 that Jonathan correctly flagged as
+     // ambiguous). Two SVGs in DOM; CSS swaps visibility via .pinned.
     pinBtn.innerHTML = `
-      <svg class="pin-icon pin-outline" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M10.5 1.5l4 4-2 1-3 3 1.5 1.5-1 1-5-5 1-1L7.5 7.5l3-3z"/><path d="M6 9.5L1.5 14.5"/></svg>
-      <svg class="pin-icon pin-filled" viewBox="0 0 16 16" fill="currentColor"><path d="M10.5 1.5l4 4-2 1-3 3 1.5 1.5-1 1-5-5 1-1L7.5 7.5l3-3z"/></svg>
+      <svg class="pin-icon pin-outline" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 10.76V4h6v6.76l3 1.74v2.5H6v-2.5z"/></svg>
+      <svg class="pin-icon pin-filled" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M12 17v5" stroke-linecap="round"/><path d="M9 10.76V4h6v6.76l3 1.74v2.5H6v-2.5z"/></svg>
     `;
     const initiallyPinned = isPinned(chatId, msgId);
     pinBtn.classList.toggle('pinned', initiallyPinned);
@@ -473,6 +476,7 @@ export function addLine(speaker: string, text: string, cls = '', opts: {
     pinBtn.onclick = (e) => {
       e.stopPropagation();
       const currentlyPinned = isPinned(chatId, msgId);
+      log(`[pin-click] chat=${chatId} msgId=${msgId} currentlyPinned=${currentlyPinned}`);
       if (currentlyPinned) {
         void unpinMessage(chatId, msgId);
         pinBtn.classList.remove('pinned');

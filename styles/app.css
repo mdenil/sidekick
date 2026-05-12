@@ -1615,21 +1615,27 @@
   .line .copy-btn svg { width: 18px; height: 18px; }
   .line .copy-btn:hover { opacity: 0.8; color: var(--primary); }
 
-  /* ── Pin button — sits to the LEFT of the copy button at top-right.
-   * Two SVGs in DOM (outline + filled); CSS swaps visibility based on
-   * .pinned state so the global sidekick:pins-changed listener can
-   * stay class-only without rebuilding innerHTML per repaint. */
+  /* ── Pin button — sits LEFT of copy on user msgs, LEFT of play+copy
+   * on agent msgs (agent already has play at right:34, copy at right:4,
+   * so pin lives at right:60 to keep all three readable). Two SVGs in
+   * DOM (outline + filled); CSS swaps visibility based on .pinned
+   * state so the global sidekick:pins-changed listener can stay
+   * class-only without rebuilding innerHTML per repaint.
+   * Bigger tap target (28px svg + 8px padding = 44x44 region) — the
+   * earlier 26px box was below Apple's minimum hit-test size and iOS
+   * sometimes refused taps. */
   .line .pin-btn {
-    position: absolute; top: 4px; right: 28px;
+    position: absolute; top: 2px; right: 32px;
     background: none; border: none; color: var(--muted);
-    cursor: pointer; opacity: 0.3; padding: 4px;
+    cursor: pointer; opacity: 0.5; padding: 8px;
     transition: opacity 0.15s ease, color 0.15s ease;
     display: flex; align-items: center; justify-content: center;
-    z-index: 2;
+    z-index: 3;
   }
+  .line.agent .pin-btn { right: 64px; }
   .line .pin-btn svg { width: 18px; height: 18px; }
-  .line .pin-btn:hover { opacity: 0.8; color: var(--primary); }
-  .line .pin-btn.pinned { opacity: 0.85; color: var(--primary); }
+  .line .pin-btn:hover { opacity: 0.95; color: var(--primary); }
+  .line .pin-btn.pinned { opacity: 1; color: var(--primary); }
   .line .pin-btn .pin-filled { display: none; }
   .line .pin-btn.pinned .pin-outline { display: none; }
   .line .pin-btn.pinned .pin-filled { display: inline-block; }
@@ -1639,30 +1645,37 @@
   .line.pinned { border-left: 2px solid var(--primary); padding-left: 6px; }
 
   /* ── Right-side pin drawer ───────────────────────────────────────
-   * Symmetric mirror of the left sidebar's open/close machinery, with
-   * pinned messages aggregated across all chats. Slides in from the
-   * right; full-width overlay on mobile, fixed-width column on
-   * desktop (no main-chat-shift in this iteration — keeps the layout
-   * change small while we feel out the surface).
+   * Symmetric mirror of the left sidebar's open/close machinery.
+   * Lists pinned messages aggregated across every chat.
+   *
+   * Layout on desktop: when open, `body.pin-drawer-open` adds
+   * `padding-right: var(--pin-drawer-width)` so the main chat column
+   * shifts LEFT and the drawer occupies the freed-up right margin.
+   * Both sidebars can be open simultaneously → 3-column layout
+   * (sessions | chat | pins).
+   * Layout on mobile: drawer overlays the chat (no padding shift),
+   * matching the left sidebar's mobile behavior.
    */
-  .pin-drawer {
+  body.pin-drawer-open { padding-right: var(--pin-drawer-width, 360px); }
+
+  #pin-drawer {
     position: fixed; top: 0; right: 0; bottom: 0;
-    width: 360px; max-width: 92vw;
-    background: var(--panel-bg);
-    color: var(--text);
+    width: var(--pin-drawer-width, 360px);
+    max-width: 92vw;
+    background: var(--surface);
+    color: var(--fg);
     border-left: 1px solid var(--border);
-    box-shadow: -4px 0 24px rgba(0,0,0,0.18);
     display: flex; flex-direction: column;
-    z-index: 60;
+    z-index: 50;
     transform: translateX(0);
-    transition: transform 0.22s ease;
+    transition: transform 0.18s ease;
   }
-  .pin-drawer.collapsed { transform: translateX(100%); pointer-events: none; }
+  #pin-drawer.collapsed { transform: translateX(100%); pointer-events: none; }
   .pin-drawer-header {
     display: flex; align-items: center; justify-content: space-between;
     padding: 12px 14px; border-bottom: 1px solid var(--border);
   }
-  .pin-drawer-title { margin: 0; font-size: 14px; font-weight: 600; letter-spacing: 0.02em; }
+  .pin-drawer-title { margin: 0; font-size: 14px; font-weight: 600; letter-spacing: 0.02em; color: var(--fg); }
   .pin-drawer-list {
     list-style: none; margin: 0; padding: 6px 0;
     overflow-y: auto; flex: 1;
@@ -1672,14 +1685,14 @@
     cursor: pointer;
     transition: background 0.12s ease;
   }
-  .pin-drawer-item:hover { background: var(--hover-bg, rgba(255,255,255,0.04)); }
+  .pin-drawer-item:hover { background: var(--surface-2); }
   .pin-item-meta {
     display: flex; justify-content: space-between; gap: 8px;
     font-size: 11px; color: var(--muted); margin-bottom: 4px;
   }
   .pin-item-role { font-weight: 600; }
   .pin-item-body {
-    font-size: 13px; line-height: 1.4; color: var(--text);
+    font-size: 13px; line-height: 1.4; color: var(--fg);
     overflow: hidden; text-overflow: ellipsis;
     display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
   }
@@ -1700,9 +1713,20 @@
     position: absolute; top: -2px; right: -2px;
     min-width: 16px; height: 16px; padding: 0 4px;
     border-radius: 8px;
-    background: var(--primary); color: var(--bg, #000);
+    background: var(--primary); color: var(--primary-fg);
     font-size: 10px; font-weight: 700; line-height: 16px;
     text-align: center;
+  }
+
+  /* Mobile: drawer overlays (no body padding shift), drops a soft
+   * shadow to hint it's floating, narrower max width. Same playbook
+   * the left sidebar uses on mobile. */
+  @media (max-width: 699px) {
+    body.pin-drawer-open { padding-right: 0; }
+    #pin-drawer {
+      width: min(85vw, 320px);
+      box-shadow: -4px 0 24px rgba(0,0,0,0.35);
+    }
   }
 
   /* ── Per-bubble TTS playback controls (agent lines) ──
