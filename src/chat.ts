@@ -16,7 +16,8 @@ import {
   saveScrollPosition,
   AT_BOTTOM_THRESHOLD_PX,
 } from './chatScrollPositions.ts';
-import { isPinned, pinMessage, unpinMessage, hydrate as hydratePins } from './pins/store.ts';
+import { isPinned as isPinMsg, pinMessage, unpinMessage, hydrate as hydratePins } from './pins/store.ts';
+import * as backend from './backend.ts';
 
 let transcriptEl: HTMLElement | null = null;
 let scrollToBottomBtn: HTMLElement | null = null;
@@ -210,7 +211,7 @@ export async function init(el: HTMLElement | null): Promise<boolean> {
       transcriptEl.querySelectorAll<HTMLElement>('.line[data-message-id]').forEach((line) => {
         const msgId = line.dataset.messageId || '';
         if (!msgId) return;
-        const pinned = isPinned(chatId, msgId);
+        const pinned = isPinMsg(chatId, msgId);
         line.classList.toggle('pinned', pinned);
         const btn = line.querySelector<HTMLButtonElement>('.pin-btn');
         if (btn) btn.classList.toggle('pinned', pinned);
@@ -449,16 +450,19 @@ export function addLine(speaker: string, text: string, cls = '', opts: {
 
   // Per-bubble pin toggle — adds the bubble to the pinned-messages
   // store (drives the right-side pins drawer's cross-chat aggregation).
-  // Only shown when we know which chat this belongs to AND the bubble
-  // carries a stable message id (without an id, we can't key the pin
-  // and the round-trip after reload wouldn't find the bubble again).
+  // Shown on any bubble with a stable msgId. The chat_id is resolved
+  // LAZILY at click time from viewedSessionIdRef so the button works
+  // even on optimistic user bubbles rendered before trackViewedSession
+  // has stamped the chat id (fresh-new-chat path: send() runs before
+  // backend.newSession() completes its assignment). Without the lazy
+  // read, the fresh-new-chat smoke caught the button missing entirely
+  // (2026-05-12).
   //
   // Icon swap is CSS-driven (.pin-btn.pinned hides outline, shows
   // filled) so the global sidekick:pins-changed listener at init()
   // only needs to toggle the `.pinned` class — no innerHTML rebuild
   // per repaint cycle.
-  if (opts.messageId && viewedSessionIdRef) {
-    const chatId = viewedSessionIdRef;
+  if (opts.messageId) {
     const msgId = String(opts.messageId);
     const pinBtn = document.createElement('button');
     pinBtn.className = 'pin-btn';
@@ -469,13 +473,30 @@ export function addLine(speaker: string, text: string, cls = '', opts: {
       <svg class="pin-icon pin-outline" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 10.76V4h6v6.76l3 1.74v2.5H6v-2.5z"/></svg>
       <svg class="pin-icon pin-filled" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M12 17v5" stroke-linecap="round"/><path d="M9 10.76V4h6v6.76l3 1.74v2.5H6v-2.5z"/></svg>
     `;
-    const initiallyPinned = isPinned(chatId, msgId);
-    pinBtn.classList.toggle('pinned', initiallyPinned);
-    pinBtn.title = initiallyPinned ? 'Unpin message' : 'Pin message';
-    if (initiallyPinned) div.classList.add('pinned');
+    // Initial paint: we don't know the chat_id yet if this is an
+    // optimistic bubble on a fresh chat. Re-paint will fire via
+    // sidekick:pins-changed once trackViewedSession stamps it.
+    if (viewedSessionIdRef && isPinMsg(viewedSessionIdRef, msgId)) {
+      pinBtn.classList.add('pinned');
+      pinBtn.title = 'Unpin message';
+      div.classList.add('pinned');
+    } else {
+      pinBtn.title = 'Pin message';
+    }
     pinBtn.onclick = (e) => {
       e.stopPropagation();
-      const currentlyPinned = isPinned(chatId, msgId);
+      // viewedSessionIdRef is set by replaySessionMessages (drawer
+      // click path), but fresh-new-chat optimistic bubbles render
+      // BEFORE that fires. Fall back to backend.getCurrentSessionId
+      // which the adapter tracks on every send/new-chat operation
+      // — gives a correct chatId for the fresh-chat case the smoke
+      // pin-toggle-on-bubble pins.
+      const chatId = viewedSessionIdRef || backend.getCurrentSessionId?.() || null;
+      if (!chatId) {
+        log(`[pin-click] no viewed/current chat — bailing (msgId=${msgId})`);
+        return;
+      }
+      const currentlyPinned = isPinMsg(chatId, msgId);
       log(`[pin-click] chat=${chatId} msgId=${msgId} currentlyPinned=${currentlyPinned}`);
       if (currentlyPinned) {
         void unpinMessage(chatId, msgId);

@@ -167,3 +167,14 @@ function notifyChange(): void {
     }
   } catch { /* non-DOM hosts (test runner) */ }
 }
+
+// Test-only window-exposed seam — lets smokes read the in-memory pin
+// state synchronously without poking at IDB. Production code never
+// references this.
+if (typeof window !== 'undefined') {
+  (window as any).__pinsDebug = {
+    size: () => pinsByKey.size,
+    snapshot: () => Array.from(pinsByKey.entries()),
+    clearForTest: () => { pinsByKey.clear(); },
+  };
+}
