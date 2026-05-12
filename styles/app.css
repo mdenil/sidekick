@@ -595,6 +595,17 @@
     font-size: 13px; color: var(--muted); font-style: italic; padding: 20px 0;
     text-align: center;
   }
+  /* Per-chat unread indicator — bold snippet + small inline pill, mirrors
+   * the WhatsApp pattern of "this row needs your attention". Driven by
+   * the badge module's in-memory unread map; class is added/removed
+   * by sessionDrawer.repaintUnreadIndicators on sidekick:unread-changed. */
+  .sessions-list li.unread .sess-snippet { font-weight: 600; color: var(--fg); }
+  .sess-unread-chip {
+    display: inline-block; vertical-align: middle; margin-left: 6px;
+    min-width: 18px; padding: 0 6px; height: 16px; line-height: 16px;
+    border-radius: 8px; background: var(--primary, #4a90e2); color: white;
+    font-size: 10px; font-weight: 600; text-align: center;
+  }
   .sessions-list .sess-row { display: flex; align-items: flex-start; gap: 4px; }
   .sessions-list .sess-body { flex: 1; min-width: 0; }
   .sess-menu-btn {

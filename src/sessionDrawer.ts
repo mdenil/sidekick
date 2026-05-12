@@ -27,6 +27,7 @@ import { markRecentlyDeleted, isRecentlyDeleted, recentlyDeletedSize } from './s
 import * as badge from './notifications/badge.ts';
 import { isMuted as isChatMuted, setMuted as setChatMuted } from './notifications/mutes.ts';
 import { reportChatSwitch } from './notifications/visibility.ts';
+import { unreadFor } from './notifications/badge.ts';
 
 let onResumeCb: ((id: string, messages: any[], pagination?: { firstId: number | null; hasMore: boolean }, inflight?: any[]) => void) | null = null;
 
@@ -465,6 +466,51 @@ function fmtRelativeTime(epochSec: number): string {
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 let refreshInFlight = false;
 
+/** Lightweight repaint of the per-row unread indicator. Walks existing
+ *  drawer rows and adds/removes `.unread` + the count chip based on
+ *  the badge module's current state. Doesn't trigger a backend fetch —
+ *  unread state is pure client-side, no server roundtrip needed.
+ *  Wired to the `sidekick:unread-changed` event by setupUnreadListener
+ *  below. */
+function repaintUnreadIndicators(): void {
+  const listEl = document.getElementById('sessions-list');
+  if (!listEl) return;
+  for (const li of Array.from(listEl.querySelectorAll('li[data-chat-id]'))) {
+    const chatId = (li as HTMLElement).dataset.chatId;
+    if (!chatId) continue;
+    const unread = unreadFor(chatId);
+    const existingChip = li.querySelector('.sess-unread-chip');
+    if (unread > 0) {
+      li.classList.add('unread');
+      if (existingChip) {
+        existingChip.textContent = unread > 99 ? '99+' : String(unread);
+      } else {
+        const snippet = li.querySelector('.sess-snippet');
+        if (snippet) {
+          const chip = document.createElement('span');
+          chip.className = 'sess-unread-chip';
+          chip.textContent = unread > 99 ? '99+' : String(unread);
+          snippet.appendChild(chip);
+        }
+      }
+    } else {
+      li.classList.remove('unread');
+      if (existingChip) existingChip.remove();
+    }
+  }
+}
+
+let unreadListenerWired = false;
+function setupUnreadListener(): void {
+  if (unreadListenerWired) return;
+  unreadListenerWired = true;
+  if (typeof window === 'undefined') return;
+  window.addEventListener('sidekick:unread-changed', repaintUnreadIndicators);
+}
+// Wire at module load — idempotent + no DOM lookup needed (event
+// listener attaches on window which exists in the PWA from the start).
+setupUnreadListener();
+
 export function scheduleRefresh(): void {
   if (refreshTimer) return;
   refreshTimer = setTimeout(() => {
@@ -766,6 +812,12 @@ function renderPlaceholderRow(id: string): HTMLLIElement {
 function renderRow(s: any, activeId: string): HTMLLIElement {
   const li = document.createElement('li');
   if (s.id === activeId) li.classList.add('active');
+  // Per-chat unread indicator — `.unread` adds bold + a count chip
+  // (see app.css). Source-of-truth is the in-memory badge map; we
+  // re-render on `sidekick:unread-changed` events so toggling state
+  // (push arrival, switch-into-chat) updates instantly without polling.
+  const unread = unreadFor(s.id);
+  if (unread > 0) li.classList.add('unread');
   // Expose the chat/session id on the li so tests + future code can
   // target rows without depending on title/snippet text (which may be
   // a placeholder until hermes generates the title).
@@ -781,6 +833,12 @@ function renderRow(s: any, activeId: string): HTMLLIElement {
   snippet.className = 'sess-snippet';
   // Prefer user-set title; fall back to snippet; then the id.
   snippet.textContent = s.title || s.snippet || s.id;
+  if (unread > 0) {
+    const chip = document.createElement('span');
+    chip.className = 'sess-unread-chip';
+    chip.textContent = unread > 99 ? '99+' : String(unread);
+    snippet.appendChild(chip);
+  }
 
   const meta = document.createElement('div');
   meta.className = 'sess-meta';

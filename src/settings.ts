@@ -12,6 +12,7 @@ import {
   unsubscribe as pushUnsubscribe,
   getPermission as getPushPermission,
 } from './notifications/index.ts';
+import { clearAllUnread, totalUnreadCount } from './notifications/badge.ts';
 
 const STORAGE_KEY = 'sidekick.settings.v2';
 
@@ -541,6 +542,8 @@ export function hydrate(handlers: {
   const setPushTestHint = $any('set-push-test-hint');
   const setPushDiagnostics = $any('set-push-diagnostics');
   const setPushDiagnosticsOut = $any('set-push-diagnostics-out');
+  const setMarkAllRead = $any('set-mark-all-read');
+  const setMarkAllReadHint = $any('set-mark-all-read-hint');
 
   // Apply `current` snapshot to every form control + label. Called
   // once at hydrate time and again on the cross-tab `sidekick:settings-
@@ -901,6 +904,27 @@ export function hydrate(handlers: {
     } catch (e: any) {
       setPushDiagnosticsOut.textContent = `error: ${e?.message ?? e}`;
     }
+  };
+
+  // ── Mark all read — escape hatch for a stuck badge. Clears the
+  // in-memory unread map, fires syncBadge → clears the app icon
+  // dot, and triggers a sidekick:unread-changed event so the drawer
+  // strips per-row indicators. Hint shows current total so the
+  // user knows what they're clearing.
+  function refreshMarkAllReadHint(): void {
+    if (!setMarkAllReadHint) return;
+    const n = totalUnreadCount();
+    setMarkAllReadHint.textContent = n > 0
+      ? `${n} unread across all chats`
+      : 'no unread events tracked';
+  }
+  refreshMarkAllReadHint();
+  if (typeof window !== 'undefined') {
+    window.addEventListener('sidekick:unread-changed', refreshMarkAllReadHint);
+  }
+  if (setMarkAllRead) setMarkAllRead.onclick = () => {
+    clearAllUnread();
+    refreshMarkAllReadHint();
   };
 
   if (setCommitPhrase) setCommitPhrase.onchange = () => {

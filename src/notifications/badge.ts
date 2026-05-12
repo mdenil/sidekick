@@ -42,6 +42,7 @@ export function incrementUnread(chatId: string, delta: number = 1): void {
   const prev = unreadByChat.get(chatId) || 0;
   unreadByChat.set(chatId, prev + delta);
   void syncBadge();
+  notifyChange();
 }
 
 /** Clear the unread counter for `chatId` and re-sync. Called when the
@@ -50,21 +51,53 @@ export function incrementUnread(chatId: string, delta: number = 1): void {
  *  observer to capture every focus path). */
 export function clearUnread(chatId: string): void {
   if (!chatId) return;
-  if (unreadByChat.delete(chatId)) void syncBadge();
+  if (unreadByChat.delete(chatId)) {
+    void syncBadge();
+    notifyChange();
+  }
 }
 
-/** Wipe everything — used by chat.clear() and the "reset state" flow.
- *  Idempotent. */
+/** Wipe everything — used by chat.clear() and the "reset state" flow,
+ *  also surfaced as a "Mark all read" button in Settings → Notifications
+ *  so the user has an escape hatch when the badge sticks on an event
+ *  they don't care about. Idempotent. */
 export function clearAllUnread(): void {
   if (unreadByChat.size === 0) return;
   unreadByChat.clear();
   void syncBadge();
+  notifyChange();
 }
 
-/** Snapshot of the unread map. Returns a fresh copy. Useful for the
- *  drawer's per-chat unread chip (Phase 3c). */
+/** Snapshot of the unread map. Returns a fresh copy. Used by the
+ *  drawer for repainting per-chat indicators + by the Notifications
+ *  settings panel for the "unread by chat" readout. */
 export function snapshotUnread(): Record<string, number> {
   const out: Record<string, number> = {};
   for (const [k, v] of unreadByChat) out[k] = v;
   return out;
+}
+
+/** Synchronous count for a single chat. Used by sessionDrawer's
+ *  renderRow to stamp `.unread` + the count chip per-row without
+ *  walking the whole map on every render. */
+export function unreadFor(chatId: string): number {
+  return unreadByChat.get(chatId) || 0;
+}
+
+/** Sum of unread across all chats — used by the Settings panel readout
+ *  to confirm the badge total without exposing internal map state. */
+export function totalUnreadCount(): number {
+  return totalUnread();
+}
+
+/** Fire a `sidekick:unread-changed` event on `window` so other modules
+ *  (sessionDrawer, settings panel) can repaint without polling.
+ *  Wrapped defensively — non-DOM hosts (Node test runner) shouldn't
+ *  break the badge update path. */
+function notifyChange(): void {
+  try {
+    if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+      window.dispatchEvent(new CustomEvent('sidekick:unread-changed'));
+    }
+  } catch { /* defensive — non-DOM hosts */ }
 }
