@@ -8,6 +8,8 @@
 // wrapper is null-safe: hosts without the API silently skip the call
 // rather than throwing.
 
+import { log } from '../util/log.ts';
+
 const unreadByChat = new Map<string, number>();
 
 /** Sum of unread counts across every chat. The number that lands on
@@ -60,12 +62,25 @@ export function clearUnread(chatId: string): void {
 /** Wipe everything — used by chat.clear() and the "reset state" flow,
  *  also surfaced as a "Mark all read" button in Settings → Notifications
  *  so the user has an escape hatch when the badge sticks on an event
- *  they don't care about. Idempotent. */
+ *  they don't care about. Idempotent on the in-memory map; ALWAYS syncs
+ *  the OS-level badge.
+ *
+ *  Field bug 2026-05-12 (Jonathan): the OS app-icon badge can show "1"
+ *  while `unreadByChat` is already empty — iOS PWA caches the badge
+ *  value across reloads / SW updates, so the in-memory map and the OS
+ *  state can drift. The earlier early-return (`if (size===0) return`)
+ *  meant Mark all read did nothing in this exact case. Drop the bail
+ *  and always force a clearAppBadge call so the OS state is always
+ *  reachable from the button. */
 export function clearAllUnread(): void {
-  if (unreadByChat.size === 0) return;
+  const hadEntries = unreadByChat.size > 0;
   unreadByChat.clear();
+  // Always sync — even when the map was already empty. syncBadge picks
+  // clearAppBadge() when total is 0, which is the OS-level reset the
+  // user is actually trying to invoke.
   void syncBadge();
-  notifyChange();
+  log(`[badge] clearAllUnread invoked (hadEntries=${hadEntries})`);
+  if (hadEntries) notifyChange();
 }
 
 /** Snapshot of the unread map. Returns a fresh copy. Used by the
