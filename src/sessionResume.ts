@@ -146,53 +146,92 @@ export function replaySessionMessages(
   );
 
   // Divergence-detection self-heal. After a server-driven replay,
-  // the on-screen bubble count should match the server's message
-  // set (modulo system_meta rows the server hides + filtered-out
-  // CONTEXT-COMPACTION lines we silently drop in renderHistoryMessage).
-  // If the count is materially higher, an earlier render path leaked
-  // stale bubbles — most commonly the sidekick_id ↔ integer-id dedup-
-  // mismatch this code is designed to prevent. Clear and re-render
-  // once to recover. The check is O(1) on the happy path (DOM length
-  // count + comparison); the heal path is a fresh batch render of
-  // up to 200 messages (~10ms). Fires at most once per replaySession-
-  // Messages call so we don't loop on stuck divergence.
+  // every finalized DOM bubble should correspond to either a server
+  // message OR an inflight envelope. Anything else is stale state
+  // leaked from a prior render path.
+  //
+  // Structural identity check (replaces the earlier count-tolerance
+  // heuristic, which Jonathan correctly called "a hack" — 2026-05-12):
+  // build the set of legitimate msgIds, walk DOM, surgically remove
+  // bubbles that don't belong. Three classes:
+  //
+  //   1. STALE: data-message-id matches neither a server message nor
+  //      an inflight envelope. Leaked from a previous session's render
+  //      or a no-longer-existing message.
+  //
+  //   2. DEDUP-MISMATCH (the historical 2x-bubble class): a server row
+  //      surfaces under BOTH `sidekick_id` AND integer `id`. The
+  //      canonical key is sidekick_id when present (see renderHistoryMessage
+  //      key selection), so a separately-keyed integer-id bubble for
+  //      the same row is the duplicate. Remove the integer-keyed one.
+  //
+  //   3. ORPHAN: two finalized bubbles share the same data-message-id.
+  //      One is in renderedMessages.entries; the other is unreferenced
+  //      DOM. Drop the orphan.
+  //
+  // Optimistic in-flight bubbles (.pending / .failed / .streaming) are
+  // LOCAL-ONLY state and excluded from the scan — otherwise a refetch
+  // right after a failed send wipes the .failed bubble + Retry button
+  // before the user can see them (smoke atomic-bubble-pending-failed).
   const transcriptEl = document.getElementById('transcript');
   if (transcriptEl) {
-    // Only count SERVER-BACKED bubbles (finalized, non-pending,
-    // non-failed, non-streaming). Optimistic in-flight bubbles
-    // (.pending, .failed for a send the user is about to retry,
-    // .streaming for a delta that hasn't finalized) are LOCAL-ONLY
-    // state and shouldn't trigger the divergence wipe — otherwise a
-    // reconcileActiveChat refetch immediately after a failed send
-    // wipes the .failed bubble + Retry button before the user can
-    // see them (smoke atomic-bubble-pending-failed.mjs).
-    const renderedCount = transcriptEl.querySelectorAll(
-      '.line[data-message-id]:not(.pending):not(.failed):not(.streaming)',
-    ).length;
-    // Server count excludes system_meta rows (no content, dropped by
-    // renderHistoryMessage). Filter to match.
-    const serverContentCount = messages.filter((m: any) => {
-      const t = (m?.content || '').trim();
-      return t && !t.startsWith('[CONTEXT COMPACTION');
-    }).length;
-    // Tolerance of +1 covers an in-flight streaming bubble that the
-    // server hasn't persisted yet (rare during replay, but possible
-    // on tightly-timed reconnects). Higher delta = real divergence.
-    if (renderedCount > serverContentCount + 1) {
-      log(
-        `[chat-resume] divergence detected: DOM has ${renderedCount} ` +
-        `bubbles vs server ${serverContentCount} — clearing + re-rendering`,
-      );
-      renderedMessages.clear();
-      activityRow.clearAll();
-      replyNavigator.reset();
-      // Re-render from server. Don't recurse — we've already cleared
-      // the entries map so the upserts here are guaranteed to create.
-      for (const m of messages) {
-        renderHistoryMessage(m, label, 'append', /*batch*/ true);
+    const expectedIds = new Set<string>();
+    const nonCanonicalIntIds = new Set<string>();
+    for (const m of messages) {
+      const text = (m?.content || '').trim();
+      if (!text || text.startsWith('[CONTEXT COMPACTION')) continue;
+      const sid = m?.sidekick_id ? String(m.sidekick_id) : null;
+      const iid = m?.id != null ? String(m.id) : null;
+      if (sid) {
+        expectedIds.add(sid);
+        // Only treat the integer id as "non-canonical" when it's actually
+        // a DIFFERENT value than sidekick_id — that's the dedup-mismatch
+        // signature. If both fields hold the same value (some mocks +
+        // some live paths echo the sidekick_id back as `id`), there's
+        // no mismatch possible: every renderer keys on the same string.
+        if (iid && iid !== sid) nonCanonicalIntIds.add(iid);
+      } else if (iid) {
+        expectedIds.add(iid);
       }
-      chat.flushBatchedRender();
-      log(`[chat-resume] divergence healed: re-rendered ${messages.length} msgs from server`);
+    }
+    if (inflight) {
+      for (const env of inflight) {
+        if (env?.message_id) expectedIds.add(String(env.message_id));
+      }
+    }
+
+    const finalized = Array.from(transcriptEl.querySelectorAll(
+      '.line[data-message-id]:not(.pending):not(.failed):not(.streaming)',
+    )) as HTMLElement[];
+    const seen = new Set<string>();
+    const stale: Array<{ id: string; el: HTMLElement }> = [];
+    const orphans: HTMLElement[] = [];
+    for (const el of finalized) {
+      const id = el.dataset.messageId || '';
+      if (!id) continue;
+      if (seen.has(id)) {
+        orphans.push(el);
+        continue;
+      }
+      seen.add(id);
+      if (nonCanonicalIntIds.has(id) || !expectedIds.has(id)) {
+        stale.push({ id, el });
+      }
+    }
+    if (stale.length || orphans.length) {
+      log(
+        `[chat-resume] divergence detected: surgical heal — ${stale.length} stale + ` +
+        `${orphans.length} orphan bubble(s) (server=${messages.length} ` +
+        `inflight=${inflight?.length || 0})`,
+      );
+      // Cleanup pairs: map entry (if tracked) + DOM node. renderedMessages.remove
+      // is a no-op when the id isn't in the map (e.g. a bubble injected directly
+      // into DOM by a buggy path — still need the DOM cleanup).
+      for (const { id, el } of stale) {
+        renderedMessages.remove(id);
+        if (el.isConnected) el.remove();
+      }
+      for (const el of orphans) el.remove();
     }
   }
   // Register pagination state AFTER messages land so the scroll listener

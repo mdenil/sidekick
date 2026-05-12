@@ -801,7 +801,14 @@ function renderRow(s: any, activeId: string): HTMLLIElement {
 
   body.appendChild(snippet);
   body.appendChild(meta);
-  body.onclick = (ev: MouseEvent) => {
+  // Click handler lives on the whole `li` so the entire highlighted
+  // area (li.active border + background) is responsive — clicks on the
+  // 10px×12px padding around .sess-row used to fall through, leaving
+  // a visible-but-unclickable rim around each row (Jonathan, 2026-05-12).
+  // menuBtn already stopPropagation's its own click, and openMenu()
+  // does the same for the menu container, so this doesn't fire on
+  // menu interactions.
+  li.onclick = (ev: MouseEvent) => {
     // Modifier matrix:
     //   shift           → range select from anchor to this id
     //                     (replaces current selection)
@@ -853,7 +860,7 @@ function renderRow(s: any, activeId: string): HTMLLIElement {
   // so Mac users get the same behavior Linux/Windows users get.
   // Plain right-click (no ctrlKey) is left alone — the browser
   // context menu still appears as expected.
-  body.addEventListener('contextmenu', (ev: MouseEvent) => {
+  li.addEventListener('contextmenu', (ev: MouseEvent) => {
     if (!ev.ctrlKey) return;
     ev.preventDefault();
     toggleSelection(s.id);
@@ -894,6 +901,11 @@ function openMenu(li: HTMLLIElement, s: any) {
   menu.appendChild(infoBtn);
   menu.appendChild(renameBtn);
   menu.appendChild(deleteBtn);
+  // Swallow clicks on the menu container itself (e.g. padding between
+  // buttons). The button onclick handlers all stopPropagation, but a
+  // click on empty menu space would otherwise bubble to li.onclick and
+  // trigger a session resume — surprising mid-action.
+  menu.addEventListener('click', (e) => e.stopPropagation());
   li.appendChild(menu);
 
   // Close on outside click (once).
