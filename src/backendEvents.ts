@@ -24,6 +24,7 @@ import { log } from './util/log.ts';
 import * as chat from './chat.ts';
 import * as renderedMessages from './renderedMessages.ts';
 import * as sessionDrawer from './sessionDrawer.ts';
+import * as badge from './notifications/badge.ts';
 
 /** Push notification handler — cron output, /background results,
  *  scheduled reminders. Backends that support out-of-band push (today:
@@ -34,11 +35,15 @@ import * as sessionDrawer from './sessionDrawer.ts';
  *  Push API / APNS / Web Push integration ships in Phase 3 (see
  *  src/notifications/ + proxy/sidekick/notifications/). */
 export function handleNotification({ chatId, kind, content }: any): void {
-  // Off-screen chat — drop for v1. The drawer doesn't yet have an
-  // unread-badge surface; refresh on switch will pick up the message
-  // via the next listSessions / resumeSession round-trip.
+  // Off-screen chat — bump the app-icon badge so the user notices
+  // there's a new event waiting in another chat. clearUnread fires
+  // from sessionDrawer.setViewed when they switch in. The system
+  // notification (OS-level) is dispatched separately by the proxy
+  // (proxy/sidekick/notifications/dispatch.ts); this is the in-app
+  // counterpart for badge state.
   if (chatId && chatId !== sessionDrawer.getViewed()) {
-    log(`notification (off-screen) chat=${chatId} kind=${kind}`);
+    badge.incrementUnread(chatId);
+    log(`notification (off-screen) chat=${chatId} kind=${kind} — badge++`);
     return;
   }
   const label = kind ? `notification — ${kind}` : 'notification';

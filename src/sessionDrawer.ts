@@ -24,6 +24,7 @@ import { parseQuery, applyFilter } from './sessionFilter.ts';
 import { getFilter as getStoredFilter, putFilter as putStoredFilter, clearFilter as clearStoredFilter } from './util/filterStore.ts';
 import { deleteSelected as bulkDeleteSelected } from './multiSelect.ts';
 import { markRecentlyDeleted, isRecentlyDeleted, recentlyDeletedSize } from './sessionOps.ts';
+import * as badge from './notifications/badge.ts';
 
 let onResumeCb: ((id: string, messages: any[], pagination?: { firstId: number | null; hasMore: boolean }, inflight?: any[]) => void) | null = null;
 
@@ -422,6 +423,9 @@ let optimisticActiveId: string | null = null;
 let viewedSessionId: string | null = null;
 export function setViewed(id: string | null) {
   viewedSessionId = id;
+  // Switching INTO a chat is the canonical "user has now seen this"
+  // signal — clear its unread badge.
+  if (id) badge.clearUnread(id);
 }
 export function getViewed(): string | null { return viewedSessionId; }
 

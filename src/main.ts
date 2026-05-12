@@ -38,6 +38,7 @@ import {
   NO_REPLY_RE,
 } from './sessionResume.ts';
 import { initNotifications } from './notifications/index.ts';
+import * as badge from './notifications/badge.ts';
 import { fetchWithTimeout, TimeoutError } from './util/fetchWithTimeout.ts';
 import * as status from './status.ts';
 import * as settings from './settings.ts';
@@ -3985,6 +3986,12 @@ function handleReplyFinal({ replyId, text, content = [], conversation, messageId
   // fired regardless.
   const viewed = sessionDrawer.getViewed();
   if (viewed && conversation && conversation !== viewed) {
+    // Off-screen reply — bump the app-icon badge so the user notices.
+    // Mirrors backendEvents.handleNotification's off-screen branch.
+    // Skip on isReplay (re-rendering an already-seen reply during
+    // resume) — replay means we're catching the client up to known
+    // state, not announcing a new arrival.
+    if (!isReplay) badge.incrementUnread(conversation);
     return;
   }
 
