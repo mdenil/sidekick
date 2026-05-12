@@ -110,7 +110,8 @@ CREATE TABLE sessions (
     user_id TEXT,
     parent_session_id TEXT,
     started_at REAL NOT NULL,
-    title TEXT
+    title TEXT,
+    system_prompt TEXT
 );
 CREATE INDEX idx_sessions_source ON sessions(source);
 
@@ -145,12 +146,13 @@ def state_db(tmp_path):
 def _insert_session(
     db: Path, sid: str, source: str, user_id: str, started_at: float,
     title: str | None = None, parent: str | None = None,
+    system_prompt: str | None = None,
 ) -> None:
     conn = sqlite3.connect(db)
     conn.execute(
         "INSERT INTO sessions (id, source, user_id, parent_session_id, "
-        "started_at, title) VALUES (?, ?, ?, ?, ?, ?)",
-        (sid, source, user_id, parent, started_at, title),
+        "started_at, title, system_prompt) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (sid, source, user_id, parent, started_at, title, system_prompt),
     )
     conn.commit()
     conn.close()
@@ -359,12 +361,34 @@ def test_drawer_includes_compression_forks_via_user_id(plugin, state_db):
     assert last_active == 2001.0
 
 
+_SIDEKICK_PROMPT = (
+    "# SOUL.md - Who You Are (Clawdian)\n\n"
+    "## Core Truths\n\n"
+    "**Be concise by default.** Skip preamble.\n\n"
+    "## Voice\n\n"
+    "Direct. Honest about limits. Push back on plausible-sounding "
+    "ideas that don't have evidence behind them. Distinguish what "
+    "you know from what you're inferring."
+)
+assert len(_SIDEKICK_PROMPT) >= 200, "fixture must exceed prefix-match threshold"
+_HERMES_DEFAULT_PROMPT = (
+    "You are Hermes Agent, an intelligent AI assistant created by "
+    "Nous Research. You help with various tasks including coding, "
+    "analysis, research, and creative work. You have access to tools "
+    "for file system, web search, and more."
+)
+assert len(_HERMES_DEFAULT_PROMPT) >= 200, "fixture must exceed threshold for negative test"
+
+
 def test_drawer_rolls_up_compacted_null_user_id_child(plugin, state_db):
     """Field bug 2026-05-12 (Jonathan, neck-strain chat): hermes
     compaction creates child sessions with user_id=NULL, breaking
     the upstream contract that "rotated sessions inherit user_id."
     The recursive CTE walks parent_session_id chains so the child's
-    messages get rolled up under the root's user_id.
+    messages get rolled up under the root's user_id — BUT only if
+    the child's system_prompt matches the parent's (compaction
+    continuations inherit the prompt; delegate sub-tasks use the
+    default hermes-agent prompt and are excluded).
 
     Pre-CTE: drawer query filters WHERE user_id IS NOT NULL → child
     invisible → mcount=2 only (root's messages). Drawer-list shows
@@ -372,12 +396,16 @@ def test_drawer_rolls_up_compacted_null_user_id_child(plugin, state_db):
 
     Post-CTE: child resolves to root_user_id via parent chain →
     mcount=5 (both root + child). Drawer-list shows the full chat."""
-    _insert_session(state_db, "root", "sidekick", "u", 1000.0, title="root")
+    _insert_session(state_db, "root", "sidekick", "u", 1000.0, title="root",
+                    system_prompt=_SIDEKICK_PROMPT)
     _insert_message(state_db, "root", "user", "before compaction", 1001.0)
     _insert_message(state_db, "root", "assistant", "reply 1", 1002.0)
-    # Compacted child — user_id IS NULL (the broken upstream invariant).
+    # Compacted child — user_id IS NULL (the broken upstream
+    # invariant) but system_prompt MATCHES the root (compaction
+    # continuation inherits the prompt).
     _insert_session(state_db, "compacted", "sidekick", None, 2000.0,
-                    title="root #2", parent="root")
+                    title="root #2", parent="root",
+                    system_prompt=_SIDEKICK_PROMPT)
     _insert_message(state_db, "compacted", "user", "post compaction", 2001.0)
     _insert_message(state_db, "compacted", "assistant", "reply 2", 2002.0)
     _insert_message(state_db, "compacted", "assistant", "reply 3", 2003.0)
@@ -393,16 +421,52 @@ def test_drawer_rolls_up_compacted_null_user_id_child(plugin, state_db):
     assert last_active == 2003.0
 
 
+def test_drawer_excludes_delegate_subtask_with_different_prompt(plugin, state_db):
+    """The system_prompt gate prevents over-inclusion: delegate
+    sub-task sessions (hermes-agent uses these when the agent calls
+    `delegate_tool` for sub-work) ALSO have parent_session_id and
+    user_id=NULL, but use the DEFAULT hermes-agent system_prompt
+    instead of inheriting the parent's. Their messages must NOT
+    roll up into the drawer's user-facing message_count.
+
+    Field signal: Jonathan's neck-strain chat had 6 delegate sub-
+    tasks chained off the root, totaling 329 messages. Without the
+    prompt gate the drawer showed message_count=486 (139 root +
+    329 delegate + 18 real continuation) instead of the correct
+    157 (139 + 18)."""
+    _insert_session(state_db, "root", "sidekick", "u", 1000.0, title="root",
+                    system_prompt=_SIDEKICK_PROMPT)
+    _insert_message(state_db, "root", "user", "user msg", 1001.0)
+    _insert_message(state_db, "root", "assistant", "reply", 1002.0)
+    # Delegate sub-task — parent=root, user_id=NULL, but DIFFERENT
+    # system_prompt (default hermes-agent persona). Should NOT roll up.
+    _insert_session(state_db, "delegate", "sidekick", None, 2000.0,
+                    parent="root", system_prompt=_HERMES_DEFAULT_PROMPT)
+    for i in range(10):
+        _insert_message(state_db, "delegate", "assistant", f"delegate msg {i}",
+                        2001.0 + i)
+
+    adapter = _make_adapter(plugin, state_db)
+    rows = adapter._summaries_by_user_id(("sidekick",), 50)
+    assert len(rows) == 1
+    _chat_id, _src, _ctype, _title, mcount, _turn, _tool, _last, _created, _first = rows[0]
+    assert mcount == 2, (
+        f"delegate sub-task messages must not be counted; expected 2 "
+        f"(root only), got {mcount}"
+    )
+
+
 def test_history_walks_compacted_null_user_id_child(plugin, state_db):
     """Twin of the drawer test for `_items_by_user_id`: transcript
     fetch must return messages from BOTH the root and compacted
-    child sessions when the child has user_id=NULL. Pre-CTE: only
-    root's messages appear. Post-CTE: both."""
-    _insert_session(state_db, "root", "sidekick", "u", 1000.0)
+    child sessions when the child has user_id=NULL AND a matching
+    system_prompt. Pre-CTE: only root's messages appear. Post-CTE: both."""
+    _insert_session(state_db, "root", "sidekick", "u", 1000.0,
+                    system_prompt=_SIDEKICK_PROMPT)
     _insert_message(state_db, "root", "user", "root msg 1", 1001.0)
     _insert_message(state_db, "root", "assistant", "root reply 1", 1002.0)
     _insert_session(state_db, "compacted", "sidekick", None, 2000.0,
-                    parent="root")
+                    parent="root", system_prompt=_SIDEKICK_PROMPT)
     _insert_message(state_db, "compacted", "user", "child msg 1", 2001.0)
     _insert_message(state_db, "compacted", "assistant", "child reply 1", 2002.0)
 
@@ -415,14 +479,40 @@ def test_history_walks_compacted_null_user_id_child(plugin, state_db):
     assert contents == ["root msg 1", "root reply 1", "child msg 1", "child reply 1"]
 
 
+def test_history_excludes_delegate_subtask_messages(plugin, state_db):
+    """Same as the drawer test, for the history-fetch path: a
+    delegate sub-task with a different system_prompt is reachable
+    via parent_session_id but its messages are NOT user-visible
+    transcript content. The CTE's system_prompt gate excludes them."""
+    _insert_session(state_db, "root", "sidekick", "u", 1000.0,
+                    system_prompt=_SIDEKICK_PROMPT)
+    _insert_message(state_db, "root", "user", "user msg", 1001.0)
+    _insert_session(state_db, "delegate", "sidekick", None, 2000.0,
+                    parent="root", system_prompt=_HERMES_DEFAULT_PROMPT)
+    _insert_message(state_db, "delegate", "assistant", "delegate work", 2001.0)
+
+    adapter = _make_adapter(plugin, state_db)
+    result = adapter._items_by_user_id("u", "sidekick", 200, None)
+    assert result is not None
+    items, _first_id, _has_more = result
+    contents = [it["content"] for it in items]
+    assert contents == ["user msg"], (
+        f"delegate messages must be excluded from transcript; got {contents}"
+    )
+
+
 def test_history_walks_multi_level_compaction_chain(plugin, state_db):
     """Compaction can rotate multiple times. The CTE must walk the
-    full parent_session_id chain, not just one level."""
-    _insert_session(state_db, "root", "sidekick", "u", 1000.0)
+    full parent_session_id chain, not just one level. All links in
+    the chain must carry a matching system_prompt to count."""
+    _insert_session(state_db, "root", "sidekick", "u", 1000.0,
+                    system_prompt=_SIDEKICK_PROMPT)
     _insert_message(state_db, "root", "user", "root msg", 1001.0)
-    _insert_session(state_db, "child1", "sidekick", None, 2000.0, parent="root")
+    _insert_session(state_db, "child1", "sidekick", None, 2000.0, parent="root",
+                    system_prompt=_SIDEKICK_PROMPT)
     _insert_message(state_db, "child1", "user", "child1 msg", 2001.0)
-    _insert_session(state_db, "child2", "sidekick", None, 3000.0, parent="child1")
+    _insert_session(state_db, "child2", "sidekick", None, 3000.0, parent="child1",
+                    system_prompt=_SIDEKICK_PROMPT)
     _insert_message(state_db, "child2", "user", "child2 msg", 3001.0)
 
     adapter = _make_adapter(plugin, state_db)
@@ -431,6 +521,41 @@ def test_history_walks_multi_level_compaction_chain(plugin, state_db):
     items, _first_id, _has_more = result
     contents = [it["content"] for it in items]
     assert contents == ["root msg", "child1 msg", "child2 msg"]
+
+
+def test_drawer_accepts_compacted_child_with_appended_prompt(plugin, state_db):
+    """Real hermes compaction APPENDS context summary to the
+    inherited system_prompt rather than copying byte-for-byte:
+
+      Root system_prompt:        "# SOUL.md - ... [22532 chars]"
+      Compacted child prompt:    "# SOUL.md - ... [22532 chars][101 chars of context]"
+
+    The CTE must roll up children whose system_prompt STARTS WITH
+    the root's, not just exact-match (which would miss the
+    real-world compaction continuation Jonathan saw 2026-05-12)."""
+    _insert_session(state_db, "root", "sidekick", "u", 1000.0,
+                    system_prompt=_SIDEKICK_PROMPT)
+    _insert_message(state_db, "root", "user", "before", 1001.0)
+    _insert_session(state_db, "compacted", "sidekick", None, 2000.0,
+                    parent="root",
+                    system_prompt=_SIDEKICK_PROMPT + "\n\n[CONTEXT SUMMARY: ...]")
+    _insert_message(state_db, "compacted", "user", "after", 2001.0)
+    _insert_message(state_db, "compacted", "assistant", "ok", 2002.0)
+
+    adapter = _make_adapter(plugin, state_db)
+    rows = adapter._summaries_by_user_id(("sidekick",), 50)
+    assert len(rows) == 1
+    _chat_id, _src, _ctype, _title, mcount, _turn, _tool, _last, _created, _first = rows[0]
+    assert mcount == 3, (
+        f"compaction child with appended prompt must be rolled up "
+        f"(prefix-match); got mcount={mcount}"
+    )
+
+    # Same expectation for history fetch.
+    result = adapter._items_by_user_id("u", "sidekick", 200, None)
+    assert result is not None
+    items, _first_id, _has_more = result
+    assert [it["content"] for it in items] == ["before", "after", "ok"]
 
 
 def test_index_migration_idempotent(plugin, state_db):

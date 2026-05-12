@@ -1508,16 +1508,28 @@ class SidekickAdapter(BasePlatformAdapter):
         #   * latest session's title (ORDER BY started_at DESC LIMIT 1)
         #   * very first user message ever (ORDER BY timestamp ASC LIMIT 1
         #     across all sessions that resolve to this user_id+source)
+        # The system_prompt match in the recursive step distinguishes
+        # compaction continuations (which INHERIT the parent's
+        # sidekick-specific system_prompt) from delegate sub-task
+        # sessions (which use hermes-agent's DEFAULT system_prompt
+        # and just happen to share parent_session_id). Without this
+        # gate the CTE over-includes — Jonathan's neck-strain chat
+        # had 6 delegate sub-tasks chained off the root, inflating
+        # the rolled-up message_count from a correct 157 (139 root +
+        # 18 continuation) to 486 (incl. 329 sub-task messages).
         sql = f"""
-            WITH RECURSIVE session_root(id, root_user_id, root_source) AS (
-                SELECT id, user_id, source
+            WITH RECURSIVE session_root(id, root_user_id, root_source, root_system_prompt) AS (
+                SELECT id, user_id, source, system_prompt
                   FROM sessions
                  WHERE user_id IS NOT NULL
                 UNION ALL
-                SELECT s.id, sr.root_user_id, sr.root_source
+                SELECT s.id, sr.root_user_id, sr.root_source, sr.root_system_prompt
                   FROM sessions s
                   JOIN session_root sr ON s.parent_session_id = sr.id
                  WHERE s.user_id IS NULL
+                   AND LENGTH(COALESCE(sr.root_system_prompt, '')) >= 200
+                   AND SUBSTR(COALESCE(s.system_prompt, ''), 1, 200)
+                       = SUBSTR(sr.root_system_prompt, 1, 200)
             )
             SELECT
                 sr.root_user_id AS user_id,
@@ -1641,14 +1653,17 @@ class SidekickAdapter(BasePlatformAdapter):
         # to a compaction-rotated child are invisible (Jonathan
         # field bug 2026-05-12).
         sql = """
-            WITH RECURSIVE session_root(id) AS (
-                SELECT id FROM sessions
+            WITH RECURSIVE session_root(id, root_system_prompt) AS (
+                SELECT id, system_prompt FROM sessions
                  WHERE user_id = ? AND source = ?
                 UNION ALL
-                SELECT s.id
+                SELECT s.id, sr.root_system_prompt
                   FROM sessions s
                   JOIN session_root sr ON s.parent_session_id = sr.id
                  WHERE s.user_id IS NULL
+                   AND LENGTH(COALESCE(sr.root_system_prompt, '')) >= 200
+                   AND SUBSTR(COALESCE(s.system_prompt, ''), 1, 200)
+                       = SUBSTR(sr.root_system_prompt, 1, 200)
             )
             SELECT m.id, m.role, m.content, m.tool_name, m.timestamp,
                    sml.sidekick_id
@@ -1744,14 +1759,17 @@ class SidekickAdapter(BasePlatformAdapter):
                     # consuming disk + occasionally surfacing
                     # ghost rows.
                     rows = conn.execute("""
-                        WITH RECURSIVE session_root(id) AS (
-                            SELECT id FROM sessions
+                        WITH RECURSIVE session_root(id, root_system_prompt) AS (
+                            SELECT id, system_prompt FROM sessions
                              WHERE user_id = ? AND source = ?
                             UNION ALL
-                            SELECT s.id
+                            SELECT s.id, sr.root_system_prompt
                               FROM sessions s
                               JOIN session_root sr ON s.parent_session_id = sr.id
                              WHERE s.user_id IS NULL
+                               AND LENGTH(COALESCE(sr.root_system_prompt, '')) >= 200
+                               AND SUBSTR(COALESCE(s.system_prompt, ''), 1, 200)
+                                   = SUBSTR(sr.root_system_prompt, 1, 200)
                         )
                         SELECT id FROM session_root
                     """, (chat_id, source)).fetchall()
