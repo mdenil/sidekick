@@ -379,6 +379,25 @@ export async function startRig(opts: { mode?: FakeMode } = {}): Promise<ProxyRig
         req, res, decodeURIComponent(setMatch[1]),
       );
     }
+    // Notifications routes — tests opt in by calling notifications.init()
+    // explicitly; routes return 503 until then (matching production
+    // VAPID-unconfigured behaviour).
+    if (method === 'GET' && path === '/api/sidekick/notifications/vapid-public-key') {
+      const r = await import('../notifications/routes.ts');
+      return r.handleSidekickVapidPublicKey(req, res);
+    }
+    if (method === 'POST' && path === '/api/sidekick/notifications/subscribe') {
+      const r = await import('../notifications/routes.ts');
+      return r.handleSidekickSubscribe(req, res);
+    }
+    if (method === 'POST' && path === '/api/sidekick/notifications/unsubscribe') {
+      const r = await import('../notifications/routes.ts');
+      return r.handleSidekickUnsubscribe(req, res);
+    }
+    if (method === 'POST' && path === '/api/sidekick/notifications/test') {
+      const r = await import('../notifications/routes.ts');
+      return r.handleSidekickTest(req, res);
+    }
     res.writeHead(404, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ error: 'no route' }));
   });
@@ -403,6 +422,13 @@ export async function startRig(opts: { mode?: FakeMode } = {}): Promise<ProxyRig
     proxyUrl: `http://127.0.0.1:${proxyAddr.port}`,
     async stop() {
       stream.__resetForTest();
+      // Reset notifications too in case a test in this rig initialized
+      // them — leaving the singleton primed would leak state into the
+      // next rig (same process, fresh harness).
+      try {
+        const n = await import('../notifications/index.ts');
+        n.__resetForTest();
+      } catch { /* notifications module not loaded in this rig — fine */ }
       await new Promise<void>((resolve) => proxyServer.close(() => resolve()));
       await fakeAgent.stop();
     },

@@ -75,3 +75,13 @@ export function getVapidConfig(): VapidConfig | null {
 export function isConfigured(): boolean {
   return vapid !== null;
 }
+
+/** Test-only seam: reset the module so init() runs fresh. Production
+ *  never calls this. Mirrors stream.ts's __resetForTest — needed
+ *  because init() is idempotent (the `ready` flag short-circuits on
+ *  the second call) and tests want to set up the module with a
+ *  different VAPID + dataDir per case. */
+export function __resetForTest(): void {
+  vapid = null;
+  ready = false;
+}
