@@ -255,10 +255,17 @@ export function replaySessionMessages(
   if (saved && !targetMessageId) {
     const transcriptEl2 = document.getElementById('transcript');
     if (transcriptEl2) {
+      const before = transcriptEl2.scrollTop;
+      const sh = transcriptEl2.scrollHeight;
+      const ch = transcriptEl2.clientHeight;
       transcriptEl2.scrollTop = saved.scrollTop;
-      log(`[chat-resume] restored scrollTop=${saved.scrollTop}`);
+      const after = transcriptEl2.scrollTop;
+      log(`[chat-resume] restore scrollTop wanted=${saved.scrollTop} before=${before} after=${after} sh=${sh} ch=${ch} maxTop=${sh - ch}`);
+    } else {
+      log(`[chat-resume] restore: transcriptEl missing`);
     }
   } else if (!targetMessageId) {
+    log(`[chat-resume] no saved position for ${id.slice(-12)} → forceScrollToBottom`);
     chat.forceScrollToBottom();
   }
 }

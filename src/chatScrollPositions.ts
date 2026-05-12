@@ -60,10 +60,13 @@ export async function hydrateScrollPositions(): Promise<void> {
         for (const r of rows) {
           if (r?.chatId) cache.set(r.chatId, r);
         }
-        diag(`[chat-scroll] hydrated ${rows.length} saved positions from IDB`);
+        diag(`[chat-scroll] hydrate ok: ${rows.length} positions from IDB`);
         resolve();
       };
-      req.onerror = () => resolve();
+      req.onerror = () => {
+        diag(`[chat-scroll] hydrate getAll() onerror`);
+        resolve();
+      };
     });
     db.close();
   } catch (e: any) {
@@ -74,18 +77,35 @@ export async function hydrateScrollPositions(): Promise<void> {
 /** Synchronously read the saved position for `chatId`, or null on
  *  cache miss. Caller treats null as "scroll to bottom." */
 export function getScrollPosition(chatId: string): SavedScrollPosition | null {
-  if (!chatId) return null;
-  return cache.get(chatId) || null;
+  if (!chatId) {
+    diag(`[chat-scroll] get: empty chatId → null`);
+    return null;
+  }
+  const v = cache.get(chatId);
+  diag(`[chat-scroll] get(${chatId.slice(-12)}) → ${v ? `scrollTop=${v.scrollTop} age=${Math.round((Date.now() - v.savedAt) / 1000)}s` : 'MISS'}`);
+  return v || null;
 }
 
 /** Update the cached position for `chatId`. Writes through to IDB
  *  on a per-chat 500ms debounce — high-frequency scroll events
  *  during a streaming reply collapse to one disk write. */
 export function saveScrollPosition(chatId: string, scrollTop: number): void {
-  if (!chatId) return;
+  if (!chatId) {
+    diag(`[chat-scroll] save: empty chatId, skip`);
+    return;
+  }
+  const floored = Math.max(0, Math.floor(scrollTop));
+  // Log only when scrollTop changes meaningfully from the last save —
+  // streaming-reply autoscroll fires many events with identical values
+  // (already at bottom, scrollHeight grew but scrollTop pinned). Cuts
+  // signal/noise without losing the "user scrolled to X" event.
+  const prev = cache.get(chatId);
+  if (!prev || Math.abs(prev.scrollTop - floored) >= 50) {
+    diag(`[chat-scroll] save(${chatId.slice(-12)}) scrollTop=${floored}${prev ? ` (was ${prev.scrollTop})` : ' [new]'}`);
+  }
   const record: SavedScrollPosition = {
     chatId,
-    scrollTop: Math.max(0, Math.floor(scrollTop)),
+    scrollTop: floored,
     savedAt: Date.now(),
   };
   cache.set(chatId, record);

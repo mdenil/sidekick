@@ -185,7 +185,10 @@ export async function init(el: HTMLElement | null): Promise<boolean> {
   // cache so sessionResume can branch synchronously on switch-in
   // (restore vs scroll-to-bottom). Best-effort — failures just mean
   // every chat takes the scroll-to-bottom fallback path.
-  void hydrateScrollPositions();
+  const t0 = performance.now();
+  hydrateScrollPositions().then(() => {
+    diag(`[chat-scroll] hydrate finished ${Math.round(performance.now() - t0)}ms after chat.init`);
+  });
 
   // Jump-to-bottom button wiring. The button lives outside the transcript
   // scroller (as a sibling inside .chat-column) so it stays fixed while
@@ -213,6 +216,12 @@ export async function init(el: HTMLElement | null): Promise<boolean> {
       // in the helper keeps streaming-reply cadence cheap.
       if (transcriptEl && viewedSessionIdRef) {
         saveScrollPosition(viewedSessionIdRef, transcriptEl.scrollTop);
+      } else if (transcriptEl && !viewedSessionIdRef) {
+        // Diagnostic: a scroll fired but no viewedSessionIdRef means
+        // either we're in the boot window before trackViewedSession or
+        // chat.clear() ran. Log so we can correlate timing if saves
+        // are missing for a chat.
+        diag(`[chat-scroll] scroll event but no viewedSessionIdRef (scrollTop=${transcriptEl.scrollTop})`);
       }
       if (!userInitiated) return;
       const wasPinned = pinnedToBottom;
