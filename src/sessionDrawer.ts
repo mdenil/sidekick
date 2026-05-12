@@ -1227,6 +1227,20 @@ async function resume(id: string) {
       // clicks an empty chat for the SECOND time and the previous
       // chat's transcript leaks through (2026-04-29 Jonathan repro).
       if (cacheRendered && cached && cached.messages.length === messages.length) {
+        // Inflight envelopes are independent of state.db rows — they
+        // represent in-flight turn state the proxy holds in memory.
+        // Even if message counts match, mid-turn bubbles (user_message
+        // echo + reply_deltas) live ONLY in `inflight` until reply_final
+        // promotes them. Skipping replay drops them on the floor.
+        // Field bug 2026-05-12 (chat 99298465): switch-back hits the
+        // cache-match path; without this replay the turn-3 user bubble
+        // vanishes because chat.clear() during cache-render wiped it
+        // and only the inflight echo can put it back.
+        const inflight = Array.isArray(result.inflight) ? result.inflight : [];
+        if (inflight.length > 0) {
+          log(`sessionDrawer: cache-match — replaying ${inflight.length} inflight envelope(s) for ${id}`);
+          backend.replayInflight?.(id, inflight);
+        }
         t?.trace('server-render-skip-cache-match');
         return;
       }
