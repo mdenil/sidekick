@@ -999,14 +999,25 @@ export const proxyClientAdapter = {
    *  wipe the replayed bubbles). Idempotent via envelope stable ids
    *  — if the same envelope ALSO arrives via live SSE during this
    *  window, renderedMessages.upsert + activityRow.upsert collapse
-   *  it to a single bubble. */
+   *  it to a single bubble.
+   *
+   *  Each envelope is stamped `_replay: true` before dispatch so the
+   *  handlers route to their replay-aware branches (suppress chime,
+   *  badge increment, TTS playback, lastMessageAt bump, etc.) — same
+   *  contract the SSE ring replay already uses for fresh-subscriber
+   *  catch-up. Pre-2026-05-12 the inflight replay omitted this flag,
+   *  so a chat whose inflight cache grew large (cron-firing chats
+   *  where each new envelope cancels the 30s pendingDrop and the
+   *  cache accumulates reply_finals over many turns — Jonathan field
+   *  bug 2026-05-12, chat 99298465 chimed on every click) re-fired
+   *  the receive chime on every switch-in. */
   replayInflight(chatId: string, envelopes: any[]): void {
     if (!envelopes || envelopes.length === 0) return;
     diag(`proxy-client: replaying ${envelopes.length} inflight envelopes for ${chatId}`);
     for (const env of envelopes) {
       const t = typeof env?.type === 'string' ? env.type : '';
       if (!t) continue;
-      handleEnvelope(t, env, chatId);
+      handleEnvelope(t, { ...env, _replay: true }, chatId);
     }
   },
 
