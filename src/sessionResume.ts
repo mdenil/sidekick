@@ -264,22 +264,29 @@ export function replaySessionMessages(
     suppressSavesFor(500);
     const transcriptEl2 = document.getElementById('transcript');
     if (transcriptEl2) {
+      // scrollTo({behavior:'instant'}) bypasses CSS scroll-behavior:
+      // smooth on the transcript. A raw `scrollTop = N` assignment on
+      // a smooth-CSS element starts a smooth animation FROM current
+      // toward N; reading scrollTop synchronously after the assignment
+      // returns the in-progress animation position (still 0), which
+      // looked like the assignment was being ignored entirely
+      // (Jonathan dev log 2026-05-12). 'instant' jumps with no
+      // animation — what we want for "return to where I was."
       const doRestore = (phase: string) => {
         if (!transcriptEl2) return;
         const before = transcriptEl2.scrollTop;
         const sh = transcriptEl2.scrollHeight;
         const ch = transcriptEl2.clientHeight;
-        transcriptEl2.scrollTop = saved.scrollTop;
+        transcriptEl2.scrollTo({ top: saved.scrollTop, behavior: 'instant' as ScrollBehavior });
         const after = transcriptEl2.scrollTop;
         log(`[chat-resume] restore (${phase}) wanted=${saved.scrollTop} before=${before} after=${after} sh=${sh} ch=${ch} maxTop=${sh - ch}`);
       };
       doRestore('sync');
-      requestAnimationFrame(() => {
-        doRestore('rAF');
-        // One more rAF for the iOS WebKit class of paint-deferred
-        // races (same workaround forceScrollToBottom uses).
-        requestAnimationFrame(() => doRestore('rAF+1'));
-      });
+      // One rAF retry — at rAF time, post-render lazy content (image
+      // natural-size resolution, inflight envelope replays) may have
+      // grown scrollHeight enough that an earlier clamped value now
+      // fits. Trace confirmed: sync had sh=2270, rAF+1 had sh=6909.
+      requestAnimationFrame(() => doRestore('rAF'));
     } else {
       log(`[chat-resume] restore: transcriptEl missing`);
     }
