@@ -184,36 +184,47 @@ function hasActiveSubFor(chatId: string): boolean {
  *  caller passes 0 when no prior broadcast for the chat exists, which we
  *  treat as "infinitely idle" (push). */
 function maybeDispatchPush(env: Envelope, prevBroadcastAt: number): void {
-  if (!isNotificationsConfigured()) return;
-  if (!isPushEligible(env as Record<string, any>)) return;
-  const chatId = typeof env.chat_id === 'string' ? env.chat_id : '';
-  if (!chatId) return;
-  // Per-chat mute — user explicitly silenced this chat's pushes via the
-  // sidebar 3-dots menu. Checked AFTER type/should_push eligibility so
-  // the mute decision is independent of envelope-class (mute everything
-  // from this chat, not just replies).
-  if (isMuted(chatId)) return;
-  // Quiet hours — global override, respects the urgent flag. Envelopes
-  // can opt out with `urgent: true` (approval prompts, future critical
-  // alerts). Default = non-urgent, so a normal reply during 22:00-07:00
-  // sits silent until the user opens the app.
-  if (inQuietHours() && (env as any).urgent !== true) return;
-  // Visibility-state gate (the most direct user-engagement signal,
-  // wins over the legacy SSE+idle fallback below). PWA reports
-  // visibility=visible + viewed-chat=X on every document.visibilitychange
-  // and chat switch; isUserEngaged returns true when that report was
-  // within ENGAGED_WINDOW_MS (2s). If the user is actively looking,
-  // SSE delivery is enough, skip the OS push.
-  if (isUserEngaged(chatId)) return;
-  if (hasActiveSubFor(chatId)) {
-    // Subscriber attached but no recent visibility report — fall back to
-    // envelope-cadence heuristic. Quiet beyond the 30s window = likely
-    // backgrounded with iOS Safari's stale-SSE keeping the connection
-    // alive. Active within the window = user probably engaged but
-    // visibility ping hasn't fired (older PWA bundle / first envelope
-    // before any visibility event).
-    const idleMs = Date.now() - prevBroadcastAt;
-    if (idleMs < QUIET_WINDOW_MS) return;
+  // Observability: every gate decision logs a single line so the
+  // journal can answer "why didn't push fire for envelope X?" without
+  // re-reading the code. The skipReason variable is the source of
+  // truth — set at the gate that decided to suppress, logged once
+  // before return. Eligibility = "dispatch" string.
+  void prevBroadcastAt;  // legacy fallback gate removed below; param kept for ABI
+  const decide = (): { decision: string; chatId: string } => {
+    if (!isNotificationsConfigured()) return { decision: 'vapid_unconfigured', chatId: '' };
+    if (!isPushEligible(env as Record<string, any>)) {
+      return { decision: 'not_eligible', chatId: '' };
+    }
+    const cid = typeof env.chat_id === 'string' ? env.chat_id : '';
+    if (!cid) return { decision: 'missing_chat_id', chatId: '' };
+    // Per-chat mute — user explicitly silenced this chat's pushes via
+    // the sidebar 3-dots menu. Checked AFTER type/should_push so the
+    // decision is independent of envelope-class (mute everything from
+    // this chat, not just replies).
+    if (isMuted(cid)) return { decision: 'muted', chatId: cid };
+    // Quiet hours — global override, respects the urgent flag.
+    if (inQuietHours() && (env as any).urgent !== true) {
+      return { decision: 'quiet_hours', chatId: cid };
+    }
+    // Visibility-state gate — the canonical engagement signal. PWA
+    // reports visibility=visible + viewed-chat=X on every
+    // document.visibilitychange + chat switch; isUserEngaged returns
+    // true within the 2s engagement window.
+    if (isUserEngaged(cid)) return { decision: 'user_engaged', chatId: cid };
+    // 2026-05-12 update: dropped the prior `hasActiveSubFor + 30s idle`
+    // fallback that lived here. It bit during long turns where typing/
+    // tool_result envelopes streamed continuously — channel was never
+    // "idle for 30s," gate suppressed even when the user had clearly
+    // backgrounded. Trust visibility reports as the single source of
+    // truth. When visibility hasn't been reported (older PWA bundle
+    // pre-`1b2733a`), the gate falls through to dispatch, which is the
+    // correct failure mode: over-notify > under-notify.
+    return { decision: 'dispatch', chatId: cid };
+  };
+  const { decision, chatId } = decide();
+  if (decision !== 'dispatch') {
+    console.log(`[notifications] skip type=${env.type} chat=${chatId} reason=${decision}`);
+    return;
   }
   const payload = envelopeToPayload(env as Record<string, any>);
   // Bundle digest: count this push against the chat's burst window
@@ -226,12 +237,14 @@ function maybeDispatchPush(env: Envelope, prevBroadcastAt: number): void {
   // Don't await — dispatch can take seconds (push services round-trip)
   // and we don't want to block the next envelope.
   dispatchPush(payload).then((result) => {
-    if (result.dispatched > 0 || result.pruned > 0) {
-      console.log(
-        `[notifications] dispatched type=${env.type} chat=${chatId} ` +
-        `→ delivered=${result.dispatched} pruned=${result.pruned} failed=${result.failed}`,
-      );
-    }
+    // Always log the outcome — silence when result is zero across the
+    // board hid the "I dispatched but had 0 subscriptions" case from
+    // the journal and made it impossible to distinguish from the
+    // "skip — vapid unconfigured" case at trace time.
+    console.log(
+      `[notifications] dispatched type=${env.type} chat=${chatId} ` +
+      `→ delivered=${result.dispatched} pruned=${result.pruned} failed=${result.failed}`,
+    );
   }).catch((e) => {
     console.warn('[notifications] dispatchPush threw:', e?.message ?? e);
   });
