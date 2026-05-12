@@ -28,6 +28,7 @@ import {
 } from './storage.ts';
 import { dispatchPush } from './dispatch.ts';
 import { setMuted, listMutedChats } from './mutes.ts';
+import { recordVisibility } from './visibility.ts';
 
 const MAX_BODY_BYTES = 8 * 1024;  // subscriptions are tiny, generous
 
@@ -154,6 +155,43 @@ export async function handleSidekickSetMute(req: any, res: any): Promise<void> {
   } catch (e: any) {
     sendJson(res, 500, { error: 'mute_failed', detail: e?.message });
   }
+}
+
+/** POST /api/sidekick/notifications/visibility
+ *  PWA reports a visibility transition (document.visibilitychange or
+ *  a chat switch). Body:
+ *    { state: 'visible' | 'hidden', chat_id?: string }
+ *
+ *  Updates the proxy's per-chat engagement clock; the dispatch gate
+ *  consults it to suppress redundant pushes while the user is actively
+ *  viewing the chat (2s window — set 2026-05-12, responsiveness-biased).
+ *
+ *  Always returns 200 even when VAPID is unconfigured — reporting
+ *  visibility is harmless when push is disabled; ignoring the data is
+ *  fine, no need to surface 503. */
+export async function handleSidekickVisibility(req: any, res: any): Promise<void> {
+  let body: any;
+  try { body = await readJsonBody(req); }
+  catch (e: any) { return sendJson(res, 400, { error: 'bad_body', detail: e.message }); }
+  if (!body || (body.state !== 'visible' && body.state !== 'hidden')) {
+    return sendJson(res, 400, {
+      error: 'invalid_body',
+      detail: 'Expected { state: "visible" | "hidden", chat_id?: string }',
+    });
+  }
+  // chat_id is optional but, when present, must be a string. Reject
+  // wrong-type values (e.g., a numeric chat_id from a buggy client)
+  // so we surface bugs at the wire instead of silently dropping data.
+  if ('chat_id' in body && body.chat_id !== undefined
+      && typeof body.chat_id !== 'string') {
+    return sendJson(res, 400, {
+      error: 'invalid_body',
+      detail: 'chat_id, when present, must be a string',
+    });
+  }
+  const chatId = typeof body.chat_id === 'string' ? body.chat_id : '';
+  recordVisibility(body.state, chatId);
+  sendJson(res, 200, { ok: true });
 }
 
 /** POST /api/sidekick/notifications/test

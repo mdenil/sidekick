@@ -48,6 +48,7 @@ export {
   handleSidekickTest,
   handleSidekickListMutes,
   handleSidekickSetMute,
+  handleSidekickVisibility,
 } from './notifications/routes.ts';
 
 let upstream: UpstreamAgent | null = null;

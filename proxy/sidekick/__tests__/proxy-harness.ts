@@ -406,6 +406,10 @@ export async function startRig(opts: { mode?: FakeMode } = {}): Promise<ProxyRig
       const r = await import('../notifications/routes.ts');
       return r.handleSidekickSetMute(req, res);
     }
+    if (method === 'POST' && path === '/api/sidekick/notifications/visibility') {
+      const r = await import('../notifications/routes.ts');
+      return r.handleSidekickVisibility(req, res);
+    }
     res.writeHead(404, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ error: 'no route' }));
   });
@@ -441,6 +445,10 @@ export async function startRig(opts: { mode?: FakeMode } = {}): Promise<ProxyRig
         const d = await import('../notifications/dispatch.ts');
         d.__resetDispatchForTest();
       } catch { /* dispatch module not loaded in this rig — fine */ }
+      try {
+        const v = await import('../notifications/visibility.ts');
+        v.__resetVisibilityForTest();
+      } catch { /* visibility module not loaded — fine */ }
       await new Promise<void>((resolve) => proxyServer.close(() => resolve()));
       await fakeAgent.stop();
     },

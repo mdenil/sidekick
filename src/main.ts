@@ -40,6 +40,7 @@ import {
 import { initNotifications } from './notifications/index.ts';
 import * as badge from './notifications/badge.ts';
 import { loadMutes } from './notifications/mutes.ts';
+import { initVisibilityReporting } from './notifications/visibility.ts';
 import { fetchWithTimeout, TimeoutError } from './util/fetchWithTimeout.ts';
 import * as status from './status.ts';
 import * as settings from './settings.ts';
@@ -949,6 +950,12 @@ async function boot() {
   // on first open. Soft-fails on 503 / network — mutes module returns
   // false from isMuted() until next successful load.
   loadMutes().catch((e) => log('[mutes] load failed:', e?.message ?? e));
+  // Visibility reporting — the proxy's push-dispatch gate uses this
+  // to distinguish "user is foregrounded + viewing chat X" from "SSE
+  // attached but tab is backgrounded." Wire to the sessionDrawer's
+  // getViewed accessor so the reported chat_id always reflects what
+  // the user is actually looking at.
+  initVisibilityReporting(() => sessionDrawer.getViewed());
 
   // Drive the mic-button peak indicator on the composer mic (the
   // toolbar #btn-mic is gone; the composer mic is now the single

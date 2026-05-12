@@ -57,6 +57,7 @@ import {
 } from './notifications/dispatch.ts';
 import { isConfigured as isNotificationsConfigured } from './notifications/index.ts';
 import { isMuted } from './notifications/mutes.ts';
+import { isUserEngaged } from './notifications/visibility.ts';
 import type { SidekickEnvelope, UpstreamAgent } from './upstream.ts';
 
 type Envelope = Record<string, unknown> & { type: string; chat_id?: string };
@@ -187,11 +188,20 @@ function maybeDispatchPush(env: Envelope, prevBroadcastAt: number): void {
   // the mute decision is independent of envelope-class (mute everything
   // from this chat, not just replies).
   if (isMuted(chatId)) return;
+  // Visibility-state gate (the most direct user-engagement signal,
+  // wins over the legacy SSE+idle fallback below). PWA reports
+  // visibility=visible + viewed-chat=X on every document.visibilitychange
+  // and chat switch; isUserEngaged returns true when that report was
+  // within ENGAGED_WINDOW_MS (2s). If the user is actively looking,
+  // SSE delivery is enough, skip the OS push.
+  if (isUserEngaged(chatId)) return;
   if (hasActiveSubFor(chatId)) {
-    // Subscriber attached. Was the channel actively producing envelopes
-    // within the quiet window before this arrival? If so, the user is
-    // probably watching — SSE delivery is enough, skip the OS push.
-    // Quiet beyond the window = likely backgrounded; push so they notice.
+    // Subscriber attached but no recent visibility report — fall back to
+    // envelope-cadence heuristic. Quiet beyond the 30s window = likely
+    // backgrounded with iOS Safari's stale-SSE keeping the connection
+    // alive. Active within the window = user probably engaged but
+    // visibility ping hasn't fired (older PWA bundle / first envelope
+    // before any visibility event).
     const idleMs = Date.now() - prevBroadcastAt;
     if (idleMs < QUIET_WINDOW_MS) return;
   }
@@ -329,6 +339,10 @@ export function __resetForTest(): void {
     try { sub.res.end(); } catch { /* noop */ }
   }
   subscribers.clear();
+  // Clear the per-chat last-broadcast clock too — otherwise the
+  // legacy 30s-idle gate sees stale timestamps from a prior test's
+  // broadcasts and incorrectly suppresses push in the next rig.
+  lastBroadcastAt.clear();
 }
 
 export function handleSidekickStream(req, res): void {

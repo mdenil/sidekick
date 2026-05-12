@@ -168,18 +168,30 @@ test('gate: reply_final without should_push → dispatches via type allowlist fa
 
 // ── hasActiveSubFor gate ───────────────────────────────────────────
 
-test('gate: active SSE subscriber for the chat → no dispatch (SSE handles it)', async () => {
+test('gate: active SSE subscriber + visibility=visible → no dispatch (SSE handles it)', async () => {
   const g = await startGateRig();
   try {
-    // Open an SSE subscriber for chat-A. The proxy's hasActiveSubFor
-    // is what gates whether push fires — with an attached client, push
-    // should be skipped (the live tab will render the envelope itself).
+    // Open an SSE subscriber for chat-A AND report visibility=visible
+    // — together these mean "the user has the PWA foregrounded on this
+    // chat right now." Push should be skipped (live tab will render the
+    // envelope itself).
+    //
+    // (As of 2026-05-12, SSE-attached alone is no longer sufficient —
+    // the visibility-state gate is the canonical engagement signal.
+    // SSE without visibility falls to the legacy idleMs gate, which
+    // for a fresh chat with no prior broadcasts dispatches. This
+    // matches real-PWA behavior: initVisibilityReporting fires on
+    // boot before the first envelope arrives.)
     const ac = new AbortController();
     const ssePromise = fetch(`${g.rig.proxyUrl}/api/sidekick/stream?chat_id=chat-A`, {
       signal: ac.signal,
     });
-    // Wait for the SSE connection to attach as a subscriber.
     await new Promise<void>((r) => setTimeout(r, 50));
+    await fetch(`${g.rig.proxyUrl}/api/sidekick/notifications/visibility`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ state: 'visible', chat_id: 'chat-A' }),
+    });
 
     await g.pushEnv({
       type: 'reply_final',
@@ -188,7 +200,7 @@ test('gate: active SSE subscriber for the chat → no dispatch (SSE handles it)'
       should_push: true,
     });
     assert.equal(g.sent.length, 0,
-      'active SSE subscriber means user is live; SSE delivers, push is redundant');
+      'SSE + visibility=visible = engaged, push must be skipped');
 
     ac.abort();
     try { await ssePromise; } catch { /* aborted */ }
