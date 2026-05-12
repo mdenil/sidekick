@@ -99,9 +99,15 @@ describe('vadRouting', () => {
   });
 
   describe('chooseVadStrategy', () => {
-    it('iOS without override → client', () => {
+    // 2026-05-09: per-device default flipped to bridge-everywhere
+    // (see vadRouting.ts:86-93). iOS no longer auto-selects client;
+    // the override gates below remain the way to force client when
+    // the bridge's multi-signal validation isn't shipped (max-volume,
+    // bike conditions). Test expectations updated 2026-05-12 to track
+    // the new default.
+    it('iOS without override → bridge (post-2026-05-09 bridge-default)', () => {
       setEnv(IOS_UA, '');
-      assert.equal(chooseVadStrategy(), 'client');
+      assert.equal(chooseVadStrategy(), 'bridge');
     });
 
     it('Mac without override → bridge', () => {
@@ -137,7 +143,7 @@ describe('vadRouting', () => {
       setEnv(IOS_UA, '');
       installLocalStorage();
       setVadStrategyOverrideSetting('auto');
-      assert.equal(chooseVadStrategy(), 'client'); // iOS default
+      assert.equal(chooseVadStrategy(), 'bridge'); // per-route default post-2026-05-09
     });
 
     it('URL param beats localStorage (URL=bridge wins over setting=client on iOS)', () => {
@@ -197,10 +203,10 @@ describe('vadRouting', () => {
       assert.ok(src instanceof BridgeVadSource, 'expected BridgeVadSource');
     });
 
-    it('uses chooseVadStrategy() when no arg passed (iOS → client)', () => {
+    it('uses chooseVadStrategy() when no arg passed (iOS → bridge, post-2026-05-09)', () => {
       setEnv(IOS_UA, '');
       const src = makeVadSource();
-      assert.ok(src instanceof ClientSideVadSource);
+      assert.ok(src instanceof BridgeVadSource);
     });
 
     it('uses chooseVadStrategy() when no arg passed (Mac → bridge)', () => {

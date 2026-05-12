@@ -39,6 +39,10 @@ import type {
 // Document stub — dictate.ts does:
 //   document.addEventListener('selectionchange', onUserSelectionChange)
 //   if (document.activeElement !== composerInput) return
+//   document.documentElement.classList.contains('capacitor-app')
+//     (Cap platform gate added 2026-05-09 for the iOS keyboard race fix —
+//      stub the classList as a static no-Cap browser; the test never
+//      exercises the Cap branch.)
 const docListeners: Record<string, Array<(ev: any) => void>> = {};
 let activeElementRef: any = null;
 (globalThis as any).document = {
@@ -52,6 +56,11 @@ let activeElementRef: any = null;
     if (i >= 0) list.splice(i, 1);
   },
   get activeElement() { return activeElementRef; },
+  documentElement: {
+    classList: {
+      contains: (_cls: string) => false,
+    },
+  },
 };
 
 // Event stub — dictate.ts dispatches `new Event('input', { bubbles: true })`.
@@ -63,18 +72,24 @@ class FakeEvent {
 
 // ── Fake textarea ──────────────────────────────────────────────────────
 
-interface ElListeners { input: Array<(ev: any) => void>; }
 class FakeTextarea {
   value = '';
   selectionStart = 0;
   selectionEnd = 0;
-  private _listeners: ElListeners = { input: [] };
-  addEventListener(type: 'input', fn: (ev: any) => void) {
+  // Generalized listener bag — dictate.init now registers both `input`
+  // and `focus` (the latter added 2026-05-10 for the iOS keyboard race
+  // fix). Originally this was a typed `{ input: [] }` literal; that
+  // broke when `focus` came along, undefined-pushing on init.
+  private _listeners: Record<string, Array<(ev: any) => void>> = {};
+  addEventListener(type: string, fn: (ev: any) => void) {
+    if (!this._listeners[type]) this._listeners[type] = [];
     this._listeners[type].push(fn);
   }
-  removeEventListener(type: 'input', fn: (ev: any) => void) {
-    const i = this._listeners[type].indexOf(fn);
-    if (i >= 0) this._listeners[type].splice(i, 1);
+  removeEventListener(type: string, fn: (ev: any) => void) {
+    const list = this._listeners[type];
+    if (!list) return;
+    const i = list.indexOf(fn);
+    if (i >= 0) list.splice(i, 1);
   }
   setRangeText(text: string, start: number, end: number, _mode: string) {
     this.value = this.value.slice(0, start) + text + this.value.slice(end);
@@ -91,7 +106,9 @@ class FakeTextarea {
     });
   }
   dispatchEvent(ev: any) {
-    if (ev.type === 'input') for (const fn of this._listeners.input) fn(ev);
+    const list = this._listeners[ev.type];
+    if (!list) return;
+    for (const fn of list) fn(ev);
   }
   focus(_opts?: any) {
     activeElementRef = this;
