@@ -29,6 +29,18 @@ export interface SavedScrollPosition {
 const cache = new Map<string, SavedScrollPosition>();
 let hydrated = false;
 
+/** Timestamp until which saveScrollPosition() is a no-op. Set by the
+ *  restore path after replaySessionMessages so the post-render scroll
+ *  event (which fires with scrollTop=0 before the scrollTop assignment
+ *  has settled into the new content) doesn't clobber the saved value.
+ *  Lasts ~500ms — long enough to cover the rAF retry + final scroll
+ *  event from the assignment, short enough that genuine user scrolls
+ *  within the next half-second still register. */
+let suppressSavesUntil = 0;
+export function suppressSavesFor(ms: number): void {
+  suppressSavesUntil = Math.max(suppressSavesUntil, Date.now() + ms);
+}
+
 function dbOpen(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, 1);
@@ -92,6 +104,12 @@ export function getScrollPosition(chatId: string): SavedScrollPosition | null {
 export function saveScrollPosition(chatId: string, scrollTop: number): void {
   if (!chatId) {
     diag(`[chat-scroll] save: empty chatId, skip`);
+    return;
+  }
+  if (Date.now() < suppressSavesUntil) {
+    // Post-render scroll storm — don't overwrite the saved value
+    // with the transient scrollTop=0 the browser reports before the
+    // restore-rAF assignment settles.
     return;
   }
   const floored = Math.max(0, Math.floor(scrollTop));

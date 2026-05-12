@@ -37,7 +37,7 @@ import * as replyNavigator from './audio/turn-based/replyNavigator.ts';
 import * as sessionDrawer from './sessionDrawer.ts';
 import * as backend from './backend.ts';
 import { showThinking } from './streamingIndicator.ts';
-import { getScrollPosition } from './chatScrollPositions.ts';
+import { getScrollPosition, suppressSavesFor } from './chatScrollPositions.ts';
 
 /** Pattern for assistant replies the plugin signals as "no reply" (the
  *  agent chose to stay silent). We drop them from the rendered
@@ -251,16 +251,35 @@ export function replaySessionMessages(
   // Restore scroll: saved position → land where the user left off;
   // cache miss → scroll to bottom. cmdk message-hit drills
   // (targetMessageId) bypass this path entirely.
+  //
+  // Two-phase: immediate assignment + rAF retry. The just-cleared-
+  // and-repopulated transcript silently ignores scrollTop assignments
+  // for one frame on Chromium (also confirmed by autoScroll's parallel
+  // failure mode in the same log). Retrying on rAF after the next
+  // paint takes the actual scrollTop. suppressSavesFor() also blocks
+  // the post-render scroll event from clobbering the saved value with
+  // scrollTop=0.
   const saved = getScrollPosition(id);
   if (saved && !targetMessageId) {
+    suppressSavesFor(500);
     const transcriptEl2 = document.getElementById('transcript');
     if (transcriptEl2) {
-      const before = transcriptEl2.scrollTop;
-      const sh = transcriptEl2.scrollHeight;
-      const ch = transcriptEl2.clientHeight;
-      transcriptEl2.scrollTop = saved.scrollTop;
-      const after = transcriptEl2.scrollTop;
-      log(`[chat-resume] restore scrollTop wanted=${saved.scrollTop} before=${before} after=${after} sh=${sh} ch=${ch} maxTop=${sh - ch}`);
+      const doRestore = (phase: string) => {
+        if (!transcriptEl2) return;
+        const before = transcriptEl2.scrollTop;
+        const sh = transcriptEl2.scrollHeight;
+        const ch = transcriptEl2.clientHeight;
+        transcriptEl2.scrollTop = saved.scrollTop;
+        const after = transcriptEl2.scrollTop;
+        log(`[chat-resume] restore (${phase}) wanted=${saved.scrollTop} before=${before} after=${after} sh=${sh} ch=${ch} maxTop=${sh - ch}`);
+      };
+      doRestore('sync');
+      requestAnimationFrame(() => {
+        doRestore('rAF');
+        // One more rAF for the iOS WebKit class of paint-deferred
+        // races (same workaround forceScrollToBottom uses).
+        requestAnimationFrame(() => doRestore('rAF+1'));
+      });
     } else {
       log(`[chat-resume] restore: transcriptEl missing`);
     }
