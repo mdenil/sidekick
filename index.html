@@ -123,15 +123,20 @@
      via the toolbar pin button. Same playbook the left sidebar uses
      on mobile (slide-in overlay, no rail). -->
 <aside id="pin-drawer" class="pin-drawer collapsed" aria-expanded="false" aria-label="Pinned messages">
-  <!-- RAIL — always visible on desktop, hidden on mobile. Pin toggle
-       at top + ambient widget mount below it (clock/weather). -->
+  <!-- Drag handle on the LEFT edge of the right drawer (mirror of
+       the sidebar's right-edge handle). Hidden via CSS on the
+       collapsed rail and on mobile (overlay layout). -->
+  <div id="pin-drawer-resizer" role="separator" aria-orientation="vertical"
+       aria-label="Drag to resize pinned messages" tabindex="-1"></div>
+  <!-- RAIL — always visible on desktop, hidden on mobile. Just the
+       pin-toggle button. Ambient widget reverted to its legacy
+       floating bottom-right pill (Jonathan field bug 2026-05-13:
+       embedded variant rendered badly when expanded). -->
   <div class="pin-drawer-rail">
     <button id="btn-pin-drawer-rail" class="sb-icon-btn pin-rail-btn" title="Pinned messages" aria-label="Pinned messages">
       <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 10.76V4h6v6.76l3 1.74v2.5H6v-2.5z"/></svg>
       <span id="pin-drawer-count-rail" class="pin-count-banner" hidden>0</span>
     </button>
-    <!-- Ambient widget (clock + weather) mounts here on desktop. -->
-    <div id="ambient-mount" class="ambient-mount"></div>
   </div>
   <!-- CONTENT — visible when drawer is expanded. -->
   <div class="pin-drawer-content">

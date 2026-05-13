@@ -56,8 +56,7 @@ import * as sessionDrawer from './sessionDrawer.ts';
 import * as cmdkPalette from './cmdkPalette.ts';
 import { initPinDrawer } from './pins/drawer.ts';
 import { attachSliderTouchAll } from './sliderTouch.ts';
-import * as sidebarResize from './sidebarResize.ts';
-import * as sidebarSwipe from './sidebarSwipe.ts';
+import { createDrawer } from './Drawer.ts';
 import * as clickFreezeDiag from './clickFreezeDiag.ts';
 import * as remoteControl from './remoteControl.ts';
 import * as multiSelect from './multiSelect.ts';
@@ -478,82 +477,28 @@ async function boot() {
   // at the bottom. Desktop: expand state persists across reload and shifts
   // body content right (Gemini-style). Mobile: overlay-style, never
   // persisted (taps outside collapse it so the chat reclaims focus).
-  const sidebar = document.getElementById('sidebar');
-  const sbToggle = document.getElementById('sb-toggle');
-  const sbToggleMobile = document.getElementById('sb-toggle-mobile');
-  const SIDEBAR_PREF_KEY = 'sidekick.sidebar.expanded';
-  if (sidebar && sbToggle) {
-    const setExpanded = (exp: boolean) => {
-      sidebar.classList.toggle('expanded', exp);
-      sidebar.classList.toggle('collapsed', !exp);
-      sidebar.setAttribute('aria-expanded', exp ? 'true' : 'false');
-      // Body class drives mobile-only CSS: hide the toolbar hamburger when
-      // the sidebar is open so the user taps outside to close (no competing
-      // toggle on top of the overlay). On desktop, the same class shifts
-      // body.padding-left to 260px so the main content slides right.
-      document.body.classList.toggle('sidebar-expanded', exp);
-      // Take the .front z-index layer on open so swipe gestures land
-      // on the sidebar when both drawers are open. Pin drawer does the
-      // same dance in its openDrawer; mutually exclusive owner of
-      // .front gives "most-recently-opened on top" semantics.
-      if (exp) {
-        sidebar.classList.add('front');
-        document.getElementById('pin-drawer')?.classList.remove('front');
-      }
-      if (exp) sessionDrawer.refresh();  // fresh data each time we open
-      // Persist only on desktop — a mobile toggle is a transient navigation
-      // action, not a global preference, and we don't want it forcing the
-      // drawer open on the next desktop load (or vice versa).
-      if (window.innerWidth >= 700) {
-        try { localStorage.setItem(SIDEBAR_PREF_KEY, exp ? '1' : '0'); } catch {}
-      }
-    };
-    // Restore persisted state on desktop only. Mobile always starts collapsed.
-    if (window.innerWidth >= 700) {
-      try {
-        if (localStorage.getItem(SIDEBAR_PREF_KEY) === '1') setExpanded(true);
-      } catch {}
-    }
-    const toggle = (e?: Event) => {
-      if (e) e.stopPropagation();  // don't let the same click count as "outside"
-      setExpanded(!sidebar.classList.contains('expanded'));
-    };
-    sbToggle.onclick = toggle;
-    if (sbToggleMobile) sbToggleMobile.onclick = toggle;
-    // Tap outside sidebar closes it ON MOBILE ONLY. Desktop keeps it open
-    // until manual hamburger toggle. Capture phase (third arg `true`) is
-    // important: chat-bubble interactive controls (play, copy, scrubber)
-    // call e.stopPropagation() to avoid side-effects in the transcript,
-    // which was killing this listener during the bubble phase. Capture
-    // fires on the way DOWN to the target, before any child handler runs,
-    // so the collapse happens regardless. The button's own onclick still
-    // fires normally afterwards.
-    document.addEventListener('click', (e) => {
-      if (!sidebar.classList.contains('expanded')) return;
-      const target = e.target as Element | null;
-      if (sidebar.contains(target)) return;
-      if (window.innerWidth >= 700) return;   // desktop: no-op
-      // Tapping the pin-drawer toggle or anything inside the pin
-      // drawer itself is part of the right-side drawer's surface,
-      // not "outside the chat" — preserve the overlap UX where both
-      // drawers can be open at once on mobile. Without this, the
-      // sidebar would auto-close the moment the user reached for
-      // the pin-drawer toggle (Jonathan field test 2026-05-13:
-      // phase 3 of mobile-drawer-swipes regression).
-      if (target?.closest?.('#pin-drawer')) return;
-      if (target?.closest?.('#btn-pin-drawer')) return;
-      setExpanded(false);
-    }, true);
-
-    // Edge-swipe to open / drawer-swipe to close (mobile only). Shares
-    // the same setExpanded closure so persistence + body class flips
-    // route through one path; the swipe module owns the visual drag +
-    // snap animation and calls setExpanded() at the end of each gesture.
-    sidebarSwipe.init({
-      setExpanded,
-      isExpanded: () => sidebar.classList.contains('expanded'),
-    });
-  }
+  // Sidebar (left drawer) — open/close/swipe/resizer/click-outside/
+  // Escape/persistence all wired through the unified Drawer module.
+  // Same chrome the pin drawer uses; only the side + body class +
+  // resizer CSS-var differ.
+  const sidebarHandle = createDrawer({
+    id: 'sidebar',
+    side: 'left',
+    bodyClass: 'sidebar-expanded',
+    prefKey: 'sidekick.sidebar.expanded',
+    toggleIds: ['sb-toggle', 'sb-toggle-mobile'],
+    excludeSwipeWhenTargetIn: ['#pin-drawer'],
+    resizer: {
+      handleId: 'sidebar-resizer',
+      cssVar: '--sidebar-width',
+      widthPrefKey: 'sidekick.sidebarWidth',
+      defaultWidthPx: 300,
+      minWidthPx: 220,
+      maxWidthPx: 600,
+    },
+    onOpen: () => sessionDrawer.refresh(),  // fresh data on open
+  });
+  void sidebarHandle;  // currently no caller needs the handle externally
 
   // Capture-phase pointerdown logger for click-freeze diagnosis. Pure
   // observation — no behavior change. Diag-level only (off in prod).
@@ -635,10 +580,8 @@ async function boot() {
       .then(() => sessionDrawer.scheduleRefresh());
   }
 
-  // Drag handle on the sidebar's right edge. Restores the persisted
-  // width on boot + wires the pointer drag → CSS `--sidebar-width`
-  // pipeline. No-op on mobile (overlay sidebar) and on the rail.
-  sidebarResize.init();
+  // (Sidebar resizer is now handled inside the createDrawer call
+  // above — single chrome module for both drawers.)
 
   // Bulk-select panel — appears when the user shift-clicks 2+ drawer
   // rows. Reads stats from the cached session list (no extra fetch);
@@ -948,29 +891,11 @@ async function boot() {
   [imageCard, youtubeCard, spotifyCard, linksCard, markdownCard, loadingCard]
     .forEach(registerCard);
 
-  // Ambient clock + weather — mounted INSIDE the right-side pin
-  // drawer rail on desktop (symmetric with the left sidebar's rail).
-  // Click on the widget expands the pin drawer; its compact/expanded
-  // state mirrors the drawer's open state via the isExpanded ref.
-  // On mobile the rail isn't shown (CSS), so the widget renders
-  // there but isn't visible — same end-state as the prior CSS
-  // `display:none` rule.
-  const ambientMount = document.getElementById('ambient-mount');
-  if (ambientMount) {
-    ambient.init({
-      mount: ambientMount,
-      isExpanded: () => document.body.classList.contains('pin-drawer-open'),
-      onClick: () => {
-        // Synthesize a click on the rail's pin-drawer toggle — same
-        // open/close path the user invokes by clicking the pin icon.
-        document.getElementById('btn-pin-drawer-rail')?.click();
-      },
-    });
-  } else {
-    // Fallback to legacy floating-pill mode if the mount point is
-    // missing (e.g. a future variant that ships without the rail).
-    ambient.init();
-  }
+  // Ambient clock + weather — floating pill in lower-right on desktop,
+  // hidden via CSS on mobile (single media query). The earlier rail-
+  // embedded variant rendered badly (the expanded card overflowed
+  // the 48px rail column); reverted per Jonathan field bug 2026-05-13.
+  ambient.init();
 
   // Fast tooltips: native HTML `title` triggers a slow ~1.5-3s browser
   // tooltip. We render our own tooltip element directly under <body>

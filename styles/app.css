@@ -1690,9 +1690,29 @@
   }
   #pin-drawer:not(.collapsed) { width: var(--pin-drawer-width, 360px); }
 
+  /* Resizer on the LEFT edge of the right drawer. Hidden on rail-
+   * collapsed + mobile (mirror of the sidebar-resizer pattern). */
+  #pin-drawer-resizer {
+    position: absolute; top: 0; left: -3px; bottom: 0;
+    width: 6px;
+    cursor: ew-resize;
+    z-index: 5;
+    background: transparent;
+    transition: background 120ms;
+  }
+  #pin-drawer-resizer:hover, #pin-drawer-resizer.dragging {
+    background: var(--primary, #7a9a7a);
+  }
+  #pin-drawer.collapsed #pin-drawer-resizer { display: none; }
+  body.pin-drawer-resizer-active,
+  body.pin-drawer-resizer-active * {
+    user-select: none !important;
+    cursor: ew-resize !important;
+  }
+
   /* RAIL — always visible on desktop, fixed 48px wide. Buttons stack
-   * vertically. Ambient widget mounts below the pin-toggle and
-   * displays as a small column-stack of clock + temp. */
+   * vertically. Ambient widget reverted to its legacy floating
+   * bottom-right position (Jonathan field bug 2026-05-13). */
   .pin-drawer-rail {
     width: 48px; flex-shrink: 0;
     display: flex; flex-direction: column; align-items: center;

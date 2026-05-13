@@ -97,6 +97,14 @@ async function openPinDrawerViaToggle(page) {
   await page.waitForTimeout(200);
 }
 
+async function openPinDrawerViaSwipe(page) {
+  // Drag right-to-left from the right side of the viewport. Mirrors
+  // the sidebar's open-from-anywhere on the left. Drawer width is
+  // ~320 on a 390 viewport, so a 250→50 swipe (200px right-to-left)
+  // comfortably crosses the widthPx/3 commit threshold.
+  await swipe(page, 250, 50, 400, 10);
+}
+
 async function closePinDrawerViaSwipe(page) {
   // Drag left-to-right starting inside the pin drawer (right side).
   // Drawer width on iPhone 390 vw is min(85vw, 320px) = 320px, so a
@@ -123,12 +131,21 @@ export default async function run({ page, log }) {
   log('phase 2: pin drawer alone');
   await forceCloseBoth(page);
   assert(!(await pinOpen(page)), `pre-2: pin drawer should start closed`);
+  // 2a. Open via toolbar tap (the discoverable affordance).
   await openPinDrawerViaToggle(page);
   assert(await pinOpen(page), `phase 2: tap toggle should open pin drawer`);
   log(`  pin drawer opened via toggle ✓`);
   await closePinDrawerViaSwipe(page);
   assert(!(await pinOpen(page)), `phase 2: swipe should close pin drawer`);
   log(`  pin drawer closed via swipe ✓`);
+  // 2b. Open via swipe (right-to-left). This is the new "symmetric
+  // with the left sidebar's open-from-anywhere" capability.
+  await openPinDrawerViaSwipe(page);
+  assert(await pinOpen(page), `phase 2b: right-to-left swipe should open pin drawer`);
+  log(`  pin drawer opened via swipe ✓`);
+  await closePinDrawerViaSwipe(page);
+  assert(!(await pinOpen(page)), `phase 2b: swipe close after swipe open`);
+  log(`  pin drawer closed via swipe (after swipe-open) ✓`);
 
   // ── Phase 3: sidebar first, then pin drawer ─────────────────────
   log('phase 3: sidebar first, then pin drawer (overlap)');

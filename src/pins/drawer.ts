@@ -11,45 +11,22 @@
 
 import { listAllPins, totalPinCount, clearAllPins, type PinnedItem } from './store.ts';
 import { log } from '../util/log.ts';
-import { repaint as repaintAmbient } from '../ambient.ts';
-import { initPinDrawerSwipe } from '../pinDrawerSwipe.ts';
+import { createDrawer, type DrawerHandle } from '../Drawer.ts';
 
 let drawerEl: HTMLElement | null = null;
 let listEl: HTMLElement | null = null;
 let emptyEl: HTMLElement | null = null;
-let toggleBtns: HTMLElement[] = [];        // [#btn-pin-drawer (mobile), #btn-pin-drawer-rail (desktop)]
 let countBanners: HTMLElement[] = [];       // both #pin-drawer-count + #pin-drawer-count-rail
 let clearBtn: HTMLElement | null = null;
+let chromeHandle: DrawerHandle | null = null;
 let onPinClickCb: ((chatId: string, msgId: string) => void) | null = null;
 
-function openDrawer(): void {
-  if (!drawerEl) return;
-  drawerEl.classList.remove('collapsed');
-  drawerEl.setAttribute('aria-expanded', 'true');
-  document.body.classList.add('pin-drawer-open');
-  // Bring pin drawer to front in the z-index stack — beats the
-  // sidebar's .front class if it was set. Both drawers running this
-  // dance gives "most-recently-opened on top" behavior on mobile
-  // where they overlap. See CSS .front rule.
-  drawerEl.classList.add('front');
-  document.getElementById('sidebar')?.classList.remove('front');
-  render();
-  // Tell the ambient widget to re-render in its new (expanded)
-  // visual mode now that the drawer is open.
-  try { repaintAmbient(); } catch { /* widget may not exist yet */ }
-}
-
-function closeDrawer(): void {
-  if (!drawerEl) return;
-  drawerEl.classList.add('collapsed');
-  drawerEl.setAttribute('aria-expanded', 'false');
-  document.body.classList.remove('pin-drawer-open');
-  try { repaintAmbient(); } catch { /* defensive */ }
-}
-
 function isOpen(): boolean {
-  return !!drawerEl && !drawerEl.classList.contains('collapsed');
+  return !!chromeHandle?.isOpen();
 }
+
+function openDrawer(): void { chromeHandle?.open(); }
+function closeDrawer(): void { chromeHandle?.close(); }
 
 /** Re-render the pin list from store state. Cheap — pin counts are
  *  typically small (single-digit to dozens). Called on every
@@ -187,12 +164,6 @@ export function initPinDrawer(opts: {
   drawerEl = document.getElementById('pin-drawer');
   listEl = document.getElementById('pin-drawer-list');
   emptyEl = document.getElementById('pin-drawer-empty');
-  // Two toggle entry points — mobile toolbar button + desktop rail
-  // button. Both wire to the same handler.
-  toggleBtns = [
-    document.getElementById('btn-pin-drawer'),
-    document.getElementById('btn-pin-drawer-rail'),
-  ].filter((el): el is HTMLElement => el !== null);
   countBanners = [
     document.getElementById('pin-drawer-count'),
     document.getElementById('pin-drawer-count-rail'),
@@ -201,72 +172,48 @@ export function initPinDrawer(opts: {
   const closeBtn = document.getElementById('pin-drawer-close');
   onPinClickCb = opts.onPinClick;
 
-  if (!drawerEl || !listEl || !emptyEl || toggleBtns.length === 0) {
+  if (!drawerEl || !listEl || !emptyEl) {
     log('[pin-drawer] required DOM elements missing — drawer disabled');
     return;
   }
 
-  for (const btn of toggleBtns) {
-    btn.addEventListener('click', () => {
-      if (isOpen()) closeDrawer();
-      else openDrawer();
-    });
-  }
+  // Unified drawer chrome — open/close, toggles, swipe, resizer,
+  // click-outside, Escape, .front swap, persistence. Same module
+  // the left sidebar uses; only side / body class / resizer config
+  // differ. Behavior is guaranteed-identical to the sidebar by
+  // construction.
+  chromeHandle = createDrawer({
+    id: 'pin-drawer',
+    side: 'right',
+    bodyClass: 'pin-drawer-open',
+    prefKey: 'sidekick.pin-drawer.expanded',
+    toggleIds: ['btn-pin-drawer', 'btn-pin-drawer-rail'],
+    excludeSwipeWhenTargetIn: ['#sidebar'],
+    resizer: {
+      handleId: 'pin-drawer-resizer',
+      cssVar: '--pin-drawer-width',
+      widthPrefKey: 'sidekick.pinDrawerWidth',
+      defaultWidthPx: 360,
+      minWidthPx: 260,
+      maxWidthPx: 600,
+    },
+    onOpen: () => render(),  // refresh list when drawer opens
+  });
+
+  // Per-row controls — Close (X) + Clear-all. These are pin-drawer-
+  // specific UI and stay here, not in the chrome module.
   if (closeBtn) closeBtn.addEventListener('click', () => closeDrawer());
   if (clearBtn) clearBtn.addEventListener('click', () => {
-    // Confirm before wiping — Clear is a destructive operation and
-    // a stray tap on a small button shouldn't lose state. confirm()
-    // is the cheapest gate that gives the user an undo opportunity.
     if (!window.confirm('Clear all pinned messages?')) return;
     void clearAllPins();
   });
 
-  // Repaint on store mutations + banner refresh. The render() call is
-  // a no-op when the drawer is collapsed (it still walks the list, but
-  // nothing visible changes); the banner is the only thing the user
-  // sees update while the drawer is closed.
+  // Repaint on store mutations.
   window.addEventListener('sidekick:pins-changed', () => {
     refreshCountBanner();
     if (isOpen()) render();
   });
 
-  // Esc closes (mirrors the cmdk palette + other modal patterns).
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && isOpen()) {
-      closeDrawer();
-      e.stopPropagation();
-    }
-  });
-
-  // Tap outside the pin drawer closes it ON MOBILE ONLY — mirrors
-  // the sidebar's behavior. Without this the only way to dismiss
-  // the drawer from a non-list area was the X button (Jonathan
-  // field bug 2026-05-13). Capture phase so chat-bubble interactive
-  // controls calling stopPropagation don't kill the dismiss path.
-  // Exemptions:
-  //   - tap inside #pin-drawer itself (we ARE the drawer)
-  //   - tap on the toolbar pin-toggle (.mobile-only) — its onclick
-  //     toggles; the click-outside handler would race + cancel.
-  //   - tap inside the left sidebar (its own dismiss rules apply,
-  //     and we shouldn't close as a side-effect of sidebar work).
-  document.addEventListener('click', (e) => {
-    if (!isOpen()) return;
-    if (window.innerWidth >= 700) return;            // desktop: no-op
-    const target = e.target as Element | null;
-    if (target?.closest?.('#pin-drawer')) return;
-    if (target?.closest?.('#btn-pin-drawer')) return;
-    if (target?.closest?.('#sidebar')) return;
-    closeDrawer();
-  }, true);
-
   refreshCountBanner();
-  // Mobile-only swipe-to-close: drag the drawer left-to-right past
-  // the halfway point (or with enough velocity) to dismiss it.
-  // Open affordance is still the toolbar button (.mobile-only); on
-  // desktop the rail toggle handles open/close and swipe is a no-op.
-  initPinDrawerSwipe({
-    close: () => closeDrawer(),
-    isOpen,
-  });
   log('[pin-drawer] initialized');
 }
