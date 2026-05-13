@@ -54,6 +54,14 @@
   ::-webkit-scrollbar-corner { background: var(--bg); }
   * { box-sizing: border-box; margin: 0; }
   html, body { height: 100%; overscroll-behavior: none; }
+  /* iOS Safari auto-inflates text on rotate-to-landscape (a heuristic
+   * for "wider screen = bigger text") and doesn't reverse it on
+   * rotate-back. Pin the adjustment to 100% so the document keeps the
+   * authored sizes across orientation changes. Field bug 2026-05-13
+   * (Jonathan: text grew in landscape and stayed large after rotating
+   * back to portrait). `text-size-adjust` is the WHATWG-standard name;
+   * the -webkit- prefix is the one iOS actually honors today. */
+  html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
   body {
     background: var(--bg); color: var(--fg);
     font: 15px/1.55 var(--font-sans);

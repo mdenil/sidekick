@@ -62,6 +62,25 @@ function targetOwnsHorizontalMotion(target: EventTarget | null): boolean {
   return false;
 }
 
+/** True if the user is currently in iOS text-selection mode — i.e.
+ *  there's a non-collapsed Selection already on the page when the
+ *  pointerdown fires. On iOS Safari, long-press-to-select followed
+ *  by dragging a selection handle (or extending the selection) fires
+ *  pointer events the drawer swipe handler would otherwise interpret
+ *  as drawer-open gestures. Bail in that case so the OS-native
+ *  selection drag wins. Field bug 2026-05-13 (Jonathan): "when I
+ *  select text and drag it triggers the drawers." */
+function hasActiveTextSelection(): boolean {
+  if (typeof window === 'undefined') return false;
+  const sel = window.getSelection?.();
+  if (!sel) return false;
+  if (sel.isCollapsed) return false;
+  // Non-empty toString catches the "user has text highlighted" case
+  // across iOS Safari + Chrome's various flavors of partially-
+  // committed selection state.
+  return (sel.toString() || '').length > 0;
+}
+
 export interface DrawerSwipeOptions {
   /** Element id of the drawer to animate (e.g. 'sidebar' or 'pin-drawer'). */
   elementId: string;
@@ -190,6 +209,11 @@ export function initDrawerSwipe(opts: DrawerSwipeOptions): void {
       if (targetEl?.closest?.(sel)) return;
     }
     if (targetOwnsHorizontalMotion(e.target)) return;
+    // Yield to OS-native text-selection drag: if the user has already
+    // highlighted text (e.g. iOS long-press-to-select), pointerdown +
+    // drag is them moving a selection handle. The drawer swipe must
+    // not steal that gesture.
+    if (hasActiveTextSelection()) return;
 
     const expanded = opts.isExpanded();
     if (!expanded) {
@@ -222,6 +246,10 @@ export function initDrawerSwipe(opts: DrawerSwipeOptions): void {
       if (e.cancelable) e.preventDefault();
       if (dx * dx + dy * dy < MIN_DISTANCE_PX * MIN_DISTANCE_PX) return;
       if (Math.abs(dy) >= Math.abs(dx)) { reset(); return; }
+      // Selection might have appeared AFTER pointerdown — iOS
+      // long-press-then-drag creates the selection ~500ms in. Re-check
+      // at pre-commit time and bail so the OS-native handle drag wins.
+      if (hasActiveTextSelection()) { reset(); return; }
       // Direction filter: opening must drag in the +direction
       // (LEFT: dx>0; RIGHT: dx<0); closing the opposite. If the user's
       // drag direction doesn't match the intent, reset — the OTHER
