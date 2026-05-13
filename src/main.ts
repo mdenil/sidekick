@@ -55,6 +55,7 @@ import * as conversations from './conversations.ts';
 import * as sessionDrawer from './sessionDrawer.ts';
 import * as cmdkPalette from './cmdkPalette.ts';
 import { initPinDrawer } from './pins/drawer.ts';
+import { initTranscriptHighlight } from './transcriptHighlight.ts';
 import { attachSliderTouchAll } from './sliderTouch.ts';
 import { createDrawer } from './Drawer.ts';
 import * as clickFreezeDiag from './clickFreezeDiag.ts';
@@ -1349,6 +1350,15 @@ async function boot() {
   // ── Composer ────────────────────────────────────────────────────────────
   const composerInput = document.getElementById('composer-input') as HTMLTextAreaElement;
   const composerSend = document.getElementById('composer-send') as HTMLButtonElement;
+
+  // Keyboard-driven transcript highlight mode (Slack-style):
+  //   Empty composer + ↑ → highlight most recent bubble; ↑/↓
+  //   navigates; ↓ past most recent returns to composer; p pins;
+  //   c copies; Esc exits. See transcriptHighlight.ts header.
+  initTranscriptHighlight({
+    composer: composerInput,
+    transcript: document.getElementById('transcript'),
+  });
 
   /** Shared mount-site for the recorder bar (memo + turn-based both
    *  hide the composer-actions row and drop a recorder bar into the

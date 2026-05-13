@@ -21,6 +21,14 @@ let clearBtn: HTMLElement | null = null;
 let chromeHandle: DrawerHandle | null = null;
 let onPinClickCb: ((chatId: string, msgId: string) => void) | null = null;
 
+// Per-item expanded state — keyed by `${chatId}|${msgId}`. Survives
+// re-renders from the sidekick:pins-changed listener (which rebuilds
+// the <li> children each pass) so an expanded item stays expanded
+// after, e.g., a new pin gets added elsewhere. Cleared when the pin
+// itself is removed (renderItem just doesn't re-add the .expanded
+// class for absent keys).
+const expandedKeys = new Set<string>();
+
 function isOpen(): boolean {
   return !!chromeHandle?.isOpen();
 }
@@ -73,6 +81,25 @@ function renderItem(item: PinnedItem): HTMLElement {
   const body = document.createElement('div');
   body.className = 'pin-item-body';
   body.textContent = item.text;
+  // Click the body to toggle expansion in-place. Multi-line clamp by
+  // default (3 lines) keeps the drawer scannable; expanded reveals
+  // the full stored text (up to ~1500 chars from pin-time). Per-item
+  // state is class-based so it survives re-renders triggered by
+  // sidekick:pins-changed (the class is re-evaluated each pass via
+  // the per-key expandedKeys set below).
+  body.style.cursor = 'pointer';
+  body.title = 'Click to expand / collapse';
+  body.onclick = (e) => {
+    e.stopPropagation();   // don't drill on body-click
+    const wasExpanded = li.classList.toggle('expanded');
+    const key = `${item.chatId}|${item.msgId}`;
+    if (wasExpanded) expandedKeys.add(key);
+    else expandedKeys.delete(key);
+  };
+  // Apply persistent expanded state from the cross-render set.
+  if (expandedKeys.has(`${item.chatId}|${item.msgId}`)) {
+    li.classList.add('expanded');
+  }
 
   // Footer row: chat label on the left, jump-to-context icon on the
   // right. The icon is the explicit affordance Jonathan asked for —

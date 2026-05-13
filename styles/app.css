@@ -1643,6 +1643,16 @@
    * pinned content in a long transcript at a glance, without it being
    * loud enough to disrupt reading. */
   .line.pinned { border-left: 2px solid var(--primary); padding-left: 6px; }
+  /* Keyboard-driven highlight (transcriptHighlight.ts): empty composer
+   * + Up arrow enters highlight mode; Up/Down navigates; P toggles
+   * pin; C copies. Visual is a sage-tinted background + thicker
+   * border so it stacks readably over the pinned class. */
+  .line.transcript-highlight {
+    background: color-mix(in srgb, var(--primary) 12%, transparent);
+    outline: 2px solid var(--primary);
+    outline-offset: -2px;
+    border-radius: 4px;
+  }
 
   /* ── Right-side pin drawer ───────────────────────────────────────
    * Symmetric mirror of the left sidebar:
@@ -1796,6 +1806,18 @@
     font-size: 13px; line-height: 1.4; color: var(--fg);
     overflow: hidden; text-overflow: ellipsis;
     display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+    transition: -webkit-line-clamp 0.1s ease;
+  }
+  /* Expanded — clicking the body toggles .pin-drawer-item.expanded.
+   * Drop the line clamp + let the full stored message render
+   * (~1500 char cap from pin-time). The body becomes a regular
+   * block flow so long messages wrap naturally. */
+  .pin-drawer-item.expanded .pin-item-body {
+    display: block;
+    -webkit-line-clamp: unset;
+    overflow: visible;
+    white-space: pre-wrap;
+    word-break: break-word;
   }
   .pin-item-footer {
     margin-top: 6px;

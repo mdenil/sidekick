@@ -1,0 +1,172 @@
+/**
+ * @fileoverview Keyboard-driven message-highlight mode for the
+ * transcript. Slack-style:
+ *
+ *   • Composer EMPTY + ↑ → enter highlight mode, highlight the most
+ *     recent message, scroll it into view.
+ *   • ↑ / ↓ — move highlight to prev / next message.
+ *   • ↓ past the most recent message → exit highlight mode, return
+ *     focus to the composer.
+ *   • Esc → exit highlight mode.
+ *   • p — toggle pin on the highlighted message.
+ *   • c — copy the highlighted message's text to the clipboard.
+ *
+ * Sole entry point is the composer's `keydown` handler at the start
+ * of every keystroke. Highlight state lives in module scope so the
+ * composer's keyup / blur don't accidentally lose it.
+ *
+ * The highlight visual is a dedicated `.transcript-highlight` class
+ * on the bubble so it stacks cleanly over the existing
+ * `.search-target-flash` styles without color collisions.
+ */
+
+import { log } from './util/log.ts';
+import {
+  isPinned as isPinMsg,
+  pinMessage,
+  unpinMessage,
+} from './pins/store.ts';
+import * as backend from './backend.ts';
+
+let composerEl: HTMLTextAreaElement | null = null;
+let transcriptEl: HTMLElement | null = null;
+let highlightedEl: HTMLElement | null = null;
+
+function bubbles(): HTMLElement[] {
+  if (!transcriptEl) return [];
+  return Array.from(
+    transcriptEl.querySelectorAll<HTMLElement>(
+      '.line[data-message-id]:not(.pending):not(.failed)',
+    ),
+  );
+}
+
+function setHighlight(el: HTMLElement | null): void {
+  if (highlightedEl && highlightedEl !== el) {
+    highlightedEl.classList.remove('transcript-highlight');
+  }
+  highlightedEl = el;
+  if (el) {
+    el.classList.add('transcript-highlight');
+    el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }
+}
+
+function exitHighlight(): void {
+  if (highlightedEl) highlightedEl.classList.remove('transcript-highlight');
+  highlightedEl = null;
+  composerEl?.focus();
+}
+
+/** True if the composer's textarea has no user content. Empty +
+ *  whitespace-only count as empty so a stray space doesn't block
+ *  the gesture. */
+function composerIsEmpty(): boolean {
+  if (!composerEl) return false;
+  return !composerEl.value || composerEl.value.trim() === '';
+}
+
+function move(delta: 1 | -1): void {
+  const list = bubbles();
+  if (list.length === 0) return;
+  const idx = highlightedEl ? list.indexOf(highlightedEl) : -1;
+  const next = idx < 0
+    ? (delta === -1 ? list.length - 1 : 0)
+    : idx + delta;
+  if (next < 0) {
+    // Up past the first bubble — stay on the first.
+    setHighlight(list[0]);
+    return;
+  }
+  if (next >= list.length) {
+    // Down past the most recent — exit back to composer.
+    exitHighlight();
+    return;
+  }
+  setHighlight(list[next]);
+}
+
+async function togglePinOnHighlight(): Promise<void> {
+  if (!highlightedEl) return;
+  const msgId = highlightedEl.dataset.messageId || '';
+  if (!msgId) return;
+  const chatId = backend.getCurrentSessionId?.() || null;
+  if (!chatId) return;
+  if (isPinMsg(chatId, msgId)) {
+    await unpinMessage(chatId, msgId);
+    highlightedEl.classList.remove('pinned');
+    const btn = highlightedEl.querySelector('.pin-btn');
+    btn?.classList.remove('pinned');
+  } else {
+    const text = highlightedEl.dataset.text
+      || (highlightedEl.querySelector('.text') as HTMLElement | null)?.textContent
+      || '';
+    const preview = text.length > 1500 ? text.slice(0, 1497) + '…' : text;
+    const cls = highlightedEl.className;
+    const role = cls.includes('agent') ? 'assistant'
+      : cls.includes('system') ? 'system' : 'user';
+    await pinMessage({ chatId, msgId, role, text: preview, timestamp: Date.now() });
+    highlightedEl.classList.add('pinned');
+    const btn = highlightedEl.querySelector('.pin-btn');
+    btn?.classList.add('pinned');
+  }
+  log(`[transcript-highlight] toggle pin on ${msgId}`);
+}
+
+async function copyHighlight(): Promise<void> {
+  if (!highlightedEl) return;
+  const text = highlightedEl.dataset.text
+    || (highlightedEl.querySelector('.text') as HTMLElement | null)?.textContent
+    || '';
+  if (!text) return;
+  try { await navigator.clipboard.writeText(text); } catch { /* clipboard might be unavailable */ }
+}
+
+export function initTranscriptHighlight(opts: {
+  composer: HTMLTextAreaElement | null;
+  transcript: HTMLElement | null;
+}): void {
+  composerEl = opts.composer;
+  transcriptEl = opts.transcript;
+  if (!composerEl || !transcriptEl) {
+    log('[transcript-highlight] required DOM missing — disabled');
+    return;
+  }
+
+  // Composer keydown: empty + Up enters highlight mode.
+  composerEl.addEventListener('keydown', (e: KeyboardEvent) => {
+    if (e.key !== 'ArrowUp') return;
+    // Modifier keys passthrough — only bare Up engages the gesture.
+    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    if (!composerIsEmpty()) return;
+    if (highlightedEl) return;  // already in highlight mode
+    e.preventDefault();
+    const list = bubbles();
+    if (list.length === 0) return;
+    setHighlight(list[list.length - 1]);   // most recent bubble
+  });
+
+  // Global keydown — only acts when we're in highlight mode.
+  document.addEventListener('keydown', (e: KeyboardEvent) => {
+    if (!highlightedEl) return;
+    // Modifier keys pass through (Cmd+P should remain print, etc.).
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    // Don't steal keys from other inputs that may be focused (cmdk,
+    // settings inputs). Only the composer + transcript surface are
+    // ours.
+    const t = e.target as HTMLElement | null;
+    const tag = t?.tagName?.toUpperCase() || '';
+    if (tag === 'INPUT' || (tag === 'TEXTAREA' && t !== composerEl) || t?.isContentEditable) {
+      // Allow composer up-arrow to bubble back through, since
+      // composer's own listener handles enter/exit on the empty
+      // path. Below handles in-mode navigation.
+      if (t !== composerEl) return;
+    }
+    if (e.key === 'Escape') { e.preventDefault(); exitHighlight(); return; }
+    if (e.key === 'ArrowUp')   { e.preventDefault(); move(-1); return; }
+    if (e.key === 'ArrowDown') { e.preventDefault(); move(1);  return; }
+    if (e.key === 'p' || e.key === 'P') { e.preventDefault(); void togglePinOnHighlight(); return; }
+    if (e.key === 'c' || e.key === 'C') { e.preventDefault(); void copyHighlight(); return; }
+    if (e.key === 'Enter') { e.preventDefault(); exitHighlight(); return; }
+  });
+}
