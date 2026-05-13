@@ -1851,37 +1851,72 @@
   }
 
   /* Ambient widget when mounted inside the pin-drawer rail —
-   * override the legacy floating-pill positioning. The widget
-   * becomes a column-stack of clock + temp/icon sized for the
-   * 48px rail. Click expands the drawer (drawer.ts wires onClick). */
+   * collapsed state: vertical stack (clock above, temp/icon below)
+   * sized for the 48px rail column. Expanded state: the widget
+   * floats out into the wider content area; we anchor it to the
+   * bottom-right of the drawer with absolute positioning + auto
+   * width up to the content panel's width. Click anywhere on the
+   * widget toggles the drawer (onClick wired in main.ts). */
+
+  /* Rail mount: always sized to fit 48px. */
+  .ambient-mount {
+    margin-top: auto;          /* pushes ambient to bottom of rail */
+    width: 100%;
+    display: flex; justify-content: center;
+  }
+
+  /* Compact (drawer collapsed) — small vertical stack. */
   #pin-drawer .ambient-widget.ambient-in-drawer {
     position: static;
     background: transparent;
     backdrop-filter: none; -webkit-backdrop-filter: none;
     border: none;
     border-radius: 0;
-    padding: 4px 0;
-    flex-direction: column; gap: 2px;
+    padding: 6px 2px;
+    flex-direction: column; align-items: center; gap: 4px;
     width: 100%; min-width: 0;
-    opacity: 0.85;
-    font: 500 11px/1.2 var(--font-mono);
+    opacity: 0.9;
+    font: 500 10px/1.2 var(--font-mono);
+    color: var(--muted);
   }
   #pin-drawer .ambient-widget.ambient-in-drawer .ambient-time {
-    font: 600 12px/1.2 var(--font-mono);
+    font: 600 11px/1.2 var(--font-mono);
     color: var(--fg);
+    letter-spacing: 0.02em;
   }
   #pin-drawer .ambient-widget.ambient-in-drawer .ambient-weather {
     border-left: none; padding-left: 0;
-    gap: 2px; font-size: 11px;
+    display: flex; flex-direction: column; align-items: center;
+    gap: 2px; font-size: 10px;
   }
-  /* In-drawer + expanded: the full clock/forecast card renders into
-   * the rail column. Don't override styles — the existing
-   * .ambient-widget.expanded rules handle the visual; we just need
-   * to allow the column to grow beyond 48px. Since the rail is
-   * still 48px when collapsed, expanded ambient content overflows
-   * into the content area — keep the inner card at rail width to
-   * avoid that. Punted on the full-expanded-in-drawer visual until
-   * we have user feedback on the rail UX. */
+  #pin-drawer .ambient-widget.ambient-in-drawer .ambient-temp {
+    font-variant-numeric: tabular-nums;
+    color: var(--muted);
+  }
+
+  /* Expanded (drawer open) — full clock/weather/forecast card.
+   * Anchored to the bottom-right of the drawer so it sits below the
+   * pin list, in its own sub-panel framing. Width matches the
+   * content column (drawer width minus the 48px rail), so the card
+   * lays out cleanly without overflowing. */
+  #pin-drawer:not(.collapsed) .ambient-widget.ambient-in-drawer.expanded {
+    position: absolute;
+    right: 12px;
+    bottom: 12px;
+    width: calc(var(--pin-drawer-width, 360px) - 48px - 24px);
+    padding: 14px 16px;
+    background: color-mix(in srgb, var(--surface-2) 92%, transparent);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    flex-direction: column;
+    gap: 0;
+    z-index: 2;
+  }
+
+  /* In the rail when expanded — hide the rail's compact-stack so the
+   * full card (positioned absolutely above) is the only ambient
+   * surface visible while the drawer is open. */
+  #pin-drawer:not(.collapsed) .ambient-mount { visibility: hidden; }
 
   /* ── Per-bubble TTS playback controls (agent lines) ──
    * Ported from the classic pipeline (08f50ac:styles/app.css ~900-985).

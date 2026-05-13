@@ -891,11 +891,25 @@ async function boot() {
   [imageCard, youtubeCard, spotifyCard, linksCard, markdownCard, loadingCard]
     .forEach(registerCard);
 
-  // Ambient clock + weather — floating pill in lower-right on desktop,
-  // hidden via CSS on mobile (single media query). The earlier rail-
-  // embedded variant rendered badly (the expanded card overflowed
-  // the 48px rail column); reverted per Jonathan field bug 2026-05-13.
-  ambient.init();
+  // Ambient clock + weather — mounted in the right-drawer rail.
+  // Renders in compact mode (vertical stack: clock above, temp/icon
+  // below) so it fits the 48px rail column. When the user clicks the
+  // widget, the drawer expands (drawer.toggle); CSS adapts the
+  // widget's layout to the wider content area. Hidden via @media
+  // on mobile (rail itself is hidden there).
+  const ambientMount = document.getElementById('ambient-mount');
+  if (ambientMount) {
+    ambient.init({
+      mount: ambientMount,
+      isExpanded: () => document.body.classList.contains('pin-drawer-open'),
+      onClick: () => {
+        // Click the rail's pin-toggle to open/close the drawer.
+        document.getElementById('btn-pin-drawer-rail')?.click();
+      },
+    });
+  } else {
+    ambient.init();  // fallback to legacy floating pill
+  }
 
   // Fast tooltips: native HTML `title` triggers a slow ~1.5-3s browser
   // tooltip. We render our own tooltip element directly under <body>
@@ -3601,6 +3615,17 @@ async function boot() {
       btn?.click();
       return;
     }
+    if (matches('Cmd+Shift+S')) {
+      claim();
+      // Toggle the left session sidebar. Visible toggle button id
+      // differs by viewport (desktop = sb-toggle inside the rail,
+      // mobile = sb-toggle-mobile in the toolbar) — both wire to the
+      // same Drawer.toggle internally so either click works.
+      const btn = (document.getElementById('sb-toggle')
+        || document.getElementById('sb-toggle-mobile')) as HTMLButtonElement | null;
+      btn?.click();
+      return;
+    }
     if (matches(s.hotkeyToggleMic)) {
       claim();
       // Toggle MIC specifically — startMicMode (memo/dictate). Not
@@ -3927,7 +3952,7 @@ function attachCardToLatestAgentBubble(card) {
  *  defensively filter them here. With per-turn replay machinery gutted,
  *  the bubble is purely a text surface: TTS is owned by the WebRTC
  *  talk-mode track on the server side and arrives as audio independently. */
-function handleReplyDelta({ replyId, cumulativeText, conversation, messageId }: any) {
+function handleReplyDelta({ replyId, cumulativeText, conversation, messageId, isReplay = false }: any) {
   if (!cumulativeText) return;
   // Drop deltas only for explicitly off-screen conversations: getViewed()
   // pinned to a DIFFERENT id. When getViewed() is null (boot before
@@ -3945,7 +3970,12 @@ function handleReplyDelta({ replyId, cumulativeText, conversation, messageId }: 
   // duplicate path that lived in the data-channel ev.role==='assistant'
   // branch (now dead). SSE is the single source of assistant events.
   const isFirstDelta = !!messageId && !renderedMessages.has(messageId);
-  if (isFirstDelta) {
+  // Guard the 'send' chime on !isReplay — SSE ring-replay envelopes
+  // (catch-up after a fresh subscriber attaches, e.g. switching to a
+  // chat with recent activity) hit this same code path and would
+  // otherwise fire the chime on every switch-in to a cron-active
+  // chat (Jonathan field bug 2026-05-13).
+  if (isFirstDelta && !isReplay) {
     try { playFeedback('send'); } catch { /* feedback is best-effort */ }
   }
   // Suppress envelope is idempotent — calling onAssistantDelta on every

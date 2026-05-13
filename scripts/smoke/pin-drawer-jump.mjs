@@ -106,10 +106,15 @@ export default async function run({ page, log }) {
 
   await clickJumpForFirstPin(page);
 
-  // ── Drawer should close + viewport should be on chat A ───────────
-  assert(!(await drawerOpen(page)),
-    `post-jump: drawer should close (currently still open)`);
-  log(`post-jump: drawer closed ✓`);
+  // ── On desktop the drawer should STAY OPEN — pin drawer is a
+  //    todo-list / context surface that should persist while the
+  //    user drills around the chat (Jonathan UX 2026-05-13).
+  //    Mobile auto-closes (full-overlay layout would otherwise
+  //    obscure the drilled-to message), but smokes run at 1280x800
+  //    desktop unless MOBILE='true'.
+  assert(await drawerOpen(page),
+    `post-jump (desktop): drawer should remain open (todo-list semantic)`);
+  log(`post-jump: drawer stayed open (desktop) ✓`);
 
   // The transcript should now show chat A's pinned bubble — verify
   // by looking for its data-message-id.

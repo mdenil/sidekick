@@ -376,15 +376,21 @@ function handleEnvelope(type: string, env: any, chatId: string): void {
       if (!text) return;
       const replyId = replyIdFor(env, chatId);
       const msgId = typeof env?.message_id === 'string' && env.message_id ? env.message_id : null;
+      const isReplay = env?._replay === true;
       // Diagnostic — every reply_delta logs message_id + envelope id +
       // a text preview. If the user reports a duplicate bubble, this
       // tells us whether the proxy delivered ONE envelope (render path
       // bug) or TWO with different ids (agent / wire bug).
-      log(`[bubble-diag] reply_delta chat=${chatId} msgId=${msgId ?? '∅'} replyId=${replyId} text-len=${text.length} text="${text.slice(0, 40)}${text.length > 40 ? '…' : ''}"`);
+      log(`[bubble-diag] reply_delta chat=${chatId} msgId=${msgId ?? '∅'} replyId=${replyId} text-len=${text.length} text="${text.slice(0, 40)}${text.length > 40 ? '…' : ''}"${isReplay ? ' (replay)' : ''}`);
       subs?.onActivity?.({ working: true, detail: 'streaming', conversation: chatId });
       // Adapter contract guarantees `text` is the full cumulative text
       // for this bubble — pass straight through as cumulativeText.
-      subs?.onDelta?.({ replyId, cumulativeText: text, conversation: chatId, messageId: msgId });
+      // isReplay flows so the shell's first-delta-of-turn chime stays
+      // quiet on SSE ring-replay catch-up after switching to a chat
+      // with recent activity (Jonathan field bug 2026-05-13: 'send'
+      // chime fired every switch into the cron-active chat because
+      // handleReplyDelta saw replay envelopes as "first delta").
+      subs?.onDelta?.({ replyId, cumulativeText: text, conversation: chatId, messageId: msgId, isReplay });
       return;
     }
 

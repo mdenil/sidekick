@@ -101,7 +101,13 @@ function renderItem(item: PinnedItem): HTMLElement {
 
   const drill = () => {
     if (onPinClickCb) onPinClickCb(item.chatId, item.msgId);
-    closeDrawer();
+    // Auto-close ONLY on mobile — on mobile the drawer is a full
+    // overlay covering the chat, so it has to dismiss to reveal the
+    // drilled-to message. On desktop the drawer sits beside the chat
+    // (3-column layout) and Jonathan wants it persistent: pinned
+    // messages function as a todo list while the user continues the
+    // conversation. Field UX 2026-05-13.
+    if (window.innerWidth < 700) closeDrawer();
   };
   li.onclick = drill;
   // Explicit handler on the jump button + stopPropagation so a click
