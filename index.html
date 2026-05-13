@@ -98,16 +98,20 @@
          2026-05-05 to match the desktop affordance. -->
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><line x1="9" y1="4" x2="9" y2="20"/></svg>
   </button>
+  <!-- Lock on the LEFT (matches the left sidebar's positional anchor
+       — it's the most-used action). Pin-drawer toggle on the right
+       (anchors to the right-side sidebar / pin drawer). Symmetric
+       with the session drawer's hamburger-on-left layout. -->
+  <button id="btn-lock" class="toolbar-btn" style="margin-left:auto" title="Pocket lock (swipe to unlock)">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+  </button>
   <!-- Toolbar pin-drawer toggle: mobile-only, since desktop shows
        the rail-internal toggle (#btn-pin-drawer-rail) instead. The
        count banner lives on whichever is currently visible — both
        have id-suffixed elements that drawer.ts updates together. -->
-  <button id="btn-pin-drawer" class="toolbar-btn mobile-only" style="margin-left:auto" title="Pinned messages" aria-label="Pinned messages">
+  <button id="btn-pin-drawer" class="toolbar-btn mobile-only" title="Pinned messages" aria-label="Pinned messages">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 10.76V4h6v6.76l3 1.74v2.5H6v-2.5z"/></svg>
     <span id="pin-drawer-count" class="pin-count-banner" hidden>0</span>
-  </button>
-  <button id="btn-lock" class="toolbar-btn" style="margin-left:auto" title="Pocket lock (swipe to unlock)">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
   </button>
 </div>
 

@@ -200,8 +200,20 @@ export function replaySessionMessages(
       }
     }
 
+    // .pinned excluded from heal alongside .pending/.failed/.streaming:
+    // pins are LOCAL retention signal, not server state. A pin can
+    // outlive the current resume window — e.g. user pinned a message,
+    // scrolled-loaded older context, then reloaded with the cache
+    // holding 100 msgs but the server returning the most-recent 33.
+    // The pinned bubble's id is in the cache but not in expectedIds
+    // (which is built from the 33-msg server window). Without this
+    // exclusion, heal would remove the pinned bubble as "stale," IDB
+    // pin metadata would orphan, and jump-to-context would land on
+    // empty DOM. Field bug 2026-05-13 (Jonathan dev-log line 89):
+    // `surgical heal — 4 stale + 20 orphan bubble(s)` ate the pin
+    // bubble after dev-reload.
     const finalized = Array.from(transcriptEl.querySelectorAll(
-      '.line[data-message-id]:not(.pending):not(.failed):not(.streaming)',
+      '.line[data-message-id]:not(.pending):not(.failed):not(.streaming):not(.pinned)',
     )) as HTMLElement[];
     const seen = new Set<string>();
     const stale: Array<{ id: string; el: HTMLElement }> = [];
