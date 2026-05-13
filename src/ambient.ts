@@ -107,6 +107,20 @@ export function init(opts?: {
   (opts?.mount || document.body).appendChild(rootEl);
   void render();
   tickTimer = setInterval(render, 60_000);
+  // In-drawer mode reads `isExpanded()` from the parent drawer's
+  // body class (e.g. `pin-drawer-open`). When the user toggles the
+  // drawer the body class flips immediately but the widget's render
+  // doesn't refire until the next 1-minute tick — leaving the
+  // compact (48px rail) layout visible inside the now-expanded
+  // 360px drawer column. Watch the body's class attribute and
+  // re-render on every change so the widget swaps to its expanded
+  // 3-day-forecast layout the moment the drawer opens (and back to
+  // compact the moment it closes). Cheap: the observer fires only
+  // on class mutations, not every attribute change.
+  if (opts?.mount && typeof MutationObserver !== 'undefined') {
+    const bodyObserver = new MutationObserver(() => { void render(); });
+    bodyObserver.observe(document.body, { attributes: true, attributeFilter: ['class'] });
+  }
 }
 
 /** Re-render on demand — used by the parent drawer when its open/close
