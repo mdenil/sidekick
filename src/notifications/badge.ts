@@ -50,7 +50,17 @@ function totalUnread(): number {
 
 /** Push the current unread total to the OS via Badging API. Silently
  *  no-ops on browsers without the API. Awaitable but failure is
- *  swallowed — badges are decorative; failure shouldn't break flow. */
+ *  swallowed — badges are decorative; failure shouldn't break flow.
+ *
+ *  Also dismisses any service-worker notifications when the total
+ *  reaches 0. On iOS PWA the visible icon badge is driven by TWO
+ *  sources: the W3C Badging API (which clearAppBadge handles) AND
+ *  the OS's count of undismissed notifications. Without closing the
+ *  SW notifications, swiping the banner away or dismissing it via
+ *  Notification Center still leaves the badge stuck (Jonathan field
+ *  bug 2026-05-13: PWA badge stuck at "1" even after Mark-all-read +
+ *  clearAppBadge fired). getNotifications + close() clears the
+ *  OS-level state. */
 async function syncBadge(): Promise<void> {
   const total = totalUnread();
   try {
@@ -58,10 +68,31 @@ async function syncBadge(): Promise<void> {
       if (typeof navigator.setAppBadge === 'function') await navigator.setAppBadge(total);
     } else {
       if (typeof navigator.clearAppBadge === 'function') await navigator.clearAppBadge();
+      // Also dismiss any still-visible SW notifications. The icon
+      // badge on iOS PWA also reflects the count of undismissed
+      // notifications — clearAppBadge alone leaves it stuck if push
+      // banners are still in Notification Center.
+      await closeAllSwNotifications();
     }
   } catch {
     // No-op on TypeError (unsupported) / SecurityError (not installed).
   }
+}
+
+/** Close every service-worker-rendered notification for this PWA.
+ *  Best-effort: hosts without SW or with no active registration
+ *  silently no-op. Failure swallowed — badge sync is decorative. */
+async function closeAllSwNotifications(): Promise<void> {
+  try {
+    if (!('serviceWorker' in navigator)) return;
+    const reg = await navigator.serviceWorker.getRegistration();
+    if (!reg) return;
+    const ns = await reg.getNotifications();
+    for (const n of ns) {
+      try { n.close(); } catch { /* tab vanished mid-loop */ }
+    }
+    if (ns.length > 0) log(`[badge] closed ${ns.length} SW notification(s)`);
+  } catch { /* defensive */ }
 }
 
 /** Increment the unread counter for `chatId` and re-sync the badge.
