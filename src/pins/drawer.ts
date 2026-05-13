@@ -9,7 +9,7 @@
 // listens to `sidekick:pins-changed` and re-renders itself; the toggle
 // button banner stays in sync via totalPinCount().
 
-import { listAllPins, totalPinCount, type PinnedItem } from './store.ts';
+import { listAllPins, totalPinCount, clearAllPins, type PinnedItem } from './store.ts';
 import { log } from '../util/log.ts';
 
 let drawerEl: HTMLElement | null = null;
@@ -17,6 +17,7 @@ let listEl: HTMLElement | null = null;
 let emptyEl: HTMLElement | null = null;
 let toggleBtn: HTMLElement | null = null;
 let countBanner: HTMLElement | null = null;
+let clearBtn: HTMLElement | null = null;
 let onPinClickCb: ((chatId: string, msgId: string) => void) | null = null;
 
 function openDrawer(): void {
@@ -45,6 +46,9 @@ function render(): void {
   if (!listEl || !emptyEl) return;
   const pins = listAllPins();
   listEl.innerHTML = '';
+  // Clear button visible only when there's something to clear —
+  // mirrors the "Mark all read" hint pattern in Settings.
+  if (clearBtn) clearBtn.hidden = pins.length === 0;
   if (pins.length === 0) {
     emptyEl.hidden = false;
     listEl.hidden = true;
@@ -151,6 +155,7 @@ export function initPinDrawer(opts: {
   emptyEl = document.getElementById('pin-drawer-empty');
   toggleBtn = document.getElementById('btn-pin-drawer');
   countBanner = document.getElementById('pin-drawer-count');
+  clearBtn = document.getElementById('pin-drawer-clear');
   const closeBtn = document.getElementById('pin-drawer-close');
   onPinClickCb = opts.onPinClick;
 
@@ -164,6 +169,13 @@ export function initPinDrawer(opts: {
     else openDrawer();
   });
   if (closeBtn) closeBtn.addEventListener('click', () => closeDrawer());
+  if (clearBtn) clearBtn.addEventListener('click', () => {
+    // Confirm before wiping — Clear is a destructive operation and
+    // a stray tap on a small button shouldn't lose state. confirm()
+    // is the cheapest gate that gives the user an undo opportunity.
+    if (!window.confirm('Clear all pinned messages?')) return;
+    void clearAllPins();
+  });
 
   // Repaint on store mutations + banner refresh. The render() call is
   // a no-op when the drawer is collapsed (it still walks the list, but

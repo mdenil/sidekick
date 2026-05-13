@@ -130,6 +130,27 @@ export async function unpinMessage(chatId: string, msgId: string): Promise<void>
   }
 }
 
+/** Wipe every pin across every chat. Backs the "Clear all" button at
+ *  the top of the pin drawer — the same escape hatch the Mark-all-read
+ *  button is on the unread side. No-op when already empty. Async IDB
+ *  clear is fire-and-forget after the in-memory wipe; the drawer
+ *  repaints synchronously via the dispatched event. */
+export async function clearAllPins(): Promise<void> {
+  if (pinsByKey.size === 0) return;
+  pinsByKey.clear();
+  notifyChange();
+  log(`[pins] clearAllPins invoked`);
+  try {
+    const db = await open();
+    await reqP(
+      db.transaction(STORE, 'readwrite').objectStore(STORE).clear(),
+    );
+    db.close();
+  } catch (e: any) {
+    log(`[pins] clearAllPins IDB clear failed: ${e?.message ?? e}`);
+  }
+}
+
 /** Sync pin check — drives the per-bubble + per-row UI repaint after
  *  hydrate() resolves. */
 export function isPinned(chatId: string, msgId: string): boolean {

@@ -106,38 +106,12 @@ async function handleSessionMessagesViaUpstream(
     for (const it of r.items) {
       if (it.sidekick_id) canonicalIds.add(it.sidekick_id);
     }
-    // Secondary defense: msgId-prefix-encoded age. The primary dedup
-    // above catches every envelope whose msgId matches a state.db
-    // sidekick_id, but the cron-fire code path mints reply envelopes
-    // with `sk-<unix_sec>-<seq>` ids that DON'T match the assistant
-    // state.db row's `msg_<hash>` sidekick_id (different namespaces).
-    // For those, fall back to the timestamp embedded in the msgId.
-    // The two patterns we care about:
-    //   umsg_<unix_ms>_<hash>   — PWA-minted user messages
-    //   sk-<unix_sec>-<seq>     — cron / gateway-minted replies
-    // Anything older than INFLIGHT_FRESHNESS_S is by definition NOT
-    // an in-flight envelope — it's leftover ring-replay state. Drop.
-    // 5 minutes generously exceeds the longest plausible in-flight
-    // turn while still being a hard upper bound the cron stragglers
-    // can't survive.
-    const INFLIGHT_FRESHNESS_S = 5 * 60;
-    const nowSec = Math.floor(Date.now() / 1000);
-    const ageFromMsgId = (mid: string): number | null => {
-      let m = /^umsg_(\d+)_/.exec(mid);
-      if (m) return nowSec - Math.floor(Number(m[1]) / 1000);
-      m = /^sk-(\d+)-/.exec(mid);
-      if (m) return nowSec - Number(m[1]);
-      return null;
-    };
     const inflightEnvelopes = allInflight.filter((env) => {
       const mid = typeof (env as any).message_id === 'string'
         ? (env as any).message_id
         : '';
       if (!mid) return true;  // can't dedup without id — pass through
-      if (canonicalIds.has(mid)) return false;  // structural match
-      const age = ageFromMsgId(mid);
-      if (age !== null && age > INFLIGHT_FRESHNESS_S) return false;
-      return true;
+      return !canonicalIds.has(mid);
     });
     trace('serialize-start');
     const body = JSON.stringify({

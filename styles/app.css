@@ -1674,8 +1674,18 @@
   .pin-drawer-header {
     display: flex; align-items: center; justify-content: space-between;
     padding: 12px 14px; border-bottom: 1px solid var(--border);
+    gap: 8px;
   }
-  .pin-drawer-title { margin: 0; font-size: 14px; font-weight: 600; letter-spacing: 0.02em; color: var(--fg); }
+  .pin-drawer-title { margin: 0; font-size: 14px; font-weight: 600; letter-spacing: 0.02em; color: var(--fg); flex: 1; }
+  .pin-drawer-header-actions {
+    display: flex; align-items: center; gap: 4px;
+  }
+  .pin-drawer-clear-btn {
+    background: none; border: 1px solid var(--border); color: var(--muted);
+    font-size: 11px; padding: 4px 10px; border-radius: 4px;
+    cursor: pointer; transition: color 0.12s, border-color 0.12s;
+  }
+  .pin-drawer-clear-btn:hover { color: var(--fg); border-color: var(--border-strong); }
   .pin-drawer-list {
     list-style: none; margin: 0; padding: 6px 0;
     overflow-y: auto; flex: 1;

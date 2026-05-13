@@ -118,9 +118,14 @@
 <aside id="pin-drawer" class="pin-drawer collapsed" aria-expanded="false" aria-label="Pinned messages">
   <div class="pin-drawer-header">
     <h3 class="pin-drawer-title">Pinned</h3>
-    <button id="pin-drawer-close" class="sb-icon-btn" title="Close" aria-label="Close pinned messages">
-      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-    </button>
+    <div class="pin-drawer-header-actions">
+      <button id="pin-drawer-clear" class="pin-drawer-clear-btn" title="Clear all pinned messages" aria-label="Clear all pinned messages" hidden>
+        Clear
+      </button>
+      <button id="pin-drawer-close" class="sb-icon-btn" title="Close" aria-label="Close pinned messages">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
   </div>
   <ul id="pin-drawer-list" class="pin-drawer-list"></ul>
   <div id="pin-drawer-empty" class="pin-drawer-empty" hidden>

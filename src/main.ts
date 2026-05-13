@@ -3628,6 +3628,16 @@ async function boot() {
       composerInput.focus();
       return;
     }
+    if (matches('Cmd+Shift+P')) {
+      claim();
+      // Toggle the right-side pin drawer. Synthesize a click on the
+      // toolbar pin-drawer button so the same open/close path the
+      // mouse exercises runs (handles count-banner refresh + body
+      // class for the desktop push layout).
+      const btn = document.getElementById('btn-pin-drawer') as HTMLButtonElement | null;
+      btn?.click();
+      return;
+    }
     if (matches(s.hotkeyToggleMic)) {
       claim();
       // Toggle MIC specifically — startMicMode (memo/dictate). Not
