@@ -261,7 +261,16 @@ export function replaySessionMessages(
       `.line[data-message-id="${CSS.escape(targetMessageId)}"]`,
     ) as HTMLElement | null;
     if (target) {
-      target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      // block:'start' aligns the TOP of the target bubble with the
+      // top of the viewport. Earlier 'center' put the MIDDLE of a
+      // tall bubble at viewport-center — for a multi-paragraph
+      // message taller than the viewport this dropped the start of
+      // the message off-screen ABOVE, making the drill feel "off by
+      // 2-3 messages" (Jonathan field bug 2026-05-13). Start-aligned
+      // is the search-result convention and also matches how cmdk
+      // message-hit drills feel correct on short messages — the
+      // 'center' inconsistency was only visible on long ones.
+      target.scrollIntoView({ block: 'start', behavior: 'smooth' });
       target.classList.add('search-target-flash');
       setTimeout(() => target.classList.remove('search-target-flash'), 1500);
       return;

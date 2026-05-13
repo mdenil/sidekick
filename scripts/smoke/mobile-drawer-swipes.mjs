@@ -149,6 +149,40 @@ export default async function run({ page, log }) {
   assert(!(await sidebarOpen(page)), `phase 3: sidebar should close after swipe`);
   log(`  sidebar closed cleanly ✓`);
 
+  // ── Phase 3b: short close-swipe (1/3 threshold) ──────────────────
+  // Jonathan field bug 2026-05-13: typical swipes landed at dx~120
+  // v~0.5 and snapped back open under the stricter widthPx/2 rule.
+  // Lower threshold to widthPx/3 — a flick should close, not a
+  // full deliberate half-drag.
+  log('phase 3b: short close-swipe should commit at widthPx/3');
+  await forceCloseBoth(page);
+  await openPinDrawerViaToggle(page);
+  assert(await pinOpen(page), `pre-3b: pin drawer should open via toggle`);
+  // 200→320 = 120px on a 320px drawer = exactly widthPx/3 + buffer.
+  // Pre-fix this would snap back; post-fix it should close.
+  await swipe(page, 200, 320, 400, 10);
+  assert(!(await pinOpen(page)),
+    `phase 3b: short close-swipe should commit at widthPx/3`);
+  log(`  short swipe (dx=120, ~1/3) closed drawer ✓`);
+
+  // ── Phase 3c: tap outside drawer dismisses ──────────────────────
+  // The X button is the explicit close; tap-anywhere-else should
+  // also dismiss on mobile. Same playbook as the sidebar.
+  log('phase 3c: tap outside dismisses');
+  await forceCloseBoth(page);
+  await openPinDrawerViaToggle(page);
+  assert(await pinOpen(page), `pre-3c: pin drawer should open via toggle`);
+  // Tap the chat area (far left of viewport — drawer occupies the
+  // right ~320px on a 390-wide screen so x=30 is comfortably outside).
+  await page.evaluate(() => {
+    const t = document.elementFromPoint(30, 400) || document.body;
+    t.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+  });
+  await page.waitForTimeout(200);
+  assert(!(await pinOpen(page)),
+    `phase 3c: tap outside drawer should close it`);
+  log(`  tap outside closed drawer ✓`);
+
   // ── Phase 4: pin drawer first, then sidebar ─────────────────────
   log('phase 4: pin drawer first, then sidebar (overlap, reverse order)');
   await forceCloseBoth(page);

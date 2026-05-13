@@ -120,4 +120,22 @@ export default async function run({ page, log }) {
   assert(targetVisible,
     `post-jump: chat A's pinned bubble (${msgA}) should be in the transcript`);
   log(`post-jump: pinned bubble rendered in transcript ✓`);
+
+  // The target's TOP should be near the viewport top (block:'start'
+  // alignment). Field bug 2026-05-13 (Jonathan): earlier `block:
+  // 'center'` centered tall bubbles, so their start fell well above
+  // the viewport — the drill felt "off by 2-3 messages." Allow
+  // smooth-scroll a moment to settle, then verify rect.top is in
+  // [-20, viewport*0.3] — within a small slack of the top edge.
+  await page.waitForTimeout(800);
+  const rect = await page.evaluate((mid) => {
+    const el = document.querySelector(`#transcript .line[data-message-id="${CSS.escape(mid)}"]`);
+    const r = el?.getBoundingClientRect();
+    return r ? { top: r.top, viewportH: window.innerHeight } : null;
+  }, msgA);
+  assert(rect, `post-jump: target bubble bounding rect should be readable`);
+  const okBand = rect.top >= -20 && rect.top <= rect.viewportH * 0.3;
+  assert(okBand,
+    `post-jump: target should land near viewport top (block:'start'), got top=${rect.top.toFixed(0)} viewportH=${rect.viewportH}`);
+  log(`post-jump: target lands at top of viewport (top=${rect.top.toFixed(0)}) ✓`);
 }

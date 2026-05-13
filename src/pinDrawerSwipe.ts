@@ -187,9 +187,17 @@ export function initPinDrawerSwipe(opts: SwipeOptions): void {
       const reversing = velocity < -VELOCITY_SNAP_PX_MS;
       closeFinal = !reversing;
     } else {
-      if (velocity > VELOCITY_SNAP_PX_MS) closeFinal = true;
-      else if (velocity < -VELOCITY_SNAP_PX_MS) closeFinal = false;
-      else closeFinal = dx > widthPx / 2;
+      // Bias toward close: distance threshold is widthPx/3 (was /2).
+      // Velocity gate is inclusive of the threshold (>=, was >).
+      // Jonathan field bug 2026-05-13: typical close-swipes landed at
+      // dx~120 v~0.5 and snapped back open under the stricter rule.
+      // 1/3 is a single quick flick rather than a deliberate full-
+      // halfway drag — the open path is button-tap so accidental
+      // closes from chat-area swipes can't happen (gesture only
+      // engages when drawer is already open + touch on right half).
+      if (velocity >= VELOCITY_SNAP_PX_MS) closeFinal = true;
+      else if (velocity <= -VELOCITY_SNAP_PX_MS) closeFinal = false;
+      else closeFinal = dx > widthPx / 3;
     }
     snap(closeFinal);
     diag(`[pin-drawer-swipe] release dx=${dx.toFixed(0)} v=${velocity.toFixed(2)} → ${closeFinal ? 'close' : 'reopen'}`);

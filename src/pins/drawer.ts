@@ -238,6 +238,27 @@ export function initPinDrawer(opts: {
     }
   });
 
+  // Tap outside the pin drawer closes it ON MOBILE ONLY — mirrors
+  // the sidebar's behavior. Without this the only way to dismiss
+  // the drawer from a non-list area was the X button (Jonathan
+  // field bug 2026-05-13). Capture phase so chat-bubble interactive
+  // controls calling stopPropagation don't kill the dismiss path.
+  // Exemptions:
+  //   - tap inside #pin-drawer itself (we ARE the drawer)
+  //   - tap on the toolbar pin-toggle (.mobile-only) — its onclick
+  //     toggles; the click-outside handler would race + cancel.
+  //   - tap inside the left sidebar (its own dismiss rules apply,
+  //     and we shouldn't close as a side-effect of sidebar work).
+  document.addEventListener('click', (e) => {
+    if (!isOpen()) return;
+    if (window.innerWidth >= 700) return;            // desktop: no-op
+    const target = e.target as Element | null;
+    if (target?.closest?.('#pin-drawer')) return;
+    if (target?.closest?.('#btn-pin-drawer')) return;
+    if (target?.closest?.('#sidebar')) return;
+    closeDrawer();
+  }, true);
+
   refreshCountBanner();
   // Mobile-only swipe-to-close: drag the drawer left-to-right past
   // the halfway point (or with enough velocity) to dismiss it.
