@@ -1763,10 +1763,25 @@
     overflow: hidden; text-overflow: ellipsis;
     display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
   }
-  .pin-item-chat {
-    margin-top: 6px; font-size: 11px; color: var(--muted);
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  .pin-item-footer {
+    margin-top: 6px;
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 8px;
   }
+  .pin-item-chat {
+    font-size: 11px; color: var(--muted);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    flex: 1; min-width: 0;
+  }
+  .pin-item-jump-btn {
+    flex-shrink: 0;
+    background: none; border: none; color: var(--muted);
+    cursor: pointer; padding: 6px; border-radius: 4px;
+    display: flex; align-items: center; justify-content: center;
+    transition: color 0.12s, background 0.12s;
+  }
+  .pin-item-jump-btn:hover { color: var(--fg); background: var(--surface-2); }
   .pin-drawer-empty {
     padding: 32px 20px; text-align: center;
     color: var(--muted); font-size: 13px;

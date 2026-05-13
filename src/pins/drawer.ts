@@ -90,22 +90,41 @@ function renderItem(item: PinnedItem): HTMLElement {
   body.className = 'pin-item-body';
   body.textContent = item.text;
 
-  const chat = document.createElement('div');
+  // Footer row: chat label on the left, jump-to-context icon on the
+  // right. The icon is the explicit affordance Jonathan asked for —
+  // a discoverable "open this in its chat" button (arrow-up-right
+  // / external-link iconography). The whole row is ALSO clickable
+  // for the common case where the user just taps anywhere on the
+  // item; the icon is the cue that this is what happens.
+  const footer = document.createElement('div');
+  footer.className = 'pin-item-footer';
+  const chat = document.createElement('span');
   chat.className = 'pin-item-chat';
   chat.textContent = chatLabelFor(item.chatId);
+  const jumpBtn = document.createElement('button');
+  jumpBtn.className = 'pin-item-jump-btn';
+  jumpBtn.title = 'Open in chat';
+  jumpBtn.setAttribute('aria-label', 'Open in chat');
+  // Arrow-up-right (open-in-context). Distinct from the bubble's
+  // pin icon — this one says "navigate," not "save."
+  jumpBtn.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="7" y1="17" x2="17" y2="7"/><polyline points="7 7 17 7 17 17"/></svg>';
+  footer.appendChild(chat);
+  footer.appendChild(jumpBtn);
 
   li.appendChild(meta);
   li.appendChild(body);
-  li.appendChild(chat);
+  li.appendChild(footer);
 
-  li.onclick = () => {
+  const drill = () => {
     if (onPinClickCb) onPinClickCb(item.chatId, item.msgId);
-    // Close on iOS / mobile — fixed overlay panels feel wrong when
-    // they stay open after a navigation. Desktop closes too — the
-    // drawer-as-overlay model means a focused chat should claim the
-    // screen.
     closeDrawer();
   };
+  li.onclick = drill;
+  // Explicit handler on the jump button + stopPropagation so a click
+  // doesn't double-fire via the row. Same destination either way,
+  // but keeps the event accounting clean (matters for any future
+  // alternate row-click action).
+  jumpBtn.onclick = (e) => { e.stopPropagation(); drill(); };
 
   return li;
 }
