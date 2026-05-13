@@ -698,7 +698,23 @@ export function prependHistory(renderFn: () => void) {
   persist();
 }
 
+/** Drill-scroll guard: while a pin-drawer / cmdk drill is scrolling
+ *  the target message into view, suppress lazy-load. Without this,
+ *  scrolling near the top of the transcript triggers maybeLoadEarlier
+ *  mid-flight; the resulting prepend shifts the target's y-coordinate
+ *  but the smooth-scroll keeps animating to the *old* coordinate,
+ *  landing the user on an "earlier" message. Each successive click
+ *  triggers another page until pagination exhausts — the field bug
+ *  Jonathan called "takes 3 tries to land on the right message"
+ *  (2026-05-13). suppressLoadEarlierFor sets a deadline; maybeLoadEarlier
+ *  bails until it passes. */
+let suppressLoadEarlierUntil = 0;
+export function suppressLoadEarlierFor(ms: number): void {
+  suppressLoadEarlierUntil = Math.max(suppressLoadEarlierUntil, Date.now() + ms);
+}
+
 async function maybeLoadEarlier() {
+  if (Date.now() < suppressLoadEarlierUntil) return;
   if (!paginationHasMore || paginationLoading || !paginationCb || paginationOldestId == null) return;
   if (!transcriptEl) return;
   if (transcriptEl.scrollTop > LOAD_EARLIER_THRESHOLD_PX) return;
