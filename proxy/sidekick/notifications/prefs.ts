@@ -98,7 +98,9 @@ function mergeWithDefaults(parsed: any): Prefs {
 
 async function persist(): Promise<void> {
   if (!storePath) throw new Error('[notifications] prefs store not initialized');
-  const tmp = `${storePath}.tmp-${process.pid}-${Date.now()}`;
+  // Random suffix — see storage.ts persist() for the same fix.
+  const rand = Math.random().toString(36).slice(2, 8);
+  const tmp = `${storePath}.tmp-${process.pid}-${Date.now()}-${rand}`;
   await fs.writeFile(tmp, JSON.stringify(cache ?? DEFAULT_PREFS, null, 2), 'utf8');
   await fs.rename(tmp, storePath);
 }
