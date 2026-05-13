@@ -1943,23 +1943,47 @@
    * content column (drawer width minus the 48px rail), so the card
    * lays out cleanly without overflowing. */
   #pin-drawer:not(.collapsed) .ambient-widget.ambient-in-drawer.expanded {
+    /* Anchor to bottom of the drawer's content column (48px rail to
+     * the left), full width, centered. No nested panel framing — the
+     * drawer itself is already a surface; another bordered card on
+     * top reads as visual clutter (Jonathan field UX 2026-05-13).
+     * Just space the rows naturally. */
     position: absolute;
-    right: 12px;
+    left: 48px;
+    right: 0;
     bottom: 12px;
-    width: calc(var(--pin-drawer-width, 360px) - 48px - 24px);
+    width: auto;
     padding: 14px 16px;
-    background: color-mix(in srgb, var(--surface-2) 92%, transparent);
-    border: 1px solid var(--border);
-    border-radius: 12px;
+    background: transparent;
+    border: none;
+    border-radius: 0;
     flex-direction: column;
     gap: 0;
     z-index: 2;
     /* Override the parent .ambient-mount's visibility:hidden — that
      * rule keeps the compact rail stack out of view while the drawer
      * is open, but visibility cascades to children even when they're
-     * position:absolute. Without this, the expanded card never paints.
-     * Field bug 2026-05-13 (Jonathan: "no weather in expanded pinbar"). */
+     * position:absolute. Without this, the expanded card never paints. */
     visibility: visible;
+  }
+  /* Drop the inner "current conditions" card framing too — the outer
+   * panel is gone, this no longer needs to read as a separate surface.
+   * Keep the icon + temp + description inline, centered. */
+  #pin-drawer:not(.collapsed) .ambient-widget.ambient-in-drawer.expanded .amb-current {
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    padding: 0;
+    margin-top: 10px;
+    justify-content: center;
+  }
+  /* Center the forecast strip too so the whole column reads as a
+   * single composed block instead of left-anchored rows. */
+  #pin-drawer:not(.collapsed) .ambient-widget.ambient-in-drawer.expanded .amb-forecast {
+    align-items: stretch;
+    max-width: 220px;
+    margin-left: auto;
+    margin-right: auto;
   }
 
   /* In the rail when expanded — hide the rail's compact-stack so the
