@@ -286,10 +286,26 @@ export function replaySessionMessages(
       setTimeout(() => target.classList.remove('search-target-flash'), 1500);
       return;
     }
-    // Fallthrough to scroll-to-bottom if not found — don't leave the
-    // user stranded on a random scroll position. A future backlog
-    // item drives load-earlier until the target is located.
-    log(`[cmdk] target message ${targetMessageId} not in initial replay; load-earlier drill not yet implemented`);
+    // Target ISN'T in the initial replay window — drive load-earlier
+    // until we either find it or run out of history. Field bug
+    // 2026-05-13 (Jonathan, dev-log line 353: `[cmdk] target message
+    // msg_0f882d80f3c8e498e1a8 not in initial replay; load-earlier
+    // drill not yet implemented` — pinning an older message and
+    // clicking jump landed on the wrong spot because the bubble
+    // wasn't rendered yet).
+    //
+    // Strategy: page through older history (~50 msgs/page) up to a
+    // safety cap (10 pages = ~500 msgs back). Each page prepends to
+    // the transcript via the same path scroll-to-top lazy-load uses.
+    // suppressLoadEarlierFor blocks the scroll listener from racing.
+    //
+    // Async / fire-and-forget: the outer replaySessionMessages
+    // returns synchronously; the drill runs in the background and
+    // scrolls the target into view when found. The pin drawer's
+    // closeOnDrillMobile UX still triggers correctly because the
+    // drill click already drove that side-effect.
+    log(`[cmdk] target ${targetMessageId} not in initial window — driving load-earlier drill`);
+    void drillToOlderMessage(id, targetMessageId, pagination?.firstId ?? null, !!pagination?.hasMore);
   }
   // Replay any inflight envelopes from the proxy's in-memory cache —
   // user message + tool calls + reply deltas for an in-flight turn
@@ -515,6 +531,67 @@ export function renderHistoryMessage(
     }
   }
   // Tool role / system role: skip for now; UI has no slot for them.
+}
+
+/** Page through older history pages until the target message renders
+ *  in the DOM, then scroll-and-flash it. Driven by the pin-drawer
+ *  jump path (and any cmdk hit on a message OLDER than the resume
+ *  window). Caps at 10 pages (~500 msgs) so a stale msgId can't drive
+ *  an unbounded backfill. Field bug 2026-05-13. */
+const DRILL_PAGE_CAP = 10;
+async function drillToOlderMessage(
+  chatId: string,
+  targetMessageId: string,
+  initialFirstId: number | null,
+  initialHasMore: boolean,
+): Promise<void> {
+  let cursor = initialFirstId;
+  let hasMore = initialHasMore;
+  const transcriptEl = document.getElementById('transcript');
+  if (!transcriptEl) return;
+  for (let i = 0; i < DRILL_PAGE_CAP && hasMore && cursor != null; i++) {
+    // Bail if the user navigated away mid-drill — the chat we're
+    // backfilling isn't the one on screen anymore.
+    if (sessionDrawer.getViewed() !== chatId) {
+      log(`[cmdk] drill aborted — session changed mid-fetch`);
+      return;
+    }
+    try {
+      const result: any = await backend.loadEarlier(chatId, cursor);
+      const older = result.messages || [];
+      if (!older.length) { hasMore = false; break; }
+      const label = getAgentLabelRef();
+      chat.prependHistory(() => {
+        // oldest→newest into prepend(firstChild), so the LAST iteration
+        // ends up topmost — matches the existing lazy-load helper.
+        for (let j = older.length - 1; j >= 0; j--) {
+          renderHistoryMessage(older[j], label, 'prepend');
+        }
+      });
+      cursor = result.firstId ?? null;
+      hasMore = !!result.hasMore;
+      chat.setPaginationState(cursor, hasMore);
+    } catch (e: any) {
+      diag(`[cmdk] drill page ${i + 1} fetch failed: ${e?.message || e}`);
+      return;
+    }
+    // Did the just-prepended page include the target?
+    const target = transcriptEl.querySelector(
+      `.line[data-message-id="${CSS.escape(targetMessageId)}"]`,
+    ) as HTMLElement | null;
+    if (target) {
+      log(`[cmdk] drill found ${targetMessageId} after ${i + 1} page(s)`);
+      chat.suppressLoadEarlierFor(1200);
+      target.scrollIntoView({ block: 'start', behavior: 'instant' as ScrollBehavior });
+      target.classList.add('search-target-flash');
+      requestAnimationFrame(() => {
+        target.scrollIntoView({ block: 'start', behavior: 'instant' as ScrollBehavior });
+      });
+      setTimeout(() => target.classList.remove('search-target-flash'), 1500);
+      return;
+    }
+  }
+  log(`[cmdk] drill exhausted — target ${targetMessageId} not found within ${DRILL_PAGE_CAP} pages`);
 }
 
 /** Scroll-to-top lazy-load. Fetches messages older than `beforeId`

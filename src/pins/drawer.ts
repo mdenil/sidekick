@@ -12,6 +12,7 @@
 import { listAllPins, totalPinCount, clearAllPins, type PinnedItem } from './store.ts';
 import { log } from '../util/log.ts';
 import { createDrawer, type DrawerHandle } from '../Drawer.ts';
+import { miniMarkdown } from '../util/markdown.ts';
 
 let drawerEl: HTMLElement | null = null;
 let listEl: HTMLElement | null = null;
@@ -80,7 +81,14 @@ function renderItem(item: PinnedItem): HTMLElement {
 
   const body = document.createElement('div');
   body.className = 'pin-item-body';
-  body.textContent = item.text;
+  // Render markdown (bold, italic, code, links, lists) so a pinned
+  // bullet list / quoted reply / code snippet reads cleanly instead of
+  // raw `**foo**` and `- bar`. Same renderer the transcript uses
+  // (chat.addLine markdown:true path); pinned items keep parity.
+  // dataset.text holds the raw markdown so copy / future edit paths
+  // round-trip losslessly; innerHTML is just the display layer.
+  body.dataset.text = item.text;
+  body.innerHTML = miniMarkdown(item.text);
   // Click the body to toggle expansion in-place. Multi-line clamp by
   // default (3 lines) keeps the drawer scannable; expanded reveals
   // the full stored text (up to ~1500 chars from pin-time). Per-item

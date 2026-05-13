@@ -1802,22 +1802,43 @@
     font-size: 11px; color: var(--muted); margin-bottom: 4px;
   }
   .pin-item-role { font-weight: 600; }
+  /* Pin body renders markdown (bold/italic/code/lists/links). Collapsed
+   * state caps height + adds a fade so block elements (<ul>, <pre>)
+   * still preview cleanly — line-clamp doesn't work on multi-block
+   * markdown HTML, so we use max-height + gradient mask instead.
+   * Expanded removes the cap. */
   .pin-item-body {
     font-size: 13px; line-height: 1.4; color: var(--fg);
-    overflow: hidden; text-overflow: ellipsis;
-    display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
-    transition: -webkit-line-clamp 0.1s ease;
-  }
-  /* Expanded — clicking the body toggles .pin-drawer-item.expanded.
-   * Drop the line clamp + let the full stored message render
-   * (~1500 char cap from pin-time). The body becomes a regular
-   * block flow so long messages wrap naturally. */
-  .pin-drawer-item.expanded .pin-item-body {
-    display: block;
-    -webkit-line-clamp: unset;
-    overflow: visible;
-    white-space: pre-wrap;
+    max-height: 4.2em; overflow: hidden;
+    position: relative;
     word-break: break-word;
+    transition: max-height 0.15s ease;
+    -webkit-mask-image: linear-gradient(to bottom, #000 70%, transparent 100%);
+    mask-image: linear-gradient(to bottom, #000 70%, transparent 100%);
+  }
+  .pin-item-body > :first-child { margin-top: 0; }
+  .pin-item-body > :last-child { margin-bottom: 0; }
+  .pin-item-body p { margin: 0 0 4px; }
+  .pin-item-body ul, .pin-item-body ol { margin: 0 0 4px; padding-left: 18px; }
+  .pin-item-body li { margin: 0; }
+  .pin-item-body code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+    background: var(--surface-2); padding: 1px 4px; border-radius: 3px;
+  }
+  .pin-item-body pre {
+    background: var(--surface-2); padding: 6px 8px; border-radius: 4px;
+    overflow-x: auto; margin: 0 0 4px;
+  }
+  .pin-item-body pre code { background: transparent; padding: 0; }
+  .pin-item-body a { color: var(--primary); }
+  /* Expanded — clicking the body toggles .pin-drawer-item.expanded.
+   * Drop the height cap + fade mask + let the full stored message
+   * render (~1500 char cap from pin-time). */
+  .pin-drawer-item.expanded .pin-item-body {
+    max-height: none;
+    -webkit-mask-image: none;
+    mask-image: none;
   }
   .pin-item-footer {
     margin-top: 6px;
@@ -1933,11 +1954,18 @@
     flex-direction: column;
     gap: 0;
     z-index: 2;
+    /* Override the parent .ambient-mount's visibility:hidden — that
+     * rule keeps the compact rail stack out of view while the drawer
+     * is open, but visibility cascades to children even when they're
+     * position:absolute. Without this, the expanded card never paints.
+     * Field bug 2026-05-13 (Jonathan: "no weather in expanded pinbar"). */
+    visibility: visible;
   }
 
   /* In the rail when expanded — hide the rail's compact-stack so the
    * full card (positioned absolutely above) is the only ambient
-   * surface visible while the drawer is open. */
+   * surface visible while the drawer is open. Children override
+   * via `visibility: visible` on the .expanded card rule above. */
   #pin-drawer:not(.collapsed) .ambient-mount { visibility: hidden; }
 
   /* ── Per-bubble TTS playback controls (agent lines) ──
