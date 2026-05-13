@@ -9,7 +9,7 @@
 // listens to `sidekick:pins-changed` and re-renders itself; the toggle
 // button banner stays in sync via totalPinCount().
 
-import { listAllPins, totalPinCount, clearAllPins, type PinnedItem } from './store.ts';
+import { listAllPins, totalPinCount, clearAllPins, unpinMessage, type PinnedItem } from './store.ts';
 import { log } from '../util/log.ts';
 import { createDrawer, type DrawerHandle } from '../Drawer.ts';
 import { miniMarkdown } from '../util/markdown.ts';
@@ -120,6 +120,16 @@ function renderItem(item: PinnedItem): HTMLElement {
   const chat = document.createElement('span');
   chat.className = 'pin-item-chat';
   chat.textContent = chatLabelFor(item.chatId);
+  // Unpin button — filled thumbtack (matches the .pinned state of the
+   // bubble's pin button). Clicking removes the entry from the store
+   // (which also toggles .pinned off in the source bubble via the
+   // sidekick:pins-changed listener).
+  const unpinBtn = document.createElement('button');
+  unpinBtn.className = 'pin-item-unpin-btn';
+  unpinBtn.title = 'Unpin message';
+  unpinBtn.setAttribute('aria-label', 'Unpin message');
+  unpinBtn.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M12 17v5" stroke-linecap="round"/><path d="M9 10.76V4h6v6.76l3 1.74v2.5H6v-2.5z"/></svg>';
+
   const jumpBtn = document.createElement('button');
   jumpBtn.className = 'pin-item-jump-btn';
   jumpBtn.title = 'Open in chat';
@@ -128,6 +138,7 @@ function renderItem(item: PinnedItem): HTMLElement {
   // pin icon — this one says "navigate," not "save."
   jumpBtn.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="7" y1="17" x2="17" y2="7"/><polyline points="7 7 17 7 17 17"/></svg>';
   footer.appendChild(chat);
+  footer.appendChild(unpinBtn);
   footer.appendChild(jumpBtn);
 
   li.appendChild(meta);
@@ -150,6 +161,13 @@ function renderItem(item: PinnedItem): HTMLElement {
   // but keeps the event accounting clean (matters for any future
   // alternate row-click action).
   jumpBtn.onclick = (e) => { e.stopPropagation(); drill(); };
+  unpinBtn.onclick = (e) => {
+    e.stopPropagation();
+    // unpinMessage fires sidekick:pins-changed which triggers
+    // render() — the item disappears from the list without us
+    // needing to remove the DOM node by hand.
+    void unpinMessage(item.chatId, item.msgId);
+  };
 
   return li;
 }

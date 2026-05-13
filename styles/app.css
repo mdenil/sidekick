@@ -1851,7 +1851,7 @@
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     flex: 1; min-width: 0;
   }
-  .pin-item-jump-btn {
+  .pin-item-jump-btn, .pin-item-unpin-btn {
     flex-shrink: 0;
     background: none; border: none; color: var(--muted);
     cursor: pointer; padding: 6px; border-radius: 4px;
@@ -1859,6 +1859,12 @@
     transition: color 0.12s, background 0.12s;
   }
   .pin-item-jump-btn:hover { color: var(--fg); background: var(--surface-2); }
+  /* Unpin button uses the same muted/hover treatment but tints toward
+   * primary on hover to telegraph the destructive-ish action (removes
+   * the pin entry); the filled-thumbtack icon already reads as "this
+   * is currently pinned, click to unpin". */
+  .pin-item-unpin-btn { color: var(--primary); opacity: 0.7; }
+  .pin-item-unpin-btn:hover { color: var(--primary); opacity: 1; background: var(--surface-2); }
   .pin-drawer-empty {
     padding: 32px 20px; text-align: center;
     color: var(--muted); font-size: 13px;

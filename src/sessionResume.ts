@@ -260,29 +260,8 @@ export function replaySessionMessages(
       `.line[data-message-id="${CSS.escape(targetMessageId)}"]`,
     ) as HTMLElement | null;
     if (target) {
-      // Suppress lazy-load while the drill is in flight. The drill
-      // scrolls the target near the TOP of the viewport (block:'start'),
-      // which crosses the LOAD_EARLIER_THRESHOLD; without this guard
-      // every drill triggers a load-earlier page, prepends ~50 older
-      // bubbles, and the target shifts to a higher y-coordinate. With
-      // a *smooth* scroll the animation kept going to the OLD target y,
-      // landing the user on an "earlier" message — the field bug
-      // Jonathan reported 2026-05-13 ("takes 3 clicks"). The fix has
-      // three layers, all needed:
-      //
-      //   1) suppressLoadEarlierFor() — pause pagination across the
-      //      drill so prepends can't happen.
-      //   2) behavior:'instant' — deterministic jump, no animation
-      //      window for other scroll listeners to race against.
-      //   3) rAF re-scroll — catch layout shifts from late-rendering
-      //      content (images, tool-call summaries) that nudge the
-      //      target's y after the initial scroll.
       chat.suppressLoadEarlierFor(1200);
-      target.scrollIntoView({ block: 'start', behavior: 'instant' as ScrollBehavior });
-      target.classList.add('search-target-flash');
-      requestAnimationFrame(() => {
-        target.scrollIntoView({ block: 'start', behavior: 'instant' as ScrollBehavior });
-      });
+      drillScrollTo(target);
       setTimeout(() => target.classList.remove('search-target-flash'), 1500);
       return;
     }
@@ -533,6 +512,49 @@ export function renderHistoryMessage(
   // Tool role / system role: skip for now; UI has no slot for them.
 }
 
+/** Scroll the target bubble's TOP to the top of the transcript
+ *  viewport — bypassing CSS `scroll-behavior: smooth` set on
+ *  `.transcript`. Direct `scrollTop` assignment is universally
+ *  instant; `scrollIntoView({behavior:'instant'})` is NOT honored on
+ *  iOS WKWebView (Safari treats `'instant'` as `'auto'` which defers
+ *  to the CSS smooth, so the animation runs — racing layout shifts
+ *  and load-earlier triggers along the way). Field bug 2026-05-13
+ *  (Jonathan, iOS): "clicking pins in iOS still doesn't immediately
+ *  jump to correct message" — the cycle smoke proved the logic
+ *  correct on chromium-emulated mobile, but real iOS still drifted
+ *  because the smooth animation kept running.
+ *
+ *  Compute target scrollTop from current rects so prior layout shifts
+ *  (load-earlier prepends, etc.) don't matter. Then re-fire on rAF
+ *  to catch any post-paint shifts (image decode, tool-call expansion). */
+function drillScrollTo(target: HTMLElement): void {
+  const transcriptEl = document.getElementById('transcript');
+  if (!transcriptEl) return;
+  const apply = () => {
+    const tr = transcriptEl.getBoundingClientRect();
+    const tg = target.getBoundingClientRect();
+    // Desired scrollTop: bring target's top to transcript's top (with
+    // an 8px slack so the bubble has visual breathing room from the
+    // viewport edge). CSS `scroll-behavior: smooth` on .transcript
+    // applies to programmatic scrolls too (including direct scrollTop
+    // assignment), which racing the smooth animation against layout
+    // shifts produces the iOS "lands wrong" symptom. Override inline,
+    // assign, restore — the change is observable only within this
+    // microtask, no flicker.
+    const prevBehavior = transcriptEl.style.scrollBehavior;
+    transcriptEl.style.scrollBehavior = 'auto';
+    const desired = transcriptEl.scrollTop + (tg.top - tr.top) - 8;
+    transcriptEl.scrollTop = Math.max(0, desired);
+    transcriptEl.style.scrollBehavior = prevBehavior;
+  };
+  target.classList.add('search-target-flash');
+  apply();
+  requestAnimationFrame(apply);
+  // One more retry after a paint+layout cycle catches late-rendering
+  // content (images decoding, tool-call summaries hydrating).
+  setTimeout(apply, 120);
+}
+
 /** Page through older history pages until the target message renders
  *  in the DOM, then scroll-and-flash it. Driven by the pin-drawer
  *  jump path (and any cmdk hit on a message OLDER than the resume
@@ -582,11 +604,7 @@ async function drillToOlderMessage(
     if (target) {
       log(`[cmdk] drill found ${targetMessageId} after ${i + 1} page(s)`);
       chat.suppressLoadEarlierFor(1200);
-      target.scrollIntoView({ block: 'start', behavior: 'instant' as ScrollBehavior });
-      target.classList.add('search-target-flash');
-      requestAnimationFrame(() => {
-        target.scrollIntoView({ block: 'start', behavior: 'instant' as ScrollBehavior });
-      });
+      drillScrollTo(target);
       setTimeout(() => target.classList.remove('search-target-flash'), 1500);
       return;
     }
