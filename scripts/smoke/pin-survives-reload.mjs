@@ -18,6 +18,7 @@ export const NAME = 'pin-survives-reload';
 export const DESCRIPTION = 'pinned bubbles + drawer aggregation survive a full page reload (IDB hydrate path)';
 export const STATUS = 'implemented';
 export const BACKEND = 'mocked';
+// MOBILE coverage deferred — see pin-toggle-on-bubble.mjs.
 
 export function MOCK_SETUP(_mock) { /* defaults */ }
 

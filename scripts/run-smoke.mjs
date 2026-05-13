@@ -87,6 +87,7 @@ async function loadScenarios() {
       backend: mod.BACKEND || 'either',  // 'mocked' | 'real' | 'either'
       mockSetup: mod.MOCK_SETUP || null,  // optional (mock) => void
       run: mod.default,
+      module: mod,                       // full module for option flags (MOBILE, etc.)
     });
   }
   return scenarios;
@@ -101,7 +102,11 @@ async function runOne(scenario, browser) {
   // every subsequent scenario. Scenarios can still override via their
   // own resetServerSettings() call after this.
   try { await resetServerSettings(null); } catch { /* dev proxy down — let scenario fail with the actual error */ }
-  const { ctx, page, cleanup } = await launchBrowser(browser, { headed: HEADED });
+  // Scenarios that need iOS-shape coverage opt in via `MOBILE = true`
+  // (mobile-only) or `MOBILE = 'both'` (expanded to desktop + mobile
+  // pair by the runner). Resolved by main() into a per-variant flag.
+  const useMobile = !!scenario.mobileVariant;
+  const { ctx, page, cleanup } = await launchBrowser(browser, { headed: HEADED, mobile: useMobile });
   const getConsole = attachConsoleCapture(page);
   const log = (msg) => console.log(`  [${scenario.name}] ${msg}`);
   let failMessage = null;
@@ -164,7 +169,24 @@ async function main() {
   if (MOCKED_ONLY) {
     runnable = runnable.filter(s => s.backend !== 'real');
   }
-  const skipped = scenarios.filter(s => !runnable.includes(s));
+  // Scenarios that export MOBILE='both' run twice — once desktop, once
+  // mobile — so coverage of iOS-shape paths (mobile breakpoint, touch,
+  // .mobile-only buttons, swipe gestures) rides every CI/test run
+  // alongside the desktop coverage. The two variants share name +
+  // description; only the suffix `· mobile` distinguishes them in
+  // the report. Saves authoring + maintaining parallel variant files.
+  const expanded = [];
+  for (const s of runnable) {
+    const mob = s.module?.MOBILE;
+    if (mob === 'both') {
+      expanded.push({ ...s, name: `${s.name} · desktop`, mobileVariant: false });
+      expanded.push({ ...s, name: `${s.name} · mobile`, mobileVariant: true });
+    } else {
+      expanded.push({ ...s, mobileVariant: !!mob });
+    }
+  }
+  runnable = expanded;
+  const skipped = scenarios.filter(s => !runnable.some(r => r.file === s.file));
 
   if (runnable.length === 0) {
     logRunner('no scenarios matched');

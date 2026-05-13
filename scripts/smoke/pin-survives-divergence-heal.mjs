@@ -28,6 +28,7 @@ export const NAME = 'pin-survives-divergence-heal';
 export const DESCRIPTION = 'pinned bubbles are excluded from divergence-heal even when their msgId falls outside the resume window';
 export const STATUS = 'implemented';
 export const BACKEND = 'mocked';
+// MOBILE coverage deferred — see pin-toggle-on-bubble.mjs.
 
 const CHAT_ID = 'mock-pin-heal-chat';
 // Build a chat with N "old" messages PLUS a stable pinned target.

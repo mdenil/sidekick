@@ -12,6 +12,7 @@
 import { listAllPins, totalPinCount, clearAllPins, type PinnedItem } from './store.ts';
 import { log } from '../util/log.ts';
 import { repaint as repaintAmbient } from '../ambient.ts';
+import { initPinDrawerSwipe } from '../pinDrawerSwipe.ts';
 
 let drawerEl: HTMLElement | null = null;
 let listEl: HTMLElement | null = null;
@@ -26,6 +27,12 @@ function openDrawer(): void {
   drawerEl.classList.remove('collapsed');
   drawerEl.setAttribute('aria-expanded', 'true');
   document.body.classList.add('pin-drawer-open');
+  // Bring pin drawer to front in the z-index stack — beats the
+  // sidebar's .front class if it was set. Both drawers running this
+  // dance gives "most-recently-opened on top" behavior on mobile
+  // where they overlap. See CSS .front rule.
+  drawerEl.classList.add('front');
+  document.getElementById('sidebar')?.classList.remove('front');
   render();
   // Tell the ambient widget to re-render in its new (expanded)
   // visual mode now that the drawer is open.
@@ -232,5 +239,13 @@ export function initPinDrawer(opts: {
   });
 
   refreshCountBanner();
+  // Mobile-only swipe-to-close: drag the drawer left-to-right past
+  // the halfway point (or with enough velocity) to dismiss it.
+  // Open affordance is still the toolbar button (.mobile-only); on
+  // desktop the rail toggle handles open/close and swipe is a no-op.
+  initPinDrawerSwipe({
+    close: () => closeDrawer(),
+    isOpen,
+  });
   log('[pin-drawer] initialized');
 }

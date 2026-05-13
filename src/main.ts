@@ -492,6 +492,14 @@ async function boot() {
       // toggle on top of the overlay). On desktop, the same class shifts
       // body.padding-left to 260px so the main content slides right.
       document.body.classList.toggle('sidebar-expanded', exp);
+      // Take the .front z-index layer on open so swipe gestures land
+      // on the sidebar when both drawers are open. Pin drawer does the
+      // same dance in its openDrawer; mutually exclusive owner of
+      // .front gives "most-recently-opened on top" semantics.
+      if (exp) {
+        sidebar.classList.add('front');
+        document.getElementById('pin-drawer')?.classList.remove('front');
+      }
       if (exp) sessionDrawer.refresh();  // fresh data each time we open
       // Persist only on desktop — a mobile toggle is a transient navigation
       // action, not a global preference, and we don't want it forcing the
@@ -522,8 +530,18 @@ async function boot() {
     // fires normally afterwards.
     document.addEventListener('click', (e) => {
       if (!sidebar.classList.contains('expanded')) return;
-      if (sidebar.contains(e.target as Node)) return;
+      const target = e.target as Element | null;
+      if (sidebar.contains(target)) return;
       if (window.innerWidth >= 700) return;   // desktop: no-op
+      // Tapping the pin-drawer toggle or anything inside the pin
+      // drawer itself is part of the right-side drawer's surface,
+      // not "outside the chat" — preserve the overlap UX where both
+      // drawers can be open at once on mobile. Without this, the
+      // sidebar would auto-close the moment the user reached for
+      // the pin-drawer toggle (Jonathan field test 2026-05-13:
+      // phase 3 of mobile-drawer-swipes regression).
+      if (target?.closest?.('#pin-drawer')) return;
+      if (target?.closest?.('#btn-pin-drawer')) return;
       setExpanded(false);
     }, true);
 

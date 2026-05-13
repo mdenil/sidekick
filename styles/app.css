@@ -1668,6 +1668,15 @@
   body { padding-right: 48px; transition: padding-right 0.18s ease; }
   body.pin-drawer-open { padding-right: var(--pin-drawer-width, 360px); }
 
+  /* When both drawers are open and overlap (mobile), whichever was
+   * opened most recently gets `.front` and rises one z-index layer
+   * so swipe gestures land on the top drawer and dismiss it cleanly.
+   * Without this, the structurally-later #pin-drawer always wins
+   * z-index ties even when the user JUST opened the sidebar.
+   * Jonathan's invariant: "whoever came out most recently is on
+   * top, swipe gesture is always with respect to the top panel." */
+  #sidebar.front, #pin-drawer.front { z-index: 51; }
+
   #pin-drawer {
     position: fixed; top: 0; right: 0; bottom: 0;
     width: 48px;
@@ -1732,6 +1741,11 @@
     display: flex; align-items: center; justify-content: space-between;
     padding: 12px 14px; border-bottom: 1px solid var(--border);
     gap: 8px;
+    /* iOS PWA respects safe-area at the TOP so the header (X / Clear)
+     * doesn't collide with the system status bar (Jonathan field bug
+     * 2026-05-13: X button was "crowded by the clock"). max() falls
+     * back to the base 12px on non-notched devices / browsers. */
+    padding-top: max(12px, env(safe-area-inset-top, 0px));
   }
   .pin-drawer-title { margin: 0; font-size: 14px; font-weight: 600; letter-spacing: 0.02em; color: var(--fg); flex: 1; }
   .pin-drawer-header-actions {

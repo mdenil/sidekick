@@ -51,13 +51,29 @@ export async function launchSharedBrowser({ headed = false } = {}) {
  *  worker registration — same isolation guarantee as the old
  *  per-scenario `launchPersistentContext` path, minus the Chromium boot
  *  cost. Caller must `await cleanup()` when the scenario finishes. */
-export async function launchBrowser(browser, { headed: _headed = false } = {}) {
-  const ctx = await browser.newContext({
-    // Desktop viewport — sidekick's mobile breakpoint auto-collapses
-    // the sidebar drawer on small screens, which would make drawer
-    // rows non-clickable in tests. Pin to a stable desktop size.
-    viewport: { width: 1280, height: 800 },
-  });
+export async function launchBrowser(browser, { headed: _headed = false, mobile = false } = {}) {
+  // Mobile mode uses an iPhone-ish viewport (375x812) + touch +
+  // mobile UA so the PWA's @media (max-width: 699px) rules apply
+  // and the sidebar swipe gesture (sidebarSwipe.ts) engages. Without
+  // these flags the mobile-only code paths (.mobile-only buttons,
+  // sidebar overlay vs rail, swipe handlers) are never exercised
+  // and the desktop-default suite ships with implicit iOS-coverage
+  // holes. Scenarios opt in via `MOBILE = true` in the module.
+  const ctx = mobile
+    ? await browser.newContext({
+        viewport: { width: 390, height: 844 },
+        deviceScaleFactor: 3,
+        userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) '
+          + 'AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
+        isMobile: true,
+        hasTouch: true,
+      })
+    : await browser.newContext({
+        // Desktop viewport — sidekick's mobile breakpoint auto-collapses
+        // the sidebar drawer on small screens, which would make drawer
+        // rows non-clickable in tests. Pin to a stable desktop size.
+        viewport: { width: 1280, height: 800 },
+      });
   const page = await ctx.newPage();
   const cleanup = async () => {
     try { await ctx.close(); } catch {}
@@ -169,9 +185,13 @@ export async function openSidebar(page, { timeout = 3_000 } = {}) {
     return sb?.classList.contains('expanded') || false;
   });
   if (isExpanded) return;
-  // Toggle button id: sb-toggle (desktop) or sb-toggle-mobile (mobile).
-  // We're on a 1280px viewport so desktop applies.
-  const toggle = page.locator('#sb-toggle, #sb-toggle-mobile').first();
+  // Toggle button id: sb-toggle (desktop, lives INSIDE the sidebar so
+  // it's off-screen when the sidebar is in mobile-collapsed
+  // translateX(-100%) state) or sb-toggle-mobile (in the toolbar,
+  // .mobile-only). Pick the visible one — locator(':visible') resolves
+  // at click time, not when the locator's created, so this works for
+  // both viewport modes without per-scenario branching.
+  const toggle = page.locator('#sb-toggle:visible, #sb-toggle-mobile:visible').first();
   await toggle.click();
   await page.waitForFunction(
     () => document.getElementById('sidebar')?.classList.contains('expanded'),

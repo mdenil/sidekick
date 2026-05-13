@@ -18,6 +18,7 @@ export const NAME = 'pin-drawer-aggregation';
 export const DESCRIPTION = 'pin drawer aggregates pinned messages across multiple chats, newest-first';
 export const STATUS = 'implemented';
 export const BACKEND = 'mocked';
+// MOBILE coverage deferred — see pin-toggle-on-bubble.mjs.
 
 const CHAT_B = 'mock-chat-b-for-pin-agg';
 
@@ -43,10 +44,12 @@ async function clickPinOnFirstUserBubble(page) {
 }
 
 async function openPinDrawer(page) {
+  // Mobile uses the toolbar (.mobile-only) toggle; desktop uses the
+  // rail toggle. Try rail first, fall back to toolbar.
   await page.evaluate(() => {
-    document.getElementById('btn-pin-drawer')?.dispatchEvent(
-      new MouseEvent('click', { bubbles: true, cancelable: true }),
-    );
+    const btn = document.getElementById('btn-pin-drawer-rail')
+            || document.getElementById('btn-pin-drawer');
+    btn?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
   });
   await page.waitForTimeout(200);
 }

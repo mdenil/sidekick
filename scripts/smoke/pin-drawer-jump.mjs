@@ -17,6 +17,7 @@ export const NAME = 'pin-drawer-jump';
 export const DESCRIPTION = 'pin drawer items have a jump-to-context button that drills + closes the drawer';
 export const STATUS = 'implemented';
 export const BACKEND = 'mocked';
+// MOBILE coverage deferred — see pin-toggle-on-bubble.mjs.
 
 const CHAT_B = 'mock-chat-b-for-jump';
 

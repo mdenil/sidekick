@@ -19,6 +19,11 @@ export const NAME = 'pin-toggle-on-bubble';
 export const DESCRIPTION = 'pin button toggles .pinned on bubble + button + reports consistent isPinned()';
 export const STATUS = 'implemented';
 export const BACKEND = 'mocked';
+// MOBILE coverage deferred — openSidebar's locator.click times out
+// on mobile-emulated context, separate harness investigation. Mobile
+// surface is currently covered by mobile-drawer-swipes.mjs which
+// exercises the drawer-overlap + swipe paths directly.
+// export const MOBILE = 'both';
 
 export function MOCK_SETUP(_mock) { /* defaults — auto-reply enabled */ }
 
