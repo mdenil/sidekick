@@ -98,38 +98,54 @@
          2026-05-05 to match the desktop affordance. -->
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><line x1="9" y1="4" x2="9" y2="20"/></svg>
   </button>
-  <button id="btn-pin-drawer" class="toolbar-btn" style="margin-left:auto" title="Pinned messages" aria-label="Pinned messages">
-    <!-- Thumbtack — symmetric mirror of the sidebar toggle on the
-         LEFT; opens the right-side drawer aggregating pinned messages
-         across all chats. Banner shows total count when > 0. -->
+  <!-- Toolbar pin-drawer toggle: mobile-only, since desktop shows
+       the rail-internal toggle (#btn-pin-drawer-rail) instead. The
+       count banner lives on whichever is currently visible — both
+       have id-suffixed elements that drawer.ts updates together. -->
+  <button id="btn-pin-drawer" class="toolbar-btn mobile-only" style="margin-left:auto" title="Pinned messages" aria-label="Pinned messages">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 10.76V4h6v6.76l3 1.74v2.5H6v-2.5z"/></svg>
     <span id="pin-drawer-count" class="pin-count-banner" hidden>0</span>
   </button>
-  <button id="btn-lock" class="toolbar-btn" title="Pocket lock (swipe to unlock)">
+  <button id="btn-lock" class="toolbar-btn" style="margin-left:auto" title="Pocket lock (swipe to unlock)">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
   </button>
 </div>
 
-<!-- Right-side drawer: pinned messages aggregated across all chats.
-     Mirrors the left sidebar in structure (aside + collapsed state +
-     slide animation), with pin items in place of session rows. Click
-     an item drills to its chat and scrolls to the message. Wired in
-     src/pins/drawer.ts. -->
+<!-- Right-side drawer — symmetric mirror of the left sidebar.
+     On desktop: 48px rail always visible (pin toggle button + ambient
+     clock/weather widget mount); expands to 360px when toggled (rail
+     stays, content area becomes visible).
+     On mobile: rail hidden, drawer overlays full-width when opened
+     via the toolbar pin button. Same playbook the left sidebar uses
+     on mobile (slide-in overlay, no rail). -->
 <aside id="pin-drawer" class="pin-drawer collapsed" aria-expanded="false" aria-label="Pinned messages">
-  <div class="pin-drawer-header">
-    <h3 class="pin-drawer-title">Pinned</h3>
-    <div class="pin-drawer-header-actions">
-      <button id="pin-drawer-clear" class="pin-drawer-clear-btn" title="Clear all pinned messages" aria-label="Clear all pinned messages" hidden>
-        Clear
-      </button>
-      <button id="pin-drawer-close" class="sb-icon-btn" title="Close" aria-label="Close pinned messages">
-        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-      </button>
-    </div>
+  <!-- RAIL — always visible on desktop, hidden on mobile. Pin toggle
+       at top + ambient widget mount below it (clock/weather). -->
+  <div class="pin-drawer-rail">
+    <button id="btn-pin-drawer-rail" class="sb-icon-btn pin-rail-btn" title="Pinned messages" aria-label="Pinned messages">
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 10.76V4h6v6.76l3 1.74v2.5H6v-2.5z"/></svg>
+      <span id="pin-drawer-count-rail" class="pin-count-banner" hidden>0</span>
+    </button>
+    <!-- Ambient widget (clock + weather) mounts here on desktop. -->
+    <div id="ambient-mount" class="ambient-mount"></div>
   </div>
-  <ul id="pin-drawer-list" class="pin-drawer-list"></ul>
-  <div id="pin-drawer-empty" class="pin-drawer-empty" hidden>
-    No pinned messages.<br><span class="pin-drawer-hint">Tap the pin icon on any message to add it here.</span>
+  <!-- CONTENT — visible when drawer is expanded. -->
+  <div class="pin-drawer-content">
+    <div class="pin-drawer-header">
+      <h3 class="pin-drawer-title">Pinned</h3>
+      <div class="pin-drawer-header-actions">
+        <button id="pin-drawer-clear" class="pin-drawer-clear-btn" title="Clear all pinned messages" aria-label="Clear all pinned messages" hidden>
+          Clear
+        </button>
+        <button id="pin-drawer-close" class="sb-icon-btn" title="Close" aria-label="Close pinned messages">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+    </div>
+    <ul id="pin-drawer-list" class="pin-drawer-list"></ul>
+    <div id="pin-drawer-empty" class="pin-drawer-empty" hidden>
+      No pinned messages.<br><span class="pin-drawer-hint">Tap the pin icon on any message to add it here.</span>
+    </div>
   </div>
 </aside>
 

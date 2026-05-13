@@ -37,13 +37,27 @@ let weatherFetchedAt = 0;
 /** @type {HTMLElement|null} */
 let rootEl = null;
 let tickTimer = null;
-/** Expanded state persisted to localStorage so it survives reload —
- *  same pattern the sidebar uses (`sidekick.sidebar.expanded`). Default
- *  collapsed on virgin load. */
+
+/** External callbacks injected at init time. When `isExpandedRef` is
+ *  supplied the widget reads expand state from there (instead of its
+ *  own localStorage var) and clicks call `onClick` instead of mutating
+ *  local state. This is how the right-side pin drawer integrates the
+ *  widget — clicking the clock expands the DRAWER, not just the widget.
+ *  Both refs are optional so the legacy floating-pill mode keeps
+ *  working for hosts that don't supply them. */
+let isExpandedRef: (() => boolean) | null = null;
+let onClickRef: (() => void) | null = null;
+
+/** Expanded state persisted to localStorage — used only when no
+ *  external isExpandedRef is supplied (legacy floating-widget mode).
+ *  Same pattern the sidebar uses for its own collapsed-pref. */
 const AMBIENT_PREF_KEY = 'sidekick.ambient.expanded';
-let expanded = (() => {
+let localExpanded = (() => {
   try { return localStorage.getItem(AMBIENT_PREF_KEY) === '1'; } catch { return false; }
 })();
+function isExpanded(): boolean {
+  return isExpandedRef ? isExpandedRef() : localExpanded;
+}
 
 async function loadWeather() {
   const now = Date.now();
@@ -60,29 +74,58 @@ async function loadWeather() {
   return weatherCache;
 }
 
-export function init() {
+/** Initialize the ambient HUD.
+ *
+ *  Two modes (controlled by `opts`):
+ *    - Legacy floating pill: omit opts. The widget mounts as a fixed
+ *      element on document.body and owns its own expand state.
+ *    - In-drawer: pass `mount` + `isExpanded` + `onClick`. The widget
+ *      renders into `mount`, reads expand state from `isExpanded()`
+ *      (so the parent drawer's open/closed state drives the visual),
+ *      and clicks invoke `onClick()` (so the parent drawer can
+ *      toggle itself). */
+export function init(opts?: {
+  mount?: HTMLElement;
+  isExpanded?: () => boolean;
+  onClick?: () => void;
+}) {
   if (rootEl) return;
   rootEl = document.createElement('div');
   rootEl.className = 'ambient-widget';
+  if (opts?.mount) rootEl.classList.add('ambient-in-drawer');
+  isExpandedRef = opts?.isExpanded || null;
+  onClickRef = opts?.onClick || null;
   rootEl.addEventListener('click', () => {
-    expanded = !expanded;
-    try { localStorage.setItem(AMBIENT_PREF_KEY, expanded ? '1' : '0'); } catch {}
-    render();
+    if (onClickRef) {
+      onClickRef();
+    } else {
+      localExpanded = !localExpanded;
+      try { localStorage.setItem(AMBIENT_PREF_KEY, localExpanded ? '1' : '0'); } catch {}
+    }
+    void render();
   });
-  document.body.appendChild(rootEl);
-  render();
+  (opts?.mount || document.body).appendChild(rootEl);
+  void render();
   tickTimer = setInterval(render, 60_000);
+}
+
+/** Re-render on demand — used by the parent drawer when its open/close
+ *  state changes so the widget can switch between compact + expanded
+ *  layouts without waiting for the 1-minute tick. */
+export function repaint(): void {
+  void render();
 }
 
 async function render() {
   if (!rootEl) return;
-  rootEl.classList.toggle('expanded', expanded);
+  const exp = isExpanded();
+  rootEl.classList.toggle('expanded', exp);
   const now = new Date();
   const hh = String(now.getHours()).padStart(2, '0');
   const mm = String(now.getMinutes()).padStart(2, '0');
   const w = await loadWeather();
   if (!rootEl) return;  // disposed during fetch
-  rootEl.innerHTML = expanded
+  rootEl.innerHTML = exp
     ? renderExpanded(hh, mm, now, w)
     : renderCompact(hh, mm, w);
 }

@@ -11,12 +11,13 @@
 
 import { listAllPins, totalPinCount, clearAllPins, type PinnedItem } from './store.ts';
 import { log } from '../util/log.ts';
+import { repaint as repaintAmbient } from '../ambient.ts';
 
 let drawerEl: HTMLElement | null = null;
 let listEl: HTMLElement | null = null;
 let emptyEl: HTMLElement | null = null;
-let toggleBtn: HTMLElement | null = null;
-let countBanner: HTMLElement | null = null;
+let toggleBtns: HTMLElement[] = [];        // [#btn-pin-drawer (mobile), #btn-pin-drawer-rail (desktop)]
+let countBanners: HTMLElement[] = [];       // both #pin-drawer-count + #pin-drawer-count-rail
 let clearBtn: HTMLElement | null = null;
 let onPinClickCb: ((chatId: string, msgId: string) => void) | null = null;
 
@@ -26,6 +27,9 @@ function openDrawer(): void {
   drawerEl.setAttribute('aria-expanded', 'true');
   document.body.classList.add('pin-drawer-open');
   render();
+  // Tell the ambient widget to re-render in its new (expanded)
+  // visual mode now that the drawer is open.
+  try { repaintAmbient(); } catch { /* widget may not exist yet */ }
 }
 
 function closeDrawer(): void {
@@ -33,6 +37,7 @@ function closeDrawer(): void {
   drawerEl.classList.add('collapsed');
   drawerEl.setAttribute('aria-expanded', 'false');
   document.body.classList.remove('pin-drawer-open');
+  try { repaintAmbient(); } catch { /* defensive */ }
 }
 
 function isOpen(): boolean {
@@ -128,18 +133,21 @@ function formatRelativeTime(ts: number): string {
   return `${day}d ago`;
 }
 
-/** Update the toggle button's count banner. Hidden when count is 0
- *  so the button doesn't carry visual weight when there's nothing
- *  pinned. */
+/** Update all toggle-button count banners — both the mobile-only
+ *  toolbar one and the desktop rail one. Each is hidden when count
+ *  is 0 so the button doesn't carry visual weight when there's
+ *  nothing pinned. */
 function refreshCountBanner(): void {
-  if (!countBanner) return;
   const n = totalPinCount();
-  if (n === 0) {
-    countBanner.hidden = true;
-    countBanner.textContent = '0';
-  } else {
-    countBanner.hidden = false;
-    countBanner.textContent = n > 99 ? '99+' : String(n);
+  const txt = n > 99 ? '99+' : String(n);
+  for (const banner of countBanners) {
+    if (n === 0) {
+      banner.hidden = true;
+      banner.textContent = '0';
+    } else {
+      banner.hidden = false;
+      banner.textContent = txt;
+    }
   }
 }
 
@@ -153,21 +161,31 @@ export function initPinDrawer(opts: {
   drawerEl = document.getElementById('pin-drawer');
   listEl = document.getElementById('pin-drawer-list');
   emptyEl = document.getElementById('pin-drawer-empty');
-  toggleBtn = document.getElementById('btn-pin-drawer');
-  countBanner = document.getElementById('pin-drawer-count');
+  // Two toggle entry points — mobile toolbar button + desktop rail
+  // button. Both wire to the same handler.
+  toggleBtns = [
+    document.getElementById('btn-pin-drawer'),
+    document.getElementById('btn-pin-drawer-rail'),
+  ].filter((el): el is HTMLElement => el !== null);
+  countBanners = [
+    document.getElementById('pin-drawer-count'),
+    document.getElementById('pin-drawer-count-rail'),
+  ].filter((el): el is HTMLElement => el !== null);
   clearBtn = document.getElementById('pin-drawer-clear');
   const closeBtn = document.getElementById('pin-drawer-close');
   onPinClickCb = opts.onPinClick;
 
-  if (!drawerEl || !listEl || !emptyEl || !toggleBtn) {
+  if (!drawerEl || !listEl || !emptyEl || toggleBtns.length === 0) {
     log('[pin-drawer] required DOM elements missing — drawer disabled');
     return;
   }
 
-  toggleBtn.addEventListener('click', () => {
-    if (isOpen()) closeDrawer();
-    else openDrawer();
-  });
+  for (const btn of toggleBtns) {
+    btn.addEventListener('click', () => {
+      if (isOpen()) closeDrawer();
+      else openDrawer();
+    });
+  }
   if (closeBtn) closeBtn.addEventListener('click', () => closeDrawer());
   if (clearBtn) clearBtn.addEventListener('click', () => {
     // Confirm before wiping — Clear is a destructive operation and

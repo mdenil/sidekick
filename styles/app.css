@@ -1645,32 +1645,89 @@
   .line.pinned { border-left: 2px solid var(--primary); padding-left: 6px; }
 
   /* ── Right-side pin drawer ───────────────────────────────────────
-   * Symmetric mirror of the left sidebar's open/close machinery.
-   * Lists pinned messages aggregated across every chat.
+   * Symmetric mirror of the left sidebar:
    *
-   * Layout on desktop: when open, `body.pin-drawer-open` adds
-   * `padding-right: var(--pin-drawer-width)` so the main chat column
-   * shifts LEFT and the drawer occupies the freed-up right margin.
-   * Both sidebars can be open simultaneously → 3-column layout
-   * (sessions | chat | pins).
-   * Layout on mobile: drawer overlays the chat (no padding shift),
-   * matching the left sidebar's mobile behavior.
+   * Desktop:
+   *   - 48px RAIL always visible on the right edge (pin-toggle btn at
+   *     top + ambient widget mount below). body has padding-right:
+   *     48px to reserve the rail space; chat fills the area between
+   *     the two rails.
+   *   - When expanded: drawer widens to 360px, rail stays in place
+   *     (now on the LEFT side of the drawer's internal flex row),
+   *     content area becomes visible (pin list, header). body shifts
+   *     padding-right to 360px so chat squeezes left to make room.
+   *   - Both sidebars open at once = 3-column layout
+   *     (sessions | chat | pins) — what Jonathan asked for.
+   *
+   * Mobile:
+   *   - Rail hidden entirely. Drawer slides in as a full overlay,
+   *     mirroring the left sidebar's mobile playbook. No body padding
+   *     shift, no rail strip. Toolbar pin button (.mobile-only) is
+   *     the discoverable toggle here.
    */
+  body { padding-right: 48px; transition: padding-right 0.18s ease; }
   body.pin-drawer-open { padding-right: var(--pin-drawer-width, 360px); }
 
   #pin-drawer {
     position: fixed; top: 0; right: 0; bottom: 0;
-    width: var(--pin-drawer-width, 360px);
-    max-width: 92vw;
+    width: 48px;
     background: var(--surface);
     color: var(--fg);
     border-left: 1px solid var(--border);
-    display: flex; flex-direction: column;
+    display: flex; flex-direction: row;
     z-index: 50;
-    transform: translateX(0);
-    transition: transform 0.18s ease;
+    overflow: hidden;
+    transition: width 0.18s ease;
   }
-  #pin-drawer.collapsed { transform: translateX(100%); pointer-events: none; }
+  #pin-drawer:not(.collapsed) { width: var(--pin-drawer-width, 360px); }
+
+  /* RAIL — always visible on desktop, fixed 48px wide. Buttons stack
+   * vertically. Ambient widget mounts below the pin-toggle and
+   * displays as a small column-stack of clock + temp. */
+  .pin-drawer-rail {
+    width: 48px; flex-shrink: 0;
+    display: flex; flex-direction: column; align-items: center;
+    padding: 8px 0; gap: 8px;
+    border-left: 1px solid var(--border);
+  }
+  .pin-rail-btn {
+    position: relative;
+    width: 36px; height: 36px;
+    display: flex; align-items: center; justify-content: center;
+    background: none; border: none; color: var(--fg);
+    cursor: pointer; opacity: 0.8;
+    border-radius: 6px;
+    transition: background 0.12s, opacity 0.12s;
+  }
+  .pin-rail-btn:hover { background: var(--surface-2); opacity: 1; }
+  #pin-drawer:not(.collapsed) .pin-rail-btn { color: var(--primary); }
+  #pin-drawer-count-rail.pin-count-banner {
+    /* override the toolbar-btn variant; rail variant sits in the
+     * upper-right of the 36px rail button. */
+    top: -2px; right: -2px;
+  }
+
+  /* Ambient mount inside the rail. The widget itself (.ambient-widget
+   * .ambient-in-drawer) gets repositioned as a flow item via the
+   * `.ambient-in-drawer` override below. */
+  .ambient-mount {
+    display: flex; flex-direction: column; align-items: center;
+    width: 100%;
+  }
+
+  /* CONTENT area — pin list + header. Hidden when drawer collapsed
+   * (rail-only), revealed when expanded. opacity fade keeps the
+   * width-only transition crisp; pointer-events:none prevents
+   * mid-transition click leaks. */
+  .pin-drawer-content {
+    flex: 1; min-width: 0;
+    display: flex; flex-direction: column;
+    opacity: 0; pointer-events: none;
+    transition: opacity 0.18s ease;
+  }
+  #pin-drawer:not(.collapsed) .pin-drawer-content {
+    opacity: 1; pointer-events: auto;
+  }
   .pin-drawer-header {
     display: flex; align-items: center; justify-content: space-between;
     padding: 12px 14px; border-bottom: 1px solid var(--border);
@@ -1728,16 +1785,54 @@
     text-align: center;
   }
 
-  /* Mobile: drawer overlays (no body padding shift), drops a soft
-   * shadow to hint it's floating, narrower max width. Same playbook
-   * the left sidebar uses on mobile. */
+  /* Mobile: rail hidden entirely; drawer overlays full-width when
+   * the toolbar pin button (.mobile-only) toggles it. Same playbook
+   * the left sidebar uses on mobile (slide-in, no rail reservation). */
   @media (max-width: 699px) {
+    body { padding-right: 0; }
     body.pin-drawer-open { padding-right: 0; }
     #pin-drawer {
       width: min(85vw, 320px);
+      transition: transform 0.18s ease;
       box-shadow: -4px 0 24px rgba(0,0,0,0.35);
     }
+    #pin-drawer.collapsed { transform: translateX(100%); width: min(85vw, 320px); }
+    #pin-drawer:not(.collapsed) { transform: translateX(0); width: min(85vw, 320px); }
+    .pin-drawer-rail { display: none; }
   }
+
+  /* Ambient widget when mounted inside the pin-drawer rail —
+   * override the legacy floating-pill positioning. The widget
+   * becomes a column-stack of clock + temp/icon sized for the
+   * 48px rail. Click expands the drawer (drawer.ts wires onClick). */
+  #pin-drawer .ambient-widget.ambient-in-drawer {
+    position: static;
+    background: transparent;
+    backdrop-filter: none; -webkit-backdrop-filter: none;
+    border: none;
+    border-radius: 0;
+    padding: 4px 0;
+    flex-direction: column; gap: 2px;
+    width: 100%; min-width: 0;
+    opacity: 0.85;
+    font: 500 11px/1.2 var(--font-mono);
+  }
+  #pin-drawer .ambient-widget.ambient-in-drawer .ambient-time {
+    font: 600 12px/1.2 var(--font-mono);
+    color: var(--fg);
+  }
+  #pin-drawer .ambient-widget.ambient-in-drawer .ambient-weather {
+    border-left: none; padding-left: 0;
+    gap: 2px; font-size: 11px;
+  }
+  /* In-drawer + expanded: the full clock/forecast card renders into
+   * the rail column. Don't override styles — the existing
+   * .ambient-widget.expanded rules handle the visual; we just need
+   * to allow the column to grow beyond 48px. Since the rail is
+   * still 48px when collapsed, expanded ambient content overflows
+   * into the content area — keep the inner card at rail width to
+   * avoid that. Punted on the full-expanded-in-drawer visual until
+   * we have user feedback on the rail UX. */
 
   /* ── Per-bubble TTS playback controls (agent lines) ──
    * Ported from the classic pipeline (08f50ac:styles/app.css ~900-985).

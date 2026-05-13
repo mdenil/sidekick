@@ -930,9 +930,29 @@ async function boot() {
   [imageCard, youtubeCard, spotifyCard, linksCard, markdownCard, loadingCard]
     .forEach(registerCard);
 
-  // Ambient clock + weather — floating pill in lower-right on desktop,
-  // hidden via CSS on mobile (single media query).
-  ambient.init();
+  // Ambient clock + weather — mounted INSIDE the right-side pin
+  // drawer rail on desktop (symmetric with the left sidebar's rail).
+  // Click on the widget expands the pin drawer; its compact/expanded
+  // state mirrors the drawer's open state via the isExpanded ref.
+  // On mobile the rail isn't shown (CSS), so the widget renders
+  // there but isn't visible — same end-state as the prior CSS
+  // `display:none` rule.
+  const ambientMount = document.getElementById('ambient-mount');
+  if (ambientMount) {
+    ambient.init({
+      mount: ambientMount,
+      isExpanded: () => document.body.classList.contains('pin-drawer-open'),
+      onClick: () => {
+        // Synthesize a click on the rail's pin-drawer toggle — same
+        // open/close path the user invokes by clicking the pin icon.
+        document.getElementById('btn-pin-drawer-rail')?.click();
+      },
+    });
+  } else {
+    // Fallback to legacy floating-pill mode if the mount point is
+    // missing (e.g. a future variant that ships without the rail).
+    ambient.init();
+  }
 
   // Fast tooltips: native HTML `title` triggers a slow ~1.5-3s browser
   // tooltip. We render our own tooltip element directly under <body>
