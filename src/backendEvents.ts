@@ -25,6 +25,7 @@ import * as chat from './chat.ts';
 import * as renderedMessages from './renderedMessages.ts';
 import * as sessionDrawer from './sessionDrawer.ts';
 import * as badge from './notifications/badge.ts';
+import * as inAppBanner from './notifications/inAppBanner.ts';
 
 /** Push notification handler — cron output, /background results,
  *  scheduled reminders. Backends that support out-of-band push (today:
@@ -42,7 +43,18 @@ export function handleNotification({ chatId, kind, content, sidekickId }: any): 
   // counterpart for badge state.
   if (chatId && chatId !== sessionDrawer.getViewed()) {
     badge.incrementUnread(chatId);
-    log(`notification (off-screen) chat=${chatId} kind=${kind} — badge++`);
+    // In-app banner — surface the notification at the top of the
+    // viewport so the user actually notices it (the badge alone is
+    // a "next time you scan the drawer" signal, not "look at me NOW").
+    // Tap → drills into the chat + scrolls to the notification row.
+    inAppBanner.show({
+      chatId,
+      kind: kind || '',
+      content: content || '',
+      sidekickId: typeof sidekickId === 'string' ? sidekickId : null,
+      chatLabel: sessionDrawer.getTitleForChat?.(chatId) || undefined,
+    });
+    log(`notification (off-screen) chat=${chatId} kind=${kind} — badge++ + banner`);
     return;
   }
   // Mirror sessionResume.renderHistoryMessage's notification branch

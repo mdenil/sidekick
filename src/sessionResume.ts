@@ -467,7 +467,39 @@ export function renderHistoryMessage(
   // Caller may force batching even for append (resume-loop case);
   // prepend always batches because chat.prependHistory wraps the loop.
   const useBatch = prepend || batch;
-  if (m.role === 'assistant') {
+  if (m.role === 'assistant' && isNotificationItem(m)) {
+    // Notification rows (cron output, scheduled reminder, approval
+    // prompt) live in state.db.messages as role='assistant' — single
+    // source of truth, same path turn replies take, and hermes' context
+    // loader picks them up on next turn (correct: the agent SHOULD
+    // know what cron output it just emitted). The `kind` field on the
+    // wire item is the discriminator that tells us to render as a
+    // styled notification instead of a regular reply.
+    const kind = String(m.kind || '');
+    const emoji = kind === 'cron' ? '⏰' : '🔔';
+    // Strip the cron scheduler boilerplate ("Cronjob Response: …\n
+    // (job_id: X)\n----\n …") so the transcript leads with the agent's
+    // actual reply. Mirrors the strip the proxy does for push payload
+    // bodies + backendEvents.handleNotification does for live SSE.
+    let displayText = text;
+    if (kind === 'cron') {
+      const headerRe = /^Cronjob Response:\s*(.+?)\s*\n\(job_id:\s*([^)]+)\)\s*\n-+\s*\n+([\s\S]*?)(?:\n+To stop or manage this job[^\n]*\.?\s*)?$/;
+      const match = headerRe.exec(displayText);
+      if (match) {
+        const taskName = match[1].trim();
+        const agentBody = match[3].trim();
+        displayText = `**${taskName}**\n\n${agentBody}`;
+      }
+    }
+    const speaker = kind ? `${emoji} ${kind}` : (emoji || 'Notification');
+    chat.addLine(speaker, displayText, 'system notification', {
+      markdown: true,
+      timestamp: ts,
+      prepend,
+      batch: useBatch,
+      messageId,
+    });
+  } else if (m.role === 'assistant') {
     if (NO_REPLY_RE.test(text)) return;
     if (messageId) {
       renderedMessages.upsert(messageId, {
@@ -508,42 +540,19 @@ export function renderHistoryMessage(
         timestamp: ts, prepend, batch: useBatch,
       });
     }
-  } else if (m.role === 'notification') {
-    // Notification row — cron output, /background result, scheduled
-    // reminder, approval prompt. Persisted by the hermes plugin's
-    // sidekick_notifications sibling table and surfaced through
-    // /v1/conversations/{id}/items so it appears inline in the
-    // transcript. Render as a styled .system .notification row with
-    // an emoji + kind tag. Stamp data-message-id (sidekick_id) so
-    // notification-click scroll-to works the same way pin-drawer-jump
-    // does. Field bug 2026-05-14 (Jonathan): tapping an iOS push
-    // notification opened the chat but the notification content
-    // wasn't anywhere durable to read.
-    const kind = (m.kind || '').toString();
-    const emoji = kind === 'cron' ? '⏰' : '🔔';
-    // Strip the cron scheduler boilerplate ("Cronjob Response: …\n
-    // (job_id: X)\n----\n") so the transcript shows the agent's
-    // actual reply — same strategy as the push payload formatter.
-    let displayText = text;
-    if (kind === 'cron') {
-      const headerRe = /^Cronjob Response:\s*(.+?)\s*\n\(job_id:\s*([^)]+)\)\s*\n-+\s*\n+([\s\S]*?)(?:\n+To stop or manage this job[^\n]*\.?\s*)?$/;
-      const match = headerRe.exec(displayText);
-      if (match) {
-        const taskName = match[1].trim();
-        const agentBody = match[3].trim();
-        displayText = `**${taskName}**\n\n${agentBody}`;
-      }
-    }
-    const speaker = kind ? `${emoji} ${kind}` : emoji;
-    chat.addLine(speaker, displayText, 'system notification', {
-      markdown: true,
-      timestamp: ts,
-      prepend,
-      batch: useBatch,
-      messageId,
-    });
   }
   // Tool role: skip for now; UI has no slot for them.
+}
+
+/** True if a server-side message is a notification (cron output,
+ *  scheduled reminder, approval prompt). State.db persists these as
+ *  `role='assistant'` (single source of truth — same path turn replies
+ *  take), and the plugin sets a `kind` field via sidekick_msg_links so
+ *  the PWA can branch rendering. `kind` is the canonical discriminator;
+ *  sidekick_id starts with `notif_` as a secondary signal but the wire
+ *  contract is `kind` is the source of truth. */
+function isNotificationItem(m: any): boolean {
+  return typeof m?.kind === 'string' && m.kind.length > 0;
 }
 
 /** Scroll the target bubble's TOP to the top of the transcript

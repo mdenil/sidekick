@@ -2396,6 +2396,63 @@
   }
   .line.system.notification .text { font-style: normal; color: var(--fg); }
 
+  /* ── In-app notification banner ──
+   * Surfaced when a notification envelope arrives for a chat OTHER
+   * than the one currently being viewed. Slides in from top, dwells
+   * for ~6s, auto-dismisses. Tap → drills to the chat + scrolls to
+   * the notification row. Click × to dismiss without drilling.
+   * Single visible banner at a time — new notifications replace.
+   * Position: fixed under any safe-area inset so iOS notch + status
+   * bar don't crowd it. */
+  .in-app-banner {
+    position: fixed;
+    top: max(12px, env(safe-area-inset-top, 0px));
+    left: 50%;
+    transform: translate(-50%, calc(-100% - 12px));
+    z-index: 100;
+    min-width: 280px; max-width: min(440px, calc(100vw - 24px));
+    padding: 10px 12px 10px 14px;
+    background: color-mix(in srgb, var(--surface) 96%, transparent);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--primary);
+    border-radius: 10px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.18);
+    backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+    cursor: pointer;
+    transition: transform 0.22s ease, opacity 0.22s ease;
+    opacity: 0;
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    gap: 10px;
+    align-items: center;
+    font-size: 13px;
+    color: var(--fg);
+  }
+  .in-app-banner.visible {
+    transform: translate(-50%, 0);
+    opacity: 1;
+  }
+  .in-app-banner .iab-emoji { font-size: 18px; line-height: 1; }
+  .in-app-banner .iab-content { min-width: 0; overflow: hidden; }
+  .in-app-banner .iab-title {
+    font-weight: 600; font-size: 12px;
+    text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--primary);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .in-app-banner .iab-preview {
+    margin-top: 2px;
+    color: var(--fg);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .in-app-banner .iab-dismiss {
+    background: none; border: none; cursor: pointer;
+    color: var(--muted); font-size: 18px; line-height: 1;
+    padding: 2px 6px; border-radius: 4px;
+    transition: color 0.12s, background 0.12s;
+  }
+  .in-app-banner .iab-dismiss:hover { color: var(--fg); background: var(--surface-2); }
+
   /* ── Composer (unified text + actions box) ── */
   .composer {
     display: flex; flex-direction: column;

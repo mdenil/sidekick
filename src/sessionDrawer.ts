@@ -649,6 +649,17 @@ export function getSourceForChat(id: string | null | undefined): string {
   return row?.source || 'sidekick';
 }
 
+/** Look up the display title for a chat_id from the cached session
+ *  list. Returns null when the chat isn't in the cache (e.g. a
+ *  brand-new chat that arrived via SSE before the drawer refresh
+ *  caught up). Used by the in-app notification banner to render a
+ *  scannable chat label instead of a UUID prefix. */
+export function getTitleForChat(id: string | null | undefined): string | null {
+  if (!id) return null;
+  const row = cachedSessions.find(s => s.id === id);
+  return row?.title || null;
+}
+
 /** Server-authoritative reconcile of the cached list against the current
  *  filter. The instant client-side re-render (applyFilter on cachedSessions)
  *  is the snappy first paint; this is the catch-up that surfaces matches

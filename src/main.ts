@@ -56,6 +56,7 @@ import * as sessionDrawer from './sessionDrawer.ts';
 import * as cmdkPalette from './cmdkPalette.ts';
 import { initPinDrawer } from './pins/drawer.ts';
 import { initTranscriptHighlight } from './transcriptHighlight.ts';
+import * as inAppBanner from './notifications/inAppBanner.ts';
 import { attachSliderTouchAll } from './sliderTouch.ts';
 import { createDrawer } from './Drawer.ts';
 import * as clickFreezeDiag from './clickFreezeDiag.ts';
@@ -635,22 +636,36 @@ async function boot() {
   // every chat. Click handler reuses the cmdk drill-to-message path:
   // resumeSession to fetch + render, then targetMessageId so the
   // replaySessionMessages scrolls + flashes the pinned bubble.
+  //
+  // Shared by pin drawer + in-app notification banner — both drill
+  // into a chat from an out-of-chat surface and want the same
+  // resume + replay + scroll-to behavior.
+  const drillToChatMessage = async (
+    chatId: string, msgId: string | null,
+  ): Promise<void> => {
+    const leaving = backend.getCurrentSessionId?.() ?? null;
+    if (leaving !== chatId) {
+      try { cleanupAbandonedChat(leaving); }
+      catch (e: any) { diag(`drill: cleanupAbandonedChat threw: ${e?.message ?? e}`); }
+    }
+    try {
+      const result: any = await backend.resumeSession(chatId);
+      const messages = result.messages || [];
+      const pagination = { firstId: result.firstId ?? null, hasMore: !!result.hasMore };
+      replaySessionMessages(chatId, messages, pagination, msgId ?? undefined);
+    } catch (e: any) {
+      diag(`drill: resume ${chatId} failed: ${e?.message ?? e}`);
+    }
+  };
   initPinDrawer({
-    onPinClick: async (chatId: string, msgId: string) => {
-      const leaving = backend.getCurrentSessionId?.() ?? null;
-      if (leaving !== chatId) {
-        try { cleanupAbandonedChat(leaving); }
-        catch (e: any) { diag(`pin-drawer: cleanupAbandonedChat threw: ${e?.message ?? e}`); }
-      }
-      try {
-        const result: any = await backend.resumeSession(chatId);
-        const messages = result.messages || [];
-        const pagination = { firstId: result.firstId ?? null, hasMore: !!result.hasMore };
-        replaySessionMessages(chatId, messages, pagination, msgId);
-      } catch (e: any) {
-        diag(`pin-drawer: resume ${chatId} failed: ${e?.message ?? e}`);
-      }
-    },
+    onPinClick: (chatId, msgId) => { void drillToChatMessage(chatId, msgId); },
+  });
+  // In-app notification banner — when a notification envelope arrives
+  // for a chat OTHER than the currently-viewed one, show a top-of-
+  // viewport toast. Tap → same drill path as the pin drawer (resume +
+  // replay + scroll to data-message-id = sidekick_id).
+  inAppBanner.init({
+    onOpen: (chatId, msgId) => { void drillToChatMessage(chatId, msgId); },
   });
   // Sidebar-top search button → opens the cmd+K palette. Lives next to
   // the hamburger as the rightmost icon in .sidebar-top-row (Gemini-style
