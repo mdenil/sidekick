@@ -75,6 +75,10 @@ async function handleSessionMessagesViaUpstream(
       // bubbles match the IDB-cached SSE-shape ones. Absent for
       // legacy rows / other-channel rows / tool+system rows.
       ...(it.sidekick_id ? { sidekick_id: it.sidekick_id } : {}),
+      // Notification kind ('cron', 'reminder', etc.) — plumbed
+      // through for role='notification' rows so the PWA's renderer
+      // can show the appropriate emoji + label.
+      ...(it.kind ? { kind: it.kind } : {}),
     }));
     // Inflight envelopes — envelopes the proxy has forwarded during
     // an in-flight turn that haven't been persisted to state.db yet

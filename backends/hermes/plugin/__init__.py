@@ -1693,6 +1693,34 @@ class SidekickAdapter(BasePlatformAdapter):
             if exists_row is None:
                 return None
             rows = list(conn.execute(sql, params).fetchall())
+            # Notification rows from the plugin-owned sibling table.
+            # Merged with `messages` rows below; sorted by timestamp so
+            # they appear inline in transcript chronology. The hermes-
+            # core agent context loader doesn't see these (different
+            # table); the PWA renders them as `.system .notification`
+            # styled rows by role.
+            #
+            # Use synthetic message ids in the negative range so they
+            # never collide with hermes' state.db AUTOINCREMENT ids
+            # (always positive). Sidekick_id (notif_*) is the canonical
+            # dedup key for these rows anyway — the integer id is just
+            # a transport-format compatibility shim for the OAI items
+            # schema.
+            notif_sql = (
+                "SELECT id, sidekick_id, kind, content, timestamp "
+                "FROM sidekick_notifications "
+                "WHERE chat_id = ?"
+            )
+            notif_params: list = [chat_id]
+            try:
+                notif_rows = list(conn.execute(notif_sql, notif_params).fetchall())
+            except sqlite3.OperationalError:
+                # sidekick_notifications table not yet created — table
+                # creation is lazy in _ensure_state_db_indexes which
+                # runs at plugin init; an existence-check fail here
+                # means we're querying a state.db from before the
+                # plugin's first start under this code revision.
+                notif_rows = []
         items = []
         for row_id, role, content, tool_name, ts, sidekick_id in rows:
             text = (content or "")
@@ -1716,6 +1744,28 @@ class SidekickAdapter(BasePlatformAdapter):
             if sidekick_id:
                 item["sidekick_id"] = sidekick_id
             items.append(item)
+        # Merge notification rows in. Use a negative integer id space
+        # so the PWA's `before` cursor (positive integers, paginates
+        # over messages.id) doesn't collide. The sidekick_id is the
+        # real dedup key.
+        for notif_id, notif_sk_id, kind, content, ts in notif_rows:
+            text = (content or "")
+            if not text:
+                continue
+            item = {
+                "id": -int(notif_id),  # negative-id space for notifications
+                "object": "message",
+                "role": "notification",
+                "content": text,
+                "created_at": int(ts) if ts else 0,
+                "sidekick_id": notif_sk_id,
+            }
+            if kind:
+                item["kind"] = kind
+            items.append(item)
+        # Re-sort merged list by timestamp so notifications interleave
+        # with messages in chronological order.
+        items.sort(key=lambda it: (it.get("created_at", 0), it.get("id", 0)))
         # Same pagination semantics as the legacy path:
         #  * before_id=None → most-recent `limit` items, has_more=True
         #    when we truncated.
@@ -3395,7 +3445,113 @@ class SidekickAdapter(BasePlatformAdapter):
                         chat_id, env_type,
                     )
 
+        # Notification persistence: cron output, /background results,
+        # scheduled reminders, approval prompts all flow as
+        # `type=notification` envelopes today. Out-of-band envelopes
+        # only existed in the proxy's SSE replay ring (minutes of
+        # retention) and Web Push delivery (one-shot banner) — never
+        # persisted to state.db.messages because that table feeds the
+        # LLM context loop. Result: clicking an iOS push notification
+        # opened the chat but the content wasn't anywhere durable, so
+        # the user lost the body whenever the banner dismissed.
+        #
+        # Solution (Jonathan field bug 2026-05-14): mint a sidekick_id
+        # for the envelope, write a row to the plugin-owned
+        # `sidekick_notifications` sibling table, stamp the id on the
+        # outgoing envelope. The history endpoint merges these rows
+        # into /v1/conversations/{id}/items so a refresh-and-scroll
+        # finds the notification in the transcript with the same
+        # data-message-id machinery cmdk + pin-drawer already use.
+        if env_type == "notification":
+            self._persist_notification(env)
+
         return self._publish_out_of_turn(env)
+
+    def _persist_notification(self, env: Dict[str, Any]) -> None:
+        """Write a notification envelope to the sidekick_notifications
+        sibling table + stamp its sidekick_id on the envelope.
+        Best-effort: failures only mean the row won't survive a reload
+        — the live fan-out still happens regardless."""
+        if self._state_db_path is None or not self._state_db_path.exists():
+            return
+        chat_id_raw = env.get("chat_id", "")
+        if not isinstance(chat_id_raw, str) or not chat_id_raw:
+            return
+        # Strip the gateway-prefix if present so we match the canonical
+        # state.db sessions.user_id shape used elsewhere in the plugin.
+        chat_id_bare = chat_id_raw
+        if _GATEWAY_ID_SEP in chat_id_bare:
+            _src, _, rest = chat_id_bare.partition(_GATEWAY_ID_SEP)
+            chat_id_bare = rest
+        content = env.get("content")
+        if not isinstance(content, str) or not content:
+            return
+        # Don't double-persist if upstream already minted an id (e.g.
+        # replay after restart). Idempotent against UNIQUE constraint
+        # below either way, but skip the lookup work when we can.
+        existing_sk_id = env.get("sidekick_id")
+        if isinstance(existing_sk_id, str) and existing_sk_id.startswith("notif_"):
+            return
+        kind = env.get("kind") if isinstance(env.get("kind"), str) else None
+        # Resolve session_id from chat_id (latest active sidekick session).
+        # The sidekick plugin keeps a resolver for this; reuse it. Falls
+        # back to first match if multiple sessions share the chat_id.
+        session_id = self._resolve_session_id_for_chat(chat_id_bare)
+        if not session_id:
+            logger.warning(
+                "[sidekick] notification persist: no session for chat=%s — skipping",
+                chat_id_bare,
+            )
+            return
+        # Mint sidekick_id. notif_<unix-ts-ms>_<6-hex> — sortable, distinct
+        # from message ids (msg_*/umsg_*) so PWA renderers can branch.
+        sk_id = f"notif_{int(time.time() * 1000)}_{secrets.token_hex(3)}"
+        env["sidekick_id"] = sk_id
+        try:
+            with contextlib.closing(
+                sqlite3.connect(self._state_db_path, timeout=5.0)
+            ) as conn:
+                with conn:
+                    conn.execute(
+                        "INSERT INTO sidekick_notifications "
+                        "(session_id, chat_id, sidekick_id, kind, content, timestamp) "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        (
+                            session_id,
+                            chat_id_bare,
+                            sk_id,
+                            kind,
+                            content,
+                            time.time(),
+                        ),
+                    )
+        except Exception as exc:
+            logger.warning(
+                "[sidekick] notification persist failed (non-fatal): %s", exc
+            )
+
+    def _resolve_session_id_for_chat(self, chat_id_bare: str) -> Optional[str]:
+        """Best-effort: return the latest active state.db session_id
+        for a sidekick chat. Used by notification persistence so the
+        row lands in the same session lineage hermes will read at
+        history-fetch time. None when state.db is missing or the chat
+        has no rows yet (fresh-chat notification — should be rare)."""
+        if self._state_db_path is None or not self._state_db_path.exists():
+            return None
+        uri = f"file:{self._state_db_path}?mode=ro"
+        try:
+            with contextlib.closing(
+                sqlite3.connect(uri, uri=True, timeout=2.0)
+            ) as conn:
+                row = conn.execute(
+                    "SELECT id FROM sessions "
+                    "WHERE user_id = ? AND source = ? "
+                    "ORDER BY started_at DESC LIMIT 1",
+                    (chat_id_bare, SIDEKICK_SOURCE),
+                ).fetchone()
+            return row[0] if row else None
+        except Exception:
+            return None
 
     def _publish_out_of_turn(self, env: Dict[str, Any]) -> bool:
         """Push an envelope to /v1/events subscribers + the replay ring.
@@ -3779,6 +3935,47 @@ class SidekickAdapter(BasePlatformAdapter):
                         "CREATE INDEX IF NOT EXISTS "
                         "idx_sidekick_msg_links_sidekick_id "
                         "ON sidekick_msg_links(sidekick_id)"
+                    )
+                    # Plugin-owned sibling table for notification envelopes
+                    # (kind='cron', '/background' results, scheduled
+                    # reminders, approval prompts). Distinct from
+                    # state.db.messages because that table feeds back into
+                    # the LLM context (hermes_state.get_messages_as_conversation
+                    # injects all rows into the next turn's prompt — adding
+                    # 'notification' role rows there would either bloat
+                    # context or confuse providers that reject unknown
+                    # roles). Plugin merges this table with messages at
+                    # /v1/conversations/{id}/items time so the PWA can
+                    # render the notification rows in-transcript without
+                    # the upstream agent ever seeing them. Schema:
+                    #   session_id : hermes session this notification
+                    #                belongs to (FK shape, not enforced;
+                    #                same column type as messages.session_id)
+                    #   chat_id    : sidekick chat_id (user-facing key)
+                    #   sidekick_id: SSE-shape id (notif_<ts>_<rand>)
+                    #                used by the PWA for dedup + scroll-to
+                    #   kind       : notification kind ('cron', 'reminder', …)
+                    #   content    : the rendered text the user sees
+                    #   timestamp  : unix float (matches messages.timestamp)
+                    conn.execute(
+                        "CREATE TABLE IF NOT EXISTS sidekick_notifications ("
+                        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                        "session_id TEXT NOT NULL, "
+                        "chat_id TEXT NOT NULL, "
+                        "sidekick_id TEXT NOT NULL UNIQUE, "
+                        "kind TEXT, "
+                        "content TEXT NOT NULL, "
+                        "timestamp REAL NOT NULL)"
+                    )
+                    conn.execute(
+                        "CREATE INDEX IF NOT EXISTS "
+                        "idx_sidekick_notifications_session "
+                        "ON sidekick_notifications(session_id, timestamp)"
+                    )
+                    conn.execute(
+                        "CREATE INDEX IF NOT EXISTS "
+                        "idx_sidekick_notifications_chat "
+                        "ON sidekick_notifications(chat_id, timestamp)"
                     )
         except Exception as exc:
             logger.warning(

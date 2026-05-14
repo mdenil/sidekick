@@ -2371,6 +2371,30 @@
     padding: 6px 12px; margin: 8px auto; max-width: 80%;
     opacity: 0.75; letter-spacing: 0.02em;
   }
+  /* Notification rows (cron output, /background result, reminder,
+   * approval prompt) — persisted by the hermes plugin so they
+   * survive reload. Distinguished from generic .system rows by a
+   * left border + slightly higher opacity (you SHOULD read these,
+   * vs the "model changed" muted ephemera). Background tint flags
+   * the row as agent-initiated state, not user-initiated. */
+  .line.system.notification {
+    font-style: normal;
+    text-align: left;
+    opacity: 0.95;
+    max-width: 92%;
+    border-left: 3px solid var(--primary);
+    background: color-mix(in srgb, var(--primary) 6%, var(--surface));
+    padding: 8px 12px 10px;
+    border-radius: 0 6px 6px 0;
+  }
+  .line.system.notification .speaker {
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-size: 11px;
+    color: var(--primary);
+    font-style: normal;
+  }
+  .line.system.notification .text { font-style: normal; color: var(--fg); }
 
   /* ── Composer (unified text + actions box) ── */
   .composer {

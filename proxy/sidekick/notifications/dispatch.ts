@@ -304,6 +304,19 @@ export function envelopeToPayload(env: Record<string, any>, bodyOverride?: strin
     : trimmed;
   const finalBody = bodyClipped + suffix;
 
+  // Include sidekick_id (when plugin minted one) so the click handler
+  // can scroll to the specific transcript row. Notifications now
+  // persist as sidekick_notifications rows with their own
+  // sidekick_id (notif_*) — the PWA's URL handler reads `?msg=` and
+  // passes it as targetMessageId to replaySessionMessages, which
+  // reuses the pin-drawer-jump scroll-to machinery.
+  const sidekickId = typeof env.sidekick_id === 'string' ? env.sidekick_id : '';
+  const url = chatId
+    ? (sidekickId
+        ? `/?chat=${encodeURIComponent(chatId)}&msg=${encodeURIComponent(sidekickId)}`
+        : `/?chat=${encodeURIComponent(chatId)}`)
+    : '/';
+
   return {
     title,
     body: finalBody,
@@ -311,6 +324,6 @@ export function envelopeToPayload(env: Record<string, any>, bodyOverride?: strin
     // tag coalesces per-chat: same chat = same tag = OS replaces the
     // prior notification instead of stacking.
     tag: chatId ? `chat:${chatId}` : undefined,
-    url: chatId ? `/?chat=${encodeURIComponent(chatId)}` : '/',
+    url,
   };
 }

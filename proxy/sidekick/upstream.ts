@@ -126,7 +126,7 @@ export interface SearchResult {
 export interface ConversationItem {
   id: number;
   object: 'message';
-  role: 'user' | 'assistant' | 'system' | string;
+  role: 'user' | 'assistant' | 'system' | 'notification' | string;
   content: string;
   created_at: number;
   /** Sidekick extension: tool name for tool-role rows. Plumbed through
@@ -140,6 +140,13 @@ export interface ConversationItem {
   // IDB cache stored. Absent for legacy rows, other-channel rows,
   // and tool / system rows.
   sidekick_id?: string;
+  /** Sidekick extension: notification kind ('cron', 'reminder', etc.)
+   *  for role='notification' rows. Plumbed through from the plugin's
+   *  sidekick_notifications sibling table — these rows live outside
+   *  the LLM context loop (so hermes never sees them) but appear
+   *  inline in the transcript when the PWA fetches /v1/conversations/
+   *  {id}/items. Absent on every other role. */
+  kind?: string;
 }
 
 export interface UpstreamAgent {

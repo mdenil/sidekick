@@ -508,8 +508,42 @@ export function renderHistoryMessage(
         timestamp: ts, prepend, batch: useBatch,
       });
     }
+  } else if (m.role === 'notification') {
+    // Notification row — cron output, /background result, scheduled
+    // reminder, approval prompt. Persisted by the hermes plugin's
+    // sidekick_notifications sibling table and surfaced through
+    // /v1/conversations/{id}/items so it appears inline in the
+    // transcript. Render as a styled .system .notification row with
+    // an emoji + kind tag. Stamp data-message-id (sidekick_id) so
+    // notification-click scroll-to works the same way pin-drawer-jump
+    // does. Field bug 2026-05-14 (Jonathan): tapping an iOS push
+    // notification opened the chat but the notification content
+    // wasn't anywhere durable to read.
+    const kind = (m.kind || '').toString();
+    const emoji = kind === 'cron' ? '⏰' : '🔔';
+    // Strip the cron scheduler boilerplate ("Cronjob Response: …\n
+    // (job_id: X)\n----\n") so the transcript shows the agent's
+    // actual reply — same strategy as the push payload formatter.
+    let displayText = text;
+    if (kind === 'cron') {
+      const headerRe = /^Cronjob Response:\s*(.+?)\s*\n\(job_id:\s*([^)]+)\)\s*\n-+\s*\n+([\s\S]*?)(?:\n+To stop or manage this job[^\n]*\.?\s*)?$/;
+      const match = headerRe.exec(displayText);
+      if (match) {
+        const taskName = match[1].trim();
+        const agentBody = match[3].trim();
+        displayText = `**${taskName}**\n\n${agentBody}`;
+      }
+    }
+    const speaker = kind ? `${emoji} ${kind}` : emoji;
+    chat.addLine(speaker, displayText, 'system notification', {
+      markdown: true,
+      timestamp: ts,
+      prepend,
+      batch: useBatch,
+      messageId,
+    });
   }
-  // Tool role / system role: skip for now; UI has no slot for them.
+  // Tool role: skip for now; UI has no slot for them.
 }
 
 /** Scroll the target bubble's TOP to the top of the transcript

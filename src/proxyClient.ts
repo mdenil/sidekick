@@ -459,9 +459,17 @@ function handleEnvelope(type: string, env: any, chatId: string): void {
       // thread, badge on the drawer entry, etc.).
       const kind = typeof env.kind === 'string' ? env.kind : 'unknown';
       const content = typeof env.content === 'string' ? env.content : '';
+      // Plugin-minted sidekick_id (notif_*) — used as the
+      // data-message-id on the rendered transcript row so:
+      //   (a) reload dedups against the same row fetched from
+      //       /v1/conversations/{id}/items (server adds it from
+      //       sidekick_notifications)
+      //   (b) `?msg=Y` URL param on push-click scrolls to the same
+      //       row via existing pin-drawer-jump machinery.
+      const sidekickId = typeof env.sidekick_id === 'string' ? env.sidekick_id : '';
       const isReplay = env?._replay === true;
-      log(`proxy-client: notification kind=${kind} chat_id=${chatId}${isReplay ? ' (replay)' : ''}`);
-      subs?.onNotification?.({ chatId, kind, content });
+      log(`proxy-client: notification kind=${kind} chat_id=${chatId} sk=${sidekickId}${isReplay ? ' (replay)' : ''}`);
+      subs?.onNotification?.({ chatId, kind, content, sidekickId });
       // Bump the drawer ordering so the chat with the freshest
       // notification floats up. Skip on replay (see reply_final's
       // matching guard for cascade rationale).

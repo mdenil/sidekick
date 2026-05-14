@@ -988,13 +988,32 @@ async function boot() {
         // welcome. For backends without session browsing (openclaw),
         // fall back to the existing history backfill path.
         if (backend.capabilities().sessionBrowsing) {
+          // URL-driven chat selection: `?chat=X` (or `?chat=X&msg=Y`)
+          // overrides whatever was last viewed. Used by the iOS push
+          // notification click path — service-worker navigates the
+          // window to `/?chat=X&msg=Y` and we hydrate that chat + scroll
+          // to that message. Field bug 2026-05-14 (Jonathan): tapping a
+          // cron banner opened the chat but the notification content
+          // wasn't anywhere reachable. The companion fix is the hermes
+          // plugin persisting notifications to a sidekick-owned sibling
+          // table so the msg is in the transcript by the time we land.
+          let urlChatId: string | null = null;
+          let urlMsgId: string | null = null;
+          try {
+            const qs = new URLSearchParams(location.search);
+            const c = qs.get('chat');
+            if (c) urlChatId = c;
+            const m = qs.get('msg');
+            if (m) urlMsgId = m;
+          } catch { /* malformed URL — fall through to default */ }
+
           // Prefer the session id persisted alongside the restored chat
           // snapshot — that's the session whose transcript is ACTUALLY on
           // screen after reload. Falls back to the adapter's
           // conversationName ('sidekick-main' default) for the fresh
           // install path where no snapshot existed.
           const restoredSid = chat.getRestoredViewedSessionId();
-          const sid = restoredSid || backend.getCurrentSessionId?.();
+          const sid = urlChatId || restoredSid || backend.getCurrentSessionId?.();
           let bootRendered = false;
           if (sid) {
             // If we restored a session from snapshot, seed the drawer
@@ -1003,16 +1022,38 @@ async function boot() {
             // placeholder row. If resumeSession succeeds it replays
             // freshly and re-sets viewed via replaySessionMessages
             // (idempotent).
-            if (restoredSid) sessionDrawer.setViewed(restoredSid);
+            if (urlChatId) sessionDrawer.setViewed(urlChatId);
+            else if (restoredSid) sessionDrawer.setViewed(restoredSid);
             try {
               const result: any = await backend.resumeSession(sid);
               const messages = result.messages || [];
               if (messages.length) {
-                replaySessionMessages(sid, messages, undefined, undefined, result.inflight);
+                // Pass urlMsgId as targetMessageId so the existing
+                // pin-drawer-jump scroll-to machinery kicks in: it
+                // walks the rendered transcript for a matching
+                // data-message-id and scrolls it to the viewport top.
+                // If the target isn't in the initial page,
+                // drillToOlderMessage paginates back until found.
+                replaySessionMessages(
+                  sid, messages,
+                  { firstId: result.firstId ?? null, hasMore: !!result.hasMore },
+                  urlMsgId ?? undefined,
+                  result.inflight,
+                );
                 bootRendered = true;
               }
             } catch (e: any) {
               diag(`boot: resume ${sid} failed: ${e.message}`);
+            }
+            // Clear the URL params after consuming them so a reload
+            // doesn't re-drill (and the address bar stays clean).
+            if (urlChatId || urlMsgId) {
+              try {
+                const cleaned = new URL(location.href);
+                cleaned.searchParams.delete('chat');
+                cleaned.searchParams.delete('msg');
+                history.replaceState({}, '', cleaned.toString());
+              } catch { /* noop */ }
             }
           }
           // Boot-UX (Jonathan 2026-04-29): if nothing got rendered above

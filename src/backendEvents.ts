@@ -29,12 +29,11 @@ import * as badge from './notifications/badge.ts';
 /** Push notification handler — cron output, /background results,
  *  scheduled reminders. Backends that support out-of-band push (today:
  *  hermes-gateway via /api/sidekick/notifications) call this; others
- *  never fire it. v1: append a styled system row in the targeted chat
- *  if it's currently being viewed. Off-screen chats get a no-op for
- *  now (a future iteration adds a drawer-side unread badge). Browser
- *  Push API / APNS / Web Push integration ships in Phase 3 (see
- *  src/notifications/ + proxy/sidekick/notifications/). */
-export function handleNotification({ chatId, kind, content }: any): void {
+ *  never fire it. For the currently-viewed chat: append a styled
+ *  notification row matching the persisted transcript shape (so
+ *  reload finds the same data-message-id and dedups). For off-screen
+ *  chats: bump the badge counter. */
+export function handleNotification({ chatId, kind, content, sidekickId }: any): void {
   // Off-screen chat — bump the app-icon badge so the user notices
   // there's a new event waiting in another chat. clearUnread fires
   // from sessionDrawer.setViewed when they switch in. The system
@@ -46,9 +45,32 @@ export function handleNotification({ chatId, kind, content }: any): void {
     log(`notification (off-screen) chat=${chatId} kind=${kind} — badge++`);
     return;
   }
-  const label = kind ? `notification — ${kind}` : 'notification';
-  const text = content ? `(${label}) ${content}` : `(${label})`;
-  chat.addSystemLine(text);
+  // Mirror sessionResume.renderHistoryMessage's notification branch
+  // so live-render and reload-render produce identical DOM. The
+  // sidekick_id is the dedup key — if hermes plugin persisted the
+  // row (2026-05-14 change), reload's history fetch will surface
+  // it AND the renderedMessages upsert dedups against this
+  // data-message-id automatically.
+  const emoji = kind === 'cron' ? '⏰' : '🔔';
+  let displayText = content || '';
+  if (kind === 'cron') {
+    // Strip the scheduler boilerplate — same parser the proxy uses
+    // for the push payload + sessionResume uses for history rendering.
+    // Keeps the transcript readable when the user IS viewing the chat.
+    const headerRe = /^Cronjob Response:\s*(.+?)\s*\n\(job_id:\s*([^)]+)\)\s*\n-+\s*\n+([\s\S]*?)(?:\n+To stop or manage this job[^\n]*\.?\s*)?$/;
+    const match = headerRe.exec(displayText);
+    if (match) {
+      const taskName = match[1].trim();
+      const agentBody = match[3].trim();
+      displayText = `**${taskName}**\n\n${agentBody}`;
+    }
+  }
+  const speaker = kind ? `${emoji} ${kind}` : (emoji || 'Notification');
+  chat.addLine(speaker, displayText, 'system notification', {
+    markdown: true,
+    timestamp: Date.now(),
+    messageId: sidekickId || undefined,
+  });
 }
 
 /** Cross-device user-message broadcast handler. The upstream emits a
