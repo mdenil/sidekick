@@ -1031,14 +1031,24 @@ async function boot() {
           const sid = urlChatId || restoredSid || backend.getCurrentSessionId?.();
           let bootRendered = false;
           if (sid) {
-            // If we restored a session from snapshot, seed the drawer
-            // highlight immediately — before resumeSession's network
-            // fetch resolves — so it doesn't briefly flash the
-            // placeholder row. If resumeSession succeeds it replays
-            // freshly and re-sets viewed via replaySessionMessages
-            // (idempotent).
-            if (urlChatId) sessionDrawer.setViewed(urlChatId);
-            else if (restoredSid) sessionDrawer.setViewed(restoredSid);
+            // Seed the drawer highlight immediately — before
+            // resumeSession's network fetch resolves — so it doesn't
+            // briefly flash the placeholder row. ONLY when we're
+            // resuming the same chat the snapshot was for; otherwise
+            // we'd trick replaySessionMessages into the merge-existing
+            // path (since sessionDrawer.getViewed() === id), which
+            // would skip chat.clear() and leave the prior chat's
+            // snapshot DOM merged on top of the URL-target chat's
+            // fresh fetch. Field bug 2026-05-14 (Jonathan, iOS):
+            // tapping a cron push opened the right chat but the new
+            // notification row wasn't visible until a sidebar click
+            // forced a clear-and-repopulate. The fix: leave viewed
+            // pointing at the snapshot's chat (or null) so
+            // replaySessionMessages sees sameSession=false and runs
+            // the clear+repopulate branch for URL-driven switches.
+            if (!urlChatId && restoredSid) {
+              sessionDrawer.setViewed(restoredSid);
+            }
             try {
               const result: any = await backend.resumeSession(sid);
               const messages = result.messages || [];

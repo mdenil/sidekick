@@ -335,16 +335,35 @@ export function initDrawerSwipe(opts: DrawerSwipeOptions): void {
   window.addEventListener('pointerup', onPointerEnd);
   window.addEventListener('pointercancel', onPointerEnd);
 
+  /** Reset the drawer's inline transform + transition state. Called
+   *  from every safety-net path so a stuck mid-drag doesn't leave the
+   *  drawer (or its sibling content) visually translated. Field bug
+   *  2026-05-14 (Jonathan, iOS, screenshot): the transcript view ended
+   *  up shifted horizontally like an app switcher — abandoned swipe
+   *  left an inline transform on the drawer that pushed the layout
+   *  sideways; the body class cleared via the existing safety nets
+   *  but the inline transform persisted. Restoring the transform/
+   *  transition makes the drawer snap back to its CSS-driven position. */
+  const resetInlineTransform = () => {
+    if (drawer.style.transform || drawer.style.transition) {
+      drawer.style.transform = '';
+      drawer.style.transition = '';
+    }
+  };
+
   // Safety nets for stuck swipe-lock. body.swipe-active disables
   // touch-action globally; if it stays on after a gesture is lost
   // (iOS suspends pointerup, app backgrounded mid-drag, etc) the
-  // whole UI freezes. Three nets, idempotent:
+  // whole UI freezes. Three nets, idempotent. All three also reset
+  // any lingering inline transform on the drawer element so an
+  // abandoned mid-drag doesn't leave the layout shifted.
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden && document.body.classList.contains('swipe-active')) {
       const ageMs = lockSetAt ? Date.now() - lockSetAt : -1;
       diag(`[swipe-lock:${opts.elementId}] clear (visibilitychange, ageMs=${ageMs})`);
       document.body.classList.remove('swipe-active');
       lockSetAt = 0;
+      resetInlineTransform();
     }
   });
   window.addEventListener('pointerdown', () => {
@@ -357,6 +376,7 @@ export function initDrawerSwipe(opts: DrawerSwipeOptions): void {
     intent = null;
     committed = false;
     pointerId = -1;
+    resetInlineTransform();
   }, { passive: true, capture: true });
   setInterval(() => {
     if (!document.body.classList.contains('swipe-active')) return;
@@ -368,5 +388,6 @@ export function initDrawerSwipe(opts: DrawerSwipeOptions): void {
     intent = null;
     committed = false;
     pointerId = -1;
+    resetInlineTransform();
   }, 2000);
 }
