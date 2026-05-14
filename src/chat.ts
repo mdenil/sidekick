@@ -511,12 +511,13 @@ export function addLine(speaker: string, text: string, cls = '', opts: {
         const liveText = div.dataset.text
           || (div.querySelector('.text') as HTMLElement | null)?.textContent
           || '';
-        // Store up to ~1500 chars so the drawer item's "expand"
-        // affordance has full-message content to reveal — Jonathan's
-        // todo-list semantic wants the whole message readable in the
-        // drawer, not a 3-line preview. Hard cap protects against
-        // pasted PDFs / multi-page docs eating IDB.
-        const preview = liveText.length > 1500 ? liveText.slice(0, 1497) + '…' : liveText;
+        // Store up to ~16000 chars so even a long markdown reply (pitch
+        // deck section, brainstorm, planning doc) shows IN FULL when
+        // the drawer item expands. Earlier 1500 cap truncated common
+        // expanded reads (Jonathan field bug 2026-05-14: expanded pin
+        // body was cut off mid-section). 16K is well under IDB pressure
+        // for any realistic pin count (1 MB at 60 pins of max size).
+        const preview = liveText.length > 16000 ? liveText.slice(0, 15997) + '…' : liveText;
         const role = cls.includes('agent') ? 'assistant'
           : cls.includes('system') ? 'system'
           : 'user';

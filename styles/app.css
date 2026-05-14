@@ -1951,28 +1951,34 @@
     color: var(--muted);
   }
 
-  /* Expanded (drawer open) — full clock/weather/forecast card.
-   * Anchored to the bottom-right of the drawer so it sits below the
-   * pin list, in its own sub-panel framing. Width matches the
-   * content column (drawer width minus the 48px rail), so the card
-   * lays out cleanly without overflowing. */
+  /* Expanded (drawer open) — horizontal 2-row footer pinned at the
+   * bottom of the drawer's content column.
+   *
+   * Row 1: time · date · current weather (icon + temp + desc)
+   * Row 2: 3-day forecast strip (THU 12°/7° | FRI 13°/7° | SAT 14°/10°)
+   *
+   * Solid bg + top border so pin-list content scrolls UNDERNEATH it
+   * cleanly without bleeding through (Jonathan field UX 2026-05-14:
+   * the 6-row vertical card overlapped the pin list and read as
+   * visual clutter — a low-profile footer reads as "this is the
+   * drawer's persistent HUD" instead). The pin-list gets matching
+   * bottom padding via #pin-drawer-list so the user can still scroll
+   * the last pin into view above the footer. */
   #pin-drawer:not(.collapsed) .ambient-widget.ambient-in-drawer.expanded {
-    /* Anchor to bottom of the drawer's content column (48px rail to
-     * the left), full width, centered. No nested panel framing — the
-     * drawer itself is already a surface; another bordered card on
-     * top reads as visual clutter (Jonathan field UX 2026-05-13).
-     * Just space the rows naturally. */
     position: absolute;
     left: 48px;
     right: 0;
-    bottom: 12px;
+    bottom: 0;
     width: auto;
-    padding: 14px 16px;
-    background: transparent;
+    padding: 10px 14px 12px;
+    background: var(--surface);
     border: none;
+    border-top: 1px solid var(--border);
     border-radius: 0;
+    display: flex;
     flex-direction: column;
-    gap: 0;
+    align-items: stretch;
+    gap: 6px;
     z-index: 2;
     /* Override the parent .ambient-mount's visibility:hidden — that
      * rule keeps the compact rail stack out of view while the drawer
@@ -1980,25 +1986,86 @@
      * position:absolute. Without this, the expanded card never paints. */
     visibility: visible;
   }
-  /* Drop the inner "current conditions" card framing too — the outer
-   * panel is gone, this no longer needs to read as a separate surface.
-   * Keep the icon + temp + description inline, centered. */
+  /* Row 1: time + date + current weather, side-by-side. The clock
+   * fades to muted; the current temp is the visual anchor. Grid layout
+   * keeps the three groups aligned at the narrowest drawer width
+   * (260px - 48px rail = ~212px content). */
+  #pin-drawer:not(.collapsed) .ambient-widget.ambient-in-drawer.expanded {
+    /* Two-row grid: r1 = top group, r2 = forecast strip. */
+    display: grid;
+    grid-template-rows: auto auto;
+    row-gap: 6px;
+  }
+  #pin-drawer:not(.collapsed) .ambient-widget.ambient-in-drawer.expanded .amb-clock {
+    grid-row: 1;
+    grid-column: 1;
+    display: inline-block;
+    text-align: left;
+    font: 600 13px/1.2 var(--font-mono);
+    letter-spacing: 0.02em;
+    color: var(--fg);
+    margin: 0;
+  }
+  #pin-drawer:not(.collapsed) .ambient-widget.ambient-in-drawer.expanded .amb-date {
+    grid-row: 1;
+    grid-column: 2;
+    text-align: right;
+    font: 400 10px/1.4 var(--font-mono);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0;
+    align-self: center;
+  }
+  /* Current conditions: the icon + temp/desc sits BELOW the time row,
+   * spanning both columns so icon-temp-desc reads as a single line. */
   #pin-drawer:not(.collapsed) .ambient-widget.ambient-in-drawer.expanded .amb-current {
+    grid-row: 2;
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    gap: 10px;
     background: transparent;
     border: none;
     border-radius: 0;
     padding: 0;
-    margin-top: 10px;
-    justify-content: center;
+    margin: 0;
   }
-  /* Center the forecast strip too so the whole column reads as a
-   * single composed block instead of left-anchored rows. */
+  #pin-drawer:not(.collapsed) .ambient-widget.ambient-in-drawer.expanded .amb-cur-meta {
+    display: flex; flex-direction: row; align-items: baseline; gap: 8px;
+  }
+  #pin-drawer:not(.collapsed) .ambient-widget.ambient-in-drawer.expanded .amb-cur-temp {
+    font: 600 14px/1.2 var(--font-mono); margin: 0;
+  }
+  #pin-drawer:not(.collapsed) .ambient-widget.ambient-in-drawer.expanded .amb-cur-desc {
+    margin: 0;
+  }
+  /* Forecast strip: 3 days side-by-side, equal columns. Sits in
+   * row 3 of an extended grid (effectively the bottom row of a 3-row
+   * grid; the absolute element's height grows automatically). */
+  #pin-drawer:not(.collapsed) .ambient-widget.ambient-in-drawer.expanded {
+    grid-template-rows: auto auto auto;
+  }
   #pin-drawer:not(.collapsed) .ambient-widget.ambient-in-drawer.expanded .amb-forecast {
-    align-items: stretch;
-    max-width: 220px;
-    margin-left: auto;
-    margin-right: auto;
+    grid-row: 3;
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+    margin: 2px 0 0;
+    max-width: none;
   }
+  #pin-drawer:not(.collapsed) .ambient-widget.ambient-in-drawer.expanded .amb-forecast-row {
+    display: flex; flex-direction: row; align-items: center; justify-content: center;
+    gap: 4px; padding: 0;
+    font: 500 11px/1.1 var(--font-mono);
+    grid-template-columns: none;
+  }
+  /* Pin-list bottom padding leaves room for the absolute footer so
+   * the last pin scrolls fully into view ABOVE the HUD. Approx
+   * footer height: row1 (16px) + row2 (24px) + row3 (16px) + padding
+   * (22px) + border (1px) ≈ 80px. */
+  #pin-drawer:not(.collapsed) #pin-drawer-list { padding-bottom: 90px; }
 
   /* In the rail when expanded — hide the rail's compact-stack so the
    * full card (positioned absolutely above) is the only ambient

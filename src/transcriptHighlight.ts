@@ -101,7 +101,7 @@ async function togglePinOnHighlight(): Promise<void> {
     const text = highlightedEl.dataset.text
       || (highlightedEl.querySelector('.text') as HTMLElement | null)?.textContent
       || '';
-    const preview = text.length > 1500 ? text.slice(0, 1497) + '…' : text;
+    const preview = text.length > 16000 ? text.slice(0, 15997) + '…' : text;
     const cls = highlightedEl.className;
     const role = cls.includes('agent') ? 'assistant'
       : cls.includes('system') ? 'system' : 'user';
