@@ -59,6 +59,37 @@ function render(): void {
   }
 }
 
+/** Best-effort lookup of the FULL message text for a pinned item.
+ *  The store may hold a truncated preview (older pins were capped at
+ *  1500 chars before the 2026-05-14 bump to 16000). If the source
+ *  bubble is currently rendered in the transcript — i.e. the user is
+ *  viewing the chat that owns this pin — its `data-text` (agent) or
+ *  `.text` textContent (user) carries the un-truncated original.
+ *  Returns the longer of the two so existing truncated pins recover
+ *  full text the moment the chat is on screen. */
+function fullTextForPin(item: PinnedItem): string {
+  const stored = item.text || '';
+  try {
+    const bubble = document.querySelector(
+      `#transcript .line[data-message-id="${CSS.escape(item.msgId)}"]`,
+    ) as HTMLElement | null;
+    if (!bubble) return stored;
+    // Agent path: raw markdown is preserved in dataset.text. User
+    // path: textContent of the `.text` span is the originally-sent
+    // text (no markdown rendering on user bubbles, just escape + br).
+    const live = bubble.dataset.text
+      || (bubble.querySelector('.text') as HTMLElement | null)?.textContent
+      || '';
+    if (!live) return stored;
+    // Prefer the live text only if it's strictly longer (avoids
+    // overwriting a clean stored copy with a still-streaming or
+    // partial DOM read in edge cases).
+    return live.length > stored.length ? live : stored;
+  } catch {
+    return stored;
+  }
+}
+
 function renderItem(item: PinnedItem): HTMLElement {
   const li = document.createElement('li');
   li.className = 'pin-drawer-item';
@@ -87,8 +118,14 @@ function renderItem(item: PinnedItem): HTMLElement {
   // (chat.addLine markdown:true path); pinned items keep parity.
   // dataset.text holds the raw markdown so copy / future edit paths
   // round-trip losslessly; innerHTML is just the display layer.
-  body.dataset.text = item.text;
-  body.innerHTML = miniMarkdown(item.text);
+  //
+  // Source-of-truth fallback: existing pins were stored truncated at
+  // 1500 chars (pre 2026-05-14). When the source bubble is in the
+  // current chat's DOM, prefer its un-truncated text so old pins
+  // recover the moment the user views the chat that owns them.
+  const fullText = fullTextForPin(item);
+  body.dataset.text = fullText;
+  body.innerHTML = miniMarkdown(fullText);
   // Click the body to toggle expansion in-place. Multi-line clamp by
   // default (3 lines) keeps the drawer scannable; expanded reveals
   // the full stored text (up to ~1500 chars from pin-time). Per-item
@@ -101,8 +138,19 @@ function renderItem(item: PinnedItem): HTMLElement {
     e.stopPropagation();   // don't drill on body-click
     const wasExpanded = li.classList.toggle('expanded');
     const key = `${item.chatId}|${item.msgId}`;
-    if (wasExpanded) expandedKeys.add(key);
-    else expandedKeys.delete(key);
+    if (wasExpanded) {
+      expandedKeys.add(key);
+      // Re-check live text on expand — the user may have drilled into
+      // the source chat between the initial render and now, making the
+      // bubble (and its un-truncated text) available.
+      const latest = fullTextForPin(item);
+      if (latest.length > (body.dataset.text || '').length) {
+        body.dataset.text = latest;
+        body.innerHTML = miniMarkdown(latest);
+      }
+    } else {
+      expandedKeys.delete(key);
+    }
   };
   // Apply persistent expanded state from the cross-render set.
   if (expandedKeys.has(`${item.chatId}|${item.msgId}`)) {
