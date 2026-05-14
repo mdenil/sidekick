@@ -177,11 +177,78 @@ export function isPushEligibleType(envelopeType: string): boolean {
   return PUSH_ELIGIBLE_TYPES.has(envelopeType);
 }
 
+/** Hermes' cron scheduler wraps the agent's reply in a fixed boilerplate
+ *  shell (see hermes-agent/cron/scheduler.py:515-522):
+ *
+ *      Cronjob Response: {task_name}
+ *      (job_id: {job_id})
+ *      -------------
+ *
+ *      {agent body}
+ *
+ *      To stop or manage this job, send me a new message (e.g. "stop reminder {task_name}").
+ *
+ *  For a watch-sized push that, in raw form, eats the entire visible
+ *  band on boilerplate and never reaches the agent's actual content
+ *  before truncation (Jonathan, 2026-05-14 — "Cronjob and job IDs and
+ *  session IDs are all I see on my watch").
+ *
+ *  Parser splits the wrapper into its parts so we can lead with the
+ *  agent's reply and let the title + suffix carry the metadata. */
+export function parseCronContent(raw: string): {
+  taskName: string;
+  jobId: string;
+  body: string;
+} {
+  const headerRe = /^Cronjob Response:\s*(.+?)\s*\n\(job_id:\s*([^)]+)\)\s*\n-+\s*\n+([\s\S]*?)(?:\n+To stop or manage this job[^\n]*\.?\s*)?$/;
+  const m = headerRe.exec(raw);
+  if (!m) {
+    // Not the canonical shape — return raw as body, no metadata
+    // extracted. Defensive: future hermes versions could change the
+    // template; we degrade gracefully to "show the whole content."
+    return { taskName: '', jobId: '', body: raw };
+  }
+  return {
+    taskName: m[1].trim(),
+    jobId: m[2].trim(),
+    body: m[3].trim(),
+  };
+}
+
+/** Strip "session_id: ..." / "job_id: ..." / "chat_id: ..." style
+ *  metadata lines from the START of a notification body. Cron jobs
+ *  often include these in their agent prompt's reply text — useful
+ *  for desktop debugging but pure noise on a watch banner. Also
+ *  drops leading dash-only separators ("------") and blank lines.
+ *  Stops at the first non-metadata line so the agent's real content
+ *  is preserved verbatim. */
+export function stripLeadingMetadata(s: string): string {
+  const META_LINE_RE = /^\s*(?:session_id|job_id|chat_id|message_id|user_id|run_id|trace_id)\s*:\s*\S/i;
+  const SEP_OR_BLANK_RE = /^\s*(?:-{3,}|=+|\*+)?\s*$/;
+  const lines = s.split('\n');
+  let i = 0;
+  while (i < lines.length && (META_LINE_RE.test(lines[i]) || SEP_OR_BLANK_RE.test(lines[i]))) {
+    i++;
+  }
+  return lines.slice(i).join('\n');
+}
+
 /** Translate a sidekick envelope into a push payload. The shape matches
  *  the sw.js push listener's expectations:
  *    { title, body, chat_id?, tag?, icon?, url? }
  *  Falls back to "Sidekick" / empty body when the envelope is missing
  *  the obvious fields — the receive side handles those gracefully.
+ *
+ *  Format strategy (Jonathan 2026-05-14 watch-readability pass):
+ *    - Title carries the category emoji + a short scannable label
+ *      (chat speaker, cron task name, etc.). NO boilerplate words.
+ *    - Body leads with the agent's actual content. Metadata that's
+ *      useful for debugging (job_id) goes in a suffix after a dot
+ *      separator, so a watch banner shows agent text first; on a
+ *      desktop banner the suffix is still visible after wrap.
+ *    - Known boilerplate patterns ("session_id: ...", separators)
+ *      are stripped from the body prefix so the first ~30 chars
+ *      (the only ones a watch shows) carry signal.
  *
  *  `bodyOverride` lets the caller supply text the envelope itself
  *  doesn't carry. Used for reply_final, which has no `text`/`content`
@@ -192,33 +259,54 @@ export function envelopeToPayload(env: Record<string, any>, bodyOverride?: strin
   const speaker = typeof env.speaker === 'string' && env.speaker
     ? env.speaker
     : 'Sidekick';
-  // notification envelopes can carry an explicit title field; fall back
-  // to the speaker label otherwise. reply_final envelopes don't have a
-  // title field but their speaker IS the natural label.
-  const title = typeof env.title === 'string' && env.title
-    ? env.title
-    : speaker;
-  // Take the first ~140 chars of the content; long replies hit the
-  // OS-level truncation anyway, and shorter payloads ride the push
-  // service's compact path on iOS.
+  const envTitle = typeof env.title === 'string' && env.title ? env.title : '';
   const raw = typeof bodyOverride === 'string' && bodyOverride ? bodyOverride
     : typeof env.content === 'string' ? env.content
     : typeof env.text === 'string' ? env.text
     : '';
-  const body = raw.length > 140 ? raw.slice(0, 137) + '…' : raw;
-  // Emoji title prefix by envelope kind. iOS PWA ignores the icon
-  // field on the lock-screen banner (always shows the app icon), so a
-  // prefix is the only category cue that actually renders. Branches
-  // ordered most-specific → most-generic; unknown types fall through
-  // with no prefix.
-  const prefix =
-    env.type === 'reply_final' ? '💬 '
-    : env.type === 'notification' && env.kind === 'cron' ? '⏰ '
-    : env.type === 'notification' ? '🔔 '
-    : '';
+
+  let title: string;
+  let body: string;
+  let suffix = '';
+
+  if (env.type === 'notification' && env.kind === 'cron') {
+    // Cron: parse the boilerplate wrapper out, lead body with agent's
+    // reply text, push job metadata to a body suffix.
+    const parsed = parseCronContent(raw);
+    const taskName = parsed.taskName || envTitle || 'Cron';
+    title = `⏰ ${taskName}`;
+    body = stripLeadingMetadata(parsed.body);
+    if (parsed.jobId) {
+      // Short-id suffix (first 8 chars of the job id is enough to
+      // disambiguate in practice while keeping the suffix tiny).
+      const shortJob = parsed.jobId.length > 8 ? parsed.jobId.slice(0, 8) : parsed.jobId;
+      suffix = ` · ${shortJob}`;
+    }
+  } else if (env.type === 'reply_final') {
+    title = `💬 ${envTitle || speaker}`;
+    body = raw;
+  } else if (env.type === 'notification') {
+    title = `🔔 ${envTitle || speaker}`;
+    body = stripLeadingMetadata(raw);
+  } else {
+    title = envTitle || speaker;
+    body = raw;
+  }
+
+  // Trim + bound the body so a watch banner stays single-screen.
+  // Reserve room for the suffix when present.
+  const BODY_CAP = 140;
+  const suffixBudget = suffix.length;
+  const bodyBudget = Math.max(40, BODY_CAP - suffixBudget);
+  const trimmed = body.trim();
+  const bodyClipped = trimmed.length > bodyBudget
+    ? trimmed.slice(0, bodyBudget - 1) + '…'
+    : trimmed;
+  const finalBody = bodyClipped + suffix;
+
   return {
-    title: prefix + title,
-    body,
+    title,
+    body: finalBody,
     chat_id: chatId,
     // tag coalesces per-chat: same chat = same tag = OS replaces the
     // prior notification instead of stacking.

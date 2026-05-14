@@ -392,6 +392,120 @@ test('payload: notification envelope without kind gets the generic bell emoji', 
   }
 });
 
+// ── Cron envelope formatting (watch-readability pass) ───────────────
+//
+// Field bug 2026-05-14 (Jonathan, Apple Watch): cron notifications
+// showed "Cronjob Response: <task>" + "(job_id: <hex>)" + separator
+// + "session_id: <ts>_<hash>" — the entire visible band on his
+// watch was boilerplate, never reaching the agent's actual reply.
+// envelopeToPayload now parses the canonical scheduler.py boilerplate
+// out so title leads with the task name + emoji and body leads with
+// the agent's content. Job-id moves to a short suffix.
+
+test('payload: cron envelope strips scheduler boilerplate, leads with agent reply', async () => {
+  const g = await startGateRig();
+  try {
+    const cronContent =
+      'Cronjob Response: Workstation quote watchdog\n' +
+      '(job_id: 0ce025d187eb43c4)\n' +
+      '-------------\n\n' +
+      'session_id: 20260514_173104_8aca03\n' +
+      '------\n' +
+      'Quote at £4,200 still tracking the budget. ' +
+      'I\'ll keep watching for the £120-per-drive offer until Friday.\n\n' +
+      'To stop or manage this job, send me a new message (e.g. "stop reminder Workstation quote watchdog").';
+    await g.pushEnv({
+      type: 'notification',
+      chat_id: 'chat-cron',
+      kind: 'cron',
+      content: cronContent,
+      should_push: true,
+    });
+    assert.equal(g.sent.length, 1);
+    const { title, body } = g.sent[0].body;
+    assert.equal(title, '⏰ Workstation quote watchdog',
+      'title leads with clock emoji + task name (no "Cronjob Response:" prefix)');
+    assert.ok(
+      body.startsWith('Quote at £4,200'),
+      `body should lead with the agent\'s actual reply, got: ${JSON.stringify(body.slice(0, 80))}`,
+    );
+    assert.ok(
+      !body.includes('session_id:'),
+      `body should not include the agent\'s session_id metadata, got: ${JSON.stringify(body)}`,
+    );
+    assert.ok(
+      !body.includes('Cronjob Response'),
+      'body should not include the "Cronjob Response" boilerplate header',
+    );
+    assert.ok(
+      !body.includes('To stop or manage'),
+      'body should not include the stop-instructions footer',
+    );
+    assert.ok(
+      body.includes('0ce025d1'),
+      `body suffix should carry the short job-id for debugging, got: ${JSON.stringify(body)}`,
+    );
+  } finally {
+    await g.stop();
+  }
+});
+
+test('payload: cron envelope without canonical wrapper degrades gracefully', async () => {
+  // Defensive — future hermes versions may change the template. Plain
+  // content (not wrapped) should fall through with no exception, just
+  // no parsing wins.
+  const g = await startGateRig();
+  try {
+    await g.pushEnv({
+      type: 'notification',
+      chat_id: 'chat-cron-plain',
+      kind: 'cron',
+      title: 'Daily digest',
+      content: 'Three new emails this morning. Two flagged for follow-up.',
+      should_push: true,
+    });
+    assert.equal(g.sent.length, 1);
+    assert.equal(g.sent[0].body.title, '⏰ Daily digest',
+      'falls back to env.title when parser doesn\'t recognize the content shape');
+    assert.equal(
+      g.sent[0].body.body,
+      'Three new emails this morning. Two flagged for follow-up.',
+      'unparsed content passes through verbatim',
+    );
+  } finally {
+    await g.stop();
+  }
+});
+
+test('payload: generic notification strips leading metadata lines from body', async () => {
+  // Generic notification kind (not cron) — any agent that prepends
+  // session_id / job_id / chat_id lines to its content shouldn\'t
+  // see those lines occupy the first watch-visible band of body.
+  const g = await startGateRig();
+  try {
+    await g.pushEnv({
+      type: 'notification',
+      chat_id: 'chat-meta-strip',
+      title: 'Approval',
+      content:
+        'session_id: 20260514_173104\n' +
+        'chat_id: abc-def\n' +
+        '---\n' +
+        '\n' +
+        'Run terraform apply? ' +
+        '(plan: 3 changes, 0 destroys)',
+      should_push: true,
+    });
+    assert.equal(g.sent.length, 1);
+    assert.ok(
+      g.sent[0].body.body.startsWith('Run terraform apply?'),
+      `body should lead with the actual prompt, got: ${JSON.stringify(g.sent[0].body.body.slice(0, 60))}`,
+    );
+  } finally {
+    await g.stop();
+  }
+});
+
 // ── Multi-subscription fan-out ─────────────────────────────────────
 
 test('fan-out: dispatches to every subscription, marks each used', async () => {
