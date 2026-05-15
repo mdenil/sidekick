@@ -2054,8 +2054,19 @@
      * distributed between them. Field UX 2026-05-15 (Jonathan): the
      * earlier `repeat(5, 1fr)` grid centered each col's text within
      * its slot, leaving FRI offset right of "13:44" and TUE offset
-     * left of "FRIDAY 15 MAY". */
+     * left of "FRIDAY 15 MAY".
+     *
+     * flex-direction MUST be explicit: an earlier legacy rule at
+     * `.ambient-widget.expanded .amb-forecast` (lower specificity,
+     * for the floating-widget mode this in-drawer mode replaced)
+     * sets flex-direction: column. Because that's a different
+     * property than what this rule sets, it survives the cascade
+     * and stacks cols vertically. Verified 2026-05-15 via playwright
+     * inspection: flex-direction was column, justify-content was
+     * space-between (my value), col widths ~30px stacked one per
+     * row. Setting flex-direction here explicitly. */
     display: flex;
+    flex-direction: row;
     justify-content: space-between;
     align-items: flex-start;
     gap: 8px;
