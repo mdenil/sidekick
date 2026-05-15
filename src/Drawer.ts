@@ -174,13 +174,13 @@ export function createDrawer(cfg: DrawerConfig): DrawerHandle | null {
     handle.close();
   }, true);
 
-  // ── Escape-to-close ──────────────────────────────────────────────
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && isOpen()) {
-      handle.close();
-      e.stopPropagation();
-    }
-  });
+  // ── Escape-to-close — removed 2026-05-15 (Jonathan UX nit). Esc is
+  //    used by the sidebar session selection to deselect rows
+  //    (keyboard nav); having it also close the drawer means a single
+  //    Esc both deselects AND closes, which is two intentions for one
+  //    key. The drawer-close affordances are the X button (mobile) +
+  //    swipe-to-close + the toggle button. Esc stays available for
+  //    things that NEED it (session-deselect, modal dismiss, etc.).
 
   // ── Resizer drag (optional, desktop only via CSS — hidden in rail
   //    + mobile states by the same display:none rules) ──────────────

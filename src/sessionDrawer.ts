@@ -213,8 +213,13 @@ function installSelectionKeyboardListener(): void {
     }
     // Shift+ArrowUp / Shift+ArrowDown — extend selection. Skip when
     // the user is typing in an input (don't steal arrow keys from
-    // the composer / filter input).
-    if (e.shiftKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+    // the composer / filter input). Also bail when ANY other modifier
+    // is held — macOS window-tiling is bound to Cmd+Ctrl+Shift+arrow
+    // and other OS-level shortcuts overlap similarly; only bare
+    // shift+arrow is ours. Field bug 2026-05-15 (Jonathan): macOS
+    // Cmd+Ctrl+Shift+Up got intercepted instead of tiling the window.
+    if (e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey
+        && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
       const t = e.target as HTMLElement | null;
       const tag = t?.tagName?.toUpperCase() || '';
       if (tag === 'INPUT' || tag === 'TEXTAREA' || t?.isContentEditable) return;
