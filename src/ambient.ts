@@ -96,6 +96,19 @@ export function init(opts?: {
   isExpandedRef = opts?.isExpanded || null;
   onClickRef = opts?.onClick || null;
   rootEl.addEventListener('click', () => {
+    // Expanded (drawer-open) state: clicking the forecast opens the
+    // platform weather page in a new tab. Previously this collapsed
+    // the drawer, which Jonathan flagged 2026-05-15 — closing the
+    // drawer is the X button's job; the widget click should open the
+    // forecast for deeper reading. Google search "weather" is the
+    // most-portable universal weather page (it auto-detects location,
+    // works in every locale, no Apple/Microsoft account lock-in).
+    if (isExpanded()) {
+      window.open('https://www.google.com/search?q=weather', '_blank', 'noopener');
+      return;
+    }
+    // Compact (rail) state: click toggles the parent drawer — opening
+    // it reveals the full forecast widget.
     if (onClickRef) {
       onClickRef();
     } else {
@@ -157,48 +170,48 @@ function renderCompact(hh, mm, w) {
 
 function renderExpanded(hh, mm, dateObj, w) {
   const dateStr = dateObj.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
-  const cur = w?.current;
   const daily = w?.daily;
-  const code = cur?.weather_code;
-  const [icon, desc] = code != null ? (WMO[code] || ['❔', 'weather']) : ['❔', 'weather'];
-  const temp = cur?.temperature_2m != null ? Math.round(cur.temperature_2m) : null;
-  const hi = daily?.temperature_2m_max?.[0] != null ? Math.round(daily.temperature_2m_max[0]) : null;
-  const lo = daily?.temperature_2m_min?.[0] != null ? Math.round(daily.temperature_2m_min[0]) : null;
 
-  const currentRow = temp != null ? `
-    <div class="amb-current">
-      <span class="amb-icon">${icon}</span>
-      <div class="amb-cur-meta">
-        <div class="amb-cur-temp">${temp}°</div>
-        <div class="amb-cur-desc">${escapeHtml(desc)}${hi != null && lo != null ? ` · h${hi}° l${lo}°` : ''}</div>
-      </div>
-    </div>` : '';
-
-  // Forecast strip — tomorrow onwards. /weather returns 4 days total,
-  // so we slice [1..4).
+  // 5-day forecast strip — today is the first column (FRI in the
+  // example), every column uses the same icon + stacked-hi/lo layout
+  // so there's no special "current weather" row taking up vertical
+  // space. CSS controls how many fit in the available width; days
+  // past the container's capacity get clipped on the right. Today's
+  // high/low are the daily aggregate from the same dataset, not the
+  // intra-day current temp — that's a stylistic choice (cleaner) and
+  // avoids the "Current 13° but forecast shows 14°" mismatch the
+  // earlier two-row layout produced. Field UX 2026-05-15 (Jonathan).
   let forecastHtml = '';
-  if (daily?.time?.length > 1) {
-    const rows = [];
-    for (let i = 1; i < Math.min(daily.time.length, 4); i++) {
-      const d = new Date(daily.time[i] + 'T00:00');
-      const wd = d.toLocaleDateString(undefined, { weekday: 'short' });
+  if (daily?.time?.length > 0) {
+    const cols = [];
+    const todayLocal = new Date();
+    const todayKey = todayLocal.toISOString().slice(0, 10);
+    for (let i = 0; i < Math.min(daily.time.length, 5); i++) {
+      const dayKey = daily.time[i];
+      const d = new Date(dayKey + 'T00:00');
+      const isToday = dayKey === todayKey;
+      const wd = isToday
+        ? d.toLocaleDateString(undefined, { weekday: 'short' })
+        : d.toLocaleDateString(undefined, { weekday: 'short' });
       const [fi] = WMO[daily.weather_code?.[i]] || ['❔', ''];
-      const fhi = daily.temperature_2m_max?.[i] != null ? Math.round(daily.temperature_2m_max[i]) : '—';
-      const flo = daily.temperature_2m_min?.[i] != null ? Math.round(daily.temperature_2m_min[i]) : '—';
-      rows.push(`
-        <div class="amb-forecast-row">
+      const fhi = daily.temperature_2m_max?.[i] != null
+        ? Math.round(daily.temperature_2m_max[i]) : '—';
+      const flo = daily.temperature_2m_min?.[i] != null
+        ? Math.round(daily.temperature_2m_min[i]) : '—';
+      cols.push(`
+        <div class="amb-forecast-col${isToday ? ' is-today' : ''}">
           <span class="amb-fc-day">${escapeHtml(wd)}</span>
           <span class="amb-fc-icon">${fi}</span>
-          <span class="amb-fc-temps">${fhi}° <span class="amb-fc-lo">${flo}°</span></span>
+          <span class="amb-fc-hi">${fhi}°</span>
+          <span class="amb-fc-lo">${flo}°</span>
         </div>`);
     }
-    forecastHtml = `<div class="amb-forecast">${rows.join('')}</div>`;
+    forecastHtml = `<div class="amb-forecast">${cols.join('')}</div>`;
   }
 
   return `
     <div class="amb-clock">${hh}:${mm}</div>
     <div class="amb-date">${escapeHtml(dateStr)}</div>
-    ${currentRow}
     ${forecastHtml}
   `;
 }

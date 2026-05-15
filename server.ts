@@ -392,7 +392,7 @@ async function handleWeather(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const lat = parseFloat(url.searchParams.get('lat') || String(DEFAULT_WEATHER_LAT));
   const lon = parseFloat(url.searchParams.get('lon') || String(DEFAULT_WEATHER_LON));
-  const omUrl = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,weather_code,wind_speed_10m,is_day&daily=temperature_2m_max,temperature_2m_min,weather_code&timezone=auto&forecast_days=4`;
+  const omUrl = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,weather_code,wind_speed_10m,is_day&daily=temperature_2m_max,temperature_2m_min,weather_code&timezone=auto&forecast_days=5`;
   try {
     const r = await fetch(omUrl);
     const data = await r.json();
