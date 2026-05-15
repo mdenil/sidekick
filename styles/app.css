@@ -1966,6 +1966,11 @@
    * the last pin into view above the footer. */
   #pin-drawer:not(.collapsed) .ambient-widget.ambient-in-drawer.expanded {
     position: absolute;
+    /* 48px to clear the rail on desktop; 0 on mobile (rail is
+     * display:none under the @media (max-width:699px) block above).
+     * Without the mobile override the panel + gray top-border were
+     * inset 48px from the drawer's left edge — the "gap on left"
+     * Jonathan flagged 2026-05-15. */
     left: 48px;
     right: 0;
     bottom: 0;
@@ -1985,6 +1990,11 @@
      * is open, but visibility cascades to children even when they're
      * position:absolute. Without this, the expanded card never paints. */
     visibility: visible;
+  }
+  @media (max-width: 699px) {
+    #pin-drawer:not(.collapsed) .ambient-widget.ambient-in-drawer.expanded {
+      left: 0;
+    }
   }
   /* Row 1: time + date + current weather, side-by-side. The clock
    * fades to muted; the current temp is the visual anchor. Grid layout
@@ -2033,36 +2043,71 @@
   #pin-drawer:not(.collapsed) .ambient-widget.ambient-in-drawer.expanded .amb-forecast {
     grid-row: 2;
     grid-column: 1 / -1;
-    display: grid;
-    grid-template-columns: repeat(5, 1fr);
-    gap: 6px;
+    /* Flex with space-between so the FIRST col's content sits flush
+     * with the parent's left edge (clock alignment) and the LAST col
+     * sits flush with the right edge (date alignment). Cols size to
+     * their natural content width; the gap is the remaining space
+     * distributed between them. Field UX 2026-05-15 (Jonathan): the
+     * earlier `repeat(5, 1fr)` grid centered each col's text within
+     * its slot, leaving FRI offset right of "13:44" and TUE offset
+     * left of "FRIDAY 15 MAY". */
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 8px;
     margin: 4px 0 0;
     max-width: none;
     overflow: hidden;
     cursor: pointer;
   }
-  /* Drop columns from the right when the container can't fit them.
-   * Approx col width threshold: ~44px each + 6px gaps. Targets are
-   * inclusive — at <=220px container width, hide col 5; <=176px hide
-   * cols 4-5; etc. Container queries trigger off the .expanded
-   * widget's inline-size, which equals the drawer's content area
-   * (drawer width - 48px rail). */
-  @container amb (max-width: 220px) {
-    .amb-forecast .amb-forecast-col:nth-child(5) { display: none; }
-  }
-  @container amb (max-width: 176px) {
-    .amb-forecast .amb-forecast-col:nth-child(4) { display: none; }
-  }
-  @container amb (max-width: 132px) {
-    .amb-forecast .amb-forecast-col:nth-child(3) { display: none; }
-  }
   #pin-drawer:not(.collapsed) .ambient-widget.ambient-in-drawer.expanded .amb-forecast-col {
     display: flex; flex-direction: column; align-items: center;
-    gap: 1px; padding: 4px 2px;
+    gap: 1px; padding: 4px 6px;
     font: 500 11px/1.1 var(--font-mono);
     color: var(--muted);
     min-width: 0;
     border-radius: 4px;
+    flex: 0 0 auto;  /* natural content width; flex grid layout */
+  }
+  /* First col text-aligns left so "FRI" is flush with "13:44"; the
+   * VISUALLY-LAST col text-aligns right so it's flush with "FRIDAY
+   * 15 MAY". Container queries drop cols from the right at progressively
+   * narrower widths, AND promote the next col to the visually-last
+   * right-aligned style so the right edge stays anchored to the date.
+   *
+   * Threshold math: each col needs ~52px (FRI / icon / 18° / 11°
+   * stacked) plus ~8px gap. 5 cols ≈ 292px container; 4 cols ≈ 240px;
+   * 3 cols ≈ 188px. Below that, only 2 cols (today + tomorrow). */
+  #pin-drawer:not(.collapsed) .ambient-widget.ambient-in-drawer.expanded .amb-forecast-col:first-child {
+    align-items: flex-start;
+    padding-left: 0;
+  }
+  /* 5-col case: col 5 is visually-last */
+  #pin-drawer:not(.collapsed) .ambient-widget.ambient-in-drawer.expanded .amb-forecast-col:nth-child(5) {
+    align-items: flex-end;
+    padding-right: 0;
+  }
+  @container amb (max-width: 292px) {
+    .amb-forecast .amb-forecast-col:nth-child(5) { display: none; }
+    /* col 4 becomes visually-last; right-align it. */
+    .amb-forecast .amb-forecast-col:nth-child(4) {
+      align-items: flex-end;
+      padding-right: 0;
+    }
+  }
+  @container amb (max-width: 240px) {
+    .amb-forecast .amb-forecast-col:nth-child(4) { display: none; }
+    .amb-forecast .amb-forecast-col:nth-child(3) {
+      align-items: flex-end;
+      padding-right: 0;
+    }
+  }
+  @container amb (max-width: 188px) {
+    .amb-forecast .amb-forecast-col:nth-child(3) { display: none; }
+    .amb-forecast .amb-forecast-col:nth-child(2) {
+      align-items: flex-end;
+      padding-right: 0;
+    }
   }
   #pin-drawer:not(.collapsed) .ambient-widget.ambient-in-drawer.expanded .amb-forecast-col.is-today {
     background: color-mix(in srgb, var(--primary) 8%, transparent);
