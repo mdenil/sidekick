@@ -269,17 +269,35 @@ export function envelopeToPayload(env: Record<string, any>, bodyOverride?: strin
   let body: string;
   let suffix = '';
 
-  if (env.type === 'notification' && env.kind === 'cron') {
-    // Cron: parse the boilerplate wrapper out, lead body with agent's
-    // reply text, push job metadata to a body suffix.
-    const parsed = parseCronContent(raw);
-    const taskName = parsed.taskName || envTitle || 'Cron';
+  // Detect cron envelopes two ways:
+  //   1. Explicit: env.type === 'notification' && env.kind === 'cron'
+  //      — what the protocol DOCUMENTED, but no production path
+  //      actually emits these. Synthetic tests use this shape, and
+  //      a future emitter could.
+  //   2. Shape-detected: content matches the canonical
+  //      "Cronjob Response: <task>\n(job_id: X)\n-------..."
+  //      wrapper. This is what hermes' cron scheduler ACTUALLY
+  //      produces — and it ships as reply_delta + reply_final via
+  //      the sidekick adapter's send() method, not as a notification
+  //      envelope. Field bug 2026-05-15 (Jonathan, iPhone): cron
+  //      pushes still arrived with the full boilerplate filling the
+  //      watch banner because the kind-only gate never fired in
+  //      production.
+  const parsedCron = parseCronContent(raw);
+  const isCronShape = !!parsedCron.taskName;
+  const isCronEnvelope = isCronShape
+    || (env.type === 'notification' && env.kind === 'cron');
+
+  if (isCronEnvelope) {
+    // Lead with the task name + clock emoji. Push the job_id to a
+    // body suffix so a watch banner shows the agent's reply text
+    // first (the part the user actually wants to read).
+    const taskName = parsedCron.taskName || envTitle || 'Cron';
     title = `⏰ ${taskName}`;
-    body = stripLeadingMetadata(parsed.body);
-    if (parsed.jobId) {
-      // Short-id suffix (first 8 chars of the job id is enough to
-      // disambiguate in practice while keeping the suffix tiny).
-      const shortJob = parsed.jobId.length > 8 ? parsed.jobId.slice(0, 8) : parsed.jobId;
+    body = stripLeadingMetadata(parsedCron.body);
+    if (parsedCron.jobId) {
+      const shortJob = parsedCron.jobId.length > 8
+        ? parsedCron.jobId.slice(0, 8) : parsedCron.jobId;
       suffix = ` · ${shortJob}`;
     }
   } else if (env.type === 'reply_final') {

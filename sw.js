@@ -11,7 +11,7 @@
  * network-first, so first-load pulls anything missed and caches on the
  * way through.
  */
-const CACHE_NAME = 'v0.534';
+const CACHE_NAME = 'v0.535';
 
 // Dedicated cache for VAD assets. Key insight (Jonathan, 2026-05-04):
 // VAD assets are 14.7 MB and don't change with every app deploy — the

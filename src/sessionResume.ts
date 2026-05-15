@@ -472,26 +472,24 @@ export function renderHistoryMessage(
     // prompt) live in state.db.messages as role='assistant' — single
     // source of truth, same path turn replies take, and hermes' context
     // loader picks them up on next turn (correct: the agent SHOULD
-    // know what cron output it just emitted). The `kind` field on the
-    // wire item is the discriminator that tells us to render as a
-    // styled notification instead of a regular reply.
-    const kind = String(m.kind || '');
-    const emoji = kind === 'cron' ? '⏰' : '🔔';
-    // Strip the cron scheduler boilerplate ("Cronjob Response: …\n
-    // (job_id: X)\n----\n …") so the transcript leads with the agent's
-    // actual reply. Mirrors the strip the proxy does for push payload
-    // bodies + backendEvents.handleNotification does for live SSE.
+    // know what cron output it just emitted). Discriminator: either
+    // server-tagged via sidekick_msg_links.kind, OR shape-detected on
+    // the content matching the canonical cron wrapper.
+    const headerRe = /^Cronjob Response:\s*(.+?)\s*\n\(job_id:\s*([^)]+)\)\s*\n-+\s*\n+([\s\S]*?)(?:\n+To stop or manage this job[^\n]*\.?\s*)?$/;
+    const match = headerRe.exec(text);
+    const inferredKind: string = (typeof m?.kind === 'string' && m.kind) ? m.kind
+      : (match ? 'cron' : '');
+    const emoji = inferredKind === 'cron' ? '⏰' : '🔔';
+    // Strip the cron scheduler boilerplate so the transcript leads
+    // with the agent's actual reply. Mirrors the strip the proxy
+    // applies to push payload bodies.
     let displayText = text;
-    if (kind === 'cron') {
-      const headerRe = /^Cronjob Response:\s*(.+?)\s*\n\(job_id:\s*([^)]+)\)\s*\n-+\s*\n+([\s\S]*?)(?:\n+To stop or manage this job[^\n]*\.?\s*)?$/;
-      const match = headerRe.exec(displayText);
-      if (match) {
-        const taskName = match[1].trim();
-        const agentBody = match[3].trim();
-        displayText = `**${taskName}**\n\n${agentBody}`;
-      }
+    if (match) {
+      const taskName = match[1].trim();
+      const agentBody = match[3].trim();
+      displayText = `**${taskName}**\n\n${agentBody}`;
     }
-    const speaker = kind ? `${emoji} ${kind}` : (emoji || 'Notification');
+    const speaker = inferredKind ? `${emoji} ${inferredKind}` : (emoji || 'Notification');
     chat.addLine(speaker, displayText, 'system notification', {
       markdown: true,
       timestamp: ts,
@@ -552,7 +550,18 @@ export function renderHistoryMessage(
  *  sidekick_id starts with `notif_` as a secondary signal but the wire
  *  contract is `kind` is the source of truth. */
 function isNotificationItem(m: any): boolean {
-  return typeof m?.kind === 'string' && m.kind.length > 0;
+  // Primary signal: plugin tagged the row via sidekick_msg_links.kind.
+  if (typeof m?.kind === 'string' && m.kind.length > 0) return true;
+  // Fallback: shape detection on content. The cron scheduler delivers
+  // its output via the sidekick adapter's send() (gateway send path),
+  // which emits reply_delta + reply_final — NOT a notification
+  // envelope — so `kind` is never recorded for these rows. Field bug
+  // 2026-05-15 (Jonathan): cron output rendered as a regular agent
+  // reply showing the full "Cronjob Response: ..." boilerplate. The
+  // canonical wrapper is recognizable by regex; tag those rows even
+  // without server-side metadata.
+  const c = typeof m?.content === 'string' ? m.content : '';
+  return /^Cronjob Response:\s*.+?\s*\n\(job_id:\s*[^)]+\)\s*\n-+/.test(c);
 }
 
 /** Scroll the target bubble's TOP to the top of the transcript

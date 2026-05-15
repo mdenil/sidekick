@@ -1996,13 +1996,17 @@
       left: 0;
     }
   }
-  /* Row 1: time + date + current weather, side-by-side. The clock
-   * fades to muted; the current temp is the visual anchor. Grid layout
-   * keeps the three groups aligned at the narrowest drawer width
-   * (260px - 48px rail = ~212px content). */
+  /* Row 1: clock (left) + date (right). Row 2: forecast strip. The
+   * grid template explicitly sets `1fr auto` so col 1 stretches to
+   * fill the panel and col 2 is just wide enough for "FRIDAY 15 MAY"
+   * — without it the implicit-grid sizing was content-only (~170px)
+   * and the forecast row, which spans cols 1 / -1, was confined to
+   * that 170px instead of the full ~300px panel. That caused the
+   * forecast cols to wrap vertically (Jonathan field bug 2026-05-15
+   * — "all in the same column"). */
   #pin-drawer:not(.collapsed) .ambient-widget.ambient-in-drawer.expanded {
-    /* Two-row grid: r1 = top group, r2 = forecast strip. */
     display: grid;
+    grid-template-columns: 1fr auto;
     grid-template-rows: auto auto;
     row-gap: 6px;
   }
