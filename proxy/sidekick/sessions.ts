@@ -28,6 +28,12 @@ interface SidekickSessionRow {
   source: string;
   title: string;
   message_count: number;
+  /** User-role message count. Drawer prefers "N turns" over the
+   *  inflated raw `message_count` (which includes tool rows) when
+   *  both turn_count + tool_count are present. */
+  turn_count?: number;
+  /** Tool-role message count. Pairs with `turn_count`. */
+  tool_count?: number;
   last_active_at: string | null;
   created_at: string | null;
   /** Snippet of the first user message in this session, truncated to
@@ -200,6 +206,8 @@ function gatewayRowToSidekickRow(
     source: m.source,
     title: m.title,
     message_count: m.message_count,
+    turn_count: m.turn_count,
+    tool_count: m.tool_count,
     last_active_at: m.last_active_at
       ? new Date(m.last_active_at * 1000).toISOString()
       : null,
@@ -224,6 +232,8 @@ function channelRowToSidekickRow(
     source: 'sidekick',
     title: m.title,
     message_count: m.message_count,
+    turn_count: m.turn_count,
+    tool_count: m.tool_count,
     last_active_at: m.last_active_at
       ? new Date(m.last_active_at * 1000).toISOString()
       : null,

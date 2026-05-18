@@ -2,6 +2,7 @@ node_modules/
 build/
 .env
 .env.local
+.env.openclaw
 *.log
 # Stub-agent runtime persistence (jsonl transcripts).
 agent/data/

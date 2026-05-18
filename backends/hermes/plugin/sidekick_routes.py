@@ -1,0 +1,207 @@
+"""HTTP route handlers for the hermes-side sidekick plugin's
+unread + pins + push surface.
+
+Mirrors the openclaw plugin's ``src/push-routes.js`` +
+``src/unread-pins-routes.js``. All mutations broadcast an
+``unread_changed`` / ``pins_changed`` envelope through the plugin's
+out-of-turn channel so connected PWAs refresh.
+
+Wiring contract: this module exports a `register_routes(app, ctx)`
+function. `ctx` is the calling plugin's reference container with
+fields:
+  - db                : SidekickDB
+  - dispatcher        : PushDispatcher (engagement.mark_visible used)
+  - state_db_path     : Path to hermes state.db (for unread compute)
+  - emit_envelope     : callable(env: Dict) → publishes to /v1/events
+  - vapid_subject     : str (passed through for vapid-public-key)
+"""
+
+from __future__ import annotations
+
+import json
+from typing import Any, Dict
+
+from aiohttp import web
+
+from . import sidekick_state as state
+from .sidekick_unread import compute_unread
+from .sidekick_state import vapid_public_key_b64url, ensure_vapid_keys
+
+
+# ── Plumbing helpers ─────────────────────────────────────────────────
+
+async def _read_json(request: web.Request) -> Dict[str, Any]:
+    try:
+        return await request.json()
+    except Exception:
+        return {}
+
+
+def _json(data: Any, status: int = 200) -> web.Response:
+    return web.json_response(data, status=status)
+
+
+# ── Push routes ──────────────────────────────────────────────────────
+
+async def handle_vapid_public_key(ctx, request: web.Request) -> web.Response:
+    v = ensure_vapid_keys(ctx.db, ctx.vapid_subject)
+    return _json({
+        "publicKey": vapid_public_key_b64url(v["public_key"]),
+        "subject": v["subject"],
+    })
+
+
+async def handle_subscribe(ctx, request: web.Request) -> web.Response:
+    body = await _read_json(request)
+    endpoint = body.get("endpoint")
+    keys = body.get("keys") or {}
+    p256dh = keys.get("p256dh") or body.get("p256dh")
+    auth = keys.get("auth") or body.get("auth")
+    user_agent = body.get("userAgent") or body.get("user_agent") or ""
+    if not endpoint or not p256dh or not auth:
+        return _json({"error": "invalid_request", "message": "endpoint + keys.p256dh + keys.auth required"}, status=400)
+    result = state.upsert_subscription(
+        ctx.db, endpoint=endpoint, p256dh=p256dh, auth=auth, user_agent=user_agent,
+    )
+    total = len(state.list_subscriptions(ctx.db))
+    return _json({"ok": True, **result, "total": total}, status=201 if result["created"] else 200)
+
+
+async def handle_unsubscribe(ctx, request: web.Request) -> web.Response:
+    body = await _read_json(request)
+    endpoint = body.get("endpoint")
+    if not endpoint:
+        return _json({"error": "invalid_request"}, status=400)
+    result = state.remove_subscription(ctx.db, endpoint)
+    total = len(state.list_subscriptions(ctx.db))
+    return _json({"ok": True, **result, "total": total})
+
+
+async def handle_list_mutes(ctx, request: web.Request) -> web.Response:
+    return _json({"mutes": state.list_mutes(ctx.db)})
+
+
+async def handle_mute(ctx, request: web.Request) -> web.Response:
+    body = await _read_json(request)
+    chat_id = body.get("chat_id") or body.get("chatId")
+    muted = bool(body.get("muted"))
+    if not chat_id:
+        return _json({"error": "invalid_request", "message": "chat_id required"}, status=400)
+    state.set_mute(ctx.db, chat_id, muted)
+    return _json({"ok": True, "chat_id": chat_id, "muted": muted})
+
+
+async def handle_prefs(ctx, request: web.Request) -> web.Response:
+    if request.method == "GET":
+        return _json({"prefs": state.list_prefs(ctx.db)})
+    body = await _read_json(request)
+    key = body.get("key")
+    if not key:
+        return _json({"error": "invalid_request", "message": "key required"}, status=400)
+    state.set_pref(ctx.db, key, body.get("value"))
+    return _json({"ok": True, "key": key, "value": state.get_pref(ctx.db, key)})
+
+
+async def handle_visibility(ctx, request: web.Request) -> web.Response:
+    body = await _read_json(request)
+    chat_id = body.get("chat_id") or body.get("chatId")
+    visible = body.get("visible") is True or body.get("state") in ("visible", "focus")
+    if not chat_id:
+        return _json({"error": "invalid_request", "message": "chat_id required"}, status=400)
+    if visible:
+        ctx.dispatcher.engagement.mark_visible(chat_id)
+    return _json({"ok": True, "chat_id": chat_id, "visible": visible})
+
+
+async def handle_test(ctx, request: web.Request) -> web.Response:
+    body = await _read_json(request)
+    chat_id = body.get("chat_id") or body.get("chatId") or "sidekick-test"
+    text = body.get("text") or "Test notification from hermes plugin"
+    result = ctx.dispatcher.dispatch_envelope({
+        "type": "notification",
+        "chat_id": chat_id,
+        "content": text,
+        "should_push": True,
+    })
+    return _json({"ok": True, **result})
+
+
+# ── Unread routes ────────────────────────────────────────────────────
+
+async def handle_unread(ctx, request: web.Request) -> web.Response:
+    data = compute_unread(db=ctx.db, state_db_path=ctx.state_db_path, source="sidekick")
+    return _json(data)
+
+
+async def handle_unread_seen(ctx, request: web.Request) -> web.Response:
+    body = await _read_json(request)
+    chat_id = body.get("chat_id") or body.get("chatId")
+    if not chat_id:
+        return _json({"error": "invalid_request", "message": "chat_id required"}, status=400)
+    state.mark_seen(ctx.db, chat_id)
+    ctx.emit_envelope({"type": "unread_changed", "chat_id": chat_id, "cause": "seen"})
+    return _json({"ok": True, "chat_id": chat_id})
+
+
+async def handle_unread_mark(ctx, request: web.Request) -> web.Response:
+    body = await _read_json(request)
+    chat_id = body.get("chat_id") or body.get("chatId")
+    marked = body.get("marked") is True
+    if not chat_id:
+        return _json({"error": "invalid_request", "message": "chat_id required"}, status=400)
+    state.set_marked(ctx.db, chat_id, marked)
+    ctx.emit_envelope({"type": "unread_changed", "chat_id": chat_id, "cause": "mark" if marked else "unmark"})
+    return _json({"ok": True, "chat_id": chat_id, "marked": marked})
+
+
+# ── Pin routes ───────────────────────────────────────────────────────
+
+async def handle_pins(ctx, request: web.Request) -> web.Response:
+    if request.method == "GET":
+        chat_id = request.rel_url.query.get("chat_id")
+        return _json({"pins": state.list_pins(ctx.db, chat_id)})
+    body = await _read_json(request)
+    chat_id = body.get("chat_id")
+    msg_id = body.get("msg_id")
+    role = body.get("role")
+    text = body.get("text")
+    timestamp = body.get("timestamp")
+    if not chat_id or not msg_id or not role or not isinstance(text, str):
+        return _json({"error": "invalid_request", "message": "chat_id+msg_id+role+text required"}, status=400)
+    state.upsert_pin(ctx.db, chat_id=chat_id, msg_id=msg_id, role=role, text=text, timestamp=timestamp)
+    ctx.emit_envelope({"type": "pins_changed", "chat_id": chat_id, "cause": "pin", "msg_id": msg_id})
+    return _json({"ok": True})
+
+
+async def handle_pin_delete(ctx, request: web.Request) -> web.Response:
+    chat_id = request.match_info.get("chat_id")
+    msg_id = request.match_info.get("msg_id")
+    if not chat_id or not msg_id:
+        return _json({"error": "invalid_request"}, status=400)
+    result = state.delete_pin(ctx.db, chat_id=chat_id, msg_id=msg_id)
+    if result["removed"]:
+        ctx.emit_envelope({"type": "pins_changed", "chat_id": chat_id, "cause": "unpin", "msg_id": msg_id})
+    return _json({"ok": True, **result})
+
+
+# ── Registrar ────────────────────────────────────────────────────────
+
+def register_routes(app: web.Application, ctx) -> None:
+    """Mount the plugin's push + unread + pin routes."""
+    app.router.add_get("/v1/push/vapid-public-key", lambda r: handle_vapid_public_key(ctx, r))
+    app.router.add_post("/v1/push/subscribe", lambda r: handle_subscribe(ctx, r))
+    app.router.add_post("/v1/push/unsubscribe", lambda r: handle_unsubscribe(ctx, r))
+    app.router.add_get("/v1/push/mutes", lambda r: handle_list_mutes(ctx, r))
+    app.router.add_post("/v1/push/mute", lambda r: handle_mute(ctx, r))
+    app.router.add_get("/v1/push/prefs", lambda r: handle_prefs(ctx, r))
+    app.router.add_post("/v1/push/prefs", lambda r: handle_prefs(ctx, r))
+    app.router.add_post("/v1/push/visibility", lambda r: handle_visibility(ctx, r))
+    app.router.add_post("/v1/push/test", lambda r: handle_test(ctx, r))
+
+    app.router.add_get("/v1/unread", lambda r: handle_unread(ctx, r))
+    app.router.add_post("/v1/unread/seen", lambda r: handle_unread_seen(ctx, r))
+    app.router.add_post("/v1/unread/mark", lambda r: handle_unread_mark(ctx, r))
+
+    app.router.add_get("/v1/pins", lambda r: handle_pins(ctx, r))
+    app.router.add_post("/v1/pins", lambda r: handle_pins(ctx, r))
+    app.router.add_delete("/v1/pins/{chat_id}/{msg_id}", lambda r: handle_pin_delete(ctx, r))

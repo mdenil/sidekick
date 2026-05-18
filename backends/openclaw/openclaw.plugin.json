@@ -1,0 +1,19 @@
+{
+  "id": "sidekick",
+  "name": "Sidekick",
+  "description": "Sidekick PWA backend — exposes the /v1/* OpenAI-Responses contract sidekick's proxy expects against any openclaw runtime.",
+  "activation": {
+    "onStartup": true
+  },
+  "enabledByDefault": true,
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "authToken": {
+        "type": "string",
+        "description": "Shared bearer token sidekick proxy uses for HTTP auth. Optional; sidekick proxy works without auth in dev."
+      }
+    }
+  }
+}

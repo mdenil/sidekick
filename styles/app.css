@@ -164,6 +164,14 @@
   .sidebar-bottom {
     display: flex; flex-direction: column; padding: 6px 8px 12px; gap: 4px;
     border-top: 1px solid var(--border);
+    /* Explicit opaque background so the sessions-list never bleeds
+     * through during scroll/transition (was inheriting from #sidebar
+     * which is set, but the inheritance broke when the parent's
+     * background went transparent during the drawer's slide animation
+     * — Jonathan 2026-05-16: pin/session drawer symmetry pass). The
+     * pin-drawer's footer (the in-drawer ambient widget) already sets
+     * background: var(--surface) explicitly for the same reason. */
+    background: var(--surface);
   }
   .sb-section-title {
     font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
@@ -752,6 +760,72 @@
     padding: 4px 12px; cursor: pointer; font: inherit; font-size: 12px;
   }
   .cmdk-close-row button:hover { background: var(--border-strong); }
+
+  /* ── Hotkey help dialog (Cmd+/) ──
+     Cosmetic kin to .cmdk-dialog (centered modal, ::backdrop, esc-built-in)
+     but with a header + per-category lists of <kbd>+label rows. Built
+     lazily by src/hotkeysHelp.ts. */
+  .hotkeys-help-dialog {
+    background: var(--surface); color: var(--fg);
+    border: 1px solid var(--border-strong); border-radius: 10px;
+    padding: 0; max-width: min(92vw, 640px); width: min(92vw, 640px);
+    position: fixed; top: 12%; left: 50%; transform: translateX(-50%);
+    margin: 0; font: inherit;
+    box-shadow: 0 12px 40px rgba(0,0,0,0.45);
+    overflow: hidden;
+  }
+  .hotkeys-help-dialog::backdrop { background: rgba(0, 0, 0, 0.55); }
+  .hotkeys-help-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  .hotkeys-help-header h2 {
+    margin: 0; font-size: 15px; font-weight: 600; letter-spacing: 0.01em;
+  }
+  .hotkeys-help-close {
+    background: transparent; border: none; color: var(--muted);
+    font-size: 22px; line-height: 1; cursor: pointer;
+    padding: 0 4px; border-radius: 4px;
+  }
+  .hotkeys-help-close:hover { color: var(--fg); background: var(--surface-2); }
+  .hotkeys-help-body {
+    max-height: 70vh; overflow-y: auto;
+    padding: 6px 0 10px;
+  }
+  .hotkeys-help-section { padding: 8px 14px; }
+  .hotkeys-help-section h3 {
+    margin: 4px 0 6px;
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em;
+    color: var(--muted); font-weight: 600;
+  }
+  .hotkeys-help-list { list-style: none; margin: 0; padding: 0; }
+  .hotkeys-help-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 2fr;
+    gap: 14px; align-items: baseline;
+    padding: 5px 0;
+  }
+  .hotkeys-help-keys {
+    text-align: right;
+    white-space: nowrap;
+    display: inline-flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end;
+  }
+  .hotkeys-help-keys kbd {
+    display: inline-block;
+    background: var(--surface-2, var(--surface));
+    border: 1px solid var(--border-strong); border-radius: 4px;
+    padding: 1px 6px; font: inherit; font-size: 12px;
+    font-family: var(--font-mono, ui-monospace, monospace);
+    color: var(--fg);
+    box-shadow: 0 1px 0 var(--border);
+  }
+  .hotkeys-help-sep { color: var(--muted); padding: 0 2px; font-size: 11px; }
+  .hotkeys-help-label { font-size: 13px; color: var(--fg); }
+  .hotkeys-help-configurable {
+    color: var(--muted); font-size: 11px; font-style: italic;
+    margin-left: 4px;
+  }
 
   /* ── Slash-command popover ──
      Anchored above the composer (positioned in JS via slashCommands.ts).
@@ -1447,11 +1521,22 @@
   .line.foldable.expanded .text { max-height: none; overflow: visible; }
   .line.foldable.expanded .text::after { display: none; }
   .bubble-fold-toggle {
-    display: none; margin-top: 4px; padding: 4px 10px;
+    display: none; margin-top: 4px; padding: 6px 12px;
     background: transparent; color: var(--accent, currentColor);
     border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
     border-radius: 4px; font-size: 12px; font-family: var(--font-mono);
     cursor: pointer; opacity: 0.85;
+    /* iOS Safari: without `touch-action: manipulation` taps near the
+       selectable .text content can be hijacked as text-selection
+       extends. -webkit-tap-highlight-color suppresses the gray flash.
+       user-select: none keeps the button from joining the text-
+       selection range. min-height: 32px gives a comfortable tap
+       target. Same hardening pattern other touch controls in this
+       file already use (.play-bar, .play-btn, slider thumbs). */
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: rgba(0, 0, 0, 0);
+    -webkit-user-select: none; user-select: none;
+    min-height: 32px;
   }
   .bubble-fold-toggle:hover { opacity: 1; }
   .line.foldable .bubble-fold-toggle { display: inline-block; }
@@ -1624,23 +1709,22 @@
   .line .copy-btn:hover { opacity: 0.8; color: var(--primary); }
 
   /* ── Pin button — sits LEFT of copy on user msgs, LEFT of play+copy
-   * on agent msgs (agent already has play at right:34, copy at right:4,
-   * so pin lives at right:60 to keep all three readable). Two SVGs in
-   * DOM (outline + filled); CSS swaps visibility based on .pinned
-   * state so the global sidekick:pins-changed listener can stay
-   * class-only without rebuilding innerHTML per repaint.
-   * Bigger tap target (28px svg + 8px padding = 44x44 region) — the
-   * earlier 26px box was below Apple's minimum hit-test size and iOS
-   * sometimes refused taps. */
+   * on agent msgs. Padding + top match .copy-btn (4px/4px) so the
+   * icons align vertically across all three buttons (user bubble: pin
+   * + copy; agent bubble: pin + play + copy). Jonathan field UX
+   * 2026-05-16: previous padding:8/top:2 left pin 2px lower than copy
+   * and the larger padding box crowded user-message text.
+   * Two SVGs in DOM (outline + filled); CSS swaps visibility based
+   * on .pinned state. */
   .line .pin-btn {
-    position: absolute; top: 2px; right: 32px;
+    position: absolute; top: 4px; right: 28px;
     background: none; border: none; color: var(--muted);
-    cursor: pointer; opacity: 0.5; padding: 8px;
+    cursor: pointer; opacity: 0.5; padding: 4px;
     transition: opacity 0.15s ease, color 0.15s ease;
     display: flex; align-items: center; justify-content: center;
     z-index: 3;
   }
-  .line.agent .pin-btn { right: 64px; }
+  .line.agent .pin-btn { right: 56px; }
   .line .pin-btn svg { width: 18px; height: 18px; }
   .line .pin-btn:hover { opacity: 0.95; color: var(--primary); }
   .line .pin-btn.pinned { opacity: 1; color: var(--primary); }
@@ -1660,6 +1744,54 @@
     outline: 2px solid var(--primary);
     outline-offset: -2px;
     border-radius: 4px;
+  }
+  /* Keyboard-hint chip — anchored just above (or below) the highlighted
+   * bubble while message-select mode is active. JS sets `left` and
+   * `top` from the bubble's bounding-rect; CSS centers horizontally
+   * via translateX(-50%). Field UX 2026-05-16 (Jonathan): previous
+   * fixed-bottom placement overlapped the composer. Subtle: muted
+   * surface, dimmed separators, tiny <kbd> chips emphasize the keys.
+   * Fades in on entry, out on exit. */
+  .transcript-highlight-hint {
+    position: fixed;
+    left: 0; top: 0;
+    transform: translateX(-50%) translateY(6px);
+    z-index: 60;
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 6px 10px;
+    background: color-mix(in srgb, var(--surface) 92%, var(--bg));
+    color: var(--muted);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    font-size: 11px; line-height: 1.2;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.18);
+    opacity: 0; pointer-events: none;
+    transition: opacity 0.14s ease, transform 0.14s ease;
+    white-space: nowrap;
+  }
+  .transcript-highlight-hint.visible {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+  .transcript-highlight-hint kbd {
+    display: inline-block;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 10px; line-height: 1;
+    padding: 2px 5px; margin-right: 3px;
+    background: var(--surface-2);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+  }
+  .transcript-highlight-hint .thh-sep {
+    opacity: 0.4; margin: 0 2px;
+  }
+  /* Mobile: the composer + on-screen keyboard claim a lot of vertical
+   * space; the hint would either be hidden by the keyboard or sit on
+   * top of the composer. Hide it — message-select mode is primarily a
+   * keyboard-driven affordance anyway. */
+  @media (max-width: 699px) {
+    .transcript-highlight-hint { display: none; }
   }
 
   /* ── Right-side pin drawer ───────────────────────────────────────
@@ -1695,13 +1827,19 @@
    * top, swipe gesture is always with respect to the top panel." */
   #sidebar.front, #pin-drawer.front { z-index: 51; }
 
+  /* Mirror of #sidebar's structure: same fixed-position rail-at-rest
+   * (48px) → expanded (var --pin-drawer-width) width transition,
+   * same flex-COLUMN with .pin-drawer-top + .pin-drawer-content +
+   * .pin-drawer-bottom children. Mirror-flipped to the right viewport
+   * edge. Field UX 2026-05-16 (Jonathan): "reuse the exact same
+   * drawer structure, mirror image on the other side". */
   #pin-drawer {
     position: fixed; top: 0; right: 0; bottom: 0;
     width: 48px;
     background: var(--surface);
     color: var(--fg);
     border-left: 1px solid var(--border);
-    display: flex; flex-direction: row;
+    display: flex; flex-direction: column;
     z-index: 50;
     overflow: hidden;
     transition: width 0.18s ease;
@@ -1728,73 +1866,103 @@
     cursor: ew-resize !important;
   }
 
-  /* RAIL — always visible on desktop, fixed 48px wide. Buttons stack
-   * vertically. Ambient widget reverted to its legacy floating
-   * bottom-right position (Jonathan field bug 2026-05-13). */
-  .pin-drawer-rail {
-    width: 48px; flex-shrink: 0;
-    display: flex; flex-direction: column; align-items: center;
-    padding: 8px 0; gap: 8px;
-    border-left: 1px solid var(--border);
-  }
-  .pin-rail-btn {
-    position: relative;
-    width: 36px; height: 36px;
-    display: flex; align-items: center; justify-content: center;
-    background: none; border: none; color: var(--fg);
-    cursor: pointer; opacity: 0.8;
-    border-radius: 6px;
-    transition: background 0.12s, opacity 0.12s;
-  }
-  .pin-rail-btn:hover { background: var(--surface-2); opacity: 1; }
-  #pin-drawer:not(.collapsed) .pin-rail-btn { color: var(--primary); }
-  #pin-drawer-count-rail.pin-count-banner {
-    /* override the toolbar-btn variant; rail variant sits in the
-     * upper-right of the 36px rail button. */
-    top: -2px; right: -2px;
-  }
-
-  /* Ambient mount inside the rail. The widget itself (.ambient-widget
-   * .ambient-in-drawer) gets repositioned as a flow item via the
-   * `.ambient-in-drawer` override below. */
-  .ambient-mount {
-    display: flex; flex-direction: column; align-items: center;
-    width: 100%;
-  }
-
-  /* CONTENT area — pin list + header. Hidden when drawer collapsed
-   * (rail-only), revealed when expanded. opacity fade keeps the
-   * width-only transition crisp; pointer-events:none prevents
-   * mid-transition click leaks. */
-  .pin-drawer-content {
-    flex: 1; min-width: 0;
+  /* TOP — always visible, mirror of .sidebar-top. Holds title (left),
+   * Clear (center), toggle (right). 3-col grid keeps Clear horizontally
+   * centered regardless of title or toggle widths. In collapsed (rail
+   * 48px) mode, title + Clear hide, leaving just the toggle — symmetric
+   * with .sidebar-top where #sb-search hides in collapsed-rail and
+   * only #sb-toggle remains visible.
+   *
+   * Vertical padding matches `.header` (4px / 4px) so the bottom border
+   * of the pin-drawer's top strip lines up visually with `.header`'s
+   * bottom border across the page (the drawer is position:fixed; top:0
+   * and overlays the right edge of the header). Jonathan field nit
+   * 2026-05-17: lines were off by ~12px because the old 10/6 padding
+   * — copied from `.sidebar-top` — made the strip taller than the
+   * header. The collapsed-rail toggle rule below trims sb-icon-btn's
+   * 36px min-height so the icon fits the new strip. */
+  .pin-drawer-top {
     display: flex; flex-direction: column;
-    opacity: 0; pointer-events: none;
-    transition: opacity 0.18s ease;
+    padding: 4px 8px 4px;
+    border-bottom: 1px solid var(--border);
+    /* iOS PWA safe-area top — same pattern as .sidebar-top. */
+    padding-top: max(4px, env(safe-area-inset-top, 0px));
   }
-  #pin-drawer:not(.collapsed) .pin-drawer-content {
-    opacity: 1; pointer-events: auto;
-  }
-  .pin-drawer-header {
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 12px 14px; border-bottom: 1px solid var(--border);
+  .pin-drawer-top-row {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    align-items: center;
     gap: 8px;
-    /* iOS PWA respects safe-area at the TOP so the header (X / Clear)
-     * doesn't collide with the system status bar (Jonathan field bug
-     * 2026-05-13: X button was "crowded by the clock"). max() falls
-     * back to the base 12px on non-notched devices / browsers. */
-    padding-top: max(12px, env(safe-area-inset-top, 0px));
   }
-  .pin-drawer-title { margin: 0; font-size: 14px; font-weight: 600; letter-spacing: 0.02em; color: var(--fg); flex: 1; }
-  .pin-drawer-header-actions {
-    display: flex; align-items: center; gap: 4px;
+  .pin-drawer-title {
+    margin: 0; font-size: 14px; font-weight: 600; letter-spacing: 0.02em;
+    color: var(--fg);
+    grid-column: 1; justify-self: start;
+    padding-left: 6px;
   }
   .pin-drawer-clear-btn {
+    grid-column: 2; justify-self: center;
     background: none; border: 1px solid var(--border); color: var(--muted);
     font-size: 11px; padding: 4px 10px; border-radius: 4px;
     cursor: pointer; transition: color 0.12s, border-color 0.12s;
   }
   .pin-drawer-clear-btn:hover { color: var(--fg); border-color: var(--border-strong); }
+  .pin-drawer-toggle {
+    grid-column: 3; justify-self: end;
+    /* Positioning context for the count banner overlay
+     * (#pin-drawer-count-rail). Without this, the banner's `position:
+     * absolute; top/left:-2px` resolves against the next positioned
+     * ancestor (#pin-drawer), drifting the badge off the pin icon —
+     * Jonathan field 2026-05-18. justify-self continues to control
+     * horizontal placement so the centering fix from 2026-05-17 (when
+     * #pin-drawer is .collapsed, the toggle spans all 3 cols + centers)
+     * is unaffected. */
+    position: relative;
+  }
+  /* In collapsed rail, title + Clear hide. Mirror of sidebar's
+   * `#sidebar.collapsed .sb-search-btn { display: none }` rule. */
+  #pin-drawer.collapsed .pin-drawer-title,
+  #pin-drawer.collapsed .pin-drawer-clear-btn {
+    display: none;
+  }
+  /* In collapsed rail (48px wide), the toggle is the only visible
+   * header element. The expanded-mode rule above (grid-column: 3 +
+   * justify-self: end) is correct when the title/Clear claim columns 1
+   * and 2, but with both hidden the toggle ends up flush against the
+   * rail's right edge — visually it overflows the rail (Jonathan field
+   * 2026-05-17). Span all 3 columns + center for symmetry with the
+   * sidebar's collapsed-rail hamburger. */
+  #pin-drawer.collapsed .pin-drawer-toggle {
+    grid-column: 1 / -1;
+    justify-self: center;
+    /* Override sb-icon-btn's 36px min-height so the toggle fits inside
+     * the now-shorter pin-drawer-top (which matches .header's height).
+     * Use a tight square that still hits the 28px hover target. */
+    min-height: 0;
+    padding: 4px;
+  }
+  /* Count banner sits at the icon's upper-LEFT corner — mirror of
+   * how the sidebar's icon-buttons would carry a badge in their
+   * upper-right (badge sits on the "outer" corner relative to the
+   * drawer's viewport-anchor edge). */
+  #pin-drawer-count-rail.pin-count-banner {
+    top: -2px; left: -2px; right: auto;
+  }
+
+  /* CONTENT — scrollable middle, mirror of .sidebar-content. Opacity
+   * fade + pointer-events:none keeps the width-only outer transition
+   * crisp and prevents mid-transition click leaks (identical pattern
+   * to .sidebar-content). */
+  .pin-drawer-content {
+    flex: 1; min-width: 0;
+    display: flex; flex-direction: column;
+    overflow: hidden;
+    opacity: 0; pointer-events: none;
+    transition: opacity 0.12s ease 0.06s;
+  }
+  #pin-drawer:not(.collapsed) .pin-drawer-content {
+    opacity: 1; pointer-events: auto;
+  }
   .pin-drawer-list {
     list-style: none; margin: 0; padding: 6px 0;
     overflow-y: auto; flex: 1;
@@ -1891,9 +2059,24 @@
     text-align: center;
   }
 
-  /* Mobile: rail hidden entirely; drawer overlays full-width when
-   * the toolbar pin button (.mobile-only) toggles it. Same playbook
-   * the left sidebar uses on mobile (slide-in, no rail reservation). */
+  /* BOTTOM — always visible HUD, mirror of .sidebar-bottom. The
+   * sidebar's bottom slot holds icon-buttons (Refresh/About/Settings);
+   * the pin drawer's bottom slot holds the ambient clock + weather
+   * widget. Both are always-visible persistent affordances anchored
+   * to the bottom of the drawer column. */
+  .pin-drawer-bottom {
+    display: flex; flex-direction: column;
+    padding: 6px 8px 12px; gap: 4px;
+    border-top: 1px solid var(--border);
+    background: var(--surface);
+    /* iOS PWA safe-area bottom mirrors the sidebar's pattern. */
+    padding-bottom: max(12px, env(safe-area-inset-bottom, 0px));
+  }
+
+  /* Mobile: drawer overlays full-width on toolbar-pin-button toggle.
+   * Same playbook as the left sidebar's mobile slide-in. No rail-
+   * hidden rule needed — the new structure folds the old rail into
+   * top/bottom sections which transition naturally with the parent. */
   @media (max-width: 699px) {
     body { padding-right: 0; }
     body.pin-drawer-open { padding-right: 0; }
@@ -1904,22 +2087,19 @@
     }
     #pin-drawer.collapsed { transform: translateX(100%); width: min(85vw, 320px); }
     #pin-drawer:not(.collapsed) { transform: translateX(0); width: min(85vw, 320px); }
-    .pin-drawer-rail { display: none; }
   }
 
-  /* Ambient widget when mounted inside the pin-drawer rail —
-   * collapsed state: vertical stack (clock above, temp/icon below)
-   * sized for the 48px rail column. Expanded state: the widget
-   * floats out into the wider content area; we anchor it to the
-   * bottom-right of the drawer with absolute positioning + auto
-   * width up to the content panel's width. Click anywhere on the
-   * widget toggles the drawer (onClick wired in main.ts). */
-
-  /* Rail mount: always sized to fit 48px. */
+  /* Ambient widget mounts inside .pin-drawer-bottom as a normal flow
+   * item. Two visual states, both in-flow:
+   *   - compact (drawer in rail, 48px wide): small vertical stack
+   *   - expanded (drawer open, ~360px wide): grid with clock + date
+   *     row and a forecast strip below
+   * No absolute positioning needed — the parent .pin-drawer-bottom
+   * IS the bottom of the drawer column, so the widget sits naturally
+   * where it should. */
   .ambient-mount {
-    margin-top: auto;          /* pushes ambient to bottom of rail */
     width: 100%;
-    display: flex; justify-content: center;
+    display: flex; flex-direction: column;
   }
 
   /* Compact (drawer collapsed) — small vertical stack. */
@@ -1951,50 +2131,22 @@
     color: var(--muted);
   }
 
-  /* Expanded (drawer open) — horizontal 2-row footer pinned at the
-   * bottom of the drawer's content column.
-   *
-   * Row 1: time · date · current weather (icon + temp + desc)
-   * Row 2: 3-day forecast strip (THU 12°/7° | FRI 13°/7° | SAT 14°/10°)
-   *
-   * Solid bg + top border so pin-list content scrolls UNDERNEATH it
-   * cleanly without bleeding through (Jonathan field UX 2026-05-14:
-   * the 6-row vertical card overlapped the pin list and read as
-   * visual clutter — a low-profile footer reads as "this is the
-   * drawer's persistent HUD" instead). The pin-list gets matching
-   * bottom padding via #pin-drawer-list so the user can still scroll
-   * the last pin into view above the footer. */
+  /* Expanded (drawer open) — clock + date row + forecast strip. As of
+   * the 2026-05-16 structural refactor (Jonathan: "reuse the exact
+   * same drawer structure"), the widget is a normal flow item inside
+   * .pin-drawer-bottom — no absolute positioning, no left-offset
+   * gymnastics, no z-index. The bottom slot is itself the bottom of
+   * the drawer column, parallel to .sidebar-bottom on the left side. */
   #pin-drawer:not(.collapsed) .ambient-widget.ambient-in-drawer.expanded {
-    position: absolute;
-    /* 48px to clear the rail on desktop; 0 on mobile (rail is
-     * display:none under the @media (max-width:699px) block above).
-     * Without the mobile override the panel + gray top-border were
-     * inset 48px from the drawer's left edge — the "gap on left"
-     * Jonathan flagged 2026-05-15. */
-    left: 48px;
-    right: 0;
-    bottom: 0;
-    width: auto;
-    padding: 10px 14px 12px;
-    background: var(--surface);
+    width: 100%;
+    padding: 4px 6px 0;
+    background: transparent;
     border: none;
-    border-top: 1px solid var(--border);
     border-radius: 0;
     display: flex;
     flex-direction: column;
     align-items: stretch;
     gap: 6px;
-    z-index: 2;
-    /* Override the parent .ambient-mount's visibility:hidden — that
-     * rule keeps the compact rail stack out of view while the drawer
-     * is open, but visibility cascades to children even when they're
-     * position:absolute. Without this, the expanded card never paints. */
-    visibility: visible;
-  }
-  @media (max-width: 699px) {
-    #pin-drawer:not(.collapsed) .ambient-widget.ambient-in-drawer.expanded {
-      left: 0;
-    }
   }
   /* Row 1: clock (left) + date (right). Row 2: forecast strip. The
    * grid template explicitly sets `1fr auto` so col 1 stretches to
@@ -2127,6 +2279,44 @@
   #pin-drawer:not(.collapsed) .ambient-widget.ambient-in-drawer.expanded .amb-forecast-col.is-today {
     background: color-mix(in srgb, var(--primary) 8%, transparent);
     color: var(--fg);
+    /* The today column carries more content than future-day columns
+     * (NOW label + live temp + icon + condition word + hi/lo pair),
+     * so let it claim more horizontal space. The other cols stay
+     * `flex: 0 0 auto` (natural content width) and the strip's
+     * justify-content: space-between distributes the remaining gap. */
+    flex: 1 1 auto;
+    align-items: flex-start;
+    padding: 4px 8px;
+    gap: 2px;
+  }
+  #pin-drawer:not(.collapsed) .ambient-widget.ambient-in-drawer.expanded .amb-forecast-col.is-today .amb-fc-day {
+    color: var(--muted);
+  }
+  #pin-drawer:not(.collapsed) .ambient-widget.ambient-in-drawer.expanded .amb-forecast-col.is-today .amb-fc-now {
+    font: 600 18px/1 var(--font-mono);
+    color: var(--fg);
+    font-variant-numeric: tabular-nums;
+    margin-top: 1px;
+  }
+  #pin-drawer:not(.collapsed) .ambient-widget.ambient-in-drawer.expanded .amb-forecast-col.is-today .amb-fc-icon {
+    font-size: 18px; margin: 2px 0;
+  }
+  #pin-drawer:not(.collapsed) .ambient-widget.ambient-in-drawer.expanded .amb-forecast-col.is-today .amb-fc-desc {
+    font-size: 10px; text-transform: lowercase;
+    color: var(--muted);
+    line-height: 1.1;
+    /* Wrap in narrow drawers; the strip's container queries already
+     * drop future cols when there's not enough room, but the today
+     * col stays — let its description wrap onto a second line if
+     * needed (e.g. "heavy drizzle" in a 188px-wide drawer). */
+    white-space: normal;
+    max-width: 100%;
+  }
+  #pin-drawer:not(.collapsed) .ambient-widget.ambient-in-drawer.expanded .amb-forecast-col.is-today .amb-fc-hilo {
+    font: 500 10px/1.1 var(--font-mono);
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.04em;
   }
   #pin-drawer:not(.collapsed) .ambient-widget.ambient-in-drawer.expanded .amb-fc-day {
     text-transform: uppercase; letter-spacing: 0.05em;
@@ -2141,17 +2331,15 @@
   #pin-drawer:not(.collapsed) .ambient-widget.ambient-in-drawer.expanded .amb-fc-lo {
     color: var(--muted); font-variant-numeric: tabular-nums; font-size: 11px;
   }
-  /* Pin-list bottom padding leaves room for the absolute footer so
-   * the last pin scrolls fully into view ABOVE the HUD. Approx
-   * footer height with 2-row layout: row1 (16px) + row2 forecast
-   * (~50px) + padding (22px) + border (1px) ≈ 90px. */
-  #pin-drawer:not(.collapsed) #pin-drawer-list { padding-bottom: 90px; }
-
-  /* In the rail when expanded — hide the rail's compact-stack so the
-   * full card (positioned absolutely above) is the only ambient
-   * surface visible while the drawer is open. Children override
-   * via `visibility: visible` on the .expanded card rule above. */
-  #pin-drawer:not(.collapsed) .ambient-mount { visibility: hidden; }
+  /* Old rules removed 2026-05-16 — both compensated for the absolute-
+   * positioned expanded-ambient widget that the structural refactor
+   * obsoleted:
+   *   - `#pin-drawer-list { padding-bottom: 90px }` reserved space
+   *     under the absolute footer; the new flex layout makes
+   *     .pin-drawer-bottom take its own height naturally.
+   *   - `.ambient-mount { visibility: hidden }` hid the compact-stack
+   *     when the expanded card was overlaid; the single widget
+   *     instance now just swaps its own .expanded class. */
 
   /* ── Per-bubble TTS playback controls (agent lines) ──
    * Ported from the classic pipeline (08f50ac:styles/app.css ~900-985).

@@ -160,7 +160,24 @@ export function getState(): ListenState { return state; }
  *  paused (no barge logic — settled decision). */
 export function notifyReplyPlayback(playing: boolean): void {
   if (playing) {
-    if (state === 'committing' || state === 'armed' || state === 'playing') {
+    // Accept 'cooldown' as a valid source: commitNow flips to cooldown
+    // immediately after onCommit returns (line ~621) if the caller
+    // hasn't yet moved us to 'playing'. When backend.sendMessage's POST
+    // resolves before the reply envelopes land (mock-backend, or any
+    // fast real backend), the cooldown transition happens BEFORE the
+    // TTS pipeline gets a chance to fire play-start. Without this,
+    // notifyReplyPlayback(true) becomes a no-op, the agent's TTS plays
+    // un-tracked, audio.ended → notifyReplyPlayback(false) is also a
+    // no-op (state !== 'playing'), and the post-commit cooldownTimer
+    // re-arms WHILE the agent is still talking. Field repro:
+    // listen-silence-commit smoke times out waiting for re-arm because
+    // the cooldownTimer fires armRecorder() against a torn-down mic
+    // capture → teardown → idle.
+    if (state === 'committing' || state === 'armed' || state === 'playing' || state === 'cooldown') {
+      // Pull back to 'playing' and CANCEL the pending re-arm — the TTS
+      // is actually playing now, the cooldown→armed timer fires the
+      // ended-path handler below.
+      if (cooldownTimer) { clearTimeout(cooldownTimer); cooldownTimer = null; }
       transition('playing');
       // Pause the sendword detector during TTS — the user's mic would
       // otherwise pick up the agent's voice and trip a false match.

@@ -241,6 +241,37 @@ class SidekickBridgeViewController: CAPBridgeViewController, WKUIDelegate, WKScr
                  defaultText: String?,
                  initiatedByFrame frame: WKFrameInfo,
                  completionHandler: @escaping (String?) -> Void) {
+        // Capacitor's injected `native-bridge.js` uses synchronous
+        // `window.prompt(JSON.stringify({type: 'CapacitorCookies.isEnabled'}))`
+        // and `prompt(JSON.stringify({type: 'CapacitorHttp'}))` at startup as a
+        // sync IPC channel to ask the native side whether those features are
+        // enabled. Cap's own `WebViewDelegationHandler` intercepts these and
+        // replies inline without showing UI.
+        //
+        // We took over the WKUIDelegate slot in capacitorDidLoad() to wire up
+        // mic permission + JS dialogs, which displaced Cap's handler — so its
+        // bridge probes started falling through to this default text-input
+        // implementation, popping up two UIAlertControllers showing the raw
+        // JSON on every fresh iOS launch (Jonathan, 2026-05-18).
+        //
+        // Detect those bridge prompts here and answer them the same way Cap
+        // does when the plugin is disabled in config (we don't enable either
+        // in capacitor.config.ts): reply "false" for CapacitorHttp + the
+        // CapacitorCookies.isEnabled probe; reply "" for CapacitorCookies.get
+        // and .set so `document.cookie` reads/writes don't throw if some
+        // future dep ever touches them.
+        if let data = prompt.data(using: .utf8),
+           let payload = try? JSONSerialization.jsonObject(with: data, options: .fragmentsAllowed) as? [String: Any],
+           let type = payload["type"] as? String {
+            if type == "CapacitorHttp" || type == "CapacitorCookies.isEnabled" {
+                completionHandler("false")
+                return
+            }
+            if type == "CapacitorCookies.get" || type == "CapacitorCookies.set" {
+                completionHandler("")
+                return
+            }
+        }
         let alert = UIAlertController(title: nil, message: prompt, preferredStyle: .alert)
         alert.addTextField { tf in tf.text = defaultText }
         alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in completionHandler(nil) })

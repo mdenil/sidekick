@@ -1,18 +1,30 @@
-// Phase 3 follow-up smoke: pin the badge wiring shipped in `1b9b164`.
+// Pins the badge wiring (src/notifications/badge.ts) end-to-end.
 //
-// The badge module (src/notifications/badge.ts) calls navigator.setAppBadge
-// to put a count on the PWA's app icon when off-screen chats accumulate
-// unread events. It's invoked by:
+// Flow (post-2026-05 refactor — server-driven SSOT):
 //
-//   - backendEvents.handleNotification (off-screen branch) → incrementUnread
-//   - main.handleReplyFinal (off-screen branch) → incrementUnread
-//   - sessionDrawer.setViewed(id) → clearUnread(id)
+//   1. Off-screen `notification` or `reply_final` envelope lands.
+//   2. PWA's handler calls `incrementUnread(chatId)` →
+//      `requestRefresh()` (debounced 1500ms).
+//   3. Debounced fetch hits /api/sidekick/notifications/unread.
+//   4. Server (mocked here) returns per-chat counts; PWA's
+//      `syncBadge()` calls navigator.setAppBadge(total).
 //
-// We stub navigator.setAppBadge + clearAppBadge so the smoke can
-// observe the call sequence without requiring an installed PWA. The
-// production code path is the same; what changes is the host OS's
-// reception of those calls (no-op in headless chromium, app-icon
-// update on iOS).
+//   Switching INTO a chat:
+//   5. PWA fires `/api/sidekick/notifications/seen` (POST).
+//   6. Server clears that chat's unread; subsequent refresh sees
+//      lower total → setAppBadge or clearAppBadge accordingly.
+//
+// The mock backend (scripts/smoke/mock-backend.mjs) auto-bumps the
+// per-chat unread counter on every `notification` / `reply_final`
+// envelope pushEnvelope sees — same shape as the real plugin's
+// responses-handler. We stub navigator.setAppBadge + clearAppBadge so
+// the smoke can observe the call sequence without requiring an
+// installed PWA.
+//
+// Timing: PWA's requestRefresh debounce is 1500ms (bumped from 200ms
+// after the Mac WindowServer repaint-storm incident 2026-05-16). Each
+// "observable" badge state requires waiting at least 1700ms after the
+// triggering envelope for the fetch to land.
 
 import { waitForReady, openSidebar, clickRow, assert } from './lib.mjs';
 
@@ -112,7 +124,7 @@ export default async function run({ page, log, mock }) {
     kind: 'cron',
     content: 'badge-pin-notification — should bump unread for BG_A',
   });
-  await page.waitForTimeout(400);
+  await page.waitForTimeout(1700);  // debounced refresh (1500ms + slack)
 
   const afterNotif = await lastBadgeState(page);
   assert(
@@ -129,7 +141,7 @@ export default async function run({ page, log, mock }) {
     message_id: 'mock-reply-badge-b',
     text: 'a final reply for B; user is on VIEWED so this is off-screen',
   });
-  await page.waitForTimeout(400);
+  await page.waitForTimeout(1700);  // debounced refresh (1500ms + slack)
 
   const afterReply = await lastBadgeState(page);
   assert(
@@ -146,7 +158,7 @@ export default async function run({ page, log, mock }) {
     kind: 'cron',
     content: 'badge-pin-notification-2 — second event for BG_A',
   });
-  await page.waitForTimeout(400);
+  await page.waitForTimeout(1700);  // debounced refresh (1500ms + slack)
 
   const afterSecondA = await lastBadgeState(page);
   assert(
@@ -163,7 +175,7 @@ export default async function run({ page, log, mock }) {
     null,
     { timeout: 4_000, polling: 50 },
   );
-  await page.waitForTimeout(300);
+  await page.waitForTimeout(1700);  // clearUnread fires /seen then refreshFromServer; debounce window
 
   const afterSwitchA = await lastBadgeState(page);
   assert(
@@ -181,7 +193,7 @@ export default async function run({ page, log, mock }) {
     null,
     { timeout: 4_000, polling: 50 },
   );
-  await page.waitForTimeout(300);
+  await page.waitForTimeout(1700);  // clearUnread fires /seen then refreshFromServer; debounce window
 
   const afterSwitchB = await lastBadgeState(page);
   assert(

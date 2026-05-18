@@ -172,39 +172,63 @@ function renderExpanded(hh, mm, dateObj, w) {
   const dateStr = dateObj.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
   const daily = w?.daily;
 
-  // 5-day forecast strip — today is the first column (FRI in the
-  // example), every column uses the same icon + stacked-hi/lo layout
-  // so there's no special "current weather" row taking up vertical
-  // space. CSS controls how many fit in the available width; days
-  // past the container's capacity get clipped on the right. Today's
-  // high/low are the daily aggregate from the same dataset, not the
-  // intra-day current temp — that's a stylistic choice (cleaner) and
-  // avoids the "Current 13° but forecast shows 14°" mismatch the
-  // earlier two-row layout produced. Field UX 2026-05-15 (Jonathan).
+  // Forecast strip: today's column gets the EXPANDED treatment (live
+  // "now" temperature + condition word + hi/lo); future-day columns
+  // stay compact (weekday, icon, hi, lo). Field request 2026-05-16
+  // (Jonathan): "current temp + expanded current day". The earlier
+  // all-compact layout (5 uniform cols) was readable but hid the
+  // "now" temperature in the rail-form pill only — once the user
+  // opened the drawer to see the full HUD, the most-frequently-
+  // glanced piece (current temp) disappeared.
+  //
+  // Mismatch caveat: the daily.temperature_2m_max for today is the
+  // *forecasted* high; current.temperature_2m is the live observation.
+  // They can disagree by a degree mid-afternoon. We render both so
+  // the user can see "now is 13° but today peaks at 18°" — that's
+  // useful, not confusing. Earlier comment (2026-05-15) said we
+  // avoided current temp because of this mismatch; the call now is
+  // to surface both intentionally.
   let forecastHtml = '';
   if (daily?.time?.length > 0) {
     const cols = [];
     const todayLocal = new Date();
     const todayKey = todayLocal.toISOString().slice(0, 10);
+    const currentTemp = w?.current?.temperature_2m;
+    const currentCode = w?.current?.weather_code;
+    const [, currentDesc] = currentCode != null ? (WMO[currentCode] || ['', '']) : ['', ''];
     for (let i = 0; i < Math.min(daily.time.length, 5); i++) {
       const dayKey = daily.time[i];
       const d = new Date(dayKey + 'T00:00');
       const isToday = dayKey === todayKey;
-      const wd = isToday
-        ? d.toLocaleDateString(undefined, { weekday: 'short' })
-        : d.toLocaleDateString(undefined, { weekday: 'short' });
       const [fi] = WMO[daily.weather_code?.[i]] || ['❔', ''];
       const fhi = daily.temperature_2m_max?.[i] != null
         ? Math.round(daily.temperature_2m_max[i]) : '—';
       const flo = daily.temperature_2m_min?.[i] != null
         ? Math.round(daily.temperature_2m_min[i]) : '—';
-      cols.push(`
-        <div class="amb-forecast-col${isToday ? ' is-today' : ''}">
-          <span class="amb-fc-day">${escapeHtml(wd)}</span>
-          <span class="amb-fc-icon">${fi}</span>
-          <span class="amb-fc-hi">${fhi}°</span>
-          <span class="amb-fc-lo">${flo}°</span>
-        </div>`);
+      if (isToday) {
+        // Expanded today column: big NOW temp + icon + condition word
+        // + hi/lo pair. The hi/lo are the daily forecast aggregate
+        // (same as other columns) so the visual structure stays
+        // comparable across the strip.
+        const nowStr = currentTemp != null ? `${Math.round(currentTemp)}°` : '—';
+        cols.push(`
+          <div class="amb-forecast-col is-today">
+            <span class="amb-fc-day">NOW</span>
+            <span class="amb-fc-now">${escapeHtml(nowStr)}</span>
+            <span class="amb-fc-icon">${fi}</span>
+            ${currentDesc ? `<span class="amb-fc-desc">${escapeHtml(currentDesc)}</span>` : ''}
+            <span class="amb-fc-hilo">${fhi}° / ${flo}°</span>
+          </div>`);
+      } else {
+        const wd = d.toLocaleDateString(undefined, { weekday: 'short' });
+        cols.push(`
+          <div class="amb-forecast-col">
+            <span class="amb-fc-day">${escapeHtml(wd)}</span>
+            <span class="amb-fc-icon">${fi}</span>
+            <span class="amb-fc-hi">${fhi}°</span>
+            <span class="amb-fc-lo">${flo}°</span>
+          </div>`);
+      }
     }
     forecastHtml = `<div class="amb-forecast">${cols.join('')}</div>`;
   }

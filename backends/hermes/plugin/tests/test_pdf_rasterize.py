@@ -91,16 +91,17 @@ def _install_hermes_stubs() -> None:
 
 
 def _load_plugin():
-    """Import ``backends/hermes/plugin/__init__.py`` directly."""
+    """Import the sidekick plugin under its real package name so the
+    package's relative imports (`.sidekick_ids`,
+    `.sidekick_route_*`) resolve. Earlier ``spec_from_file_location``
+    loaders minted a fake module name and broke relative imports
+    after the 2026-05-17 route refactor."""
     _install_hermes_stubs()
-    plugin_init = Path(__file__).resolve().parents[1] / "__init__.py"
-    spec = importlib.util.spec_from_file_location(
-        "sidekick_plugin_under_test", plugin_init,
-    )
-    mod = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(mod)
-    return mod
+    plugin_pkg = Path(__file__).resolve().parents[1]
+    parent_dir = str(plugin_pkg.parent)
+    if parent_dir not in sys.path:
+        sys.path.insert(0, parent_dir)
+    return importlib.import_module(plugin_pkg.name)
 
 
 @pytest.fixture(scope="module")

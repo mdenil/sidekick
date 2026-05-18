@@ -194,16 +194,18 @@ export async function init(el: HTMLElement | null): Promise<boolean> {
   });
   // Hydrate the pinned-messages store so the per-bubble pin button
   // paints with correct state on the first render. Fire-and-forget —
-  // IDB is fast (~few ms); a bubble rendered before hydrate finishes
-  // just gets a momentary "unpinned" indicator that flips via the
-  // sidekick:pins-changed listener once hydrate resolves.
+  // server fetch is fast (~50ms on LAN); a bubble rendered before the
+  // hydrate resolves just gets a momentary "unpinned" indicator that
+  // flips via the sidekick:pins-changed listener once the server-
+  // driven cache populates.
   void hydratePins();
   // Repaint all bubble pin indicators when the pin set changes.
   // Fires on: hydrate completion (catches bubbles that rendered
-  // before IDB resolved), explicit pinMessage / unpinMessage from
-  // anywhere, and the future cross-tab sync path. Cheap — walks
-  // .pin-btn elements only (most bubbles don't have one — only those
-  // with a stable msgId), reads isPinned() synchronously.
+  // before the server fetch resolved), explicit pinMessage /
+  // unpinMessage from anywhere, and the cross-device sync path
+  // (server-pins-changed via proxyClient). Cheap — walks .pin-btn
+  // elements only (most bubbles don't have one — only those with a
+  // stable msgId), reads isPinned() synchronously.
   if (typeof window !== 'undefined') {
     window.addEventListener('sidekick:pins-changed', () => {
       if (!transcriptEl || !viewedSessionIdRef) return;
@@ -279,6 +281,11 @@ export async function init(el: HTMLElement | null): Promise<boolean> {
       // Strip stale memo cards — their audio element + blob reference are dead
       // after serialization. Caller will re-render them fresh from IndexedDB.
       transcriptEl.querySelectorAll('.memo-card').forEach(el => el.remove());
+      // Strip stale activity rows. saveSnapshot() (below) excludes them
+      // going forward, but existing IDB snapshots written by older builds
+      // may still carry them and would dupe with fresh inflight replay.
+      // Idempotent: a fresh snapshot has none.
+      transcriptEl.querySelectorAll('.activity-row').forEach(el => el.remove());
       // Initial load: always jump to latest regardless of the default
       // pinned-to-bottom state.
       forceScrollToBottom();
@@ -293,6 +300,20 @@ export async function init(el: HTMLElement | null): Promise<boolean> {
             || line?.querySelector('.text')?.textContent
             || '';
           navigator.clipboard.writeText(text).catch(() => {});
+        };
+      });
+      // Re-wire show-more/show-less buttons. Snapshot restores the DOM
+      // text but the onclick handler is lost across page reload. Without
+      // this re-attach, buttons existed visually but did nothing —
+      // particularly visible on iOS PWA where reload is the common
+      // entry path (Jonathan field bug 2026-05-17).
+      transcriptEl.querySelectorAll<HTMLElement>('.bubble-fold-toggle').forEach(btn => {
+        const line = btn.closest<HTMLElement>('.line');
+        if (!line) return;
+        btn.onclick = (e) => {
+          e.stopPropagation();
+          const expanded = line.classList.toggle('expanded');
+          btn.textContent = expanded ? 'Show less' : 'Show more';
         };
       });
       // Reset play-bar state on restored agent bubbles. Audio buffers are
@@ -324,10 +345,26 @@ export async function init(el: HTMLElement | null): Promise<boolean> {
 
 /** Fire-and-forget snapshot write to IndexedDB. Backfill from the gateway
  *  still plugs any gap on next connect (see always-run-backfill branch in
- *  main.ts) in case the IDB write fails mid-flight. */
+ *  main.ts) in case the IDB write fails mid-flight.
+ *
+ *  Activity rows (`.activity-row` — the collapsed "N tools · done"
+ *  surface) are stripped before serialization. Reason: they have no
+ *  `data-message-id` and so are invisible to `renderedMessages.upsert`'s
+ *  dedup-by-id path. Persisting them produces a cascading dupe — every
+ *  reload restores the prior DOM row AND a fresh replay from inflight
+ *  appends another (since the in-memory `rows` Map is empty post-JS-
+ *  reset). 3 reloads → 3 stacked "N tools · done" rows on the same chat
+ *  (Jonathan field bug 2026-05-17).
+ *
+ *  Trade-off: past-turn activity rows disappear on reload. Acceptable
+ *  for now; the principled fix is to extend renderHistoryMessage to
+ *  reconstruct activity rows from state.db's `role='tool'` /
+ *  `role='assistant' (tool_calls JSON)` rows. Follow-up. */
 function persist(): void {
   if (!transcriptEl) return;
-  const html = transcriptEl.innerHTML;
+  const clone = transcriptEl.cloneNode(true) as HTMLElement;
+  clone.querySelectorAll('.activity-row').forEach((el) => el.remove());
+  const html = clone.innerHTML;
   saveSnapshot(html, viewedSessionIdRef).catch((e) => diag(`chat.persist failed: ${e?.message || 'idb error'}`));
 }
 

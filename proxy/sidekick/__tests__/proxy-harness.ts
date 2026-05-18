@@ -31,6 +31,11 @@ export interface FakeConversationSummary {
   metadata: {
     title: string;
     message_count: number;
+    /** User-role count ("N turns"). Optional; newer plugins emit it. */
+    turn_count?: number;
+    /** Tool-role count. Pairs with turn_count for "N turns · M tools"
+     *  rendering in the drawer (Jonathan field 2026-05-17). */
+    tool_count?: number;
     last_active_at: number;
     first_user_message: string | null;
     source?: string;       // gateway-only

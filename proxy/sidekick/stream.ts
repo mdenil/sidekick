@@ -49,13 +49,13 @@
 // transcript reconcile path; the ring is best-effort, not durable.
 
 import { getUpstream } from './index.ts';
-import * as inflight from './inflight.ts';
 import {
   dispatchPush,
   envelopeToPayload,
   isPushEligible,
 } from './notifications/dispatch.ts';
 import { isConfigured as isNotificationsConfigured } from './notifications/index.ts';
+import { isPushOwnedByPlugin } from './notifications/delegate.ts';
 import { isMuted } from './notifications/mutes.ts';
 import { isUserEngaged } from './notifications/visibility.ts';
 import { inQuietHours, isKindEnabled, type PushKinds } from './notifications/prefs.ts';
@@ -89,6 +89,16 @@ const FANOUT_TYPES = new Set<string>([
   // the user bubble for the first time. See proxyClient `handleEnvelope`
   // case 'user_message' for the PWA-side handler.
   'user_message',
+  // Cross-device SSOT sync — when one device hits /seen, /mark, or a
+  // pin/unpin, the plugin emits these envelopes so other devices
+  // re-fetch the canonical state without waiting for foreground.
+  // badge.ts + pin drawer use the diff-aware refresh path (1500ms
+  // debounced), so this stays cheap even with multi-PWA setups.
+  // conversation_deleted is fanned so other devices drop the row from
+  // their sidebar IDB cache without waiting for the next list poll.
+  'unread_changed',
+  'pins_changed',
+  'conversation_deleted',
 ]);
 
 // Bumped from 32 → 128: traffic is heavier now (every reply_delta
@@ -189,6 +199,11 @@ function hasActiveSubFor(chatId: string): boolean {
  *  caller passes 0 when no prior broadcast for the chat exists, which we
  *  treat as "infinitely idle" (push). */
 function maybeDispatchPush(env: Envelope, prevBroadcastAt: number, bodyOverride?: string): void {
+  // When push is owned by the backend plugin (openclaw path), the
+  // plugin observes agent events directly via its in-process bus and
+  // does its own dispatch. The proxy must NOT also dispatch — would
+  // double-send each push to every subscriber.
+  if (isPushOwnedByPlugin()) return;
   // Observability: every gate decision logs a single line so the
   // journal can answer "why didn't push fire for envelope X?" without
   // re-reading the code. The skipReason variable is the source of
@@ -311,17 +326,14 @@ export function pushEnvelope(env: SidekickEnvelope | Envelope): void {
   if (!env || typeof env.type !== 'string') return;
   if (!FANOUT_TYPES.has(env.type)) return;
   const chatId = typeof (env as any).chat_id === 'string' ? (env as any).chat_id : '';
-  // Record in inflight BEFORE broadcast: even renderable transient
-  // envelopes (typing) are excluded so the cache stays focused on
-  // bubbles the PWA needs to replay. session_changed is metadata, not
-  // a bubble — also skip. Everything else: record. reply_final
-  // records itself THEN drops the cache (handoff to state.db).
-  if (chatId && env.type !== 'typing' && env.type !== 'session_changed') {
-    inflight.record(chatId, env as SidekickEnvelope);
-    if (env.type === 'reply_final') {
-      inflight.dropChat(chatId);
-    }
-  }
+  // (Previously: the proxy maintained an in-memory `inflight` cache of
+  // envelopes for mid-turn switch-away replay. Retired 2026-05-17 once
+  // both plugins (hermes + openclaw) became authoritative for in-flight
+  // state via their TurnBuffer → /v1/conversations/{id}/items merge.
+  // Crack C of the turn-taking audit. Production has been running with
+  // `SIDEKICK_INFLIGHT_OWNED_BY_PLUGIN=true` on both sidekick.service
+  // and sidekick-openclaw.service — the cache was dead code by the time
+  // it shipped.)
   // Reply-text buffering for push body previews. reply_delta carries
   // the cumulative reply text; reply_final carries none. Stash on
   // delta, drain on final — independent of the eventual dispatch

@@ -69,15 +69,23 @@ def _install_hermes_stubs() -> None:
 
 
 def _load_plugin():
+    """Import under the real package name so relative imports resolve;
+    see test_user_id_queries._load_plugin for context. Eager-loads
+    route submodules so tests can reference them as
+    ``plugin.sidekick_route_*``."""
     _install_hermes_stubs()
-    plugin_init = Path(__file__).resolve().parents[1] / "__init__.py"
-    spec = importlib.util.spec_from_file_location(
-        "sidekick_plugin_under_test_commands", plugin_init,
-    )
-    mod = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(mod)
-    return mod
+    plugin_pkg = Path(__file__).resolve().parents[1]
+    parent_dir = str(plugin_pkg.parent)
+    if parent_dir not in sys.path:
+        sys.path.insert(0, parent_dir)
+    pkg = importlib.import_module(plugin_pkg.name)
+    for sub in (
+        "sidekick_ids", "sidekick_route_conversations",
+        "sidekick_route_items", "sidekick_route_events",
+        "sidekick_route_responses", "sidekick_route_settings",
+    ):
+        importlib.import_module(f"{plugin_pkg.name}.{sub}")
+    return pkg
 
 
 @pytest.fixture(scope="module")
@@ -107,19 +115,22 @@ def test_returns_list_of_dicts_with_documented_fields(plugin):
         assert isinstance(r["subcommands"], list)
 
 
-def test_excludes_cli_only_entries(plugin):
-    """``/clear``, ``/history``, ``/save``, ``/quit`` etc. are CLI-only —
-    they exercise terminal affordances the PWA can't and must not appear
-    in the gateway-surface payload."""
+def test_excludes_hidden_terminal_commands(plugin):
+    """Sidekick is a chat surface, not a TUI. The plugin's
+    ``_SIDEKICK_HIDDEN_COMMANDS`` set drops genuinely terminal-coupled
+    entries (screen wipe, redraw, OSC52 clipboard, etc.). Most
+    ``cli_only=True`` commands in hermes-cli still appear — they
+    route fine through chat (busy, tools, snapshot, config, ...).
+
+    This test gates the explicit drop list: anything in
+    ``_SIDEKICK_HIDDEN_COMMANDS`` must NOT surface in /v1/commands."""
     rows = plugin._serialize_command_registry()
     if not rows:
         pytest.skip("hermes_cli not importable in this test env")
     names = {r["name"] for r in rows}
-    # Sample a few well-known cli_only entries from commands.py.
-    cli_only_samples = {"clear", "history", "save", "quit", "config"}
-    for name in cli_only_samples:
+    for name in plugin._SIDEKICK_HIDDEN_COMMANDS:
         assert name not in names, (
-            f"{name!r} is cli_only and must not appear in /v1/commands"
+            f"{name!r} is in _SIDEKICK_HIDDEN_COMMANDS but appeared in /v1/commands"
         )
 
 
@@ -136,15 +147,21 @@ def test_includes_gateway_only_entries(plugin):
 
 
 def test_aliases_carried_on_canonical_row(plugin):
-    """``/new`` has alias ``reset`` — the row should list it under
-    ``aliases``, NOT as a second top-level row."""
+    """Aliases stay on the canonical row, not as separate top-level
+    entries. ``/topic`` has alias ``set-topic`` — the row should list
+    it under ``aliases``, NOT as a second top-level row.
+
+    (Previously asserted against ``/new``+``reset``, but /new is now
+    hidden in _SIDEKICK_HIDDEN_COMMANDS — see the 2026-05-17 slash-
+    command catalog change: /new triggers the destructive_slash confirm
+    flow, and the canonical "New chat" button covers it.)"""
     rows = plugin._serialize_command_registry()
     if not rows:
         pytest.skip("hermes_cli not importable in this test env")
     by_name = {r["name"]: r for r in rows}
-    assert "new" in by_name, "expected /new in the catalog"
-    assert "reset" in by_name["new"]["aliases"]
-    assert "reset" not in by_name, "alias must not be a top-level row"
+    assert "sethome" in by_name, "expected /sethome in the catalog"
+    assert "set-home" in by_name["sethome"]["aliases"]
+    assert "set-home" not in by_name, "alias must not be a top-level row"
 
 
 def test_args_hint_and_subcommands_propagate(plugin):

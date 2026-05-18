@@ -78,15 +78,23 @@ def _install_hermes_stubs() -> None:
 
 
 def _load_plugin():
+    """Import under the real package name so relative imports resolve;
+    see test_user_id_queries._load_plugin for context. Eager-loads
+    route submodules so tests can reference them as
+    ``plugin.sidekick_route_*``."""
     _install_hermes_stubs()
-    plugin_init = Path(__file__).resolve().parents[1] / "__init__.py"
-    spec = importlib.util.spec_from_file_location(
-        "sidekick_plugin_under_test_model", plugin_init,
-    )
-    mod = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(mod)
-    return mod
+    plugin_pkg = Path(__file__).resolve().parents[1]
+    parent_dir = str(plugin_pkg.parent)
+    if parent_dir not in sys.path:
+        sys.path.insert(0, parent_dir)
+    pkg = importlib.import_module(plugin_pkg.name)
+    for sub in (
+        "sidekick_ids", "sidekick_route_conversations",
+        "sidekick_route_items", "sidekick_route_events",
+        "sidekick_route_responses", "sidekick_route_settings",
+    ):
+        importlib.import_module(f"{plugin_pkg.name}.{sub}")
+    return pkg
 
 
 @pytest.fixture(scope="module")
@@ -104,9 +112,9 @@ def adapter(plugin, tmp_path):
 
 
 def _make_schema_stub(plugin, options, current_value):
-    """Patch ``_build_settings_schema`` to return a single 'model'
-    enum with the given options[] and current value. Returns the
-    mock so the test can assert call counts."""
+    """Patch ``sidekick_route_settings.build_settings_schema`` (free
+    function, post-2026-05-17 refactor) to return a single 'model'
+    enum with the given options[] and current value."""
     schema = [
         {
             "id": "model",
@@ -116,7 +124,7 @@ def _make_schema_stub(plugin, options, current_value):
         },
     ]
     return mock.patch.object(
-        plugin.SidekickAdapter, "_build_settings_schema",
+        plugin.sidekick_route_settings, "build_settings_schema",
         return_value=schema,
     )
 
@@ -168,7 +176,7 @@ def test_persists_model_to_config_yaml(plugin, adapter):
             switch_model=mock.Mock(return_value=fake_switch_result),
         ),
     }):
-        result = adapter._apply_model_setting("anthropic/claude-haiku-4.5")
+        result = plugin.sidekick_route_settings.apply_model_setting("anthropic/claude-haiku-4.5")
 
     assert len(save_calls) == 1, "save_config should be invoked exactly once"
     persisted = save_calls[0]
@@ -215,7 +223,7 @@ def test_skips_persist_when_switch_model_fails(plugin, adapter):
         ),
     }):
         with pytest.raises(Exception):  # _SettingsValidationError
-            adapter._apply_model_setting("y")
+            plugin.sidekick_route_settings.apply_model_setting("y")
 
     assert save_calls == [], "save_config must NOT run when switch_model fails"
 
@@ -240,6 +248,6 @@ def test_rejects_value_not_in_options(plugin, adapter):
         ),
     }):
         with pytest.raises(Exception):  # _SettingsValidationError
-            adapter._apply_model_setting("not-in-options")
+            plugin.sidekick_route_settings.apply_model_setting("not-in-options")
 
     assert switch_calls == []

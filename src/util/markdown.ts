@@ -29,14 +29,33 @@ export function miniMarkdown(s) {
     const items = m.trim().split('\n').map(l => '<li>' + l.replace(/^[-*]\s+/, '') + '</li>').join('');
     return `<ul>${items}</ul>`;
   });
+  // Numbered lists. Same shape as bullet but consecutive lines beginning
+  // with digits-dot-space → <ol><li>…</li></ol>. Risk of false positives
+  // on prose like "10. October" is real but low for chat content.
+  t = t.replace(/^(?:\d+\.\s+.+\n?)+/gm, m => {
+    const items = m.trim().split('\n').map(l => '<li>' + l.replace(/^\d+\.\s+/, '') + '</li>').join('');
+    return `<ol>${items}</ol>`;
+  });
   // Markdown links
   t = t.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
   // Angle-bracketed URLs: <url> → escaped as &lt;url&gt; by escapeHtml
   t = t.replace(/&lt;(https?:\/\/[^\s&]+?)&gt;/g, '<a href="$1">$1</a>');
   // Bare URLs
   t = t.replace(/(^|[^"'>=])(https?:\/\/[^\s<)"']+)/g, '$1<a href="$2">$2</a>');
-  // Paragraphs
-  t = t.split(/\n\n+/).map(p => p.startsWith('<') ? p : `<p>${p.replace(/\n/g, '<br>')}</p>`).join('');
+  // Paragraphs. Split on blank lines. For each chunk: if it starts with a
+  // block-level element (already rendered by an earlier rule: <pre>, <ul>,
+  // <ol>, <h1-6>, <table>, etc.), leave it alone — wrapping it in <p>
+  // would be invalid HTML, and any intra-chunk `\n` belongs to the block
+  // element's own semantics (e.g. preserved whitespace inside <pre>).
+  // Otherwise wrap in <p> and convert single newlines to <br>. The old
+  // implementation used a bare `startsWith('<')` test, which incorrectly
+  // skipped the `<br>` rewrite for chunks starting with inline elements
+  // like <strong> — a single-newline-separated pair of `**bold**` lines
+  // collapsed onto one rendered line (Jonathan field report 2026-05-17).
+  const BLOCK_OPENER = /^<(?:pre|table|ul|ol|blockquote|h[1-6]|hr|div)\b/i;
+  t = t.split(/\n\n+/).map(p =>
+    BLOCK_OPENER.test(p) ? p : `<p>${p.replace(/\n/g, '<br>')}</p>`
+  ).join('');
   return t;
 }
 

@@ -6,7 +6,6 @@
 // PWA renderer consumes today.
 
 import { getUpstream } from './index.ts';
-import * as inflight from './inflight.ts';
 import type { UpstreamAgent } from './upstream.ts';
 
 export async function handleSidekickSessionMessages(req, res, chatId: string) {
@@ -69,6 +68,15 @@ async function handleSessionMessagesViaUpstream(
       content: it.content,
       timestamp: it.created_at,
       ...(it.tool_name ? { toolName: it.tool_name } : {}),
+      // tool_call_id (role='tool' rows) + tool_calls JSON (role='assistant'
+      // rows that issued tool calls). The PWA's sessionResume rebuild path
+      // routes tool rows through activityRow.appendToolResult and parses
+      // tool_calls to rebuild the activity row's headers. Without these
+      // fields, post-session-switch reload showed assistant text but no
+      // tool activity — exactly the "tool calls disappeared" symptom
+      // Jonathan hit on 2026-05-17.
+      ...(it.tool_call_id ? { tool_call_id: it.tool_call_id } : {}),
+      ...(it.tool_calls ? { tool_calls: it.tool_calls } : {}),
       // SSE-shape id (umsg_*/msg_*) when the plugin recorded a link
       // for this row in sidekick_msg_links. PWA's renderHistoryMessage
       // prefers this over the integer id as the dedup key so reload
@@ -80,43 +88,21 @@ async function handleSessionMessagesViaUpstream(
       // can show the appropriate emoji + label.
       ...(it.kind ? { kind: it.kind } : {}),
     }));
-    // Inflight envelopes — envelopes the proxy has forwarded during
-    // an in-flight turn that haven't been persisted to state.db yet
-    // (hermes-core persists post-turn). Empty for any chat that
-    // isn't currently mid-turn. Only included for fresh history
-    // fetches (before-cursor paging skips it — older pages can't
-    // contain inflight by definition).
+    // In-flight envelopes carried from the upstream's
+    // /v1/conversations/{id}/items response. Plugin (hermes + openclaw)
+    // owns the TurnBuffer and now emits live-SSE-shape envelopes under
+    // `inflight: [...]`. PWA's `backend.replayInflight()` feeds them
+    // through the same handlers the live SSE stream uses, so a
+    // reconnected client renders STREAMING bubbles keyed by message_id —
+    // subsequent live deltas update those same bubbles instead of
+    // forking duplicates. Crack C, 2026-05-17 turn-taking audit:
+    // replaces both the older proxy-side inflight cache AND the
+    // finalized-items merge (which dropped message_id on the in-flight
+    // assistant, causing visible double-renders on reload).
     //
-    // Dedup against state.db: any inflight envelope whose msgId is
-    // already canonical (has a sidekick_id in the state.db rows we
-    // just fetched) is redundant — the PWA would render it twice
-    // (once from state.db, once from inflight replay) or, worse,
-    // re-surface "old" envelopes the user already saw and the system
-    // already finalized.
-    //
-    // Why this is the structural fix (vs filtering at record() time
-    // or warmup-window heuristics): the inflight cache is allowed to
-    // accumulate from any source — live-turn dispatch, gateway events
-    // ring replay on reconnect, the record()-cancels-pendingDrop edge
-    // case for cron-active chats. None of those sources need to know
-    // about each other if the boundary check is "filter at serve."
-    // Field bug 2026-05-12 (chat 99298465, Jonathan): cron-response
-    // bubbles from 1-2 hours ago kept reappearing on switch-in because
-    // sidekick restarts re-seeded the inflight cache from the gateway
-    // ring; the boundary filter makes that whole class of accumulation
-    // bug invisible.
-    const allInflight = before === null ? inflight.getForChat(chatId) : [];
-    const canonicalIds = new Set<string>();
-    for (const it of r.items) {
-      if (it.sidekick_id) canonicalIds.add(it.sidekick_id);
-    }
-    const inflightEnvelopes = allInflight.filter((env) => {
-      const mid = typeof (env as any).message_id === 'string'
-        ? (env as any).message_id
-        : '';
-      if (!mid) return true;  // can't dedup without id — pass through
-      return !canonicalIds.has(mid);
-    });
+    // Skip on `before`-cursor paging (older pages can't contain in-flight
+    // by definition). Empty array when no turn is active.
+    const inflightEnvelopes = before === null ? r.inflight : [];
     trace('serialize-start');
     const body = JSON.stringify({
       messages,

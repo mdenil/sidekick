@@ -31,6 +31,13 @@ import { setMuted, listMutedChats } from './mutes.ts';
 import { recordVisibility } from './visibility.ts';
 import { getPrefs, updatePrefs, type Prefs } from './prefs.ts';
 import { getRecentDecisions } from './diagnostics.ts';
+import {
+  isPushOwnedByPlugin,
+  delegateVapid, delegateSubscribe, delegateUnsubscribe,
+  delegateListMutes, delegateSetMute,
+  delegateGetPrefs, delegateSetPrefs,
+  delegateVisibility, delegateTest,
+} from './delegate.ts';
 
 const MAX_BODY_BYTES = 8 * 1024;  // subscriptions are tiny, generous
 
@@ -66,6 +73,7 @@ function sendJson(res: any, status: number, payload: any): void {
  *  VAPID env is missing so the client can distinguish "feature disabled"
  *  from "wrong proxy version". */
 export function handleSidekickVapidPublicKey(req: any, res: any): void {
+  if (isPushOwnedByPlugin()) { delegateVapid(req, res).catch(() => sendJson(res, 502, { error: 'upstream_unavailable' })); return; }
   const vapid = getVapidConfig();
   if (!vapid) {
     return sendJson(res, 503, {
@@ -82,6 +90,7 @@ export function handleSidekickVapidPublicKey(req: any, res: any): void {
  *    { endpoint: "https://...", keys: { p256dh, auth }, userAgent? }
  *  Re-subscribing the same endpoint updates the row (rotating keys). */
 export async function handleSidekickSubscribe(req: any, res: any): Promise<void> {
+  if (isPushOwnedByPlugin()) return delegateSubscribe(req, res);
   if (!isConfigured()) {
     return sendJson(res, 503, { error: 'vapid_unconfigured' });
   }
@@ -108,6 +117,7 @@ export async function handleSidekickSubscribe(req: any, res: any): Promise<void>
 /** POST /api/sidekick/notifications/unsubscribe
  *  Remove a subscription by endpoint URL. Idempotent. */
 export async function handleSidekickUnsubscribe(req: any, res: any): Promise<void> {
+  if (isPushOwnedByPlugin()) return delegateUnsubscribe(req, res);
   if (!isConfigured()) {
     return sendJson(res, 503, { error: 'vapid_unconfigured' });
   }
@@ -126,6 +136,7 @@ export async function handleSidekickUnsubscribe(req: any, res: any): Promise<voi
  *  + after toggling so the 3-dots menu can show the right label
  *  ("Mute" vs "Unmute") per chat. */
 export function handleSidekickListMutes(req: any, res: any): void {
+  if (isPushOwnedByPlugin()) { delegateListMutes(req, res).catch(() => sendJson(res, 502, { error: 'upstream_unavailable' })); return; }
   if (!isConfigured()) {
     return sendJson(res, 503, { error: 'vapid_unconfigured' });
   }
@@ -138,6 +149,7 @@ export function handleSidekickListMutes(req: any, res: any): void {
  *  Idempotent: setting an already-muted chat to muted=true returns the
  *  same result. Mute is GLOBAL across all subscriptions in v1. */
 export async function handleSidekickSetMute(req: any, res: any): Promise<void> {
+  if (isPushOwnedByPlugin()) return delegateSetMute(req, res);
   if (!isConfigured()) {
     return sendJson(res, 503, { error: 'vapid_unconfigured' });
   }
@@ -164,6 +176,7 @@ export async function handleSidekickSetMute(req: any, res: any): Promise<void> {
  *  fills in digest + per-kind toggles). Always 200 — defaults are
  *  returned even when no prefs file exists. */
 export function handleSidekickGetPreferences(req: any, res: any): void {
+  if (isPushOwnedByPlugin()) { delegateGetPrefs(req, res).catch(() => sendJson(res, 502, { error: 'upstream_unavailable' })); return; }
   sendJson(res, 200, getPrefs());
 }
 
@@ -172,6 +185,7 @@ export function handleSidekickGetPreferences(req: any, res: any): void {
  *  body keep their current values. Returns the updated prefs blob.
  *  400 on malformed body (non-HH:MM times etc). */
 export async function handleSidekickSetPreferences(req: any, res: any): Promise<void> {
+  if (isPushOwnedByPlugin()) return delegateSetPrefs(req, res);
   let body: any;
   try { body = await readJsonBody(req); }
   catch (e: any) { return sendJson(res, 400, { error: 'bad_body', detail: e.message }); }
@@ -199,6 +213,7 @@ export async function handleSidekickSetPreferences(req: any, res: any): Promise<
  *  visibility is harmless when push is disabled; ignoring the data is
  *  fine, no need to surface 503. */
 export async function handleSidekickVisibility(req: any, res: any): Promise<void> {
+  if (isPushOwnedByPlugin()) return delegateVisibility(req, res);
   let body: any;
   try { body = await readJsonBody(req); }
   catch (e: any) { return sendJson(res, 400, { error: 'bad_body', detail: e.message }); }
@@ -248,6 +263,7 @@ export function handleSidekickDiagnostics(req: any, res: any): void {
  *  the ones the push service reported as gone (404/410) — storage
  *  removes them so future dispatches don't waste a roundtrip. */
 export async function handleSidekickTest(req: any, res: any): Promise<void> {
+  if (isPushOwnedByPlugin()) return delegateTest(req, res);
   if (!isConfigured()) {
     return sendJson(res, 503, { error: 'vapid_unconfigured' });
   }

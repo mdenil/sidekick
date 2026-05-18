@@ -67,49 +67,71 @@ export default async function run({ page, log, fail }) {
   log(`fresh chat (chat_id=${chatId || 'unknown'}) — no prior agent bubbles`);
 
   try {
-  // Step 1: open settings, pick a vision-capable model. We pick from
-  // the live schema's options[] to stay in sync with whatever the
-  // user has configured; prefer claude-sonnet/opus since they handle
-  // PDFs reliably. Fall back to any vision-capable id if neither is
-  // available.
-  await page.click('#sb-settings');
-  await page.waitForFunction(
-    () => document.getElementById('settings')?.classList.contains('on'),
-    null, { timeout: 3_000 },
-  );
-  await page.waitForSelector('[data-agent-setting="model"] select', { timeout: 5_000 });
-
-  const visionPreferred = [
-    /^anthropic\/claude-(sonnet|opus|haiku)/,
-    /^openai\/gpt-4o/,
-    /^google\/gemini-/,
-    /^google\/gemma-3-(4b|12b|27b)/,
-  ];
-  const pickedModel = await page.evaluate((patterns) => {
-    const sel = document.querySelector('[data-agent-setting="model"] select');
-    if (!sel) return null;
-    const opts = Array.from(sel.options).map(o => o.value);
-    const re = patterns.map(p => new RegExp(p[0], p[1]));
-    for (const r of re) {
-      const hit = opts.find(v => r.test(v));
-      if (hit) return hit;
-    }
-    return null;
-  }, visionPreferred.map(r => [r.source, r.flags]));
-  if (!pickedModel) {
-    fail('no vision-capable model in agent options[] — install at least one (claude/gpt-4o/gemini/gemma-3) before running this test');
+  // ── Vision-capability gate (2026-05-17 rewrite) ───────────────────
+  //
+  // Previous behavior: this smoke USED to pick a vision-capable model
+  // from the live schema's options[] and POST it to /api/sidekick/
+  // settings/model, silently switching the user's hermes config to
+  // whatever vision-capable model it found (almost always an
+  // openrouter-prefixed one). It never restored the original. Result:
+  // every full smoke run left the user paying openrouter credits for
+  // unrelated agent calls. 2026-05-16: Jonathan caught it; today we
+  // ripped it out.
+  //
+  // New behavior: the test interrogates the *current* model's
+  // capabilities via /api/sidekick/model-capabilities. Three cases:
+  //   1. Current model supports vision → great, use it as-is.
+  //   2. Current model is text-only but an auxiliary vision model
+  //      is configured (/api/sidekick/auxiliary-models) → the
+  //      attach-button vision-gate routes PDFs through the aux
+  //      model; proceed.
+  //   3. Neither → fail with a clear warning. Honest signal that
+  //      the user's hermes config doesn't support vision; the test
+  //      should not pass under false pretenses.
+  const visionStatus = await page.evaluate(async () => {
+    const schemaResp = await fetch('/api/sidekick/settings/schema');
+    if (!schemaResp.ok) return { error: `settings/schema returned ${schemaResp.status}` };
+    const schema = await schemaResp.json();
+    const modelDef = (schema?.data || []).find((s) => s.id === 'model');
+    const current = modelDef?.value || null;
+    if (!current) return { error: 'no current model in schema' };
+    const capsResp = await fetch(`/api/sidekick/model-capabilities?model=${encodeURIComponent(current)}`);
+    const caps = capsResp.ok ? await capsResp.json() : null;
+    const auxResp = await fetch('/api/sidekick/auxiliary-models');
+    const aux = auxResp.ok ? await auxResp.json() : null;
+    return {
+      current,
+      primaryVision: caps?.supports_vision === true,
+      primaryKnown: caps?.known === true,
+      auxVision: typeof aux?.vision === 'string' && aux.vision.length > 0,
+      auxModel: aux?.vision || null,
+    };
+  });
+  log(`vision-status: ${JSON.stringify(visionStatus)}`);
+  if (visionStatus.error) {
+    fail(`cannot probe model capabilities: ${visionStatus.error}`);
     return;
   }
-  log(`picking vision-capable model: ${pickedModel}`);
-
-  await page.evaluate((model) => {
-    const sel = document.querySelector('[data-agent-setting="model"] select');
-    sel.value = model;
-    sel.dispatchEvent(new Event('change', { bubbles: true }));
-  }, pickedModel);
-  // Wait for the POST to land + the agent-setting-changed event to
-  // re-run updateAttachButtonsState. The button enabling is the
-  // signal the PWA-side gate accepted the model.
+  if (!visionStatus.primaryVision && !visionStatus.auxVision) {
+    fail(
+      `current model ${JSON.stringify(visionStatus.current)} does not support vision, ` +
+      `and no auxiliary vision model is configured. ` +
+      `This smoke needs at least one of:\n` +
+      `  (a) a vision-capable primary model selected in Settings → Model, OR\n` +
+      `  (b) an auxiliary vision model configured (hermes-side hermes_cli.aux config).\n` +
+      `Refusing to change the model behind the user's back — change it manually before re-running.`
+    );
+    return;
+  }
+  if (visionStatus.primaryVision) {
+    log(`primary model ${JSON.stringify(visionStatus.current)} supports vision ✓`);
+  } else {
+    log(`primary model is text-only; routing PDFs through aux vision model ${JSON.stringify(visionStatus.auxModel)} ✓`);
+  }
+  // The attach button's vision-gate (see updateAttachButtonsState
+  // in src/main.ts) flips enabled based on the same caps + aux state
+  // the test just checked. Wait for it to settle so the attach call
+  // doesn't race the gate.
   await page.waitForFunction(
     () => {
       const b = document.getElementById('btn-attach');
@@ -117,16 +139,7 @@ export default async function run({ page, log, fail }) {
     },
     null, { timeout: 5_000 },
   );
-  log('attach button enabled after model switch ✓');
-
-  // Close settings via Escape key — handler at src/settings.ts:703.
-  // The DOM has both #settings-close and #sb-settings (open button)
-  // matching loose locator queries, so press Escape instead of click.
-  await page.keyboard.press('Escape');
-  await page.waitForFunction(
-    () => !document.getElementById('settings')?.classList.contains('on'),
-    null, { timeout: 3_000 },
-  );
+  log('attach button enabled by vision-gate ✓');
 
   // Step 2: feed the fixture PDF into the hidden file input. Skip
   // the file picker chrome by setting files programmatically — same
@@ -225,7 +238,11 @@ export default async function run({ page, log, fail }) {
   log(`PDF rasterization → vision-LLM path verified end-to-end ✓`);
   } finally {
     // Cleanup so smoke runs don't pollute the real user's drawer —
-    // runs whether the test passed or threw.
+    // runs whether the test passed or threw. No model restoration
+    // needed: as of 2026-05-17 we never change the model from inside
+    // this test (Jonathan's rule: "it shouldn't change the model
+    // itself"). If the test wants vision it asks the user to provide
+    // it via primary or aux config; otherwise it fails loudly.
     if (chatId) await deleteChat(page, chatId);
   }
 }

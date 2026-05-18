@@ -42,6 +42,14 @@ export interface ConversationSummary {
   metadata: {
     title: string;
     message_count: number;
+    /** User-role message count ("turns") — what the user thinks of as
+     *  "how many times have I said something". Newer plugins emit this;
+     *  optional for back-compat. Pairs with `tool_count` so the drawer
+     *  can render "N turns · M tools" instead of the inflated raw msg
+     *  count (Jonathan field 2026-05-17). */
+    turn_count?: number;
+    /** Tool-role message count. Pairs with `turn_count`. Optional. */
+    tool_count?: number;
     last_active_at: number;
     first_user_message: string | null;
   };
@@ -133,6 +141,16 @@ export interface ConversationItem {
    *  the OAI item shape so the drawer's "agent activity" view can
    *  render the row with its tool label. Absent for non-tool rows. */
   tool_name?: string;
+  /** Sidekick extension: tool_call_id on role='tool' rows — pairs the
+   *  tool result back to the assistant's tool_call entry. Lets the
+   *  PWA's history rebuild route this row through activityRow
+   *  appendToolResult correctly. */
+  tool_call_id?: string;
+  /** Sidekick extension: serialized tool_calls JSON on role='assistant'
+   *  rows that issued tool calls during their turn. PWA parses this
+   *  to reconstruct the activity row's headers on history replay so
+   *  post-reload renders look identical to live SSE. */
+  tool_calls?: string;
   // Sidekick extension: SSE-shape id (umsg_X / msg_X) the plugin
   // emitted during the live turn that persisted this row. Recorded
   // by the plugin via sidekick_msg_links and surfaced through the
@@ -184,11 +202,13 @@ export interface UpstreamAgent {
    *  third-parties); the caller falls back to `listConversations`. */
   listGatewayConversations(limit?: number): Promise<GatewayConversationSummary[] | null>;
 
-  /** Transcript replay. */
+  /** Transcript replay. `inflight` carries live-SSE-shape envelopes
+   *  from the plugin's TurnBuffer (only on the first page; empty
+   *  array when no turn is active). */
   getMessages(
     chatId: string,
     opts?: { limit?: number; before?: number },
-  ): Promise<{ items: ConversationItem[]; first_id: number | null; has_more: boolean }>;
+  ): Promise<{ items: ConversationItem[]; first_id: number | null; has_more: boolean; inflight: SidekickEnvelope[] }>;
 
   /** Drawer delete. Cascades upstream (transcript + memory store). */
   deleteConversation(chatId: string): Promise<void>;
@@ -279,8 +299,15 @@ export class HTTPAgentUpstream implements UpstreamAgent {
   }
 
   async healthcheck(): Promise<{ ok: boolean }> {
+    // Hit the plugin-served `/v1/health` path rather than the bare
+    // `/health` (which on openclaw is the gateway's own built-in
+    // route — passes even when the sidekick plugin failed to load).
+    // Hermes plugin exposes both /health and /v1/health to the same
+    // handler. Field bug 2026-05-15: pointed the proxy at openclaw
+    // and the bare /health check passed even though the sidekick
+    // plugin wasn't serving any /v1/* routes.
     try {
-      const r = await fetch(`${this.url}/health`, { headers: this.headers() });
+      const r = await fetch(`${this.url}/v1/health`, { headers: this.headers() });
       if (!r.ok) return { ok: false };
       const j: any = await r.json().catch(() => ({}));
       return { ok: j.status === 'ok' };
@@ -319,7 +346,7 @@ export class HTTPAgentUpstream implements UpstreamAgent {
   async getMessages(
     chatId: string,
     opts: { limit?: number; before?: number } = {},
-  ): Promise<{ items: ConversationItem[]; first_id: number | null; has_more: boolean }> {
+  ): Promise<{ items: ConversationItem[]; first_id: number | null; has_more: boolean; inflight: SidekickEnvelope[] }> {
     const params = new URLSearchParams();
     if (opts.limit != null) params.set('limit', String(opts.limit));
     if (opts.before != null) params.set('before', String(opts.before));
@@ -329,14 +356,21 @@ export class HTTPAgentUpstream implements UpstreamAgent {
       { headers: this.headers() },
     );
     if (r.status === 404) {
-      return { items: [], first_id: null, has_more: false };
+      return { items: [], first_id: null, has_more: false, inflight: [] };
     }
     if (!r.ok) throw new Error(`upstream getMessages: HTTP ${r.status}`);
     const j: any = await r.json();
+    // `inflight` carries live-SSE-shape envelopes from the plugin's
+    // TurnBuffer (Crack C, 2026-05-17). The PWA's replayInflight() path
+    // pipes them through the same handlers the live SSE stream uses, so
+    // streaming bubbles render on mid-turn reconnect. Optional — older
+    // plugins (or any current snapshot with no active turn) omit the
+    // field, in which case we surface an empty array.
     return {
       items: Array.isArray(j?.data) ? j.data : [],
       first_id: j?.first_id ?? null,
       has_more: !!j?.has_more,
+      inflight: Array.isArray(j?.inflight) ? j.inflight : [],
     };
   }
 

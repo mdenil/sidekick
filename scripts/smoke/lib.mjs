@@ -13,10 +13,47 @@
 
 import { chromium } from 'playwright-core';
 
-// Default to the OS-installed chromium (apt install chromium). Hosts
-// without it can set SMOKE_CHROMIUM to a Playwright-bundled binary,
-// e.g. ~/.cache/ms-playwright/chromium-*/chrome-linux64/chrome
-export const CHROMIUM = process.env.SMOKE_CHROMIUM || '/usr/bin/chromium';
+// Resolve the chromium binary in priority order:
+//   1. SMOKE_CHROMIUM env (explicit override).
+//   2. The Playwright-bundled chromium under ~/.cache/ms-playwright
+//      (any chromium-*/chrome-linux64/chrome). This is the right
+//      default — the mock-backend smoke harness uses an in-process
+//      HTTP server forwarding /api/sidekick/stream as SSE, and
+//      consumer chromium builds (Google Chrome stable on Ubuntu)
+//      ship aggressive default "block 3rd-party SSE / private-
+//      network" heuristics that surface as net::ERR_BLOCKED_BY_CLIENT
+//      on the forwarded stream — breaks every smoke that touches the
+//      live stream channel. The Playwright build doesn't ship those
+//      blocks. Field bug 2026-05-17: I previously declared 3 smokes
+//      (tool-row-reload-dedup, multi-session-bubble-survival,
+//      cross-device-pin-sync) "pre-existing flakes" because they
+//      failed under google-chrome-stable; all 3 pass cleanly under
+//      the Playwright build.
+//   3. /usr/bin/chromium (apt package) as last resort.
+import { existsSync, readdirSync } from 'node:fs';
+import { join as pathJoin } from 'node:path';
+function _findPlaywrightChromium() {
+  const home = process.env.HOME || '';
+  if (!home) return null;
+  const dir = pathJoin(home, '.cache', 'ms-playwright');
+  if (!existsSync(dir)) return null;
+  try {
+    const entries = readdirSync(dir);
+    // Prefer the highest-numbered chromium-XXXX/chrome-linux64/chrome.
+    const chromiumDirs = entries
+      .filter((e) => /^chromium-\d+$/.test(e))
+      .sort()
+      .reverse();
+    for (const d of chromiumDirs) {
+      const bin = pathJoin(dir, d, 'chrome-linux64', 'chrome');
+      if (existsSync(bin)) return bin;
+    }
+  } catch { /* ignore — fall through */ }
+  return null;
+}
+export const CHROMIUM = process.env.SMOKE_CHROMIUM
+  || _findPlaywrightChromium()
+  || '/usr/bin/chromium';
 export const DEFAULT_URL = process.env.SMOKE_URL || 'http://127.0.0.1:3001';
 
 /** Launch a single Chromium process for the entire smoke run. Returns

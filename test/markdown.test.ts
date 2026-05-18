@@ -94,4 +94,32 @@ describe('miniMarkdown', () => {
     const html = miniMarkdown('| not a table |');
     assert.ok(!html.includes('<table>'));
   });
+
+  it('renders numbered lists', () => {
+    const result = miniMarkdown('1. first\n2. second\n3. third');
+    assert.ok(result.includes('<ol>'));
+    assert.ok(result.includes('<li>first</li>'));
+    assert.ok(result.includes('<li>second</li>'));
+    assert.ok(result.includes('<li>third</li>'));
+  });
+
+  it('renders <br> between adjacent **bold** lines in one paragraph', () => {
+    // Field bug 2026-05-17: when a chunk starts with <strong> (or any
+    // inline element), the old paragraph step skipped the \n→<br> rewrite
+    // and the two lines collapsed onto one. New behavior: only true
+    // block-level openers skip the wrap, so this paragraph gets <p>…<br>…</p>.
+    const result = miniMarkdown('**foo:** 0\n**bar:** 0');
+    assert.ok(result.includes('<br>'), `expected <br> between bold lines, got: ${result}`);
+    assert.ok(result.includes('<strong>foo:</strong>'));
+    assert.ok(result.includes('<strong>bar:</strong>'));
+  });
+
+  it('does not wrap block-level rendered output in <p>', () => {
+    // <pre>, <ul>, <ol>, <h2>, etc. are produced by earlier rules and
+    // must not be wrapped in <p> (invalid HTML).
+    assert.ok(!/\<p\>\s*\<pre\>/.test(miniMarkdown('```\ncode\n```')));
+    assert.ok(!/\<p\>\s*\<ul\>/.test(miniMarkdown('- a\n- b')));
+    assert.ok(!/\<p\>\s*\<ol\>/.test(miniMarkdown('1. a\n2. b')));
+    assert.ok(!/\<p\>\s*\<h2\>/.test(miniMarkdown('## heading')));
+  });
 });

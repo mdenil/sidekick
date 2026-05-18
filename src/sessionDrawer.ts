@@ -436,6 +436,7 @@ let optimisticActiveId: string | null = null;
  *  there's a chat on screen, even one that's not yet persisted. */
 let viewedSessionId: string | null = null;
 export function setViewed(id: string | null) {
+  const prev = viewedSessionId;
   viewedSessionId = id;
   // Switching INTO a chat is the canonical "user has now seen this"
   // signal — clear its unread badge.
@@ -445,6 +446,14 @@ export function setViewed(id: string | null) {
   // fire for envelopes arriving on the chat the user is right here
   // looking at.
   reportChatSwitch(id);
+  // Drop any message-select highlight + its hint chip when the user
+  // navigates away from the chat that had a highlighted bubble. The
+  // bubble itself is about to be detached from the DOM; without this,
+  // the chip stays visible against an irrelevant transcript.
+  // Field UX 2026-05-16 (Jonathan).
+  if (prev !== id) {
+    void import('./transcriptHighlight.ts').then((m) => m.clearHighlight?.());
+  }
 }
 export function getViewed(): string | null { return viewedSessionId; }
 
@@ -517,6 +526,11 @@ function setupUnreadListener(): void {
   unreadListenerWired = true;
   if (typeof window === 'undefined') return;
   window.addEventListener('sidekick:unread-changed', repaintUnreadIndicators);
+  // Cross-device delete sync — proxyClient already wiped the IDB row
+  // and broadcast this event. We just need to schedule a sidebar
+  // refresh so the DOM row drops. Jonathan field bug 2026-05-16:
+  // "deleting a session on phone left a straggler in desktop sidebar".
+  window.addEventListener('sidekick:server-conversation-deleted', () => scheduleRefresh());
 }
 // Wire at module load — idempotent + no DOM lookup needed (event
 // listener attaches on window which exists in the PWA from the start).

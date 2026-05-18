@@ -1058,6 +1058,34 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && req.url && req.url.startsWith('/api/sidekick/notifications/diagnostics')) {
       return sidekick.handleSidekickDiagnostics(req, res);
     }
+    // ── Unread + pins (plugin-owned SSOT; proxy forwards). ───────────
+    // The PWA's badge module + pin drawer call these; the proxy
+    // delegates to the upstream plugin's /v1/unread + /v1/pins.
+    {
+      const delegate = await import('./proxy/sidekick/notifications/delegate.ts');
+      if (req.method === 'GET' && req.url === '/api/sidekick/notifications/unread') {
+        return delegate.delegateUnread(req, res);
+      }
+      if (req.method === 'POST' && req.url === '/api/sidekick/notifications/seen') {
+        return delegate.delegateUnreadSeen(req, res);
+      }
+      if (req.method === 'POST' && req.url === '/api/sidekick/notifications/mark') {
+        return delegate.delegateUnreadMark(req, res);
+      }
+      if (req.method === 'GET' && req.url && /^\/api\/sidekick\/pins(?:\?.*)?$/.test(req.url)) {
+        return delegate.delegatePinsList(req, res);
+      }
+      if (req.method === 'POST' && req.url === '/api/sidekick/pins') {
+        return delegate.delegatePinUpsert(req, res);
+      }
+      const pinDelete = req.method === 'DELETE'
+        && req.url.match(/^\/api\/sidekick\/pins\/([^/]+)\/([^/?]+)(?:\?.*)?$/);
+      if (pinDelete) {
+        return delegate.delegatePinDelete(
+          req, res, decodeURIComponent(pinDelete[1]), decodeURIComponent(pinDelete[2]),
+        );
+      }
+    }
     const sidekickSettingsUpdate = req.method === 'POST'
       && req.url.match(/^\/api\/sidekick\/settings\/([^/?]+)(?:\?.*)?$/);
     if (sidekickSettingsUpdate) {

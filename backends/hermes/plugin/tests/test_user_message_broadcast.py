@@ -77,15 +77,23 @@ def _install_hermes_stubs() -> None:
 
 
 def _load_plugin():
+    """Import under the real package name so relative imports resolve;
+    see test_user_id_queries._load_plugin for context. Eager-loads
+    route submodules so tests can reference them as
+    ``plugin.sidekick_route_*``."""
     _install_hermes_stubs()
-    plugin_init = Path(__file__).resolve().parents[1] / "__init__.py"
-    spec = importlib.util.spec_from_file_location(
-        "sidekick_plugin_under_test_user_message", plugin_init,
-    )
-    mod = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(mod)
-    return mod
+    plugin_pkg = Path(__file__).resolve().parents[1]
+    parent_dir = str(plugin_pkg.parent)
+    if parent_dir not in sys.path:
+        sys.path.insert(0, parent_dir)
+    pkg = importlib.import_module(plugin_pkg.name)
+    for sub in (
+        "sidekick_ids", "sidekick_route_conversations",
+        "sidekick_route_items", "sidekick_route_events",
+        "sidekick_route_responses", "sidekick_route_settings",
+    ):
+        importlib.import_module(f"{plugin_pkg.name}.{sub}")
+    return pkg
 
 
 @pytest.fixture(scope="module")
@@ -118,10 +126,20 @@ class _FakeRequest:
 
 
 async def _drive_handle_responses(plugin, body: dict):
-    """Call _handle_responses with the auth + dispatch + streaming-write
-    paths neutered. Returns the captured envelopes (in order) and the
-    list of dispatch calls."""
+    """Drive sidekick_route_responses.handle_responses with the auth +
+    dispatch + streaming-write paths neutered. Returns the captured
+    envelopes (in order) and the list of dispatch calls.
+
+    Post-2026-05-17 the responses handler lives as a free function on
+    sidekick_route_responses, not as an adapter method. We patch the
+    module-level _handle_streaming / _handle_blocking to short-circuit
+    the SSE machinery while still observing the pre-dispatch envelope
+    + dispatch call sequence."""
+    route_resp = plugin.sidekick_route_responses
     adapter = _make_adapter(plugin)
+    # _capture_msg_high_water_mark + _coerce_input are exercised before
+    # dispatch — stub them out so the test doesn't need state.db.
+    adapter._capture_msg_high_water_mark = lambda chat_id: 0
     sent: list[dict] = []
     dispatched: list[dict] = []
 
@@ -138,21 +156,29 @@ async def _drive_handle_responses(plugin, body: dict):
     adapter._safe_send_envelope = fake_send_envelope
     adapter._dispatch_message = fake_dispatch_message
     adapter._check_http_auth = lambda req: True
+    # TurnBuffer is optional; stub absent.
+    adapter._turn_buffer = None
 
-    # Force the streaming path to terminate immediately by patching
-    # _handle_responses_streaming. We want to assert what happened
-    # BEFORE the dispatch, not exercise the full SSE stream.
+    # Force the streaming + blocking paths to terminate immediately by
+    # monkeypatching the module-level helpers. We want to assert what
+    # happened BEFORE the dispatch — emit-user-message + register-queue
+    # — not exercise the full SSE stream.
     async def fake_streaming(*args, **kwargs):
         return mock.MagicMock(name="StreamResponse")
 
     async def fake_blocking(*args, **kwargs):
         return mock.MagicMock(name="Response")
 
-    adapter._handle_responses_streaming = fake_streaming
-    adapter._handle_responses_blocking = fake_blocking
-
-    req = _FakeRequest(body)
-    await adapter._handle_responses(req)
+    saved_streaming = route_resp._handle_streaming
+    saved_blocking = route_resp._handle_blocking
+    route_resp._handle_streaming = fake_streaming
+    route_resp._handle_blocking = fake_blocking
+    try:
+        req = _FakeRequest(body)
+        await route_resp.handle_responses(adapter, req)
+    finally:
+        route_resp._handle_streaming = saved_streaming
+        route_resp._handle_blocking = saved_blocking
     return sent, dispatched
 
 
@@ -178,11 +204,17 @@ def test_user_message_envelope_emitted_with_documented_shape(plugin):
 
 def test_user_message_envelope_fires_before_dispatch(plugin):
     """Order matters: emission must happen BEFORE _dispatch_message
-    so other PWA tabs paint the bubble before any reply_delta lands."""
-    # We instrument both _safe_send_envelope and _dispatch_message to
-    # share a single ordering log.
-    plugin_mod = plugin
-    adapter = _make_adapter(plugin_mod)
+    so other PWA tabs paint the bubble before any reply_delta lands.
+
+    Post-2026-05-17 the responses handler lives as
+    sidekick_route_responses.handle_responses(adapter, request); the
+    streaming helper as _handle_streaming. We patch the module-level
+    helpers here to short-circuit the SSE path while observing the
+    pre-dispatch envelope + dispatch call ordering."""
+    route_resp = plugin.sidekick_route_responses
+    adapter = _make_adapter(plugin)
+    adapter._capture_msg_high_water_mark = lambda chat_id: 0
+    adapter._turn_buffer = None
     order: list[str] = []
 
     async def tracking_send(env):
@@ -199,18 +231,25 @@ def test_user_message_envelope_fires_before_dispatch(plugin):
 
     async def fake_streaming(*args, **kwargs):
         # Simulate the dispatch the streaming path would normally
-        # schedule — _handle_responses_streaming kicks off
-        # _dispatch_message via asyncio.create_task internally.
-        await tracking_dispatch(chat_id=args[1], text=args[2])
+        # schedule — handle_streaming kicks off _dispatch_message via
+        # asyncio.create_task internally. Args are positional in the
+        # free function: (adapter, request, chat_id, text, queue, ...)
+        await tracking_dispatch(chat_id=kwargs.get("chat_id", args[2]),
+                                text=kwargs.get("text", args[3]))
         return mock.MagicMock()
 
-    adapter._handle_responses_streaming = fake_streaming
-    adapter._handle_responses_blocking = mock.AsyncMock()
-
-    req = _FakeRequest({
-        "conversation": "ord-1", "input": "hi", "stream": True,
-    })
-    asyncio.run(adapter._handle_responses(req))
+    saved_streaming = route_resp._handle_streaming
+    saved_blocking = route_resp._handle_blocking
+    route_resp._handle_streaming = fake_streaming
+    route_resp._handle_blocking = mock.AsyncMock()
+    try:
+        req = _FakeRequest({
+            "conversation": "ord-1", "input": "hi", "stream": True,
+        })
+        asyncio.run(route_resp.handle_responses(adapter, req))
+    finally:
+        route_resp._handle_streaming = saved_streaming
+        route_resp._handle_blocking = saved_blocking
 
     # Envelope MUST come first.
     assert order[:2] == ["user_message", "dispatch"], (

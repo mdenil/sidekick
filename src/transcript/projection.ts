@@ -1,0 +1,374 @@
+/**
+ * @fileoverview Crack A — pure projection from ChatState → BubbleSpec[].
+ *
+ * No DOM, no logging, no globals, no time-of-day reads. The reconciler
+ * consumes the output and brings the DOM in line. Identical inputs MUST
+ * produce identical outputs — that's what makes the projection
+ * cache-friendly + easy to test.
+ *
+ * Ordering rule:
+ *   - Walk `durable` in given order (server-canonical).
+ *   - Walk `inflight` in given order (TurnBuffer-canonical: user_message
+ *     → tool_call/result → reply_delta → reply_final).
+ *   - Merge in `pendingSends` whose message_id isn't already covered by
+ *     durable or inflight (optimistic-only state).
+ *   - Stable sort by (timestamp, kind-tiebreak) where kind-tiebreak puts
+ *     user → activityRow → assistant for same timestamp (so a tool call
+ *     emitted in the same wall-clock ms as the user prompt still slots
+ *     in AFTER the user bubble).
+ *
+ * Dedup rule:
+ *   - `key` is the join axis. For user/assistant bubbles, durable's
+ *     `sidekick_id` (umsg_… / msg_…) matches inflight's `message_id` and
+ *     pendingSend's `messageId`. The dedup happens here, before the
+ *     reconciler sees the list.
+ */
+import type {
+  ActivityRowSpec,
+  ActivityTool,
+  AssistantBubbleSpec,
+  BubbleSpec,
+  ChatState,
+  ConversationItem,
+  PendingSend,
+} from './types.ts';
+
+export function project(state: ChatState): BubbleSpec[] {
+  const specs: BubbleSpec[] = [];
+  const userKeys = new Set<string>();
+  const assistantKeys = new Set<string>();
+  const activityByKey = new Map<string, ActivityRowSpec>();
+
+  // Track the current turn so tool rows attach to the right activity
+  // row. Updated when we walk past a user message in durable OR an
+  // user_message envelope in inflight.
+  let currentTurnKey: string | null = null;
+  let currentTurnTs = 0;
+
+  // ── 1. Durable rows
+  for (const item of state.durable) {
+    const ts = normalizeTimestamp(item);
+    if (item.role === 'user') {
+      const key = userKey(item);
+      if (!userKeys.has(key)) {
+        userKeys.add(key);
+        specs.push({ kind: 'user', key, text: item.content || '', timestamp: ts });
+      }
+      currentTurnKey = `turn:${key}`;
+      currentTurnTs = ts;
+    } else if (item.role === 'assistant') {
+      // Notification rows persisted by the plugin land as role='assistant'
+      // with a `kind` field (cron, reminder, approval). Legacy renderer
+      // also detected the canonical "Cronjob Response: …" content shape
+      // for rows from older builds without the kind annotation. Treat
+      // both as notification bubbles so history replay matches live
+      // (handleNotification → store envelope) rendering exactly.
+      if (isNotificationLikeItem(item)) {
+        const key = `notif:${item.sidekick_id || item.id}`;
+        specs.push({
+          kind: 'notification',
+          key,
+          text: stripCronBoilerplate(item.content || '', item.kind),
+          timestamp: ts,
+          notificationKind: item.kind || 'cron',
+        });
+        continue;
+      }
+      const akey = assistantKey(item);
+      // Tool calls embedded on the assistant row → fold into the
+      // current turn's activity row.
+      const calls = parseToolCalls(item.tool_calls);
+      if (calls.length) {
+        const row = ensureActivityRow(activityByKey, specs, currentTurnKey, currentTurnTs || ts, /*complete*/ true);
+        for (const c of calls) {
+          if (!row.tools.find(t => t.callId === c.callId)) row.tools.push(c);
+        }
+      }
+      if (item.content && !assistantKeys.has(akey)) {
+        assistantKeys.add(akey);
+        specs.push({ kind: 'assistant', key: akey, text: item.content, timestamp: ts });
+      }
+    } else if (item.role === 'tool') {
+      const callId = item.tool_call_id;
+      if (!callId || !currentTurnKey) continue;
+      const row = ensureActivityRow(activityByKey, specs, currentTurnKey, currentTurnTs || ts, /*complete*/ true);
+      const existing = row.tools.find(t => t.callId === callId);
+      if (existing) {
+        existing.result = item.content;
+        if (item.tool_name) existing.name = item.tool_name;
+      } else {
+        row.tools.push({ callId, name: item.tool_name || '(unknown)', args: {}, result: item.content });
+      }
+    } else if (item.role === 'notification') {
+      const key = `notif:${item.sidekick_id || item.id}`;
+      specs.push({
+        kind: 'notification',
+        key,
+        text: item.content || '',
+        timestamp: ts,
+        notificationKind: item.kind || 'notification',
+      });
+    }
+    // role==='system' rows: skip — never rendered as bubbles today.
+  }
+
+  // ── 2. Inflight envelopes
+  // Anchor synthetic timestamps onto the tail of durable so the
+  // inflight bubbles always sort AFTER the durable ones.
+  let inflightTs = Math.max(currentTurnTs, lastTimestamp(specs)) + 1;
+  const inflightAssistantByKey = new Map<string, AssistantBubbleSpec>();
+  // Pending lookup so user_message echoes inherit source/attachments
+  // from the optimistic send.
+  const pendingByKey = new Map<string, PendingSend>(state.pendingSends.map(p => [p.messageId, p]));
+
+  for (const env of state.inflight) {
+    switch (env.type) {
+      case 'user_message': {
+        const key = env.message_id;
+        currentTurnKey = `turn:${key}`;
+        if (userKeys.has(key)) {
+          // Already in durable — only update the turn anchor so any
+          // subsequent inflight tool envelopes attach correctly.
+          currentTurnTs = lookupTimestamp(specs, 'user', key) ?? inflightTs;
+          inflightTs = Math.max(inflightTs, currentTurnTs + 1);
+        } else {
+          userKeys.add(key);
+          const pend = pendingByKey.get(key);
+          const ts = pend ? pend.sentAt : inflightTs++;
+          currentTurnTs = ts;
+          specs.push({
+            kind: 'user',
+            key,
+            text: env.text || pend?.text || '',
+            timestamp: ts,
+            source: pend?.source,
+            attachments: pend?.attachments,
+          });
+        }
+        break;
+      }
+      case 'tool_call': {
+        const row = ensureActivityRow(activityByKey, specs, currentTurnKey, currentTurnTs || inflightTs, /*complete*/ false);
+        if (!row.tools.find(t => t.callId === env.call_id)) {
+          row.tools.push({ callId: env.call_id, name: env.tool_name, args: env.args });
+        }
+        break;
+      }
+      case 'tool_result': {
+        const row = ensureActivityRow(activityByKey, specs, currentTurnKey, currentTurnTs || inflightTs, /*complete*/ false);
+        const existing = row.tools.find(t => t.callId === env.call_id);
+        if (existing) {
+          existing.result = env.result;
+          if (env.duration_ms != null) existing.durationMs = env.duration_ms;
+          if (env.tool_name) existing.name = env.tool_name;
+        } else {
+          row.tools.push({
+            callId: env.call_id,
+            name: env.tool_name,
+            args: {},
+            result: env.result,
+            durationMs: env.duration_ms,
+          });
+        }
+        break;
+      }
+      case 'reply_delta': {
+        let spec = inflightAssistantByKey.get(env.message_id);
+        if (!spec) {
+          spec = {
+            kind: 'assistant',
+            key: env.message_id,
+            text: '',
+            timestamp: inflightTs++,
+            streaming: true,
+          };
+          inflightAssistantByKey.set(env.message_id, spec);
+          if (!assistantKeys.has(env.message_id)) {
+            assistantKeys.add(env.message_id);
+            specs.push(spec);
+          }
+        }
+        if (env.edit) {
+          spec.text = env.text;
+        } else {
+          spec.text = (spec.text || '') + env.text;
+        }
+        spec.streaming = true;
+        break;
+      }
+      case 'reply_final': {
+        let spec = inflightAssistantByKey.get(env.message_id);
+        if (!spec && !assistantKeys.has(env.message_id)) {
+          spec = {
+            kind: 'assistant',
+            key: env.message_id,
+            text: env.text || '',
+            timestamp: inflightTs++,
+            streaming: false,
+          };
+          inflightAssistantByKey.set(env.message_id, spec);
+          assistantKeys.add(env.message_id);
+          specs.push(spec);
+        }
+        if (spec) {
+          if (env.text != null) spec.text = env.text;
+          spec.streaming = false;
+        }
+        // Whatever activity row this turn produced is now complete.
+        if (currentTurnKey) {
+          const row = activityByKey.get(currentTurnKey);
+          if (row) row.complete = true;
+        }
+        break;
+      }
+      case 'notification': {
+        const key = `notif:inflight:${inflightTs}`;
+        specs.push({
+          kind: 'notification',
+          key,
+          text: env.content || '',
+          timestamp: inflightTs++,
+          notificationKind: env.kind || 'notification',
+        });
+        break;
+      }
+      // typing / image / session_changed / error — projection ignores;
+      // they don't produce bubbles.
+    }
+  }
+
+  // ── 3. Pending sends not yet acknowledged
+  for (const p of state.pendingSends) {
+    if (userKeys.has(p.messageId)) continue;
+    userKeys.add(p.messageId);
+    specs.push({
+      kind: 'user',
+      key: p.messageId,
+      text: p.text,
+      timestamp: p.sentAt,
+      pending: !p.failed,
+      failed: p.failed,
+      source: p.source,
+      attachments: p.attachments,
+    });
+  }
+
+  // ── 4. Stable sort: timestamp asc, then kind tiebreak.
+  // Tiebreak: user (0) < activityRow (1) < assistant (2) < notification (3)
+  // — so within a single ms, the turn renders user prompt → tool row →
+  // agent reply, which is the order the user expects.
+  specs.sort((a, b) => {
+    if (a.timestamp !== b.timestamp) return a.timestamp - b.timestamp;
+    return kindOrder(a) - kindOrder(b);
+  });
+  return specs;
+}
+
+// ── helpers ────────────────────────────────────────────────────────────
+
+const CRONJOB_RESPONSE_RE = /^Cronjob Response:\s*.+?\s*\n\(job_id:\s*[^)]+\)\s*\n-+/;
+
+function isNotificationLikeItem(item: ConversationItem): boolean {
+  if (typeof item.kind === 'string' && item.kind.length > 0) return true;
+  // Shape detection for legacy rows persisted without the kind tag.
+  const c = typeof item.content === 'string' ? item.content : '';
+  return CRONJOB_RESPONSE_RE.test(c);
+}
+
+function stripCronBoilerplate(text: string, kind: string | undefined): string {
+  if (kind !== 'cron' && !CRONJOB_RESPONSE_RE.test(text)) return text;
+  const headerRe = /^Cronjob Response:\s*(.+?)\s*\n\(job_id:\s*([^)]+)\)\s*\n-+\s*\n+([\s\S]*?)(?:\n+To stop or manage this job[^\n]*\.?\s*)?$/;
+  const match = headerRe.exec(text);
+  if (match) {
+    const taskName = match[1].trim();
+    const agentBody = match[3].trim();
+    return `**${taskName}**\n\n${agentBody}`;
+  }
+  return text;
+}
+
+function userKey(item: ConversationItem): string {
+  return item.sidekick_id || String(item.id);
+}
+
+function assistantKey(item: ConversationItem): string {
+  return item.sidekick_id || String(item.id);
+}
+
+function normalizeTimestamp(item: ConversationItem): number {
+  const raw = item.timestamp ?? item.created_at;
+  if (raw == null) return 0;
+  // < 1e12 → unix seconds (hermes); ≥ 1e12 → ms (openclaw).
+  return raw < 1e12 ? raw * 1000 : raw;
+}
+
+function parseToolCalls(raw: string | undefined): ActivityTool[] {
+  if (!raw) return [];
+  try {
+    const arr = JSON.parse(raw);
+    if (!Array.isArray(arr)) return [];
+    return arr.map(c => ({
+      callId: c.id,
+      name: c.function?.name || c.name || '(unknown)',
+      args: parseArgs(c.function?.arguments ?? c.arguments),
+    })).filter(t => t.callId);
+  } catch {
+    return [];
+  }
+}
+
+function parseArgs(s: unknown): unknown {
+  if (s == null) return {};
+  if (typeof s === 'string') {
+    try { return JSON.parse(s); } catch { return s; }
+  }
+  return s;
+}
+
+function ensureActivityRow(
+  byKey: Map<string, ActivityRowSpec>,
+  specs: BubbleSpec[],
+  turnKey: string | null,
+  ts: number,
+  completeDefault: boolean,
+): ActivityRowSpec {
+  const key = turnKey || `turn:orphan:${ts}`;
+  let row = byKey.get(key);
+  if (!row) {
+    row = {
+      kind: 'activityRow',
+      key,
+      timestamp: ts,
+      tools: [],
+      complete: completeDefault,
+    };
+    byKey.set(key, row);
+    specs.push(row);
+  } else if (!completeDefault) {
+    // An inflight envelope after a durable turn was rebuilt as
+    // "complete" — flip it back to in-progress since more is coming.
+    row.complete = false;
+  }
+  return row;
+}
+
+function lastTimestamp(specs: BubbleSpec[]): number {
+  let max = 0;
+  for (const s of specs) if (s.timestamp > max) max = s.timestamp;
+  return max;
+}
+
+function lookupTimestamp(specs: BubbleSpec[], kind: BubbleSpec['kind'], key: string): number | null {
+  for (const s of specs) if (s.kind === kind && s.key === key) return s.timestamp;
+  return null;
+}
+
+function kindOrder(s: BubbleSpec): number {
+  switch (s.kind) {
+    case 'user': return 0;
+    case 'activityRow': return 1;
+    case 'assistant': return 2;
+    case 'notification': return 3;
+  }
+}
+

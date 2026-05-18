@@ -14,7 +14,6 @@
 import { test } from 'node:test';
 import * as assert from 'node:assert/strict';
 
-import * as inflight from '../inflight.ts';
 import { startRig } from './proxy-harness.ts';
 
 /** Subscribe to an SSE endpoint and collect parsed envelopes for `ms`
@@ -107,6 +106,71 @@ test('sessions list — gateway endpoint surfaces multi-source rows', async () =
     const tg = body.sessions.find((s: any) => s.source === 'telegram');
     assert.equal(tg.last_active_at, '2023-11-14T22:31:40.000Z');
     assert.equal(tg.first_user_message, "hey what's the weather?");
+  } finally {
+    await rig.stop();
+  }
+});
+
+test('sessions list — forwards turn_count + tool_count split through to PWA', async () => {
+  // Field bug 2026-05-17: drawer was rendering raw `message_count`
+  // which inflates by tool-call rows. Plugin now emits a turn/tool
+  // split; proxy must forward both so the drawer can show
+  // "N turns · M tools".
+  const rig = await startRig({ mode: 'gateway' });
+  try {
+    rig.fakeAgent.setGatewaySessions([
+      {
+        id: 'sk-tt',
+        created_at: 1700000000,
+        metadata: {
+          title: 'mixed-roles chat',
+          message_count: 30,
+          turn_count: 4,
+          tool_count: 22,
+          last_active_at: 1700000060,
+          first_user_message: 'count split test',
+          source: 'sidekick',
+          chat_type: 'dm',
+        },
+      },
+    ]);
+    const r = await fetch(`${rig.proxyUrl}/api/sidekick/sessions?limit=10`);
+    assert.equal(r.status, 200);
+    const body = await r.json();
+    assert.equal(body.sessions.length, 1);
+    const s = body.sessions[0];
+    assert.equal(s.message_count, 30);
+    assert.equal(s.turn_count, 4);
+    assert.equal(s.tool_count, 22);
+  } finally {
+    await rig.stop();
+  }
+});
+
+test('sessions list — omits turn_count/tool_count when plugin does not emit them (back-compat)', async () => {
+  const rig = await startRig({ mode: 'gateway' });
+  try {
+    rig.fakeAgent.setGatewaySessions([
+      {
+        id: 'sk-old',
+        created_at: 1700000000,
+        metadata: {
+          title: 'legacy plugin',
+          message_count: 7,
+          last_active_at: 1700000060,
+          first_user_message: null,
+          source: 'sidekick',
+          chat_type: 'dm',
+        },
+      },
+    ]);
+    const r = await fetch(`${rig.proxyUrl}/api/sidekick/sessions?limit=10`);
+    assert.equal(r.status, 200);
+    const body = await r.json();
+    const s = body.sessions[0];
+    assert.equal(s.message_count, 7);
+    assert.equal(s.turn_count, undefined);
+    assert.equal(s.tool_count, undefined);
   } finally {
     await rig.stop();
   }
@@ -629,237 +693,6 @@ test('user_message — POST /api/sidekick/messages forwards user_message_id to u
     // build of `metadata` and plugin/__init__.py read path.
     assert.equal(bodySeen?.metadata?.user_message_id, 'umsg_pwa_pre_minted_42',
       `expected proxy to forward metadata.user_message_id verbatim; saw ${JSON.stringify(bodySeen)}`);
-  } finally {
-    await rig.stop();
-  }
-});
-
-// ────────────────────────────────────────────────────────────────────
-// Inflight cache — survival of mid-turn switch-away.
-//
-// Jonathan reported 2026-05-11 that switching sessions during a tool
-// call still loses the user message + tool row. The earlier mocked-
-// harness smoke (scripts/smoke/inflight-mid-stream-survive.mjs)
-// passed because it pre-seeded mock.setInflight(...) directly,
-// bypassing the proxy entirely. These tests drive the REAL proxy
-// code path so we can actually verify inflight.record fires on every
-// envelope channel the agent emits — both /v1/responses dispatch
-// (messages.ts dispatchTurnViaUpstream) AND /v1/events broadcast
-// (stream.ts runUpstreamEventsLoop).
-// ────────────────────────────────────────────────────────────────────
-
-test('inflight — /v1/responses tool_call envelope surfaces in history-fetch mid-turn', async () => {
-  inflight._test.reset();
-  const rig = await startRig({ mode: 'gateway' });
-  try {
-    // Empty state.db for this chat — simulates the in-flight window
-    // where hermes hasn't yet persisted (post-turn append_to_transcript
-    // hasn't fired). PWA's switch-back must rely entirely on inflight.
-    rig.fakeAgent.setItems('chat-mid-turn-A', []);
-    // Enqueue a turn that emits a tool_call mid-stream but NEVER
-    // completes — simulates the user switching away while the agent
-    // is still running a tool. No response.completed means no
-    // reply_final means inflight.dropChat never fires.
-    rig.fakeAgent.enqueueTurnEvents([
-      { event: 'response.in_progress', data: { type: 'response.in_progress' } },
-      {
-        event: 'response.output_text.delta',
-        data: { delta: 'looking that up…', item_id: 'msg_inflight_001' },
-      },
-      {
-        // Trigger upstream.translateOAIEvent → tool_call envelope.
-        event: 'response.output_item.added' as any,
-        data: {
-          item: {
-            type: 'function_call',
-            id: 'call_test_lookup',
-            name: 'web_search',
-            arguments: '{"q":"weather"}',
-          },
-        },
-      },
-      // (deliberately NO response.completed)
-    ]);
-
-    const post = await fetch(`${rig.proxyUrl}/api/sidekick/messages`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ chat_id: 'chat-mid-turn-A', text: "what's the weather?" }),
-    });
-    assert.equal(post.status, 202);
-    // Give dispatchTurnViaUpstream a tick to consume the queued events.
-    await new Promise<void>((r) => setTimeout(r, 250));
-
-    // History fetch — the in-flight envelopes should ride alongside
-    // (empty) state.db messages so a PWA switching back can replay them.
-    const r = await fetch(`${rig.proxyUrl}/api/sidekick/sessions/chat-mid-turn-A/messages`);
-    assert.equal(r.status, 200);
-    const body = await r.json();
-    assert.equal(body.messages.length, 0,
-      `expected state.db empty mid-turn; got ${JSON.stringify(body.messages)}`);
-    assert.ok(
-      Array.isArray(body.inflight),
-      `expected response.inflight to be present mid-turn; body=${JSON.stringify(body)}`,
-    );
-    const types = body.inflight.map((e: any) => e.type);
-    assert.ok(
-      types.includes('tool_call'),
-      `expected tool_call in inflight; got types=${JSON.stringify(types)}`,
-    );
-    const tc = body.inflight.find((e: any) => e.type === 'tool_call');
-    assert.equal(tc.call_id, 'call_test_lookup');
-    assert.equal(tc.tool_name, 'web_search');
-  } finally {
-    await rig.stop();
-  }
-});
-
-test('inflight — /v1/events out-of-turn envelopes also cache (cross-device tool_call path)', async () => {
-  // This is the suspected bug: hermes broadcasts user_message + tool_call
-  // via the persistent /v1/events SSE channel (so OTHER devices see the
-  // activity too). That path goes through stream.ts runUpstreamEventsLoop
-  // → pushEnvelope, which fans to live PWA subscribers but — pre-fix —
-  // skips inflight.record(). A device that switches away and back finds
-  // no inflight for the chat because nothing was recorded.
-  inflight._test.reset();
-  const rig = await startRig({ mode: 'gateway' });
-  try {
-    rig.fakeAgent.setItems('chat-events-B', []);
-
-    // Push a user_message + tool_call via the /v1/events channel —
-    // mimics how hermes-core broadcasts these out-of-turn for
-    // cross-device fan-out.
-    rig.fakeAgent.pushOutOfTurnEvent({
-      type: 'user_message',
-      chat_id: 'chat-events-B',
-      message_id: 'umsg_test_oot',
-      text: 'check my calendar',
-    });
-    rig.fakeAgent.pushOutOfTurnEvent({
-      type: 'tool_call',
-      chat_id: 'chat-events-B',
-      call_id: 'call_oot_cal',
-      tool_name: 'list_calendar_events',
-      args: { range: '7d' },
-    });
-    // Give the proxy's subscribeEvents loop a tick to ingest both.
-    await new Promise<void>((r) => setTimeout(r, 200));
-
-    const r = await fetch(`${rig.proxyUrl}/api/sidekick/sessions/chat-events-B/messages`);
-    assert.equal(r.status, 200);
-    const body = await r.json();
-    assert.ok(
-      Array.isArray(body.inflight),
-      `expected response.inflight to be present; body=${JSON.stringify(body)}`,
-    );
-    const types = body.inflight.map((e: any) => e.type);
-    assert.ok(
-      types.includes('user_message'),
-      `expected user_message from /v1/events to land in inflight; got ${JSON.stringify(types)}`,
-    );
-    assert.ok(
-      types.includes('tool_call'),
-      `expected tool_call from /v1/events to land in inflight; got ${JSON.stringify(types)}`,
-    );
-  } finally {
-    await rig.stop();
-  }
-});
-
-test('inflight — reply_final schedules a delayed drop; immediately after, entries still surface', async () => {
-  // Post 2026-05-11 fix: reply_final does NOT clear inflight
-  // immediately. The drop is scheduled with a 30s grace period so
-  // state.db's post-turn append_to_transcript has time to catch up.
-  // This guards a switch-in-and-back during that gap from finding
-  // neither inflight nor state.db data (Jonathan's field bug —
-  // user bubble vanishes after a switch round-trip taken
-  // mid-persist-window).
-  inflight._test.reset();
-  const rig = await startRig({ mode: 'gateway' });
-  try {
-    rig.fakeAgent.setItems('chat-final-C', []);
-
-    rig.fakeAgent.pushOutOfTurnEvent({
-      type: 'tool_call', chat_id: 'chat-final-C',
-      call_id: 'call_to_be_cleared', tool_name: 'noop', args: {},
-    });
-    await new Promise<void>((r) => setTimeout(r, 100));
-    let r1 = await fetch(`${rig.proxyUrl}/api/sidekick/sessions/chat-final-C/messages`);
-    let body1 = await r1.json();
-    assert.ok(
-      Array.isArray(body1.inflight) && body1.inflight.length > 0,
-      'sanity: inflight should be non-empty after the tool_call push',
-    );
-
-    // Fire reply_final. Pre-fix this would immediately delete the
-    // inflight queue; post-fix the delete is scheduled DROP_GRACE_MS
-    // (30s) later.
-    rig.fakeAgent.pushOutOfTurnEvent({
-      type: 'reply_final', chat_id: 'chat-final-C',
-      message_id: 'msg_test_final',
-    });
-    await new Promise<void>((r) => setTimeout(r, 100));
-    let r2 = await fetch(`${rig.proxyUrl}/api/sidekick/sessions/chat-final-C/messages`);
-    let body2 = await r2.json();
-    // The cache should STILL include both the original tool_call AND
-    // the reply_final envelope — a client switching in during the
-    // grace window has the bridge data.
-    assert.ok(
-      Array.isArray(body2.inflight) && body2.inflight.length >= 1,
-      `expected inflight to remain during the grace window after reply_final; got ${JSON.stringify(body2.inflight)}`,
-    );
-    const types = body2.inflight.map((e: any) => e.type);
-    assert.ok(types.includes('reply_final'),
-      `reply_final itself should be in the inflight queue during grace; got types ${JSON.stringify(types)}`);
-
-    // Now force the drop (test-only helper) and verify the cache is
-    // empty. In production the drop fires automatically after 30s.
-    inflight._test.forceDrop('chat-final-C');
-    let r3 = await fetch(`${rig.proxyUrl}/api/sidekick/sessions/chat-final-C/messages`);
-    let body3 = await r3.json();
-    assert.ok(
-      !body3.inflight || body3.inflight.length === 0,
-      `expected inflight cleared after forceDrop; got ${JSON.stringify(body3.inflight)}`,
-    );
-  } finally {
-    await rig.stop();
-  }
-});
-
-test('inflight — record() during the grace window cancels the pending drop (continued activity)', async () => {
-  // Same idea as above but the user keeps the chat active: agent emits
-  // reply_final, then a new envelope (e.g. notification, follow-up
-  // delta) arrives. The follow-up should cancel the pending drop —
-  // the chat is plainly NOT done.
-  inflight._test.reset();
-  const rig = await startRig({ mode: 'gateway' });
-  try {
-    rig.fakeAgent.setItems('chat-keepalive-D', []);
-
-    rig.fakeAgent.pushOutOfTurnEvent({
-      type: 'reply_final', chat_id: 'chat-keepalive-D',
-      message_id: 'msg_first',
-    });
-    await new Promise<void>((r) => setTimeout(r, 100));
-    // reply_final scheduled a drop. Now: a new envelope arrives BEFORE
-    // the grace expires.
-    rig.fakeAgent.pushOutOfTurnEvent({
-      type: 'tool_call', chat_id: 'chat-keepalive-D',
-      call_id: 'call_followup', tool_name: 'noop', args: {},
-    });
-    await new Promise<void>((r) => setTimeout(r, 100));
-    // The pending drop should have been cancelled by record(). To
-    // assert: forceDrop now is the only way the cache empties. But
-    // we want to assert it WASN'T already empty. Easiest: do another
-    // history fetch and check inflight has multiple envelope types.
-    let r1 = await fetch(`${rig.proxyUrl}/api/sidekick/sessions/chat-keepalive-D/messages`);
-    let body1 = await r1.json();
-    assert.ok(Array.isArray(body1.inflight) && body1.inflight.length >= 2,
-      `expected at least 2 inflight envelopes (reply_final + tool_call); got ${JSON.stringify(body1.inflight)}`);
-
-    // Now even without forceDrop, the cache survives — the prior
-    // drop was cancelled. The TTL (10 min) is the only thing that'll
-    // clear it from here.
   } finally {
     await rig.stop();
   }

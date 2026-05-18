@@ -81,15 +81,31 @@ def _install_hermes_stubs() -> None:
 
 
 def _load_plugin():
+    """Import the sidekick plugin under its real package name so the
+    package's relative imports (`.sidekick_ids`,
+    `.sidekick_route_conversations`, ...) resolve. The earlier
+    ``spec_from_file_location`` loader minted a fake module name and
+    Python's relative-import machinery couldn't resolve siblings
+    against it — the test file errored at collection from the
+    ``ff9a70b`` extraction onward. Eager-load the route submodules
+    too so tests can access them as ``plugin.sidekick_route_*``."""
     _install_hermes_stubs()
-    plugin_init = Path(__file__).resolve().parents[1] / "__init__.py"
-    spec = importlib.util.spec_from_file_location(
-        "sidekick_plugin_under_test_user_id", plugin_init,
-    )
-    mod = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(mod)
-    return mod
+    plugin_pkg = Path(__file__).resolve().parents[1]
+    parent_dir = str(plugin_pkg.parent)
+    if parent_dir not in sys.path:
+        sys.path.insert(0, parent_dir)
+    pkg_name = plugin_pkg.name
+    pkg = importlib.import_module(pkg_name)
+    for sub in (
+        "sidekick_ids",
+        "sidekick_route_conversations",
+        "sidekick_route_items",
+        "sidekick_route_events",
+        "sidekick_route_responses",
+        "sidekick_route_settings",
+    ):
+        importlib.import_module(f"{pkg_name}.{sub}")
+    return pkg
 
 
 @pytest.fixture(scope="module")
@@ -121,13 +137,26 @@ CREATE TABLE messages (
     role TEXT NOT NULL,
     content TEXT,
     tool_name TEXT,
+    -- 2026-05-17 tool-history rebuild columns. role='tool' rows
+    -- carry tool_call_id pairing back to the assistant row that
+    -- issued the call. Assistant rows that orchestrated calls
+    -- store the JSON-encoded OpenAI-shape array here.
+    tool_call_id TEXT,
+    tool_calls TEXT,
     timestamp REAL NOT NULL
 );
 CREATE INDEX idx_messages_session ON messages(session_id, timestamp);
 
 CREATE TABLE sidekick_msg_links (
     state_db_id INTEGER PRIMARY KEY,
-    sidekick_id TEXT NOT NULL
+    sidekick_id TEXT NOT NULL,
+    -- 2026-05-14 notification-persistence extension: cron output /
+    -- background results / scheduled reminders / approvals all flow
+    -- as notification envelopes, and the items endpoint surfaces this
+    -- as the row's discriminator (PWA renders the row as a styled
+    -- notification instead of a regular reply). NULL for ordinary
+    -- user-typed turns + regular replies.
+    kind TEXT
 );
 """
 
@@ -177,8 +206,36 @@ def _insert_message(
 def _make_adapter(plugin, state_db_path: Path):
     """Construct an adapter without going through __init__ (which
     needs PlatformConfig). We only exercise pure read methods, so
-    bypassing the constructor is fine."""
-    adapter = plugin.SidekickAdapter.__new__(plugin.SidekickAdapter)
+    bypassing the constructor is fine.
+
+    The state.db query helpers (`_summaries_by_user_id`,
+    `_items_by_user_id`, `delete_conversation_sync`,
+    `rename_conversation_sync`) live as FREE functions on the route
+    submodules — they take ``adapter`` as their first arg. Bind
+    them as adapter methods here as a test-side ergonomic wrapper
+    so the existing test bodies read naturally; production code
+    calls the free functions directly via the route modules."""
+    _route_conv = plugin.sidekick_route_conversations
+    _route_items = plugin.sidekick_route_items
+
+    class _TestAdapter(plugin.SidekickAdapter):
+        def _summaries_by_user_id(self, sources, limit):
+            return _route_conv._summaries_by_user_id(self, sources, limit)
+
+        def _items_by_user_id(self, chat_id, source, limit, before_id):
+            return _route_items._items_by_user_id(
+                self, chat_id, source, limit, before_id,
+            )
+
+        def _delete_conversation_sync(self, chat_id, source="sidekick"):
+            return _route_conv.delete_conversation_sync(self, chat_id, source)
+
+        def _rename_conversation_sync(self, chat_id, source, title):
+            return _route_conv.rename_conversation_sync(
+                self, chat_id, source, title,
+            )
+
+    adapter = _TestAdapter.__new__(_TestAdapter)
     adapter._state_db_path = state_db_path
     return adapter
 
@@ -208,7 +265,8 @@ def test_drawer_aggregate_one_row_per_user_id(plugin, state_db):
     rows = adapter._summaries_by_user_id(("sidekick",), 50)
 
     assert len(rows) == 1
-    chat_id, source, chat_type, title, mcount, last_active, created, first = rows[0]
+    (chat_id, source, chat_type, title, mcount, _turn, _tool,
+     last_active, created, first) = rows[0]
     assert chat_id == chat
     assert source == "sidekick"
     assert chat_type == "dm"
@@ -353,7 +411,7 @@ def test_drawer_includes_compression_forks_via_user_id(plugin, state_db):
     adapter = _make_adapter(plugin, state_db)
     rows = adapter._summaries_by_user_id(("sidekick",), 50)
     assert len(rows) == 1
-    chat_id, _src, _ctype, title, mcount, last_active, created, _first = rows[0]
+    chat_id, _src, _ctype, title, mcount, _turn, _tool, last_active, created, _first = rows[0]
     assert chat_id == "u"
     assert title == "fork"  # latest started_at
     assert mcount == 2
@@ -580,7 +638,10 @@ def test_drawer_first_user_message_truncated_to_80_chars(plugin, state_db):
     adapter = _make_adapter(plugin, state_db)
     rows = adapter._summaries_by_user_id(("sidekick",), 50)
     assert len(rows) == 1
-    first_user = rows[0][7]
+    # Index 9 = first_user_truncated in the 10-tuple shape
+    # (chat_id, source, chat_type, title, message_count, turn_count,
+    #  tool_count, last_active_at, created_at, first_user_message).
+    first_user = rows[0][9]
     assert first_user is not None
     assert len(first_user) == 80
 
@@ -863,5 +924,8 @@ def test_rename_conversation_sync_source_isolation(plugin, state_db):
 
 
 def test_session_title_max_len_constant(plugin):
-    """Document the cap so a future bump doesn't silently lose data."""
-    assert plugin.SESSION_TITLE_MAX_LEN == 200
+    """Document the cap so a future bump doesn't silently lose data.
+    Constant moved into sidekick_route_conversations alongside its
+    consumers (the rename + delete sync paths) in the 2026-05-17
+    refactor; the package-root re-export is gone."""
+    assert plugin.sidekick_route_conversations.SESSION_TITLE_MAX_LEN == 200

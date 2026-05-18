@@ -21,8 +21,7 @@
 // ~200-line touch in main.ts.
 
 import { log } from './util/log.ts';
-import * as chat from './chat.ts';
-import * as renderedMessages from './renderedMessages.ts';
+import * as transcriptStore from './transcript/store.ts';
 import * as sessionDrawer from './sessionDrawer.ts';
 import * as badge from './notifications/badge.ts';
 import * as inAppBanner from './notifications/inAppBanner.ts';
@@ -57,18 +56,12 @@ export function handleNotification({ chatId, kind, content, sidekickId }: any): 
     log(`notification (off-screen) chat=${chatId} kind=${kind} — badge++ + banner`);
     return;
   }
-  // Mirror sessionResume.renderHistoryMessage's notification branch
-  // so live-render and reload-render produce identical DOM. The
-  // sidekick_id is the dedup key — if hermes plugin persisted the
-  // row (2026-05-14 change), reload's history fetch will surface
-  // it AND the renderedMessages upsert dedups against this
-  // data-message-id automatically.
-  const emoji = kind === 'cron' ? '⏰' : '🔔';
+  // On-screen notification — push into the store. Projection renders
+  // it via the reconciler's notification path; same shape as durable
+  // rows that come back through /messages later (deduped via sidekick_id).
   let displayText = content || '';
   if (kind === 'cron') {
-    // Strip the scheduler boilerplate — same parser the proxy uses
-    // for the push payload + sessionResume uses for history rendering.
-    // Keeps the transcript readable when the user IS viewing the chat.
+    // Strip the scheduler boilerplate so the in-chat row reads cleanly.
     const headerRe = /^Cronjob Response:\s*(.+?)\s*\n\(job_id:\s*([^)]+)\)\s*\n-+\s*\n+([\s\S]*?)(?:\n+To stop or manage this job[^\n]*\.?\s*)?$/;
     const match = headerRe.exec(displayText);
     if (match) {
@@ -77,12 +70,17 @@ export function handleNotification({ chatId, kind, content, sidekickId }: any): 
       displayText = `**${taskName}**\n\n${agentBody}`;
     }
   }
-  const speaker = kind ? `${emoji} ${kind}` : (emoji || 'Notification');
-  chat.addLine(speaker, displayText, 'system notification', {
-    markdown: true,
-    timestamp: Date.now(),
-    messageId: sidekickId || undefined,
-  });
+  if (chatId) {
+    transcriptStore.appendInflight(chatId, {
+      type: 'notification',
+      chat_id: chatId,
+      kind: kind || 'notification',
+      content: displayText,
+    });
+    void badge.clearUnread(chatId);
+  }
+  void sidekickId;  // currently no per-message dedup at store level;
+                   // future: include in envelope when projection needs it
 }
 
 /** Cross-device user-message broadcast handler. The upstream emits a
@@ -101,34 +99,24 @@ export function handleNotification({ chatId, kind, content, sidekickId }: any): 
  *  getViewed() is null (boot races), render — there's no on-screen
  *  session to protect. */
 export function handleUserMessage({ conversation, text, messageId }: any): void {
-  if (!messageId) return;
-  const viewed = sessionDrawer.getViewed();
-  if (viewed && conversation && conversation !== viewed) {
-    log(`user_message (off-screen) chat=${conversation} msgId=${messageId}`);
-    return;
-  }
-  // Defensive: an empty/missing text on a user_message envelope must
-  // not WIPE an existing populated bubble. The upsert below is keyed
-  // by messageId, so a second envelope for the same id with text=""
-  // would otherwise overwrite the bubble's text and the user sees
-  // their own message vanish. Production hermes envelopes always
-  // carry text, but a serialization race, a future codepath that
-  // emits a metadata-only ping, or a partial replay must not clobber
-  // the user's words. Pinned by
-  // scripts/smoke/user-message-empty-text-noop.mjs.
+  if (!messageId || !conversation) return;
+  // Defensive: empty text must not wipe an existing bubble. Production
+  // envelopes always carry text; future metadata-only pings shouldn't
+  // clobber the user's words.
   if (!text) {
     log(`user_message (empty text) chat=${conversation} msgId=${messageId} — skip to preserve existing bubble`);
     return;
   }
-  // Idempotent — originating device's optimistic bubble is already
-  // registered under this id, so this collapses to a no-op upsert
-  // (text is unchanged, status stays 'finalized'). Other devices
-  // create the bubble for the first time.
-  renderedMessages.upsert(messageId, {
-    role: 'user',
+  // Push into the store unconditionally — background chats need to
+  // know about the echo too so a switch-back finds the right state.
+  transcriptStore.appendInflight(conversation, {
+    type: 'user_message',
+    chat_id: conversation,
+    message_id: messageId,
     text,
-    status: 'finalized',
-    speaker: 'You',
-    cls: 's0',
   });
+  // Clear the matching pendingSend on the originator — projection
+  // dedups against inflight regardless, but cleaning up keeps the
+  // store hygienic.
+  transcriptStore.clearPendingSend(conversation, messageId);
 }

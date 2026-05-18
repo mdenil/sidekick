@@ -178,13 +178,11 @@ TOOL_RESULT_MAX_BYTES = 50 * 1024
 # These bound worst-case memory if a consumer hangs.
 TURN_QUEUE_MAX = 1000          # per-chat envelope queue depth
 TURN_TIMEOUT_S = 120           # hold a /v1/responses turn open this long
-EVENT_REPLAY_CAP = 256         # bounded ring for /v1/events replay
+# EVENT_REPLAY_CAP moved with the publisher into sidekick_route_events.py
 
-# Session title cap on the PATCH /v1/conversations/{id} rename path.
-# 200 chars is comfortably more than the drawer renders (~40 visible
-# before ellipsis) but small enough that an abusive client can't bloat
-# the sessions row. The PWA's UI already truncates at 80 in the bubble.
-SESSION_TITLE_MAX_LEN = 200
+# Session title cap (SESSION_TITLE_MAX_LEN) + sessions.json key prefix
+# (SESSION_KEY_PREFIX) live in sidekick_route_conversations.py — they're
+# only consumed by the rename / delete cascade.
 
 
 def _iso_from_epoch(t: float) -> str:
@@ -211,88 +209,23 @@ def _iso_from_epoch(t: float) -> str:
 # only fires on subsequent (session_id, title) changes.
 SESSION_POLL_INTERVAL_S = 1.5
 
-# state.db lookup pattern. Matches the session_key shape that
-# build_session_key generates for SessionSource(platform=SIDEKICK,
-# chat_id=X, chat_type='dm') — `agent:main:sidekick:dm:<chat_id>`.
-SESSION_KEY_PREFIX = "agent:main:sidekick:dm:"
-
 # Source allow-list for the cross-platform gateway drawer. Any
 # `sessions.source` value not in this set is dropped at query time.
 # This is the canonical hermes-agent platform set as of the platform-
 # adapter migration; if hermes adds a new platform, drop it in here.
-GATEWAY_DRAWER_SOURCES: Tuple[str, ...] = (
-    "sidekick",
-    "telegram",
-    "whatsapp",
-    "slack",
-    "signal",
-    "discord",
-    "webhook",
-    "openclaw",
+# ID-encoding helpers + source constants moved to sidekick_ids.py
+# (2026-05-17 refactor) so route-handler submodules can import them
+# without a circular dep on this package's __init__. Re-exported here
+# for backward compat with any caller that still references them from
+# the package root.
+from .sidekick_ids import (  # noqa: F401
+    GATEWAY_DRAWER_SOURCES,
+    SIDEKICK_SOURCE,
+    _GATEWAY_ID_SEP,
+    _format_gateway_id,
+    _parse_gateway_id,
 )
 
-# Sidekick's own source — used by the channel-only `/v1/conversations`
-# endpoint and by tool-event hook resolution (which only cares about
-# sidekick sessions; non-sidekick tool calls never make it past the
-# adapter's filter).
-SIDEKICK_SOURCE: str = "sidekick"
-
-
-# ── Gateway id encoding ─────────────────────────────────────────────
-# The agent contract guarantees `ConversationSummary.id` is globally
-# unique. Hermes natively keys sessions by `(source, user_id)` —
-# `user_id` IS the platform chat_id, and the same chat_id can recur
-# across sources (e.g. a sidekick test session that happens to use a
-# WhatsApp `@lid` as its chat_id, or a telegram numeric id that
-# coincides with a sidekick UUID). Exposing user_id alone as `id`
-# violates uniqueness; the drawer then renders two LIs with the same
-# `data-chat-id`, click activates both, and history fetches go
-# through `_resolve_source_for_chat_id` which picks one source
-# arbitrarily — wrong session content appears in the right row.
-#
-# Encode `(source, chat_id)` into a single contract-unique id:
-#   `${source}:${chat_id}`  e.g. `whatsapp:199999999999999@lid`
-#
-# Sources are internal constants (no colons); chat_ids in the wild
-# don't contain colons in any platform we support. We split on FIRST
-# `:` — chat_ids containing colons would still round-trip correctly.
-# Frontend treats `id` as opaque. Per-chat URLs (`/v1/conversations/
-# {id}/items`, DELETE) decode the prefix server-side to disambiguate.
-#
-# Backward compat: if an `id` arrives at the per-chat handler WITHOUT
-# a prefix, fall through to `_resolve_source_for_chat_id` so legacy
-# callers (channel-only `/v1/conversations` consumers, ad-hoc curls)
-# keep working. New callers should always use prefixed ids.
-_GATEWAY_ID_SEP = ":"
-
-
-def _format_gateway_id(source: str, chat_id: str) -> str:
-    """Encode (source, chat_id) into a contract-unique identifier."""
-    return f"{source}{_GATEWAY_ID_SEP}{chat_id}"
-
-
-def _parse_gateway_id(id_str: str) -> Tuple[Optional[str], str]:
-    """Split a gateway id back into (source, chat_id). Returns
-    `(None, id_str)` for legacy un-prefixed ids — callers fall back to
-    source-resolution-by-chat_id in that case."""
-    if _GATEWAY_ID_SEP not in id_str:
-        return (None, id_str)
-    src, _, chat = id_str.partition(_GATEWAY_ID_SEP)
-    if src not in GATEWAY_DRAWER_SOURCES:
-        # Unrecognized prefix — treat as a chat_id that happens to
-        # contain a colon. Defensive against future chat_id formats.
-        return (None, id_str)
-    return (src, chat)
-
-
-class _SettingsValidationError(ValueError):
-    """Raised by _apply_setting when the value is invalid for the
-    declared type. Maps to HTTP 400 in _handle_settings_update."""
-
-
-class _SettingsNotFoundError(KeyError):
-    """Raised by _apply_setting when the setting id isn't declared.
-    Maps to HTTP 404 in _handle_settings_update."""
 
 
 _SIDEKICK_HIDDEN_COMMANDS = frozenset({
@@ -307,6 +240,14 @@ _SIDEKICK_HIDDEN_COMMANDS = frozenset({
     "paste",      # terminal paste of system clipboard
     "image",      # terminal image attach; sidekick has its own attach UI
     "quit",       # close TUI; sidekick tabs close differently
+    # /new is dispatchable but triggers the destructive-slash confirm
+    # flow (gateway/run.py:_maybe_confirm_destructive_slash). The
+    # sidekick "New chat" button skips that — it's the canonical UX for
+    # this action and there's no value in offering a second slash
+    # variant that prompts for approval (Jonathan field 2026-05-17:
+    # "should we drop that from sidekick? i expected it to be same as
+    # 'new chat'"). Hide here so the slash popover doesn't surface it.
+    "new",
 })
 
 
@@ -317,14 +258,21 @@ def _serialize_command_registry() -> List[Dict[str, Any]]:
     any plugin-registered commands (via the existing
     ``_iter_plugin_command_entries`` helper).
 
-    Sidekick is a first-class chat surface, not a "messaging platform"
-    adapter (telegram/slack), so the hermes-side ``cli_only`` filter —
-    which hides TUI-only entries from those gateways — is
-    over-conservative here. Most ``cli_only=True`` commands (busy,
-    tools, skills, cron, snapshot, config, plugins, ...) route fine
-    through the gateway and work in sidekick when typed manually; this
-    just makes them discoverable in the slash menu. We only drop the
-    explicitly TUI-coupled set in ``_SIDEKICK_HIDDEN_COMMANDS``.
+    Two filters apply:
+
+      1. ``_SIDEKICK_HIDDEN_COMMANDS`` — manually-curated drop list for
+         entries that are nonsense in a chat UI even if dispatchable
+         (terminal-only utilities + redundant chat-flow commands).
+
+      2. ``GATEWAY_KNOWN_COMMANDS`` membership — the gateway only
+         dispatches commands without ``cli_only=True`` (or with a
+         ``gateway_config_gate``). Exposing a ``cli_only`` command in
+         the slash popover gives the user a discoverable trap: pick
+         it, send it, and Clawdian replies "Unknown command" because
+         gateway/run.py rejects the dispatch (Jonathan field 2026-05-17
+         repro on /save, /cron, /history). Align the catalog with what
+         the gateway will actually run, so the popover only lists
+         things that work end-to-end.
 
     Aliases stay on the canonical row (the PWA matches both names
     against the same entry — no separate row per alias). Returns an
@@ -334,6 +282,7 @@ def _serialize_command_registry() -> List[Dict[str, Any]]:
     try:
         from hermes_cli.commands import (
             COMMAND_REGISTRY,
+            GATEWAY_KNOWN_COMMANDS,
             _iter_plugin_command_entries,
         )
     except Exception:
@@ -341,6 +290,11 @@ def _serialize_command_registry() -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     for cmd in COMMAND_REGISTRY:
         if cmd.name in _SIDEKICK_HIDDEN_COMMANDS:
+            continue
+        # Gateway-dispatchable only. Without this, /tools, /skills, /cron,
+        # /history, /save etc surface in the popover but fail at dispatch
+        # with "Unknown command".
+        if cmd.name not in GATEWAY_KNOWN_COMMANDS:
             continue
         out.append({
             "name": cmd.name,
@@ -477,6 +431,21 @@ class SidekickAdapter(BasePlatformAdapter):
         # Bounded replay ring so a transient /v1/events disconnect can
         # resume without losing recent envelopes.
         self._event_replay_ring: List[Tuple[int, Dict[str, Any]]] = []
+
+        # ── Sidekick supplemental store (per-backend SSOT) ────────────
+        # Push subs / mutes / prefs / VAPID / pins / unread_state /
+        # msg_links — see backends/hermes/plugin/sidekick_db.py.
+        # Lazy-opened on first use to avoid touching disk during
+        # __init__ (keeps test rigs happy).
+        self._sidekick_db = None
+        self._push_dispatcher = None
+        # In-memory mirror of in-flight turns. Source of truth for
+        # `/v1/conversations/{id}/items` mid-turn — bridges the gap
+        # between POST receipt and the sidekick_msg_links write
+        # that happens at reply_final. Mirrors openclaw plugin's
+        # TurnBuffer (src/turn-buffer.js).
+        from .sidekick_turn_buffer import TurnBuffer  # noqa: WPS433
+        self._turn_buffer = TurnBuffer()
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -514,18 +483,64 @@ class SidekickAdapter(BasePlatformAdapter):
         # encoded inside the JSON envelope. Match sidekick proxy's
         # MAX_BODY_BYTES so the bottleneck is consistent end-to-end.
         self._app = web.Application(client_max_size=50 * 1024 * 1024)
+        # ── Sidekick supplemental store + plugin-owned push/unread/pins ──
+        # See backends/hermes/plugin/sidekick_db.py + sidekick_routes.py.
+        # When SIDEKICK_PUSH_OWNED_BY_PLUGIN=true, the proxy forwards
+        # /api/sidekick/notifications/* to /v1/push/* on us. Same flag
+        # gates whether _safe_send_envelope fires push directly.
+        from . import sidekick_db as _sdb  # noqa: WPS433 (local import keeps test rigs unaffected)
+        from . import sidekick_routes as _sroutes  # noqa: WPS433
+        from .sidekick_dispatcher import PushDispatcher as _PushDispatcher
+
+        self._sidekick_db = _sdb.open_sidekick_db()
+        # One-shot migration: copy legacy push subs from the proxy's
+        # JSON file into the supplemental DB. Idempotent — subsequent
+        # starts see the rows already there and skip silently.
+        self._maybe_migrate_legacy_push_subs()
+        vapid_subject = os.environ.get("VAPID_SUBJECT") or "mailto:jscholz@reimaginerobotics.ai"
+        self._push_dispatcher = _PushDispatcher(self._sidekick_db, vapid_subject=vapid_subject)
+        # Route ctx — collected fields the route handlers consume.
+        # Wraps as a SimpleNamespace so the handlers can `ctx.db`,
+        # `ctx.dispatcher`, etc. emit_envelope routes to the
+        # plugin's existing out-of-turn fanout (replay ring + SSE
+        # subscribers); the events handler picks them up.
+        import types
+        from . import sidekick_route_events as _route_events  # noqa: F401
+        ctx = types.SimpleNamespace(
+            db=self._sidekick_db,
+            dispatcher=self._push_dispatcher,
+            state_db_path=self._state_db_path,
+            emit_envelope=lambda env: _route_events.publish_out_of_turn(self, env),
+            vapid_subject=vapid_subject,
+        )
+        _sroutes.register_routes(self._app, ctx)
+
         self._app.router.add_get("/health", self._handle_health)
+        # Also expose at `/v1/health` so the sidekick proxy can hit a
+        # plugin-served path (rather than the gateway's built-in
+        # /health). On openclaw, the bare /health is owned by the
+        # gateway itself and plugins can't shadow it — so the proxy's
+        # healthcheck has to target a plugin-namespaced path to
+        # actually verify "is the sidekick plugin loaded?" instead of
+        # "is the gateway process up?". Same handler on both paths
+        # keeps hermes side trivial. Added 2026-05-15.
+        self._app.router.add_get("/v1/health", self._handle_health)
         # ── Agent contract HTTP routes ────────────────────────────────
         # OAI-Responses-shape surface the proxy talks to. See
         # docs/ABSTRACT_AGENT_PROTOCOL.md for the canonical reference.
+        from . import sidekick_route_conversations as _route_conv
         self._app.router.add_get(
-            "/v1/conversations", self._handle_list_conversations
+            "/v1/conversations",
+            lambda r: _route_conv.handle_list(self, r),
         )
+        from . import sidekick_route_items as _route_items
         self._app.router.add_get(
-            "/v1/conversations/{id}/items", self._handle_get_conversation_items
+            "/v1/conversations/{id}/items",
+            lambda r: _route_items.handle_get_items(self, r),
         )
         self._app.router.add_delete(
-            "/v1/conversations/{id}", self._handle_delete_conversation
+            "/v1/conversations/{id}",
+            lambda r: _route_conv.handle_delete(self, r),
         )
         # Cross-device session rename. Local-IDB userTitle stamping
         # remains the source of truth from the originating device, but
@@ -533,7 +548,8 @@ class SidekickAdapter(BasePlatformAdapter):
         # clients (Mac + iPhone) see the new title via the existing
         # session_changed envelope on /v1/events.
         self._app.router.add_patch(
-            "/v1/conversations/{id}", self._handle_rename_conversation
+            "/v1/conversations/{id}",
+            lambda r: _route_conv.handle_rename(self, r),
         )
         # Gateway extension: cross-platform enumeration. Optional second
         # contract (`/v1/gateway/*`) the proxy probes-and-falls-back on.
@@ -542,25 +558,33 @@ class SidekickAdapter(BasePlatformAdapter):
         # single-channel agents simply don't expose this prefix; the
         # proxy 404s gracefully back to `/v1/conversations`.
         self._app.router.add_get(
-            "/v1/gateway/conversations", self._handle_list_gateway_conversations
+            "/v1/gateway/conversations",
+            lambda r: _route_conv.handle_list_gateway(self, r),
         )
         # Turn dispatch + out-of-turn event channel.
+        from . import sidekick_route_responses as _route_resp
         self._app.router.add_post(
-            "/v1/responses", self._handle_responses
+            "/v1/responses",
+            lambda r: _route_resp.handle_responses(self, r),
         )
+        from . import sidekick_route_events as _route_events
         self._app.router.add_get(
-            "/v1/events", self._handle_events
+            "/v1/events",
+            lambda r: _route_events.handle_events(self, r),
         )
         # Optional settings extension. Today: a single "model" enum
         # entry that wraps hermes config + the openrouter catalog,
         # filtered by SIDEKICK_PREFERRED_MODELS. Adding more
         # (persona, temperature, ...) is purely additive: extend
         # _build_settings_schema + _apply_setting.
+        from . import sidekick_route_settings as _route_settings
         self._app.router.add_get(
-            "/v1/settings/schema", self._handle_settings_schema
+            "/v1/settings/schema",
+            lambda r: _route_settings.handle_schema(self, r),
         )
         self._app.router.add_post(
-            "/v1/settings/{id}", self._handle_settings_update
+            "/v1/settings/{id}",
+            lambda r: _route_settings.handle_update(self, r),
         )
         # Slash-command catalog. Surfaced as JSON so the PWA composer
         # can render an autocomplete popover from the same registry the
@@ -578,14 +602,16 @@ class SidekickAdapter(BasePlatformAdapter):
         # this advertisement the button would stay disabled even though
         # the upload would actually work end-to-end.
         self._app.router.add_get(
-            "/v1/sidekick/auxiliary-models", self._handle_auxiliary_models
+            "/v1/sidekick/auxiliary-models",
+            lambda r: _route_settings.handle_auxiliary_models(self, r),
         )
         # Model capability lookup — ground truth from hermes's models.dev
         # registry. Replaces the previous OpenRouter-catalog fetch +
         # regex-fallback in sidekick. Same data hermes consults at request
         # time for native-vs-text image routing.
         self._app.router.add_get(
-            "/v1/sidekick/model-capabilities", self._handle_model_capabilities
+            "/v1/sidekick/model-capabilities",
+            lambda r: _route_settings.handle_model_capabilities(self, r),
         )
         # Cross-conversation FTS5 search. Reads against the same
         # messages_fts virtual table hermes_state.SessionDB maintains
@@ -1100,861 +1126,6 @@ class SidekickAdapter(BasePlatformAdapter):
         provided = header[len("Bearer ") :].strip()
         return hmac.compare_digest(provided, self._token)
 
-    async def _handle_list_conversations(self, request: "web.Request") -> "web.Response":
-        """GET /v1/conversations — return the sidekick-only drawer list.
-
-        Channel-only counterpart to the cross-platform
-        ``/v1/gateway/conversations``. Single-channel agents (stub,
-        third-party OAI-compat agents that aren't gateways) implement
-        only this. The proxy probes the gateway endpoint first and
-        falls back here on 404, stamping ``source: 'sidekick'``."""
-        if not self._check_http_auth(request):
-            return web.Response(status=401, text="invalid token")
-        try:
-            limit = max(1, min(int(request.query.get("limit", "50")), 200))
-        except ValueError:
-            return web.Response(status=400, text="invalid limit")
-
-        rows = await asyncio.to_thread(
-            self._summaries_by_user_id, (SIDEKICK_SOURCE,), limit,
-        )
-        data = [
-            {
-                "id": chat_id,
-                "object": "conversation",
-                "created_at": int(created_at),
-                "metadata": {
-                    "title": title or "",
-                    "message_count": message_count,
-                    "turn_count": turn_count,
-                    "tool_count": tool_count,
-                    "last_active_at": int(last_active_at),
-                    "first_user_message": first_user_message,
-                },
-            }
-            for (chat_id, _source, _chat_type, title, message_count,
-                 turn_count, tool_count,
-                 last_active_at, created_at, first_user_message) in rows
-        ]
-        return web.json_response({"object": "list", "data": data})
-
-    async def _handle_get_conversation_items(self, request: "web.Request") -> "web.Response":
-        """GET /v1/conversations/{id}/items — transcript replay.
-
-        Aggregates messages across every state.db session whose
-        ``(user_id, source)`` matches this chat. user_id IS the
-        platform chat_id; rotations under the hood (compression forks
-        AND session_reset auto-reset) all roll up into a single flat
-        transcript ordered by ``(timestamp ASC, id ASC)``.
-
-        Source is resolved at query time by probing state.db for any
-        source associated with this user_id, preferring ``sidekick``
-        on a collision (sidekick chat_ids are UUIDs, telegram chat_ids
-        are short ints, so collisions are vanishingly unlikely in
-        practice but the deterministic preference keeps behavior
-        reproducible)."""
-        # [items-trace] instrumentation (Jonathan, 2026-05-04 overnight)
-        # — diagnose the 4-20s `/messages` latency. Print() bypasses
-        # hermes logger config (which seemingly drops INFO from journal).
-        # Removes once the bottleneck is identified.
-        import time as _time
-        import sys as _sys
-        _trace_id = secrets.token_hex(3)
-        _t0 = _time.monotonic()
-        def _trace(event: str, extra: str = "") -> None:
-            ms = int((_time.monotonic() - _t0) * 1000)
-            print(f"[items-trace {_trace_id}] +{ms}ms {event}{' ' + extra if extra else ''}", flush=True, file=_sys.stderr)
-        _trace("enter")
-        if not self._check_http_auth(request):
-            return web.Response(status=401, text="invalid token")
-        raw_id = request.match_info["id"]
-        try:
-            limit = max(1, min(int(request.query.get("limit", "200")), 500))
-        except ValueError:
-            return web.Response(status=400, text="invalid limit")
-        before = request.query.get("before")
-        before_id: Optional[int]
-        if before is None:
-            before_id = None
-        else:
-            try:
-                before_id = int(before)
-            except ValueError:
-                return web.Response(status=400, text="invalid before cursor")
-
-        # Prefer the source carried in the prefixed id — that's what
-        # disambiguates `(source, chat_id)` collisions. Fall back to
-        # state.db source resolution for legacy un-prefixed callers.
-        parsed_source, chat_id = _parse_gateway_id(raw_id)
-        if parsed_source is not None:
-            source = parsed_source
-            _trace("source-from-prefix", f"source={source} chat={chat_id[:24]}")
-        else:
-            _trace("source-resolve-start", f"chat={chat_id[:24]}")
-            source = await asyncio.to_thread(self._resolve_source_for_chat_id, chat_id)
-            _trace("source-resolve-end", f"source={source}")
-            if source is None:
-                return web.Response(status=404, text="conversation not found")
-
-        _trace("query-start", f"limit={limit} before={before_id}")
-        result = await asyncio.to_thread(
-            self._items_by_user_id, chat_id, source, limit, before_id,
-        )
-        _trace("query-end", f"rows={len(result[0]) if result else 0}")
-        if result is None:
-            return web.Response(status=404, text="conversation not found")
-        items, first_id, has_more = result
-        response = web.json_response({
-            "object": "list",
-            "data": items,
-            "first_id": first_id,
-            "has_more": has_more,
-        })
-        _trace("response-built")
-        return response
-
-    async def _handle_list_gateway_conversations(
-        self, request: "web.Request"
-    ) -> "web.Response":
-        """GET /v1/gateway/conversations — cross-platform drawer list.
-
-        Same OAI-compat row shape as `/v1/conversations` (`{id, object,
-        created_at, metadata}`), but enumerates every platform in
-        state.db (telegram / slack / whatsapp / sidekick / …) and adds
-        `source` + `chat_type` to `metadata` so the proxy can render
-        per-row badges. Sidekick's drawer relies on this for
-        cross-platform visibility; non-sidekick rows are read-only.
-
-        Backed by `_summaries_by_user_id` which groups state.db rows by
-        `(user_id, source)` — chat_id IS user_id at the gateway. This
-        means rotated session_ids (auto-reset, compression) all roll
-        up into a single drawer entry; the previous sessions.json walk
-        only saw the currently-active session per chat and lost the
-        rest after rotation.
-
-        Implementing this endpoint is what makes a plugin a "gateway" in
-        sidekick's eyes. Single-channel agents (stub, openai-compat
-        third-parties) leave it unimplemented and the proxy falls back
-        to `/v1/conversations`."""
-        if not self._check_http_auth(request):
-            return web.Response(status=401, text="invalid token")
-        try:
-            limit = max(1, min(int(request.query.get("limit", "50")), 200))
-        except ValueError:
-            return web.Response(status=400, text="invalid limit")
-
-        rows = await asyncio.to_thread(
-            self._summaries_by_user_id, GATEWAY_DRAWER_SOURCES, limit,
-        )
-        data = [
-            {
-                # Prefixed `${source}:${chat_id}` — see _format_gateway_id
-                # rationale at module top. Clients treat as opaque; per-
-                # chat handlers decode source-side via _parse_gateway_id.
-                "id": _format_gateway_id(source, chat_id),
-                "object": "conversation",
-                "created_at": int(created_at),
-                "metadata": {
-                    "title": title or "",
-                    "message_count": message_count,
-                    "turn_count": turn_count,
-                    "tool_count": tool_count,
-                    "last_active_at": int(last_active_at),
-                    "first_user_message": first_user_message,
-                    "source": source,
-                    "chat_type": chat_type,
-                    # Native chat_id (pre-prefix) preserved for clients
-                    # that need to display or correlate the platform-
-                    # native identifier (e.g. WhatsApp @lid badge, debug).
-                    "native_chat_id": chat_id,
-                },
-            }
-            for (chat_id, source, chat_type, title, message_count,
-                 turn_count, tool_count,
-                 last_active_at, created_at, first_user_message) in rows
-        ]
-        return web.json_response({"object": "list", "data": data})
-
-    async def _handle_delete_conversation(self, request: "web.Request") -> "web.Response":
-        """DELETE /v1/conversations/{id} — hard delete with full cascade.
-
-        Cascade ordering:
-          1. state.db (sessions + messages rows)
-          2. ~/.hermes/sessions/sessions.json (key removal)
-          3. ~/.hermes/sessions/<sid>.jsonl (transcript file)
-          4. Hindsight bank (memory units tagged with this session UUID)
-
-        Best-effort on each step — sql failure aborts (the cascade can't
-        proceed without knowing which session_id to scrub), filesystem
-        failures log + continue, hindsight failures log + continue
-        (privacy bug if hindsight scrub fails, but a stranded memory
-        row is less bad than a stranded session row that re-ghosts the
-        drawer)."""
-        if not self._check_http_auth(request):
-            return web.Response(status=401, text="invalid token")
-        raw_id = request.match_info["id"]
-        # Source-aware delete — without the prefix we'd default to
-        # SIDEKICK_SOURCE and silently scrub the wrong session when
-        # chat_ids collide across platforms.
-        parsed_source, chat_id = _parse_gateway_id(raw_id)
-        source = parsed_source if parsed_source is not None else SIDEKICK_SOURCE
-        if parsed_source is None:
-            # Surfaces any caller still using bare-id DELETE so we can
-            # tighten this fallback (eventually 400) once all callers
-            # migrate. The 2026-05-03 data-loss regression flowed through
-            # this exact path: a stale frontend cleanup hit bare-id
-            # DELETE, this fallback defaulted to sidekick, and a real
-            # session was wiped silently. The frontend cleanup is now
-            # local-IDB-only (src/main.ts cleanupAbandonedChat) — any
-            # bare-id DELETE arriving here is unexpected and worth a log.
-            logger.warning(
-                "[sidekick] bare-id DELETE %s — defaulting source=sidekick. "
-                "Caller should use prefixed id `sidekick:%s` to be explicit.",
-                raw_id, chat_id,
-            )
-        result = await asyncio.to_thread(
-            self._delete_conversation_sync, chat_id, source,
-        )
-        if result == "not_found":
-            return web.Response(status=404, text="conversation not found")
-        if result == "error":
-            return web.Response(status=500, text="delete failed")
-        # Drop from in-process caches so the next list/poll doesn't
-        # resurrect the row from stale state.
-        self._session_state_cache.pop(chat_id, None)
-        for sid in [s for s, c in self._sid_to_chat_id_cache.items() if c == chat_id]:
-            self._sid_to_chat_id_cache.pop(sid, None)
-        return web.json_response({"ok": True})
-
-    async def _handle_rename_conversation(
-        self, request: "web.Request"
-    ) -> "web.Response":
-        """PATCH /v1/conversations/{id} — set sessions.title.
-
-        Body: ``{"title": "..."}`` — non-empty trimmed string ≤
-        ``SESSION_TITLE_MAX_LEN`` chars. Updates every session row
-        sharing ``(source, user_id=chat_id)`` so a chat that's been
-        rotated by compression / auto-reset still surfaces the new
-        title via ``_summaries_by_user_id`` (which picks the latest
-        session's title).
-
-        Sidekick-source-only today — telegram / slack / whatsapp don't
-        expose a "rename" surface, and a sidekick-tab rename of a
-        cross-source row would silently mutate state.db rows owned by
-        a different platform. Rejected with 400 to make the boundary
-        explicit.
-
-        Emits a ``session_changed`` envelope so any other connected
-        clients (PWA on a second device, the originating client's other
-        tabs) see the live update via /v1/events. Same shape the
-        compression poller uses; the event_id ring de-dupes if the
-        poller's next tick observes the same change.
-        """
-        if not self._check_http_auth(request):
-            return web.Response(status=401, text="invalid token")
-        raw_id = request.match_info["id"]
-        parsed_source, chat_id = _parse_gateway_id(raw_id)
-        source = parsed_source if parsed_source is not None else SIDEKICK_SOURCE
-        if source != SIDEKICK_SOURCE:
-            # Cross-source rename has no defined semantics yet — refuse
-            # rather than silently mutate a non-sidekick session row.
-            return web.json_response(
-                {"error": "rename only supported for sidekick sessions"},
-                status=400,
-            )
-        try:
-            body = await request.json()
-        except Exception:
-            return web.json_response({"error": "invalid json"}, status=400)
-        title = body.get("title") if isinstance(body, dict) else None
-        if not isinstance(title, str):
-            return web.json_response(
-                {"error": "title must be a string"}, status=400,
-            )
-        title = title.strip()
-        if not title:
-            return web.json_response(
-                {"error": "title must be non-empty"}, status=400,
-            )
-        if len(title) > SESSION_TITLE_MAX_LEN:
-            return web.json_response(
-                {"error": f"title exceeds {SESSION_TITLE_MAX_LEN} chars"},
-                status=400,
-            )
-        result = await asyncio.to_thread(
-            self._rename_conversation_sync, chat_id, source, title,
-        )
-        if result == "not_found":
-            return web.json_response(
-                {"error": "conversation not found"}, status=404,
-            )
-        if result == "title_conflict":
-            # state.db has a partial UNIQUE INDEX on title. Surfacing
-            # 409 lets the PWA tell the user "another chat already
-            # has that name" instead of crashing.
-            return web.json_response(
-                {"error": "another conversation already uses this title"},
-                status=409,
-            )
-        if result == "error":
-            return web.json_response({"error": "rename failed"}, status=500)
-        # Surface to other connected clients. Use the same envelope
-        # shape the compression poller emits — clients already know how
-        # to consume it. session_id field is best-effort: we surface
-        # whatever the poller has cached; downstream consumers key on
-        # chat_id+title so a stale/empty session_id is harmless.
-        cached_sid = (self._session_state_cache.get(chat_id) or ("", ""))[0]
-        # Update the cache so the next poll tick doesn't immediately
-        # re-emit a session_changed for the same (sid, title) pair.
-        self._session_state_cache[chat_id] = (cached_sid, title)
-        await self._safe_send_envelope({
-            "type": "session_changed",
-            "chat_id": chat_id,
-            "session_id": cached_sid,
-            "title": title,
-        })
-        return web.json_response({"ok": True, "title": title})
-
-    # ── user_id-keyed read path (chat_id is the durable identity) ────
-    #
-    # Background: an earlier iteration of this plugin walked
-    # ``~/.hermes/sessions/sessions.json``, which only points at the
-    # *currently active* session for each session_key. When hermes
-    # auto-reset rotates a session for a chat_id, the old session
-    # loses its sessions.json mapping but state.db keeps the row with
-    # ``user_id = <chat_id>``. The drawer then hid the old session
-    # entirely and the history fetch only walked the
-    # ``parent_session_id`` chain (which compression sets but
-    # session_reset doesn't), so messages from rotated-out sessions
-    # stopped being visible even though they were still in state.db.
-    #
-    # Fix: query state.db directly by ``(user_id, source)``, since
-    # user_id IS the platform chat_id. The session_id rotation under
-    # the hood is invisible to sidekick — every session that ever
-    # belonged to this chat aggregates into one drawer row and replays
-    # as one transcript. Compression-fork chains are subsumed (their
-    # rows share user_id), so the recursive parent_session_id CTE is
-    # no longer needed.
-    #
-    # Cross-platform safety: every query filters on ``user_id +
-    # source`` together. Two platforms could in theory mint the same
-    # chat_id (telegram numeric id vs sidekick UUID), but the source
-    # discriminator keeps them distinct.
-
-    def _summaries_by_user_id(
-        self, sources: Tuple[str, ...], limit: int,
-    ) -> list:
-        """Drawer aggregation grouped by ``(user_id, source)``.
-
-        Returns ``[(chat_id, source, chat_type, title, message_count,
-        turn_count, tool_count, last_active_at, created_at,
-        first_user_message), …]`` sorted most-recently-active first,
-        bounded by ``limit``.
-
-        ``turn_count`` is user-role messages (the user's mental model of
-        "how many times have I said something"); ``tool_count`` is the
-        opaque count of tool-call/result rows hermes inserted along the
-        way. The drawer renders ``N turns · M tools`` when both are
-        present (vs the misleading ``message_count`` which used to read
-        as e.g. "39 msgs" when the user had only spoken twice and the
-        agent had run 35 tool calls under the hood).
-
-        ``sources`` is the platform allow-list — any non-empty
-        ``sessions.source`` is included if its value is in this tuple.
-        Pass ``("sidekick",)`` for the channel-only drawer; pass the
-        full set (sidekick, telegram, slack, whatsapp, …) for the
-        cross-platform gateway drawer.
-
-        chat_type is fixed to "dm" because state.db doesn't carry it
-        explicitly. The plugin's existing surface only exposed DM
-        chats; group/channel inference would need an out-of-band
-        signal (room id parsing) which lives in the platform adapters,
-        not here.
-
-        ``parent_session_id`` chains (compression forks) are walked
-        via a recursive CTE that maps every session to its root
-        user_id. The upstream hermes contract claims rotated sessions
-        inherit user_id from the root, but in practice compaction
-        creates child sessions with user_id=NULL (Jonathan field bug
-        2026-05-12: neck-strain chat's compacted continuation invisible
-        in the drawer because filtered out by the old
-        ``WHERE user_id IS NOT NULL``). The CTE resolves the effective
-        user_id by walking parent_session_id chains until we hit a
-        session with user_id set; that root user_id is then used as
-        the GROUP BY key for the drawer row.
-
-        Where ORDER BY matters: ``ORDER BY started_at DESC LIMIT 1`` for
-        the title pulls the *latest* session for the chat (whatever
-        compression and session_reset did), which is what the drawer
-        wants.
-        """
-        if self._state_db_path is None or not self._state_db_path.exists():
-            return []
-        if not sources:
-            return []
-        src_csv = ",".join(["?"] * len(sources))
-        # Recursive CTE: session_root maps every session to its
-        # effective (root_user_id, root_source) by walking
-        # parent_session_id chains. Sessions with their own user_id
-        # are their own root; sessions without inherit from their
-        # parent's root. Hermes's compaction creates child sessions
-        # with user_id=NULL, so this is the only way to roll them up
-        # under the parent's user_id for drawer + history rendering.
-        #
-        # One row per resolved (root_user_id, source) pair:
-        #   * MIN(started_at) — oldest session = drawer "created_at"
-        #   * MAX over message timestamps — drawer "last_active_at"
-        #   * SUM(COUNT(messages)) — total message_count across rotations
-        #   * latest session's title (ORDER BY started_at DESC LIMIT 1)
-        #   * very first user message ever (ORDER BY timestamp ASC LIMIT 1
-        #     across all sessions that resolve to this user_id+source)
-        # The system_prompt match in the recursive step distinguishes
-        # compaction continuations (which INHERIT the parent's
-        # sidekick-specific system_prompt) from delegate sub-task
-        # sessions (which use hermes-agent's DEFAULT system_prompt
-        # and just happen to share parent_session_id). Without this
-        # gate the CTE over-includes — Jonathan's neck-strain chat
-        # had 6 delegate sub-tasks chained off the root, inflating
-        # the rolled-up message_count from a correct 157 (139 root +
-        # 18 continuation) to 486 (incl. 329 sub-task messages).
-        sql = f"""
-            WITH RECURSIVE session_root(id, root_user_id, root_source, root_system_prompt) AS (
-                SELECT id, user_id, source, system_prompt
-                  FROM sessions
-                 WHERE user_id IS NOT NULL
-                UNION ALL
-                SELECT s.id, sr.root_user_id, sr.root_source, sr.root_system_prompt
-                  FROM sessions s
-                  JOIN session_root sr ON s.parent_session_id = sr.id
-                 WHERE s.user_id IS NULL
-                   AND LENGTH(COALESCE(sr.root_system_prompt, '')) >= 200
-                   AND SUBSTR(COALESCE(s.system_prompt, ''), 1, 200)
-                       = SUBSTR(sr.root_system_prompt, 1, 200)
-            )
-            SELECT
-                sr.root_user_id AS user_id,
-                sr.root_source AS source,
-                MIN(COALESCE(s.started_at, 0)) AS created_at,
-                COALESCE(MAX(
-                    (SELECT COALESCE(MAX(m.timestamp), s.started_at)
-                       FROM messages m WHERE m.session_id = s.id)
-                ), 0) AS last_active_at,
-                SUM(
-                    (SELECT COUNT(*) FROM messages m
-                       WHERE m.session_id = s.id)
-                ) AS message_count,
-                SUM(
-                    (SELECT COUNT(*) FROM messages m
-                       WHERE m.session_id = s.id AND m.role = 'user')
-                ) AS turn_count,
-                SUM(
-                    (SELECT COUNT(*) FROM messages m
-                       WHERE m.session_id = s.id AND m.role = 'tool')
-                ) AS tool_count,
-                (SELECT COALESCE(s2.title, '')
-                   FROM session_root sr2
-                   JOIN sessions s2 ON s2.id = sr2.id
-                   WHERE sr2.root_user_id = sr.root_user_id
-                     AND sr2.root_source = sr.root_source
-                   ORDER BY s2.started_at DESC LIMIT 1) AS title,
-                (SELECT m.content
-                   FROM messages m
-                   JOIN session_root sr3 ON m.session_id = sr3.id
-                   WHERE sr3.root_user_id = sr.root_user_id
-                     AND sr3.root_source = sr.root_source
-                     AND m.role = 'user'
-                   ORDER BY m.timestamp ASC, m.id ASC LIMIT 1
-                ) AS first_user_message
-            FROM session_root sr
-            JOIN sessions s ON s.id = sr.id
-            WHERE sr.root_source IN ({src_csv})
-            GROUP BY sr.root_user_id, sr.root_source
-            ORDER BY last_active_at DESC
-            LIMIT ?
-        """
-        params = list(sources) + [limit]
-        uri = f"file:{self._state_db_path}?mode=ro"
-        with contextlib.closing(
-            sqlite3.connect(uri, uri=True, timeout=2.0)
-        ) as conn:
-            rows = conn.execute(sql, params).fetchall()
-        out = []
-        for (user_id, source, created_at, last_active_at, mcount,
-             turn_count, tool_count, title, first_user) in rows:
-            if not user_id:
-                continue
-            first_user_truncated = (first_user or "")[:80] or None
-            out.append((
-                user_id, source, "dm", title or "", int(mcount or 0),
-                int(turn_count or 0), int(tool_count or 0),
-                float(last_active_at or 0), float(created_at or 0),
-                first_user_truncated,
-            ))
-        return out
-
-    def _resolve_source_for_chat_id(self, chat_id: str) -> Optional[str]:
-        """Pick a `sessions.source` for this chat_id.
-
-        Used by the per-chat history handler, which doesn't carry a
-        source on the URL. Prefers ``sidekick`` on a collision so the
-        composer-editable behavior in the PWA stays consistent for
-        sidekick-native chats; falls back to whatever source state.db
-        has for the user_id otherwise (telegram, slack, etc.).
-
-        Returns None when no session exists for the chat_id (treated
-        as 404 by the caller).
-        """
-        if self._state_db_path is None or not self._state_db_path.exists():
-            return None
-        uri = f"file:{self._state_db_path}?mode=ro"
-        with contextlib.closing(
-            sqlite3.connect(uri, uri=True, timeout=2.0)
-        ) as conn:
-            rows = conn.execute(
-                "SELECT DISTINCT source FROM sessions WHERE user_id = ?",
-                (chat_id,),
-            ).fetchall()
-        sources = [r[0] for r in rows if r and r[0]]
-        if not sources:
-            return None
-        if SIDEKICK_SOURCE in sources:
-            return SIDEKICK_SOURCE
-        return sources[0]
-
-    def _items_by_user_id(
-        self,
-        chat_id: str,
-        source: str,
-        limit: int,
-        before_id: Optional[int],
-    ) -> Optional[Tuple[list, Optional[int], bool]]:
-        """Transcript replay across every session that ever belonged
-        to ``(user_id=chat_id, source)``.
-
-        Returns ``(items, first_id, has_more)`` or ``None`` when no
-        sessions exist for the pair (treated as 404 by the route
-        handler).
-
-        Replaces the old ``_read_conversation_items`` recursive CTE
-        over ``parent_session_id``. Rotations done by session_reset
-        (which doesn't set parent_session_id) used to drop messages
-        from history; this query picks them up because they share
-        user_id.
-
-        Honors ``before_id`` for lazy paging: when set, only messages
-        with ``id < before_id`` are returned.
-        """
-        if self._state_db_path is None or not self._state_db_path.exists():
-            return None
-        # Recursive CTE: walk parent_session_id chains so compacted
-        # child sessions (user_id=NULL) get rolled up under the
-        # requested chat_id. Without this, the transcript returns
-        # only the root session's messages — any messages persisted
-        # to a compaction-rotated child are invisible (Jonathan
-        # field bug 2026-05-12).
-        sql = """
-            WITH RECURSIVE session_root(id, root_system_prompt) AS (
-                SELECT id, system_prompt FROM sessions
-                 WHERE user_id = ? AND source = ?
-                UNION ALL
-                SELECT s.id, sr.root_system_prompt
-                  FROM sessions s
-                  JOIN session_root sr ON s.parent_session_id = sr.id
-                 WHERE s.user_id IS NULL
-                   AND LENGTH(COALESCE(sr.root_system_prompt, '')) >= 200
-                   AND SUBSTR(COALESCE(s.system_prompt, ''), 1, 200)
-                       = SUBSTR(sr.root_system_prompt, 1, 200)
-            )
-            SELECT m.id, m.role, m.content, m.tool_name, m.timestamp,
-                   sml.sidekick_id, sml.kind
-            FROM messages m
-            JOIN session_root sr ON m.session_id = sr.id
-            LEFT JOIN sidekick_msg_links sml ON sml.state_db_id = m.id
-        """
-        params: list = [chat_id, source]
-        if before_id is not None:
-            sql += " WHERE m.id < ?"
-            params.append(before_id)
-        sql += " ORDER BY m.timestamp ASC, m.id ASC"
-        uri = f"file:{self._state_db_path}?mode=ro"
-        with contextlib.closing(
-            sqlite3.connect(uri, uri=True, timeout=2.0)
-        ) as conn:
-            # Existence check first so we can return 404 vs. an empty
-            # but valid transcript. A user_id with no messages yet
-            # (e.g. just-created chat that hasn't sent its first turn)
-            # still exists; the items list will be empty. We check the
-            # root sessions table directly — if the chat_id has at
-            # least one session with that user_id, it exists.
-            exists_row = conn.execute(
-                "SELECT 1 FROM sessions WHERE user_id = ? AND source = ? LIMIT 1",
-                (chat_id, source),
-            ).fetchone()
-            if exists_row is None:
-                return None
-            rows = list(conn.execute(sql, params).fetchall())
-        items = []
-        for row_id, role, content, tool_name, ts, sidekick_id, kind in rows:
-            text = (content or "")
-            if text.startswith("[CONTEXT COMPACTION"):
-                continue
-            item: Dict[str, Any] = {
-                "id": int(row_id),
-                "object": "message",
-                "role": role,
-                "content": text,
-                "created_at": int(ts) if ts else 0,
-            }
-            if tool_name:
-                item["tool_name"] = tool_name
-            # SSE-shape id (umsg_*/msg_*/notif_*) when this row was
-            # persisted by a sidekick turn (or cron delivery — see
-            # _persist_notification) that recorded its link. Absent
-            # for legacy messages, messages from other channels, and
-            # tool/system rows.
-            if sidekick_id:
-                item["sidekick_id"] = sidekick_id
-            # Notification kind (cron / reminder / approval / etc.).
-            # Plumbed through from sidekick_msg_links.kind — only set
-            # on rows _persist_notification wrote. The PWA reads this
-            # to discriminate notification rows from regular assistant
-            # replies for rendering purposes.
-            if kind:
-                item["kind"] = kind
-            items.append(item)
-        # Same pagination semantics as the legacy path:
-        #  * before_id=None → most-recent `limit` items, has_more=True
-        #    when we truncated.
-        #  * before_id set → user is paging backward; return up to
-        #    `limit` items older than the cursor, has_more=True if a
-        #    full page came back.
-        first_id = items[0]["id"] if items else None
-        if before_id is None and len(items) > limit:
-            items = items[-limit:]
-            first_id = items[0]["id"] if items else None
-            has_more = True
-        elif before_id is not None and len(items) >= limit:
-            items = items[:limit]
-            has_more = True
-        else:
-            has_more = False
-        return (items, first_id, has_more)
-
-    def _delete_conversation_sync(
-        self, chat_id: str, source: str = SIDEKICK_SOURCE,
-    ) -> str:
-        """Synchronous cascade delete. Returns 'ok', 'not_found', or
-        'error'. Worker-thread safe.
-
-        Resolves the set of session_ids to scrub via
-        ``WHERE user_id = chat_id AND source = ?`` — picks up every
-        session that ever belonged to this `(source, chat_id)` pair
-        (compression forks AND auto-reset rotations), no recursive
-        parent-chain walk needed. ``source`` defaults to ``sidekick``
-        for backward compat with un-prefixed delete callers."""
-        if self._state_db_path is None or not self._state_db_path.exists():
-            return "error"
-        try:
-            with contextlib.closing(sqlite3.connect(self._state_db_path, timeout=5.0)) as conn:
-                conn.execute("PRAGMA foreign_keys = ON")
-                with conn:
-                    # Recursive CTE walks parent_session_id chains so
-                    # compacted child sessions (user_id=NULL) are
-                    # included in the cascade — otherwise a delete
-                    # leaves orphan child sessions in state.db,
-                    # consuming disk + occasionally surfacing
-                    # ghost rows.
-                    rows = conn.execute("""
-                        WITH RECURSIVE session_root(id, root_system_prompt) AS (
-                            SELECT id, system_prompt FROM sessions
-                             WHERE user_id = ? AND source = ?
-                            UNION ALL
-                            SELECT s.id, sr.root_system_prompt
-                              FROM sessions s
-                              JOIN session_root sr ON s.parent_session_id = sr.id
-                             WHERE s.user_id IS NULL
-                               AND LENGTH(COALESCE(sr.root_system_prompt, '')) >= 200
-                               AND SUBSTR(COALESCE(s.system_prompt, ''), 1, 200)
-                                   = SUBSTR(sr.root_system_prompt, 1, 200)
-                        )
-                        SELECT id FROM session_root
-                    """, (chat_id, source)).fetchall()
-                    fork_sids = [r[0] for r in rows]
-                    if not fork_sids:
-                        return "not_found"
-                    placeholders = ",".join(["?"] * len(fork_sids))
-                    conn.execute(
-                        f"DELETE FROM messages WHERE session_id IN ({placeholders})",
-                        fork_sids,
-                    )
-                    conn.execute(
-                        f"DELETE FROM sessions WHERE id IN ({placeholders})",
-                        fork_sids,
-                    )
-        except Exception as exc:
-            logger.warning("[sidekick] state.db delete failed for chat_id=%s: %s", chat_id, exc)
-            return "error"
-        # sessions.json: scrub the sidekick key. SESSION_KEY_PREFIX is
-        # the sidekick-namespaced prefix; for non-sidekick deletes the
-        # sessions.json entry (if any) belongs to a different platform
-        # adapter and isn't ours to scrub here. Skip when source isn't
-        # sidekick — hermes-agent's other adapters own their own keys.
-        # jsonl + hindsight cascades below still run for any source.
-        if source == SIDEKICK_SOURCE:
-            sessions_index = self._state_db_path.parent / "sessions" / "sessions.json"
-            try:
-                if sessions_index.exists():
-                    with open(sessions_index, encoding="utf-8") as f:
-                        idx = json.load(f)
-                    key = f"{SESSION_KEY_PREFIX}{chat_id}"
-                    if isinstance(idx, dict) and key in idx:
-                        del idx[key]
-                        tmp = sessions_index.with_suffix(f".tmp.{os.getpid()}")
-                        with open(tmp, "w", encoding="utf-8") as f:
-                            json.dump(idx, f, indent=2)
-                        os.replace(tmp, sessions_index)
-            except Exception as exc:
-                logger.warning("[sidekick] sessions.json scrub failed: %s", exc)
-        # jsonl transcripts.
-        for sid in fork_sids:
-            jsonl = self._state_db_path.parent / "sessions" / f"{sid}.jsonl"
-            try:
-                if jsonl.exists():
-                    jsonl.unlink()
-            except Exception as exc:
-                logger.warning("[sidekick] jsonl unlink failed for sid=%s: %s", sid, exc)
-        # Hindsight cascade (privacy-critical — closes the regression
-        # introduced in the platform-adapter migration where the new
-        # delete path skipped the hindsight scrub the legacy path had).
-        try:
-            self._purge_hindsight_for_session_uuids(fork_sids)
-        except Exception as exc:
-            logger.warning("[sidekick] hindsight purge failed: %s", exc)
-        return "ok"
-
-    def _rename_conversation_sync(
-        self, chat_id: str, source: str, title: str,
-    ) -> str:
-        """Synchronous rename. Returns 'ok', 'not_found', or 'error'.
-        Worker-thread safe.
-
-        Updates only the LATEST session row for ``(user_id=chat_id,
-        source)`` — that's the row the drawer's ``_summaries_by_user_id``
-        picks up via ``ORDER BY started_at DESC LIMIT 1``. We can't
-        update all rotated sessions in one shot because hermes-agent's
-        state.db schema has a partial UNIQUE INDEX on
-        ``sessions(title) WHERE title IS NOT NULL`` — every other
-        rotated session for this chat ALREADY holds a (likely auto-
-        generated, distinct) title, and rewriting them all to the same
-        new title violates that constraint. The drawer's read path
-        already prefers the latest, so updating just that row is
-        sufficient and constraint-safe.
-        """
-        if self._state_db_path is None or not self._state_db_path.exists():
-            return "error"
-        try:
-            with contextlib.closing(
-                sqlite3.connect(self._state_db_path, timeout=5.0)
-            ) as conn:
-                with conn:
-                    # Find the latest session for this chat — that's
-                    # the one the drawer surfaces and the one a rename
-                    # should target.
-                    row = conn.execute(
-                        "SELECT id FROM sessions "
-                        "WHERE user_id = ? AND source = ? "
-                        "ORDER BY started_at DESC LIMIT 1",
-                        (chat_id, source),
-                    ).fetchone()
-                    if row is None:
-                        return "not_found"
-                    latest_sid = row[0]
-                    # If another session already holds this title,
-                    # the partial UNIQUE INDEX would reject the UPDATE.
-                    # Two cases to distinguish (Jonathan, 2026-05-05):
-                    #
-                    #  1. The conflicting row is a STALE SIBLING for the
-                    #     SAME chat_id+source — i.e. a prior rotation
-                    #     where the user had set this title before
-                    #     hermes' session compression minted a new row.
-                    #     The drawer only ever shows the latest row, so
-                    #     the sibling's title is functionally orphaned.
-                    #     Clear it so the latest row can take the name —
-                    #     matches the user's mental model of "this CHAT
-                    #     is named X" (not "this session_id is named X").
-                    #
-                    #  2. The conflicting row belongs to a DIFFERENT
-                    #     chat — genuine cross-chat collision; reject
-                    #     and let the caller surface a toast.
-                    #
-                    # Filtering on `id != latest_sid` so the idempotent
-                    # case (latest row already has this title) falls
-                    # through to a no-op UPDATE without spurious clear.
-                    existing = conn.execute(
-                        "SELECT id, user_id, source FROM sessions "
-                        "WHERE title = ? AND id != ?",
-                        (title, latest_sid),
-                    ).fetchone()
-                    if existing is not None:
-                        other_id, other_user, other_source = existing
-                        if other_user == chat_id and other_source == source:
-                            # Stale sibling — release its grip on the title.
-                            conn.execute(
-                                "UPDATE sessions SET title = NULL "
-                                "WHERE id = ?",
-                                (other_id,),
-                            )
-                        else:
-                            return "title_conflict"
-                    conn.execute(
-                        "UPDATE sessions SET title = ? WHERE id = ?",
-                        (title, latest_sid),
-                    )
-        except Exception as exc:
-            logger.warning(
-                "[sidekick] state.db rename failed for chat_id=%s: %s",
-                chat_id, exc,
-            )
-            return "error"
-        return "ok"
-
-    def _purge_hindsight_for_session_uuids(self, session_uuids: list) -> None:
-        """Delete hindsight memories tagged with any of these session
-        UUIDs. Reads hindsight URL + bank from env; no-op if hindsight
-        isn't configured (local-only deployments without a memory store).
-
-        Two storage shapes (both handled by the proxy's existing
-        purgeHindsightSession in TS — we mirror the logic here):
-          1. Live retains (document.id == session UUID): direct DELETE.
-          2. Backfilled docs (random doc.id, session UUID in metadata):
-             paginated metadata sweep.
-
-        Best-effort: hindsight unreachable is logged but not fatal."""
-        url = os.getenv("HINDSIGHT_URL", "").strip() or os.getenv("SIDEKICK_HINDSIGHT_URL", "").strip()
-        if not url:
-            return
-        bank = os.getenv("HINDSIGHT_BANK", "").strip() or os.getenv("SIDEKICK_HINDSIGHT_BANK", "default").strip()
-        api_key = os.getenv("HINDSIGHT_API_KEY", "").strip() or os.getenv("SIDEKICK_HINDSIGHT_API_KEY", "").strip()
-        try:
-            import urllib.request
-            import urllib.parse
-            headers = {"content-type": "application/json"}
-            if api_key:
-                headers["authorization"] = f"Bearer {api_key}"
-            for sid in session_uuids:
-                target = f"{url}/v1/default/banks/{urllib.parse.quote(bank, safe='')}/documents/{urllib.parse.quote(sid, safe='')}"
-                req = urllib.request.Request(target, method="DELETE", headers=headers)
-                try:
-                    with urllib.request.urlopen(req, timeout=5.0) as resp:
-                        if resp.status not in (200, 204, 404):
-                            logger.warning("[sidekick] hindsight DELETE returned %s for sid=%s", resp.status, sid)
-                except urllib.error.HTTPError as e:
-                    if e.code != 404:
-                        logger.warning("[sidekick] hindsight DELETE returned %s for sid=%s", e.code, sid)
-                except Exception as exc:
-                    logger.warning("[sidekick] hindsight DELETE failed for sid=%s: %s", sid, exc)
-        except Exception as exc:
-            logger.warning("[sidekick] hindsight purge setup failed: %s", exc)
 
     # ------------------------------------------------------------------
     # /v1/responses — turn dispatch with streaming SSE reply
@@ -1994,431 +1165,6 @@ class SidekickAdapter(BasePlatformAdapter):
                 return "\n".join(parts)
         return None
 
-    # ── Optional settings extension (/v1/settings/*) ──────────────────
-    # Lets the PWA render an agent-owned controls panel without
-    # frontend-side knowledge of what the agent supports. Today: one
-    # "model" enum. Adding more knobs (persona, temperature, default
-    # provider) is additive: append to _build_settings_schema() and
-    # branch _apply_setting() on id.
-
-    def _read_hermes_config(self) -> Dict[str, Any]:
-        """Snapshot of ~/.hermes/config.yaml as a dict (or {} on failure).
-        Used by every settings read so we work from one consistent
-        view per request. Raw read — no normalization."""
-        try:
-            import yaml
-            from hermes_cli.config import get_config_path
-            cfg_path = get_config_path()
-            if not cfg_path.exists():
-                return {}
-            with open(cfg_path, encoding="utf-8") as f:
-                return yaml.safe_load(f) or {}
-        except Exception as e:
-            logger.warning("[sidekick] settings: read hermes config failed: %s", e)
-            return {}
-
-    def _read_preferred_models(self, cfg: Dict[str, Any]) -> List[str]:
-        """Resolve the preferred-models glob list. Source of truth:
-        `sidekick.preferred_models:` in ~/.hermes/config.yaml (a yaml
-        list of glob strings). Falls back to SIDEKICK_PREFERRED_MODELS
-        env (comma-separated) for env-only deployments. Empty result
-        = no filter (full catalog)."""
-        sk = cfg.get("sidekick") if isinstance(cfg.get("sidekick"), dict) else {}
-        raw = sk.get("preferred_models")
-        if isinstance(raw, list):
-            out = [str(g).strip() for g in raw if isinstance(g, str) and str(g).strip()]
-            if out:
-                return out
-        env_raw = (os.environ.get("SIDEKICK_PREFERRED_MODELS") or "").strip()
-        if env_raw:
-            return [g.strip() for g in env_raw.split(",") if g.strip()]
-        return []
-
-    def _build_settings_schema(self) -> List[Dict[str, Any]]:
-        """Build the SettingDef[] list. Reads hermes config.yaml for
-        the current model + the preferred-models glob filter (under
-        `sidekick.preferred_models:`). Picker options merge OpenRouter
-        (filtered by user's preferred-globs) with EVERY other
-        authenticated provider's curated model list (e.g. openai-codex
-        OAuth, copilot, anthropic). Provider is encoded into the option
-        value: OpenRouter entries stay bare (vendor/model), every other
-        provider prefixes with `<slug>:` (e.g. `openai-codex:gpt-5.5`).
-        _apply_model_setting parses the prefix back to route the switch
-        to the right provider."""
-        import fnmatch
-        cfg = self._read_hermes_config()
-
-        # Current model + provider — hermes stores model as scalar
-        # (`model: google/gemma-4-26b-a4b-it`) or dict (`model:
-        # {default: ..., provider: ...}`); handle both. Default
-        # provider when unset is "openrouter" (matches hermes default).
-        current_model = ""
-        current_provider = "openrouter"
-        model_cfg = cfg.get("model")
-        if isinstance(model_cfg, dict):
-            current_model = (model_cfg.get("default") or "").strip()
-            current_provider = (model_cfg.get("provider") or "openrouter").strip()
-        elif isinstance(model_cfg, str):
-            current_model = model_cfg.strip()
-        # Encoded form of the current selection — what the picker will
-        # show as the active option. OpenRouter stays bare; others
-        # carry the slug prefix so they can be uniquely identified
-        # (e.g. `gpt-5.5` is ambiguous between openai-codex and copilot,
-        # `openai-codex:gpt-5.5` is not).
-        if current_provider == "openrouter" or not current_model:
-            current_value = current_model
-        else:
-            current_value = f"{current_provider}:{current_model}"
-
-        # Preferred-models filter (string-list — also exposed as its
-        # own SettingDef below so the chip UI can edit it).
-        preferred = self._read_preferred_models(cfg)
-
-        # Openrouter catalog. fetch_openrouter_models returns a list of
-        # `(model_id, source_label)` tuples (curated by hermes — only
-        # tool-supporting models, ranked by the preferred_ids list).
-        # The label is "recommended" / "free" / "" — useful as a hint
-        # in the dropdown but we just use the id for now to keep the
-        # contract simple. Be defensive about shape: any future return
-        # type change should degrade to "no options" instead of 500ing
-        # the whole settings panel.
-        catalog: List[Dict[str, Any]] = []
-        try:
-            from hermes_cli.models import fetch_openrouter_models
-            raw = fetch_openrouter_models() or []
-            for entry in raw:
-                if isinstance(entry, tuple) and len(entry) >= 1:
-                    mid = str(entry[0] or "").strip()
-                    tag = str(entry[1] or "").strip() if len(entry) >= 2 else ""
-                elif isinstance(entry, dict):
-                    mid = str(entry.get("id") or "").strip()
-                    tag = ""
-                elif isinstance(entry, str):
-                    mid = entry.strip()
-                    tag = ""
-                else:
-                    continue
-                if not mid:
-                    continue
-                label = f"{mid} ({tag})" if tag else mid
-                catalog.append({"value": mid, "label": label, "group": "OpenRouter"})
-        except Exception as e:
-            logger.warning("[sidekick] settings: openrouter catalog fetch failed: %s", e)
-
-        # Apply preferred-models filter to the catalog. Empty list =
-        # no filter (full catalog).
-        if preferred and catalog:
-            catalog = [
-                e for e in catalog
-                if any(fnmatch.fnmatch(e["value"], g) for g in preferred)
-            ]
-
-        # Supplement with the LIVE openrouter catalog for any preferred
-        # glob whose pattern matched nothing in hermes' curated list.
-        # The curated list (hermes_cli/models.py:OPENROUTER_MODELS) is
-        # a hand-maintained "tool-supporting" subset and lags reality —
-        # e.g. google/gemma-4* never made it in. The user's explicit
-        # preferred glob is the authoritative signal: if they asked for
-        # gemma-4, give them what openrouter actually has matching that.
-        if preferred:
-            try:
-                import urllib.request
-                req = urllib.request.Request(
-                    "https://openrouter.ai/api/v1/models",
-                    headers={"Accept": "application/json"},
-                )
-                with urllib.request.urlopen(req, timeout=5.0) as resp:
-                    payload = json.loads(resp.read().decode())
-                live_ids = [
-                    str(item.get("id") or "").strip()
-                    for item in (payload.get("data") or [])
-                    if isinstance(item, dict)
-                ]
-                seen = {e["value"] for e in catalog}
-                for mid in live_ids:
-                    if not mid or mid in seen:
-                        continue
-                    if any(fnmatch.fnmatch(mid, g) for g in preferred):
-                        catalog.append({"value": mid, "label": mid, "group": "OpenRouter"})
-                        seen.add(mid)
-            except Exception as e:
-                logger.warning(
-                    "[sidekick] settings: live openrouter supplement failed: %s", e,
-                )
-
-        # Pull EVERY OTHER authenticated provider's curated model list
-        # (Codex OAuth, Copilot OAuth, Anthropic API key, etc.). Each
-        # gets a `<slug>:<model>` value prefix so the dropdown can
-        # uniquely identify it and _apply_model_setting can route the
-        # switch to the right provider. Glob filtering is NOT applied
-        # here — the per-provider curated lists are small (7-14 entries)
-        # and forcing the user to add globs for each new provider
-        # would be tax. OpenRouter (the giant catalog) keeps the
-        # globs above; other providers ship as-is.
-        # User-controlled provider exclusion — `sidekick.exclude_providers`
-        # in ~/.hermes/config.yaml lists provider slugs to suppress from the
-        # picker even if hermes auto-detects credentials for them. Use case:
-        # `list_authenticated_providers` is "discovery-oriented" — it shows
-        # providers the user COULD switch to (e.g. anthropic detected via
-        # CC's OAuth, copilot detected via gh CLI token) regardless of
-        # whether the user wants inference routed there. This list is the
-        # opt-out. Set 2026-05-03.
-        sk_cfg = cfg.get("sidekick", {}) if isinstance(cfg.get("sidekick"), dict) else {}
-        exclude_providers = set()
-        for p in (sk_cfg.get("exclude_providers") or []):
-            if isinstance(p, str):
-                exclude_providers.add(p.strip().lower())
-        # Per-model exclusion list — globs matched against the encoded
-        # picker value `<slug>:<model>` (e.g. `openai-codex:gpt-5.1-codex-mini`).
-        # Use case: a provider is generally usable but specific models are
-        # auth-tier-locked (e.g. ChatGPT-account auth rejects gpt-5.1-codex-*
-        # with HTTP 400). Curated by the user as they discover unusable
-        # entries. Glob-friendly so e.g. `openai-codex:gpt-4*` blocks the
-        # whole gpt-4 family at once.
-        exclude_models_globs = []
-        for m in (sk_cfg.get("exclude_models") or []):
-            if isinstance(m, str) and m.strip():
-                exclude_models_globs.append(m.strip())
-        try:
-            from hermes_cli.model_switch import list_authenticated_providers
-            for prov in list_authenticated_providers(
-                current_provider=current_provider,
-                current_base_url=str((model_cfg or {}).get("base_url", "") if isinstance(model_cfg, dict) else ""),
-                user_providers=cfg.get("providers"),
-                custom_providers=cfg.get("custom_providers"),
-            ) or []:
-                slug = (prov.get("slug") or "").strip()
-                name = (prov.get("name") or slug).strip()
-                if not slug or slug == "openrouter":
-                    # Skip OpenRouter — it's already in `catalog` above
-                    # with full filter logic + live supplement.
-                    continue
-                if slug.lower() in exclude_providers:
-                    continue
-                for mid in (prov.get("models") or []):
-                    mid_s = str(mid).strip()
-                    if not mid_s:
-                        continue
-                    encoded = f"{slug}:{mid_s}"
-                    if exclude_models_globs and any(
-                        fnmatch.fnmatch(encoded, g) for g in exclude_models_globs
-                    ):
-                        continue
-                    catalog.append({
-                        "value": encoded,
-                        "label": mid_s,
-                        "group": name,
-                    })
-        except Exception as e:
-            logger.warning(
-                "[sidekick] settings: list_authenticated_providers failed: %s", e,
-            )
-
-        # Always include the current model in the options[] list so the
-        # picker can show "what's set now" even if the catalog filter
-        # excluded it. Use the encoded value (with provider prefix for
-        # non-openrouter) so the picker matches what's stored. Group it
-        # under "Current" so it shows at the top of the dropdown for
-        # easy visibility.
-        if current_value and not any(e["value"] == current_value for e in catalog):
-            catalog.insert(0, {
-                "value": current_value,
-                "label": current_value,
-                "group": "Current",
-            })
-
-        # Sort by (group_order, label) so the dropdown stays grouped:
-        # Current first (if any), then OpenRouter (the largest catalog),
-        # then other providers alphabetically. Within a group, sort by
-        # label.
-        _GROUP_RANK = {"Current": 0, "OpenRouter": 1}
-        catalog.sort(key=lambda e: (
-            _GROUP_RANK.get(e.get("group", ""), 2),
-            (e.get("group") or "").lower(),
-            (e.get("label") or "").lower(),
-        ))
-
-        return [
-            {
-                "id": "model",
-                "label": "Model",
-                "description": "LLM used for replies",
-                "category": "Agent",
-                "type": "enum",
-                "value": current_value,
-                "options": catalog,
-            },
-            {
-                "id": "preferred_models",
-                "label": "Preferred models",
-                "description": (
-                    "Glob patterns that filter the model dropdown above "
-                    "(e.g. anthropic/*, google/gemini-*). Empty = full "
-                    "openrouter catalog."
-                ),
-                "category": "Agent",
-                "type": "string-list",
-                "value": preferred,
-                "placeholder": "e.g. anthropic/* + Enter",
-            },
-        ]
-
-    async def _handle_settings_schema(self, request: "web.Request") -> "web.Response":
-        """GET /v1/settings/schema — list the agent's user-facing knobs."""
-        if not self._check_http_auth(request):
-            return web.Response(status=401, text="invalid token")
-        try:
-            schema = await asyncio.get_running_loop().run_in_executor(
-                None, self._build_settings_schema,
-            )
-        except Exception as e:
-            logger.exception("[sidekick] settings schema build failed")
-            return web.json_response(
-                {"error": {"type": "server_error", "message": str(e)}},
-                status=500,
-            )
-        return web.json_response({"object": "list", "data": schema})
-
-    async def _handle_settings_update(self, request: "web.Request") -> "web.Response":
-        """POST /v1/settings/{id} — apply one setting."""
-        if not self._check_http_auth(request):
-            return web.Response(status=401, text="invalid token")
-        sid = request.match_info.get("id", "")
-        try:
-            body = await request.json()
-        except (ValueError, json.JSONDecodeError):
-            return web.json_response(
-                {"error": {"type": "invalid_request_error",
-                           "message": "body is not valid JSON"}},
-                status=400,
-            )
-        value = body.get("value")
-        try:
-            updated = await asyncio.get_running_loop().run_in_executor(
-                None, self._apply_setting, sid, value,
-            )
-        except _SettingsValidationError as e:
-            return web.json_response(
-                {"error": {"type": "invalid_request_error", "message": str(e)}},
-                status=400,
-            )
-        except _SettingsNotFoundError as e:
-            return web.json_response(
-                {"error": {"type": "invalid_request_error", "message": str(e)}},
-                status=404,
-            )
-        except Exception as e:
-            logger.exception("[sidekick] settings apply failed: %s", sid)
-            return web.json_response(
-                {"error": {"type": "server_error", "message": str(e)}},
-                status=500,
-            )
-        return web.json_response(updated)
-
-    async def _handle_auxiliary_models(self, request: "web.Request") -> "web.Response":
-        """GET /v1/sidekick/auxiliary-models — surface the auxiliary models
-        hermes is configured to route to. Today: just `vision`. The PWA's
-        attachment-button gate uses this to enable the + button when the
-        primary model is text-only but an auxiliary vision model is
-        configured (hermes auto-enriches media_urls via the auxiliary
-        vision pipeline; see hermes-agent gateway/run.py:_enrich_message_with_vision).
-        """
-        if not self._check_http_auth(request):
-            return web.Response(status=401, text="invalid token")
-        cfg = self._read_hermes_config()
-        aux = cfg.get("auxiliary") if isinstance(cfg.get("auxiliary"), dict) else {}
-        vision_cfg = aux.get("vision") if isinstance(aux.get("vision"), dict) else {}
-        vision_model = vision_cfg.get("model") if isinstance(vision_cfg.get("model"), str) else None
-        return web.json_response({"vision": vision_model or None})
-
-    async def _handle_model_capabilities(self, request: "web.Request") -> "web.Response":
-        """GET /v1/sidekick/model-capabilities?provider=X&model=Y — return
-        ground-truth capability metadata from the models.dev registry that
-        hermes already uses for its native-vs-text image routing decision
-        (see agent/image_routing.py:_lookup_supports_vision).
-
-        Replaces sidekick's previous OpenRouter-catalog + regex-fallback
-        approach with the same data hermes consults at request time. Returns
-        the full ModelCapabilities shape (so future capability gates —
-        tool-calling, reasoning, context window — share one source).
-
-        Response shape (200):
-          {"supports_vision": bool, "supports_tools": bool,
-           "supports_reasoning": bool, "context_window": int,
-           "max_output_tokens": int, "model_family": str}
-        Returns null fields (404 if model unknown to models.dev) so the PWA
-        can fall back to its `vision_fallback_model` advertisement when the
-        primary's caps are unknown.
-        """
-        if not self._check_http_auth(request):
-            return web.Response(status=401, text="invalid token")
-        provider = (request.query.get("provider") or "").strip()
-        model = (request.query.get("model") or "").strip()
-        if not model:
-            return web.json_response(
-                {"error": "model query param required"}, status=400,
-            )
-        # PWA-side picker values are composite ids: bare `<vendor>/<name>`
-        # (OpenRouter) or `<provider-slug>:<name>` (e.g.
-        # `openai-codex:gpt-5.5`, `copilot:gpt-5.4`). models.dev is keyed
-        # by bare model id, so when we see a `<slug>:<model>` shape AND
-        # no explicit provider was passed, decode it BEFORE the lookup.
-        # Pre-2026-05-11 the prefix was passed verbatim and models.dev
-        # missed every lookup for non-OpenRouter selections — PWA fell
-        # through to the vision_fallback advertisement even for natively-
-        # vision-capable models like openai-codex:gpt-5.5. The same
-        # slash-vs-colon-prefix detection lives in _apply_model_setting
-        # (line ~2626) — both call sites use it now.
-        if not provider and ":" in model and "/" not in model.split(":", 1)[0]:
-            slug, _, mid = model.partition(":")
-            provider = slug.strip()
-            model = mid.strip()
-        try:
-            from agent.models_dev import (
-                get_model_capabilities,
-                PROVIDER_TO_MODELS_DEV,
-            )
-            if provider:
-                caps = get_model_capabilities(provider, model)
-                resolved_provider = provider if caps is not None else None
-            else:
-                # PWA may not know the provider (the picker groups by
-                # "OpenAI" / "OpenAI Codex" / "OpenRouter" but the value
-                # is just the model ID). Try each known provider in
-                # models.dev order and return the first match.
-                caps = None
-                resolved_provider = None
-                for p in PROVIDER_TO_MODELS_DEV.keys():
-                    candidate = get_model_capabilities(p, model)
-                    if candidate is not None:
-                        caps = candidate
-                        resolved_provider = p
-                        break
-        except Exception as e:
-            logger.exception("[sidekick] model-capabilities lookup failed")
-            return web.json_response(
-                {"error": {"type": "server_error", "message": str(e)}},
-                status=500,
-            )
-        if caps is None:
-            # Distinguish "unknown to models.dev" from "lookup errored" so
-            # the PWA can route the fallback path (vision_fallback_model
-            # advertisement) without the user seeing an error.
-            return web.json_response(
-                {"provider": provider or None, "model": model, "known": False},
-                status=200,
-            )
-        return web.json_response({
-            "provider": resolved_provider,
-            "model": model,
-            "known": True,
-            "supports_vision": caps.supports_vision,
-            "supports_tools": caps.supports_tools,
-            "supports_reasoning": caps.supports_reasoning,
-            "context_window": caps.context_window,
-            "max_output_tokens": caps.max_output_tokens,
-            "model_family": caps.model_family,
-        })
 
     async def _handle_search_conversations(self, request: "web.Request") -> "web.Response":
         """GET /v1/conversations/search?q=&limit=20 — FTS5 cross-conversation search.
@@ -2606,228 +1352,6 @@ class SidekickAdapter(BasePlatformAdapter):
             )
         return web.json_response({"object": "list", "data": data})
 
-    def _apply_setting(self, sid: str, value: Any) -> Dict[str, Any]:
-        """Apply one setting and return the updated def. Synchronous —
-        called from a thread executor since switch_model + config
-        write are blocking. Raises _SettingsValidationError /
-        _SettingsNotFoundError to map to 400 / 404 respectively."""
-        if sid == "model":
-            return self._apply_model_setting(value)
-        if sid == "preferred_models":
-            return self._apply_preferred_models_setting(value)
-        raise _SettingsNotFoundError(f"unknown setting: {sid}")
-
-    def _apply_preferred_models_setting(self, value: Any) -> Dict[str, Any]:
-        """Persist the preferred-models glob list to
-        ~/.hermes/config.yaml under `sidekick.preferred_models:`. The
-        next /v1/settings/schema response uses the new list to filter
-        the catalog. Already-cached agents are unaffected — this knob
-        is purely a UI filter, not an agent-runtime setting."""
-        if not isinstance(value, list):
-            raise _SettingsValidationError("preferred_models value must be a list of strings")
-        cleaned: List[str] = []
-        seen: Set[str] = set()
-        for entry in value:
-            if not isinstance(entry, str):
-                raise _SettingsValidationError(
-                    f"preferred_models entries must be strings; got {type(entry).__name__}"
-                )
-            t = entry.strip()
-            if not t or t in seen:
-                continue
-            # Conservative charset — globs are ASCII printables minus
-            # whitespace + a few risky ones. Lets a forks-edit survive
-            # round-trip through yaml without surprises.
-            if any(ch in t for ch in (" ", "\t", "\n", "\r")):
-                raise _SettingsValidationError(
-                    f"preferred_models entry has whitespace: {t!r}"
-                )
-            seen.add(t)
-            cleaned.append(t)
-        try:
-            import yaml
-            from hermes_cli.config import get_config_path
-            cfg_path = get_config_path()
-            cfg: Dict[str, Any] = {}
-            if cfg_path.exists():
-                with open(cfg_path, encoding="utf-8") as f:
-                    cfg = yaml.safe_load(f) or {}
-            sk = cfg.get("sidekick")
-            if not isinstance(sk, dict):
-                sk = {}
-                cfg["sidekick"] = sk
-            sk["preferred_models"] = cleaned
-            from hermes_cli.config import save_config
-            save_config(cfg)
-        except Exception as e:
-            logger.exception("[sidekick] preferred_models persist failed")
-            raise _SettingsValidationError(f"failed to write hermes config: {e}")
-        # Return the freshly-rebuilt def (in case the schema build
-        # normalized the list further — currently a no-op but keeps
-        # the response shape consistent with model setting).
-        new_schema = self._build_settings_schema()
-        for s in new_schema:
-            if s["id"] == "preferred_models":
-                return s
-        # Shouldn't reach here; fall through to a synthesized response.
-        return {
-            "id": "preferred_models",
-            "label": "Preferred models",
-            "category": "Agent",
-            "type": "string-list",
-            "value": cleaned,
-        }
-
-    def _apply_model_setting(self, value: Any) -> Dict[str, Any]:
-        """Persist a new default model to hermes config.yaml, mirroring
-        what `/model <name> --global` does in chat. Cached agents on
-        existing sessions keep their model until evicted (typical
-        case: next conversation start). New conversations pick up
-        the new default immediately on next /v1/responses dispatch.
-
-        The PWA may submit either `<vendor>/<model>` (OpenRouter, no
-        prefix) or `<provider-slug>:<model>` (e.g. `openai-codex:gpt-5.5`,
-        `copilot:gpt-5.4`). The colon prefix is the cue to route the
-        switch via switch_model's `explicit_provider` arg so we don't
-        have to detect-by-name. Provider names with colons in them
-        would break this — none today."""
-        # Diagnostic INFO log (Jonathan, 2026-05-12): hermes config.yaml
-        # has been silently flipping from gpt-5 to haiku and we haven't
-        # been able to locate the writer. /tmp/hermes-config-writes.log
-        # (cron model-watcher) catches the *moment* of change with PID
-        # context, but not the call chain that drove it. Logging the
-        # incoming value + caller frames here triangulates the plugin's
-        # /v1/settings POST path vs other writers (cli /model, gateway
-        # /handle_model_switch). Strip when the cause is identified.
-        try:
-            import traceback as _tb
-            frames = _tb.format_stack(limit=8)
-            logger.info(
-                "[sidekick] _apply_model_setting called value=%r frames=%s",
-                value,
-                " <- ".join(f.strip().splitlines()[0] for f in frames[:-1]),
-            )
-        except Exception:
-            pass
-        if not isinstance(value, str) or not value.strip():
-            raise _SettingsValidationError("model value must be a non-empty string")
-        raw_value = value.strip()
-
-        # Validate against the declared options[] (sidekick filter +
-        # current). Same logic as _build_settings_schema; we re-derive
-        # to avoid round-tripping through the schema endpoint.
-        schema = self._build_settings_schema()
-        model_def = next((s for s in schema if s["id"] == "model"), None)
-        if model_def is None:
-            raise _SettingsNotFoundError("model setting not declared")
-        valid_values = {o["value"] for o in (model_def.get("options") or [])}
-        if raw_value not in valid_values:
-            raise _SettingsValidationError(
-                f"value not in options[]: {raw_value!r}"
-            )
-
-        # Decode `<slug>:<model>` if present. Bare values (no colon)
-        # are treated as openrouter-routed. Note OpenRouter IDs CAN
-        # contain colons in the suffix (e.g. `google/gemma-4-26b:free`,
-        # `:nitro`) — but those values always have a `/` BEFORE the
-        # colon. Provider-slug prefixes never contain `/`. So: strip
-        # the prefix only when the part before `:` has no slash.
-        #
-        # explicit_provider="openrouter" for bare values is load-bearing:
-        # without it switch_model defaults to current_provider, which
-        # rejects the model with "Model X not found in <current> listing"
-        # whenever current is a non-OpenRouter provider (e.g. an
-        # exhausted Codex credential blocking the user from switching
-        # away to gemma).
-        if ":" in raw_value and "/" not in raw_value.split(":", 1)[0]:
-            slug, _, mid = raw_value.partition(":")
-            explicit_provider = slug.strip()
-            new_model = mid.strip()
-        else:
-            explicit_provider = "openrouter"
-            new_model = raw_value
-
-        # Read current state to feed switch_model.
-        try:
-            import yaml
-            from hermes_cli.config import get_config_path
-            cfg_path = get_config_path()
-            cfg: Dict[str, Any] = {}
-            if cfg_path.exists():
-                with open(cfg_path, encoding="utf-8") as f:
-                    cfg = yaml.safe_load(f) or {}
-            raw_model = cfg.get("model")
-            if isinstance(raw_model, dict):
-                model_cfg = raw_model
-            elif isinstance(raw_model, str):
-                model_cfg = {"default": raw_model}
-            else:
-                model_cfg = {}
-            current_model = (model_cfg.get("default") or "").strip()
-            current_provider = (model_cfg.get("provider") or "openrouter").strip()
-            current_base_url = (model_cfg.get("base_url") or "").strip()
-            user_provs = cfg.get("providers")
-            try:
-                from hermes_cli.config import get_compatible_custom_providers
-                custom_provs = get_compatible_custom_providers(cfg)
-            except Exception:
-                custom_provs = cfg.get("custom_providers")
-        except Exception as e:
-            raise _SettingsValidationError(
-                f"failed to read hermes config: {e}"
-            )
-
-        # Delegate provider resolution via switch_model. Despite the
-        # is_global flag's name, the function does NOT write config
-        # itself — that's the caller's job (mirroring how cli.py and
-        # gateway/run.py handle their own /model commands). We do it
-        # below.
-        try:
-            from hermes_cli.model_switch import switch_model
-            result = switch_model(
-                raw_input=new_model,
-                current_provider=current_provider,
-                current_model=current_model,
-                current_base_url=current_base_url,
-                current_api_key="",
-                is_global=True,
-                explicit_provider=explicit_provider,
-                user_providers=user_provs,
-                custom_providers=custom_provs,
-            )
-        except Exception as e:
-            logger.exception("[sidekick] switch_model raised")
-            raise _SettingsValidationError(f"switch_model failed: {e}")
-        if not result.success:
-            raise _SettingsValidationError(
-                result.error_message or "model switch rejected"
-            )
-
-        # Persist resolved model+provider+base_url to config.yaml so
-        # the change survives restart (mirrors the persist block in
-        # gateway/run.py:_handle_model_switch). switch_model itself
-        # does NOT write — despite the is_global flag — so we have
-        # to do it here, otherwise the setting reverts on the next
-        # _build_settings_schema call (it reads config.yaml).
-        try:
-            from hermes_cli.config import save_config
-            cfg.setdefault("model", {})
-            if not isinstance(cfg["model"], dict):
-                cfg["model"] = {"default": cfg["model"]}
-            cfg["model"]["default"] = result.new_model
-            if result.target_provider:
-                cfg["model"]["provider"] = result.target_provider
-            if result.base_url:
-                cfg["model"]["base_url"] = result.base_url
-            save_config(cfg)
-        except Exception as e:
-            logger.warning("[sidekick] failed to persist model to config.yaml: %s", e)
-
-        # Re-derive the schema so the response reflects the actual
-        # post-write state (catches cases where switch_model
-        # normalized the model id to a canonical form).
-        new_schema = self._build_settings_schema()
-        return next((s for s in new_schema if s["id"] == "model"), schema[0])
 
     # Pretty names for the auth-error enrichment below. Provider slugs
     # come from hermes' credential pool; the user-facing reply uses
@@ -2898,442 +1422,6 @@ class SidekickAdapter(BasePlatformAdapter):
             f" Switch to a different model in Settings → Agent → Model to continue."
         )
 
-    async def _handle_responses(self, request: "web.Request") -> "web.StreamResponse":
-        """POST /v1/responses — turn dispatch with optional streaming."""
-        if not self._check_http_auth(request):
-            return web.Response(status=401, text="invalid token")
-        try:
-            body = await request.json()
-        except (ValueError, json.JSONDecodeError):
-            return web.json_response(
-                {"error": {"type": "invalid_request_error",
-                           "message": "body is not valid JSON"}},
-                status=400,
-            )
-
-        conversation = body.get("conversation")
-        input_field = body.get("input")
-        stream = bool(body.get("stream", True))
-        # Sidekick extension: optional `attachments` array — each entry
-        # is `{type, mimeType, fileName, content}` where `content` is a
-        # `data:<mime>;base64,<payload>` URL. NOT part of the OpenAI
-        # Responses API today; tolerated as an additive field so a
-        # raw OAI third-party speaking only the standard surface still
-        # interoperates.
-        raw_attachments = body.get("attachments")
-        attachments = raw_attachments if isinstance(raw_attachments, list) else None
-        # Sidekick extension: `voice: true` flags the input as dictated.
-        # We prepend `[voice]` so the agent can recognise it (AGENTS.md
-        # tells the agent to expect occasional STT errors in such turns
-        # and to interpret them charitably). Lives in metadata
-        # alongside user_message_id for OAI-blessed compatibility;
-        # back-compat reads top-level `voice` from older PWA bundles.
-        body_metadata = body.get("metadata") if isinstance(body.get("metadata"), dict) else {}
-        voice_flag = body_metadata.get("voice") == "true" or body.get("voice") is True
-
-        if not isinstance(conversation, str) or not conversation:
-            return web.json_response(
-                {"error": {"type": "invalid_request_error",
-                           "message": "missing or invalid `conversation`"}},
-                status=400,
-            )
-        if input_field is None:
-            return web.json_response(
-                {"error": {"type": "invalid_request_error",
-                           "message": "missing `input`"}},
-                status=400,
-            )
-        text = self._coerce_input(input_field)
-        if text is None:
-            return web.json_response(
-                {"error": {"type": "invalid_request_error",
-                           "message": "`input` must be a string or array of {role, content}"}},
-                status=400,
-            )
-        if voice_flag and text and not text.lstrip().startswith("[voice]"):
-            text = f"[voice] {text}"
-
-        # Decode the gateway-prefixed conversation id. The drawer hands
-        # back ids of the form `${source}:${chat_id}` (see
-        # _format_gateway_id rationale). Sidekick's /v1/responses path
-        # only dispatches for sidekick-source chats — the composer is
-        # read-only for any other source upstream — so reject prefixes
-        # that aren't ours rather than silently routing to a wrong-chat
-        # adapter. Bare ids (no prefix) are accepted for backward compat
-        # with un-prefixed callers.
-        parsed_source, chat_id = _parse_gateway_id(conversation)
-        if parsed_source is not None and parsed_source != SIDEKICK_SOURCE:
-            return web.json_response(
-                {"error": {"type": "invalid_request_error",
-                           "message": (f"`conversation` source `{parsed_source}` "
-                                       "is read-only via sidekick plugin")}},
-                status=400,
-            )
-        response_id = f"resp_{secrets.token_hex(12)}"
-        message_id = f"msg_{secrets.token_hex(10)}"
-        created_at = int(time.time())
-
-        # Sidekick extension: PWA may pre-mint the user-message id and
-        # ship it as `metadata.user_message_id` (OAI Responses API
-        # `metadata: Dict[str, str]` — a documented extension point
-        # vanilla servers preserve unchanged; we read ours out). The
-        # bubble it broadcasts in the `user_message` envelope below
-        # uses this id as the dedup key for cross-device sync. When
-        # absent (raw OAI third-parties, legacy clients pre-2026-05)
-        # we mint one server-side; the originating device just won't
-        # dedup against the broadcast.
-        #
-        # Back-compat: also accept the legacy top-level
-        # `user_message_id` for one release cycle. Sidekick PWA
-        # bundle v0.424+ uses metadata; older bundles still using
-        # top-level get correct behavior until they're refreshed.
-        # body_metadata captured above (voice handling).
-        raw_user_msg_id = (
-            body_metadata.get("user_message_id")
-            or body.get("user_message_id")  # legacy top-level
-        )
-        if isinstance(raw_user_msg_id, str) and raw_user_msg_id:
-            user_message_id = raw_user_msg_id
-        else:
-            user_message_id = f"umsg_{secrets.token_hex(10)}"
-
-        # Cross-device user-message broadcast. Emit BEFORE dispatching
-        # the turn so other connected PWA tabs render the user bubble
-        # immediately (asymmetry fix: previously only the agent's reply
-        # envelopes propagated to other devices, so the user's own
-        # bubble was invisible until manual refresh). The originating
-        # device dedups against this broadcast via `user_message_id`
-        # (the optimistic bubble it already rendered shares the id).
-        # Out-of-turn channel: this fires before _dispatch_message, so
-        # there's no in-turn queue to bypass — _safe_send_envelope will
-        # route it through _publish_out_of_turn which prefixes the
-        # chat_id to `sidekick:<chat_id>` on the wire.
-        await self._safe_send_envelope({
-            "type": "user_message",
-            "chat_id": chat_id,
-            "message_id": user_message_id,
-            "text": text,
-        })
-
-        # Register the turn queue. If a queue already exists for this
-        # chat_id, replace it — the proxy is expected to serialize per-
-        # chat (multiplexed via /api/sidekick/messages on the proxy
-        # side), so this branch is purely defensive.
-        queue: "asyncio.Queue[Dict[str, Any]]" = asyncio.Queue(maxsize=TURN_QUEUE_MAX)
-        self._turn_queues[chat_id] = queue
-
-        # Capture state.db's id high-water mark for this chat BEFORE
-        # dispatching. After reply_final fires, any messages.id strictly
-        # greater than this is a row hermes persisted during this turn —
-        # used by _write_msg_links_after_turn to link the SSE-shape ids
-        # the PWA knows (user_message_id, message_id) back to the
-        # canonical state.db ids history-fetch will surface later.
-        pre_high_water = await asyncio.to_thread(
-            self._capture_msg_high_water_mark, chat_id,
-        )
-
-        if not stream:
-            return await self._handle_responses_blocking(
-                chat_id, text, queue, response_id, message_id, created_at,
-                attachments=attachments,
-                user_message_id=user_message_id, pre_high_water=pre_high_water,
-            )
-        return await self._handle_responses_streaming(
-            request, chat_id, text, queue, response_id, message_id, created_at,
-            attachments=attachments,
-            user_message_id=user_message_id, pre_high_water=pre_high_water,
-        )
-
-    async def _handle_responses_blocking(
-        self, chat_id: str, text: str,
-        queue: "asyncio.Queue[Dict[str, Any]]",
-        response_id: str, message_id: str, created_at: int,
-        attachments: Optional[list] = None,
-        user_message_id: str = "",
-        pre_high_water: Optional[int] = None,
-    ) -> "web.Response":
-        """Non-streaming /v1/responses path. Dispatch, drain the queue
-        until reply_final, return single JSON envelope."""
-        reply_final_seen = False
-        try:
-            # _dispatch_message kicks off agent processing; replies
-            # arrive on `queue` via _safe_send_envelope's fan-out.
-            asyncio.create_task(self._dispatch_message(
-                chat_id=chat_id, text=text, attachments=attachments,
-            ))
-            assembled = ""
-            while True:
-                env = await asyncio.wait_for(queue.get(), timeout=TURN_TIMEOUT_S)
-                t = env.get("type")
-                if t == "reply_delta":
-                    # Hermes emits the accumulated text on each chunk.
-                    # Track the latest; OAI-shape compaction below.
-                    assembled = env.get("text", assembled) or assembled
-                elif t == "reply_final":
-                    reply_final_seen = True
-                    break
-            return web.json_response(self._build_response_envelope(
-                response_id, message_id, created_at, assembled,
-            ))
-        except asyncio.TimeoutError:
-            return web.json_response(
-                {"error": {"type": "server_error", "message": "turn timed out"}},
-                status=500,
-            )
-        finally:
-            self._turn_queues.pop(chat_id, None)
-            # Link the just-persisted state.db rows to the PWA's known
-            # SSE-shape ids so a future history-fetch reload can dedup
-            # against the IDB-cached bubbles. Only fires when a turn
-            # actually completed; on timeout / error the rows hermes
-            # may or may not have written aren't ours to claim.
-            if reply_final_seen:
-                await asyncio.to_thread(
-                    self._write_msg_links_after_turn,
-                    chat_id, pre_high_water, user_message_id, message_id,
-                )
-
-    async def _handle_responses_streaming(
-        self, request: "web.Request",
-        chat_id: str, text: str,
-        queue: "asyncio.Queue[Dict[str, Any]]",
-        response_id: str, message_id: str, created_at: int,
-        attachments: Optional[list] = None,
-        user_message_id: str = "",
-        pre_high_water: Optional[int] = None,
-    ) -> "web.StreamResponse":
-        """Streaming /v1/responses. Emits OpenAI Responses-API SSE
-        events as the agent produces output."""
-        resp = web.StreamResponse(
-            status=200,
-            headers={
-                "content-type": "text/event-stream",
-                "cache-control": "no-cache",
-                "x-accel-buffering": "no",
-            },
-        )
-        await resp.prepare(request)
-
-        async def write_sse(event: str, data: Dict[str, Any]) -> None:
-            await resp.write(
-                f"event: {event}\ndata: {json.dumps(data)}\n\n".encode("utf-8")
-            )
-
-        output_index = 0
-        content_index = 0
-        assembled = ""
-        completed_emitted = False
-
-        # Dispatch the message; replies flow back through `queue` via
-        # _safe_send_envelope.
-        asyncio.create_task(self._dispatch_message(
-            chat_id=chat_id, text=text, attachments=attachments,
-        ))
-
-        try:
-            while True:
-                env = await asyncio.wait_for(queue.get(), timeout=TURN_TIMEOUT_S)
-                t = env.get("type")
-                if t == "reply_delta":
-                    # Hermes streams accumulated text. First chunk
-                    # (no edit flag) might be empty or full; subsequent
-                    # chunks (edit=True) carry the running total.
-                    full = env.get("text", "") or ""
-                    if env.get("edit") and full.startswith(assembled):
-                        delta_text = full[len(assembled):]
-                    elif env.get("edit"):
-                        # Non-additive edit (rare). Bump content_index
-                        # so the client knows to start fresh.
-                        delta_text = full
-                        content_index += 1
-                        assembled = ""
-                    else:
-                        # First (non-edit) delta — full content is the delta.
-                        delta_text = full
-                    if delta_text:
-                        await write_sse("response.output_text.delta", {
-                            "type": "response.output_text.delta",
-                            "item_id": message_id,
-                            "output_index": output_index,
-                            "content_index": content_index,
-                            "delta": delta_text,
-                        })
-                        assembled += delta_text
-                elif t == "reply_final":
-                    await write_sse("response.completed", {
-                        "type": "response.completed",
-                        "response": self._build_response_envelope(
-                            response_id, message_id, created_at, assembled,
-                        ),
-                    })
-                    completed_emitted = True
-                    break
-                elif t == "tool_call":
-                    output_index += 1
-                    args = env.get("args", {})
-                    args_str = (
-                        json.dumps(args) if isinstance(args, dict)
-                        else str(env.get("_args_repr") or args)
-                    )
-                    await write_sse("response.output_item.added", {
-                        "type": "response.output_item.added",
-                        "output_index": output_index,
-                        "item": {
-                            "type": "function_call",
-                            "id": env.get("call_id", ""),
-                            "name": env.get("tool_name", ""),
-                            "arguments": args_str,
-                        },
-                    })
-                elif t == "tool_result":
-                    result = env.get("result", "")
-                    if isinstance(result, str):
-                        result_out = result[:TOOL_RESULT_MAX_BYTES]
-                    else:
-                        try:
-                            result_out = json.dumps(result)[:TOOL_RESULT_MAX_BYTES]
-                        except Exception:
-                            result_out = str(result)[:TOOL_RESULT_MAX_BYTES]
-                    await write_sse("response.output_item.done", {
-                        "type": "response.output_item.done",
-                        "output_index": output_index,
-                        "item": {
-                            "type": "function_call_output",
-                            "call_id": env.get("call_id", ""),
-                            "output": result_out,
-                        },
-                    })
-                    # Bump for any subsequent output. Reset assembled
-                    # so a follow-up text item starts fresh.
-                    output_index += 1
-                    content_index = 0
-                    assembled = ""
-                elif t == "typing":
-                    await write_sse("response.in_progress", {
-                        "type": "response.in_progress",
-                    })
-                # Other envelope types are out-of-turn and shouldn't
-                # arrive here. If they do (defensive), skip silently
-                # rather than corrupt the response stream.
-        except asyncio.TimeoutError:
-            if not completed_emitted:
-                with contextlib.suppress(Exception):
-                    await write_sse("response.error", {
-                        "type": "response.error",
-                        "error": {"type": "server_error", "message": "turn timed out"},
-                    })
-        except (ConnectionResetError, asyncio.CancelledError):
-            # Client disconnected mid-stream. Cleanup in finally.
-            pass
-        except Exception as exc:
-            logger.warning("[sidekick] /v1/responses error for %s: %s", chat_id, exc)
-            with contextlib.suppress(Exception):
-                await write_sse("response.error", {
-                    "type": "response.error",
-                    "error": {"type": "server_error", "message": str(exc)},
-                })
-        finally:
-            self._turn_queues.pop(chat_id, None)
-            with contextlib.suppress(Exception):
-                await resp.write_eof()
-            # Mirror of the blocking handler's link-write — only fires
-            # when reply_final actually completed (`completed_emitted`).
-            # See _write_msg_links_after_turn for full rationale.
-            if completed_emitted:
-                await asyncio.to_thread(
-                    self._write_msg_links_after_turn,
-                    chat_id, pre_high_water, user_message_id, message_id,
-                )
-        return resp
-
-    @staticmethod
-    def _build_response_envelope(
-        response_id: str, message_id: str,
-        created_at: int, assembled: str,
-    ) -> Dict[str, Any]:
-        """Build the OpenAI Responses-API completed envelope."""
-        return {
-            "id": response_id,
-            "object": "response",
-            "status": "completed",
-            "created_at": created_at,
-            "model": "hermes",
-            "output": [{
-                "type": "message",
-                "id": message_id,
-                "role": "assistant",
-                "content": [{"type": "output_text", "text": assembled}],
-            }],
-            "usage": {
-                "input_tokens": 0,
-                "output_tokens": 0,
-                "total_tokens": 0,
-            },
-        }
-
-    # ------------------------------------------------------------------
-    # /v1/events — out-of-turn SSE channel
-    # ------------------------------------------------------------------
-    #
-    # Persistent SSE for envelopes not tied to an active /v1/responses
-    # turn: notifications (cron-driven), session_changed (compression-
-    # rotation that didn't happen during a request), late tool events,
-    # etc. The proxy keeps one of these open at all times and fans the
-    # envelopes onto its persistent /api/sidekick/stream channel.
-
-    async def _handle_events(self, request: "web.Request") -> "web.StreamResponse":
-        """GET /v1/events — persistent SSE for out-of-turn envelopes."""
-        if not self._check_http_auth(request):
-            return web.Response(status=401, text="invalid token")
-
-        last_event_id = request.headers.get("Last-Event-ID", "")
-        cursor: Optional[int] = None
-        if last_event_id:
-            try:
-                cursor = int(last_event_id)
-            except ValueError:
-                cursor = None
-
-        queue: "asyncio.Queue[Tuple[int, Dict[str, Any]]]" = (
-            asyncio.Queue(maxsize=TURN_QUEUE_MAX)
-        )
-        self._event_subscribers.add(queue)
-
-        resp = web.StreamResponse(
-            status=200,
-            headers={
-                "content-type": "text/event-stream",
-                "cache-control": "no-cache",
-                "x-accel-buffering": "no",
-            },
-        )
-        await resp.prepare(request)
-
-        async def write_evt(eid: int, event_name: str, data: Dict[str, Any]) -> None:
-            await resp.write(
-                f"id: {eid}\nevent: {event_name}\ndata: {json.dumps(data)}\n\n".encode("utf-8")
-            )
-
-        try:
-            # Tight reconnect hint so a transient drop resumes sub-second.
-            await resp.write(b"retry: 1000\n\n")
-            # Replay anything from the ring strictly newer than cursor.
-            for eid, env in list(self._event_replay_ring):
-                if cursor is None or eid > cursor:
-                    await write_evt(eid, env.get("type", "event"), env)
-            # Live envelopes.
-            while True:
-                eid, env = await queue.get()
-                await write_evt(eid, env.get("type", "event"), env)
-        except (asyncio.CancelledError, ConnectionResetError):
-            pass
-        except Exception as exc:
-            logger.warning("[sidekick] /v1/events error: %s", exc)
-        finally:
-            self._event_subscribers.discard(queue)
-            with contextlib.suppress(Exception):
-                await resp.write_eof()
-        return resp
 
     # ------------------------------------------------------------------
     # Outbound
@@ -3342,6 +1430,53 @@ class SidekickAdapter(BasePlatformAdapter):
     def _next_message_id(self) -> str:
         self._message_seq += 1
         return f"sk-{int(time.time())}-{self._message_seq}"
+
+    @staticmethod
+    def _push_owned_by_plugin() -> bool:
+        """Mirrors the proxy's ``isPushOwnedByPlugin`` env check.
+        When set, dispatch lives here; the proxy is just a passthrough."""
+        v = os.environ.get("SIDEKICK_PUSH_OWNED_BY_PLUGIN", "")
+        return v == "true" or v == "1"
+
+    def _maybe_migrate_legacy_push_subs(self) -> None:
+        """One-shot migration: copy push subscriptions out of the
+        proxy's JSON file (``~/.sidekick/notifications/push-subscriptions.json``)
+        into the supplemental DB. Idempotent — re-runs skip rows that
+        already exist by endpoint. Failure is non-fatal: legacy subs
+        stay working until migration succeeds on a later boot.
+        """
+        if self._sidekick_db is None:
+            return
+        from .sidekick_state import upsert_subscription, list_subscriptions
+        try:
+            json_path = Path.home() / ".sidekick" / "notifications" / "push-subscriptions.json"
+            if not json_path.exists():
+                return
+            with open(json_path, "r", encoding="utf-8") as f:
+                rows = json.load(f)
+            if not isinstance(rows, list):
+                return
+            existing = {s["endpoint"] for s in list_subscriptions(self._sidekick_db)}
+            imported = 0
+            for r in rows:
+                ep = r.get("endpoint") if isinstance(r, dict) else None
+                keys = (r.get("keys") or {}) if isinstance(r, dict) else {}
+                p256dh = keys.get("p256dh")
+                auth = keys.get("auth")
+                ua = r.get("userAgent") or ""
+                if not ep or not p256dh or not auth:
+                    continue
+                if ep in existing:
+                    continue
+                upsert_subscription(
+                    self._sidekick_db,
+                    endpoint=ep, p256dh=p256dh, auth=auth, user_agent=ua,
+                )
+                imported += 1
+            if imported:
+                logger.info("[sidekick] migrated %d legacy push subscriptions → sqlite", imported)
+        except Exception as exc:
+            logger.warning("[sidekick] legacy push subs migration skipped: %s", exc)
 
     async def _safe_send_envelope(self, env: Dict[str, Any]) -> bool:
         """Fan an outbound envelope to consumers.
@@ -3389,6 +1524,36 @@ class SidekickAdapter(BasePlatformAdapter):
                 if replacement is not None:
                     env = {**env, "text": replacement}
 
+        # In-flight turn buffer: capture tool/reply envelopes for the
+        # mid-flight /items merge. Closes on reply_final (state.db is
+        # now authoritative). Independent of the in-turn vs out-of-turn
+        # routing below.
+        if self._turn_buffer is not None:
+            try:
+                self._turn_buffer.observe_envelope(env)
+                if env_type == "reply_final" and chat_id:
+                    self._turn_buffer.close_turn(chat_id)
+            except Exception as exc:
+                logger.warning("[sidekick] turn buffer observe failed: %s", exc)
+
+        # Plugin-owned push dispatch. Fires on push-eligible envelopes
+        # (reply_final, notification) when SIDEKICK_PUSH_OWNED_BY_PLUGIN
+        # is set on the matching proxy. Independent of the in-turn vs
+        # out-of-turn routing below — we ship the push REGARDLESS of
+        # which channel the envelope rides client-side.
+        if self._push_dispatcher and self._push_owned_by_plugin():
+            try:
+                # body for the push payload: env.content/text, or the
+                # accumulated reply text for reply_final. Reuse the
+                # plugin's existing replyBuffer-like state if needed;
+                # for now use env contents directly.
+                body_override = None
+                if env_type == "reply_final":
+                    body_override = env.get("text") or env.get("content") or ""
+                self._push_dispatcher.dispatch_envelope(env, body_override=body_override)
+            except Exception as exc:
+                logger.warning("[sidekick.push] dispatch failed: %s", exc)
+
         if env_type in in_turn_types and chat_id:
             queue = self._turn_queues.get(chat_id)
             if queue is not None:
@@ -3421,7 +1586,36 @@ class SidekickAdapter(BasePlatformAdapter):
         if env_type == "notification":
             self._persist_notification(env)
 
-        return self._publish_out_of_turn(env)
+        from . import sidekick_route_events as _route_events
+        published = _route_events.publish_out_of_turn(self, env)
+
+        # Cross-device unread sync: when a push-eligible envelope lands
+        # for a chat, every connected device needs to know its unread
+        # count just changed. Without this, other devices' badges stay
+        # stale until they manually foreground (Jonathan field bug
+        # 2026-05-16 — "session said 2 messages but no unreads or
+        # notifications on either device"). The PWA's listener (in
+        # badge.ts) is debounced 1500ms, so the cumulative effect of
+        # an active conversation is one re-fetch per ~1.5s window per
+        # chat — cheap.
+        #
+        # Race note: reply_final fires here BEFORE hermes' state.db
+        # write commits. The PWA's fetch may see the count as N-1 if
+        # the race lands wrong. Self-heals on the next event (or any
+        # visibilitychange refresh) so the worst case is a brief stale
+        # badge. Fix in-place if it turns out to be user-visible: hook
+        # off the state.db commit instead.
+        if env_type in ("reply_final", "notification") and chat_id:
+            try:
+                _route_events.publish_out_of_turn(self, {
+                    "type": "unread_changed",
+                    "chat_id": chat_id,
+                    "cause": env_type,
+                })
+            except Exception as exc:
+                logger.debug("[sidekick] unread_changed publish failed: %s", exc)
+
+        return published
 
     def _persist_notification(self, env: Dict[str, Any]) -> None:
         """Write a notification envelope to state.db.messages as an
@@ -3524,50 +1718,9 @@ class SidekickAdapter(BasePlatformAdapter):
         except Exception:
             return None
 
-    def _publish_out_of_turn(self, env: Dict[str, Any]) -> bool:
-        """Push an envelope to /v1/events subscribers + the replay ring.
-
-        Synchronous (asyncio.Queue.put_nowait is non-blocking). Drops
-        envelopes for subscribers whose queue is full — protects the
-        plugin from a hung consumer; the affected client gets gaps,
-        which it can detect via Last-Event-ID skips on reconnect.
-
-        Wire-side chat_id normalization: prefix bare chat_ids with
-        ``sidekick:`` so the field matches the format the PWA pins via
-        ``getViewed()`` (drawer rows + URLs use ``_format_gateway_id``,
-        which always prefixes). Without this, post-tool-result `send()`
-        envelopes (sk-* message ids) carry bare chat_ids and the PWA's
-        handleReplyDelta gate drops them as off-screen — symptom: agent
-        reply hangs behind the activity row until session-switch+back
-        re-fetches via the prefixed `/v1/conversations/sidekick:.../items`
-        path. Internal queue routing (in-turn path) keys on bare chat_id
-        and is unaffected — only the wire field is rewritten.
-        """
-        chat_id = env.get("chat_id")
-        if isinstance(chat_id, str) and chat_id and _GATEWAY_ID_SEP not in chat_id:
-            env = {**env, "chat_id": _format_gateway_id(SIDEKICK_SOURCE, chat_id)}
-        self._event_id_counter += 1
-        eid = self._event_id_counter
-        self._event_replay_ring.append((eid, env))
-        if len(self._event_replay_ring) > EVENT_REPLAY_CAP:
-            self._event_replay_ring.pop(0)
-
-        delivered = False
-        dead: List["asyncio.Queue"] = []
-        for q in list(self._event_subscribers):
-            try:
-                q.put_nowait((eid, env))
-                delivered = True
-            except asyncio.QueueFull:
-                logger.warning(
-                    "[sidekick] /v1/events subscriber queue full, dropping %s",
-                    env.get("type"),
-                )
-            except Exception:
-                dead.append(q)
-        for q in dead:
-            self._event_subscribers.discard(q)
-        return delivered
+    # _publish_out_of_turn moved to sidekick_route_events.publish_out_of_turn
+    # (2026-05-17). Call sites use `_route_events.publish_out_of_turn(self,
+    # env)` directly so the same module owns the SSE reader + publisher.
 
     async def send(
         self,

@@ -31,6 +31,7 @@ import * as backend from './backend.ts';
 let composerEl: HTMLTextAreaElement | null = null;
 let transcriptEl: HTMLElement | null = null;
 let highlightedEl: HTMLElement | null = null;
+let hintEl: HTMLElement | null = null;
 
 function bubbles(): HTMLElement[] {
   if (!transcriptEl) return [];
@@ -41,6 +42,54 @@ function bubbles(): HTMLElement[] {
   );
 }
 
+function ensureHint(): void {
+  if (hintEl || typeof document === 'undefined') return;
+  const el = document.createElement('div');
+  el.className = 'transcript-highlight-hint';
+  el.setAttribute('aria-hidden', 'true');
+  // Each segment is a separate <span> so CSS can dim the bullets
+  // between them without dimming the key glyphs.
+  el.innerHTML =
+    '<kbd>↑↓</kbd> navigate'
+    + '<span class="thh-sep">·</span><kbd>P</kbd> pin'
+    + '<span class="thh-sep">·</span><kbd>C</kbd> copy'
+    + '<span class="thh-sep">·</span><kbd>Esc</kbd> exit';
+  document.body.appendChild(el);
+  hintEl = el;
+}
+
+/** Position the hint chip just above the currently highlighted bubble.
+ *  Field UX 2026-05-16 (Jonathan): the fixed bottom-center placement
+ *  overlapped the composer. Anchor to the bubble instead so the chip
+ *  moves with the selection and stays out of the input area. */
+function positionHint(): void {
+  if (!hintEl) return;
+  const bubble = highlightedEl;
+  if (!bubble) return;
+  const rect = bubble.getBoundingClientRect();
+  // Above the bubble with 6px gap. If the bubble is near the top of
+  // the viewport, the chip would clip — fall back to below it.
+  const chipH = 28;  // approx height of the rendered chip; CSS sets ~26-30
+  const gap = 6;
+  const above = rect.top - chipH - gap;
+  const useAbove = above > 12;  // give it 12px from viewport top
+  const y = useAbove ? above : rect.bottom + gap;
+  // Center horizontally on the bubble's mid-width.
+  const x = rect.left + rect.width / 2;
+  hintEl.style.left = `${Math.round(x)}px`;
+  hintEl.style.top = `${Math.round(y)}px`;
+}
+
+function showHint(): void {
+  ensureHint();
+  positionHint();
+  hintEl?.classList.add('visible');
+}
+
+function hideHint(): void {
+  hintEl?.classList.remove('visible');
+}
+
 function setHighlight(el: HTMLElement | null): void {
   if (highlightedEl && highlightedEl !== el) {
     highlightedEl.classList.remove('transcript-highlight');
@@ -48,14 +97,38 @@ function setHighlight(el: HTMLElement | null): void {
   highlightedEl = el;
   if (el) {
     el.classList.add('transcript-highlight');
+    // Reposition the chip AFTER scroll completes; smooth scroll is
+    // animated, so the bubble rect changes over ~300ms. Position once
+    // immediately (so the chip appears next to the pre-scroll position)
+    // and once after the scroll settles.
     el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    showHint();
+    setTimeout(() => { if (highlightedEl === el) positionHint(); }, 320);
+  } else {
+    hideHint();
   }
 }
 
 function exitHighlight(): void {
   if (highlightedEl) highlightedEl.classList.remove('transcript-highlight');
   highlightedEl = null;
+  hideHint();
   composerEl?.focus();
+}
+
+/** Called by external state-change paths (chat switch, new chat) to
+ *  drop highlight mode without focusing the composer. Idempotent.
+ *  Field UX 2026-05-16 (Jonathan): "when i go into select mode and
+ *  then switch sessions or do new chat this overlay should disappear
+ *  but it doesn't." */
+export function clearHighlight(): void {
+  if (!highlightedEl) {
+    hideHint();
+    return;
+  }
+  highlightedEl.classList.remove('transcript-highlight');
+  highlightedEl = null;
+  hideHint();
 }
 
 /** True if the composer's textarea has no user content. Empty +

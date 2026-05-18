@@ -229,7 +229,15 @@ function startStreamChannel(): void {
   };
   for (const t of ['reply_delta', 'reply_final', 'image', 'typing',
                    'notification', 'session_changed', 'error',
-                   'tool_call', 'tool_result', 'user_message']) {
+                   'tool_call', 'tool_result', 'user_message',
+                   // Cross-device SSOT sync envelopes. The proxy
+                   // forwards these (see FANOUT_TYPES in
+                   // proxy/sidekick/stream.ts) but EventSource only
+                   // delivers events whose name we explicitly subscribe
+                   // to. Without these listeners, the handlers in
+                   // handleEnvelope() are unreachable — caught only
+                   // by cross-device-pin-sync.mjs smoke 2026-05-16.
+                   'unread_changed', 'pins_changed', 'conversation_deleted']) {
     streamES.addEventListener(t, onEvent as any);
   }
   streamES.onerror = (e) => {
@@ -365,6 +373,44 @@ function bindLifecycleHandlers(): void {
   });
 }
 
+/** Cross-device SSOT sync — the plugin emits these envelopes when
+ *  another device (or a local seen/mark/pin/delete op) mutated state
+ *  the PWA tracks via /api/sidekick/{notifications,pins,...}. The
+ *  PWA's local listeners (badge.ts, pins/store.ts, sessionDrawer.ts)
+ *  re-fetch the affected surface; some types also have a local side
+ *  effect (e.g. delete the IDB row).
+ *
+ *  Table-driven so adding a fourth sync type means one row, not a
+ *  copy-paste of the case body. Each entry maps:
+ *    envelope.type → { eventName, sideEffect? }
+ *
+ *  `eventName` is dispatched on `window` with `{detail: env}`; local
+ *  listeners pick it up.
+ *  `sideEffect`, if present, runs BEFORE the dispatch — useful when
+ *  the listener depends on local state already being updated (e.g.
+ *  sessionDrawer's scheduleRefresh needs the IDB row gone before its
+ *  re-render). */
+type CrossDeviceSyncType = 'unread_changed' | 'pins_changed' | 'conversation_deleted';
+const CROSS_DEVICE_SYNC: Record<CrossDeviceSyncType, {
+  eventName: string;
+  sideEffect?: (chatId: string) => void;
+}> = {
+  unread_changed:        { eventName: 'sidekick:server-unread-changed' },
+  pins_changed:          { eventName: 'sidekick:server-pins-changed' },
+  conversation_deleted:  {
+    eventName: 'sidekick:server-conversation-deleted',
+    sideEffect: (chatId) => { conversations.remove(chatId).catch(() => {}); },
+  },
+};
+function dispatchCrossDeviceSync(type: CrossDeviceSyncType, env: any, chatId: string): void {
+  const entry = CROSS_DEVICE_SYNC[type];
+  if (!entry) return;
+  try {
+    entry.sideEffect?.(chatId);
+    window.dispatchEvent(new CustomEvent(entry.eventName, { detail: env }));
+  } catch { /* swallow — sync is best-effort */ }
+}
+
 function handleEnvelope(type: string, env: any, chatId: string): void {
   switch (type) {
     case 'typing':
@@ -431,6 +477,12 @@ function handleEnvelope(type: string, env: any, chatId: string): void {
       });
       return;
     }
+
+    case 'unread_changed':
+    case 'pins_changed':
+    case 'conversation_deleted':
+      dispatchCrossDeviceSync(env.type, env, chatId);
+      return;
 
     case 'session_changed': {
       // Compression rotated the gateway session, or hermes finished

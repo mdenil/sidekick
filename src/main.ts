@@ -19,21 +19,10 @@ import {
   fetchModelCaps,
   getVisionFallbackModel,
 } from './modelCapabilities.ts';
-import {
-  initStreamingIndicator,
-  showThinking,
-  showStreamingIndicator,
-  finalizeStreamingBubble,
-  clearStreamingIndicator,
-  resetStreamingIdleTimer,
-  trackPendingBubble,
-  untrackPendingBubble,
-  finalizeOldestPending,
-} from './streamingIndicator.ts';
+// streamingIndicator.ts removed — Crack A: rendering is projection-driven.
 import {
   initSessionResume,
   replaySessionMessages,
-  renderHistoryMessage,
   loadEarlierHistory,
   NO_REPLY_RE,
 } from './sessionResume.ts';
@@ -49,11 +38,11 @@ import * as vadRouting from './audio/shared/vadRouting.ts';
 import * as theme from './theme.ts';
 import * as wakeLock from './wakeLock.ts';
 import * as chat from './chat.ts';
-import * as renderedMessages from './renderedMessages.ts';
 import * as backend from './backend.ts';
 import * as conversations from './conversations.ts';
 import * as sessionDrawer from './sessionDrawer.ts';
 import * as cmdkPalette from './cmdkPalette.ts';
+import * as hotkeysHelp from './hotkeysHelp.ts';
 import { initPinDrawer } from './pins/drawer.ts';
 import { initTranscriptHighlight } from './transcriptHighlight.ts';
 import * as inAppBanner from './notifications/inAppBanner.ts';
@@ -94,7 +83,8 @@ import * as webrtcDictate from './audio/realtime/dictate.ts';
 import * as browserDictate from './audio/streaming/browserDictate.ts';
 import * as webrtcSuppress from './audio/realtime/suppress.ts';
 import * as bgTrace from './bgTrace.ts';
-import * as activityRow from './activityRow.ts';
+import * as transcriptStore from './transcript/store.ts';
+import { bindTranscriptPipeline } from './transcript/index.ts';
 
 // Card kind modules
 import imageCard from './cards/kinds/image.ts';
@@ -252,7 +242,11 @@ function setComposerReadOnly(readOnly: boolean, source: string = 'sidekick') {
       input.placeholder = `View only — sent via ${source}`;
       input.classList.add('readonly');
     } else {
-      input.placeholder = 'Ask anything';
+      // Must match the index.html placeholder. setComposerReadOnly(false)
+      // is called whenever switching to a sidekick chat, so this is the
+      // source of truth at runtime (not the HTML attribute, which gets
+      // overwritten on first call). Stay in sync if you change one.
+      input.placeholder = 'Type / for commands';
       input.classList.remove('readonly');
     }
   }
@@ -506,6 +500,14 @@ async function boot() {
   // observation — no behavior change. Diag-level only (off in prod).
   clickFreezeDiag.init();
 
+  // Mobile: strip native `title` attributes from all buttons so taps
+  // don't surface the system tooltip popup (iOS especially). aria-label
+  // covers accessibility. No-op on desktop. Idempotent.
+  void (async () => {
+    const { installMobileTooltipSuppression } = await import('./util/mobileTooltips.ts');
+    installMobileTooltipSuppression();
+  })();
+
   // Lockscreen + BT-headset remote-control receiver. Cap forwards
   // MPRemoteCommandCenter callbacks via custom events; PWA uses the
   // Media Session API. Both feed the same dispatcher (stop = end call,
@@ -616,8 +618,8 @@ async function boot() {
     // chat surface so they can keep going.
     onSessionGone: () => {
       diag('reset history: viewed session disappeared from server');
-      renderedMessages.clear();
-      activityRow.clearAll();
+      const viewed = sessionDrawer.getViewed();
+      if (viewed) transcriptStore.clearAll(viewed);
       draft.dismiss();
       voiceMemos.clearAll().catch(() => {});
       historyLoaded = false;
@@ -632,6 +634,10 @@ async function boot() {
     onResume: replaySessionMessages,
     onBeforeSwitch: cleanupAbandonedChat,
   });
+  // Cmd+/ (mac) / Ctrl+/ (other) → keyboard-shortcut reference modal.
+  // Pure UI; binds a document-level keydown listener and renders a
+  // lazy <dialog> on first open. No deps on backend/proxy state.
+  hotkeysHelp.init();
   // Pin drawer — right-side surface aggregating pinned messages across
   // every chat. Click handler reuses the cmdk drill-to-message path:
   // resumeSession to fetch + render, then targetMessageId so the
@@ -866,19 +872,17 @@ async function boot() {
     onChange: updateSendButtonState,
     onScroll: chat.autoScroll,
     onFlush: (text) => {
-      // User bubble FIRST, then send. Pre-mint userMessageId + use
-      // renderedMessages so the server's user_message envelope echo
-      // dedups idempotently (the SSOT contract every user-bubble
-      // path follows post-2026-05-04).
+      // Pre-mint a user_message_id and surface the bubble optimistically
+      // via the store. The server's user_message envelope echo dedups
+      // by the same id; once it arrives, the pendingSend clears and
+      // the bubble's .pending class flips off via projection.
       const userMessageId = `umsg_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
-      renderedMessages.upsert(userMessageId, {
-        role: 'user',
-        text,
-        status: 'finalized',
-        speaker: 'You',
-        cls: 's0',
-        source: 'voice',
-      });
+      const chatId = resolveOrMintSendChatId();
+      if (chatId) {
+        transcriptStore.addPendingSend(chatId, {
+          messageId: userMessageId, text, source: 'voice', sentAt: Date.now(),
+        });
+      }
       backend.sendMessage(text, { voice: true, userMessageId });
       playFeedback('send');
     },
@@ -942,15 +946,20 @@ async function boot() {
   // viewport-aware bubble that hides on iOS tap. See util/tooltip.ts.
   initAppTooltip();
 
-  // Streaming-bubble module — needs the agent-label callback wired
-  // before backend.onSend(() => showThinking()) fires on the first send.
-  initStreamingIndicator({ getAgentLabel });
+  // Crack A: transcript pipeline. Wires store mutations → projection
+  // → reconciler for the active chat. From here on, every SSE
+  // envelope / send / resume goes through `transcriptStore.*` and the
+  // DOM follows automatically. Has to fire BEFORE the SSE wiring
+  // below (or events would land on a no-op subscriber).
+  bindTranscriptPipeline({
+    transcriptEl: () => document.getElementById('transcript'),
+    getViewedChatId: () => sessionDrawer.getViewed(),
+  });
 
   // Session-resume rendering — drives the transcript on chat switch /
-  // resume / load-earlier. Needs agent-label + composer-ro callbacks
-  // plus a hook to flip the historyLoaded flag in main.ts.
+  // resume / load-earlier. Needs composer-ro callback + a hook to flip
+  // the historyLoaded flag in main.ts.
   initSessionResume({
-    getAgentLabel,
     setComposerReadOnly,
     setHistoryLoaded: () => { historyLoaded = true; },
   });
@@ -1145,11 +1154,27 @@ async function boot() {
       // and each individually-rendered drawer is wasted work + flicker.
       sessionDrawer.scheduleRefresh();
     },
-    // Phase 3 — surface tool calls / results as inline activity rows.
-    // Renderer reads settings.agentActivity per call, so toggling at
-    // runtime takes effect on the next event without re-wiring.
-    onToolCall: (e) => activityRow.appendToolCall(e.conversation, e),
-    onToolResult: (e) => activityRow.appendToolResult(e.conversation, e),
+    // Crack A: tool envelopes go straight into the store. The
+    // projection + reconciler decide where the activity row lands —
+    // anchored to the in-flight turn's user_message id. Settings
+    // (agentActivity off/summary/full) read by the reconciler at
+    // each render.
+    onToolCall: (e) => {
+      if (!e?.conversation) return;
+      transcriptStore.appendInflight(e.conversation, {
+        type: 'tool_call', chat_id: e.conversation,
+        call_id: e.callId, tool_name: e.toolName,
+        args: e.args, started_at: e.startedAt,
+      });
+    },
+    onToolResult: (e) => {
+      if (!e?.conversation) return;
+      transcriptStore.appendInflight(e.conversation, {
+        type: 'tool_result', chat_id: e.conversation,
+        call_id: e.callId, tool_name: e.toolName,
+        result: e.result, duration_ms: e.durationMs,
+      });
+    },
     // Adapter-driven reconcile: hermes-gateway fires this when its
     // persistent SSE channel has been down long enough that the
     // server's replay ring may have rolled over. Re-render the active
@@ -1178,20 +1203,12 @@ async function boot() {
   // active backend's capabilities (sidebar itself is always visible).
   sessionDrawer.applyCapabilities();
 
-  // Any user-initiated send shows the thinking indicator immediately —
-  // doesn't wait for the first delta. Critical for the case where the
-  // agent jumps straight to tool calls (calendar, email, web fetch) with
-  // no text deltas for seconds; without this the chat looks dead.
-  backend.onSend(() => showThinking());
-
-  // Freeze the previous turn's activity row on every new user-initiated
-  // send so the next tool-event lands in a fresh row (per-turn grouping).
-  // The viewed chat is the only one whose row exists in DOM right now;
-  // background-chat rows are dropped at render time.
-  backend.onSend(() => {
-    const viewed = sessionDrawer.getViewed();
-    if (viewed) activityRow.freezeOnUserMessage(viewed);
-  });
+  // Crack A: no more showThinking() — the projection emits an
+  // activity row the moment the first tool_call envelope lands, and
+  // a streaming assistant bubble on the first reply_delta. The user
+  // sees their pending bubble until the agent acks; the gap is small.
+  // Turn boundaries are projection-driven (activity row key derives
+  // from the user_message id), so no explicit freeze call either.
 
   // Any user-initiated send is also a signal that the network is
   // responsive — take that opportunity to retry queued audio blobs
@@ -1234,52 +1251,51 @@ async function boot() {
   // bubble renders once per dispatch (one utterance = one bubble), set
   // up below via setUserBubbleHandler.
 
-  // Streaming user bubble for live dictation. Created on first interim
-  // of a new utterance; updated as interims/finals arrive; finalized
-  // on dispatch. Lives in `renderedMessages` keyed by a pre-minted
-  // `userMessageId` so the server's `user_message` envelope echo
-  // collapses idempotently into the same bubble (no dupe).
-  //
-  // The id rides through the data-channel `dispatch` envelope →
-  // bridge → `/v1/responses` `metadata.user_message_id` → plugin
-  // emits user_message envelope with the same id → handleUserMessage
-  // upserts under same key → no-op for the originator.
+  // Streaming user bubble for live dictation. Pending send is added
+  // on first interim, text updated as interims/finals arrive, cleared
+  // by the server's user_message echo (or the reset handler if the
+  // call closes mid-utterance). Pre-minted userMessageId rides
+  // through the dispatch envelope so the server's echo dedups against
+  // the same key.
   let dcUserMessageId: string | null = null;
   let dcUserBufferedFinals = '';
-  function userBubbleEl(): HTMLElement | null {
-    if (!dcUserMessageId) return null;
-    return document.querySelector(
-      `.line[data-message-id="${CSS.escape(dcUserMessageId)}"]`,
-    ) as HTMLElement | null;
+  function currentChatId(): string | null {
+    return backend.getCurrentSessionId?.() ?? sessionDrawer.getViewed() ?? null;
   }
-  function ensureUserBubble(initial: string): HTMLElement | null {
+  /** Resolve the chatId for a fresh send. On a fresh PWA the user's
+   *  first action (typed send, voice send, slash command) lands BEFORE
+   *  backend.newSession has been called — `currentChatId()` returns
+   *  null and the optimistic-bubble path can't route. Pre-mint a chat
+   *  via backend.newSession's synchronous prefix (it sets activeChatId
+   *  via mintChatId before its first await). Also pin sessionDrawer +
+   *  chat to the new id so subsequent envelopes route correctly. */
+  function resolveOrMintSendChatId(): string | null {
+    const existing = currentChatId();
+    if (existing) return existing;
+    void backend.newSession?.();
+    const fresh = backend.getCurrentSessionId?.() ?? null;
+    if (fresh) {
+      sessionDrawer.setViewed(fresh);
+      chat.trackViewedSession(fresh);
+    }
+    return fresh;
+  }
+  function ensureUserBubble(initial: string): void {
     if (!dcUserMessageId) {
       dcUserMessageId = `umsg_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
-      renderedMessages.upsert(dcUserMessageId, {
-        role: 'user',
-        text: initial,
-        status: 'streaming',
-        speaker: 'You',
-        cls: 's0 streaming',
-        source: 'voice',
-      });
+      const chatId = currentChatId();
+      if (chatId) {
+        transcriptStore.addPendingSend(chatId, {
+          messageId: dcUserMessageId, text: initial, source: 'voice', sentAt: Date.now(),
+        });
+      }
     }
-    return userBubbleEl();
   }
   function setUserBubbleText(text: string): void {
     if (!dcUserMessageId) return;
-    renderedMessages.upsert(dcUserMessageId, {
-      role: 'user',
-      text,
-      status: 'streaming',
-      speaker: 'You',
-      cls: 's0 streaming',
-    });
+    const chatId = currentChatId();
+    if (chatId) transcriptStore.updatePendingSend(chatId, dcUserMessageId, text);
   }
-  /** Pulled by webrtcDictation when it dispatches — pre-mints a bubble
-   *  id if one isn't already alive (e.g. dispatch fired before any
-   *  interim was rendered). The id ships in the dispatch envelope so
-   *  the server's user_message echo dedups against the same key. */
   function getOrMintUserMessageId(): string {
     if (!dcUserMessageId) {
       dcUserMessageId = `umsg_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
@@ -1287,29 +1303,33 @@ async function boot() {
     return dcUserMessageId;
   }
   webrtcDictation.setOnResetHandler(() => {
-    // Call closed (or reopened) — drop any in-flight streaming state.
-    // Orphan streaming bubble (dispatch never fired) gets removed.
+    // Call closed mid-utterance — drop the in-flight pending send if
+    // it never made it through dispatch.
     if (dcUserMessageId) {
-      const el = userBubbleEl();
-      if (el) el.remove();
-      renderedMessages.remove(dcUserMessageId);
+      const chatId = currentChatId();
+      if (chatId) transcriptStore.clearPendingSend(chatId, dcUserMessageId);
     }
     dcUserMessageId = null;
     dcUserBufferedFinals = '';
   });
   webrtcDictation.setUserBubbleHandler((text) => {
-    // Dispatch fired — finalize the bubble. If we never rendered an
-    // interim (e.g. silence-commit on empty utterance), mint an id now.
+    // Dispatch fired — pendingSend gets the final text; the server's
+    // user_message echo will clear it shortly. If we never rendered
+    // an interim (e.g. silence-commit on empty utterance), mint a
+    // pendingSend here so the bubble exists at all.
     const id = getOrMintUserMessageId();
-    renderedMessages.upsert(id, {
-      role: 'user',
-      text,
-      status: 'finalized',
-      speaker: 'You',
-      cls: 's0',
-      source: 'voice',
-    });
-    dcUserMessageId = null;  // next utterance mints a fresh id
+    const chatId = currentChatId();
+    if (chatId) {
+      const state = transcriptStore.getState(chatId);
+      if (state.pendingSends.find(p => p.messageId === id)) {
+        transcriptStore.updatePendingSend(chatId, id, text);
+      } else {
+        transcriptStore.addPendingSend(chatId, {
+          messageId: id, text, source: 'voice', sentAt: Date.now(),
+        });
+      }
+    }
+    dcUserMessageId = null;
     dcUserBufferedFinals = '';
   });
   webrtcDictation.setUserMessageIdProvider(getOrMintUserMessageId);
@@ -1410,7 +1430,16 @@ async function boot() {
       const actionsEl = composerEl3?.querySelector('.composer-actions') as HTMLElement | null;
       if (actionsEl) actionsEl.style.display = '';
     }
-    if (capture.hasActive()) capture.release();
+    // Don't tear down Listen's mic here — Listen owns the capture
+    // across commit + reply + re-arm, by design. releaseCaptureIfActive
+    // fires from sendTypedMessage to clean up memo/dictate/webrtc
+    // captures the user might have started; pulling Listen's mic out
+    // mid-turn breaks the post-reply cooldown→armed transition
+    // (armRecorder rebuilds against a torn-down stream → teardown →
+    // idle, and the user is stranded after one turn).
+    if (capture.hasActive() && capture.currentOwner() !== 'listen') {
+      capture.release();
+    }
   };
 
   // ── Composer ────────────────────────────────────────────────────────────
@@ -1546,27 +1575,20 @@ async function boot() {
       // line. On send-failure it flips to `.failed` with a Retry button
       // that restores the composer text and re-fires sendTypedMessage.
       //
-      // Cross-device dedup: pre-mint a userMessageId and key the
-      // optimistic bubble in renderedMessages with it. The same id
-      // ships in the POST body → the upstream's user_message broadcast
-      // carries it back → handleUserMessage upserts under the same key
-      // and the renderedMessages map's idempotency gives us free dedup
-      // on the originating device. Other devices see the id for the
-      // first time and render fresh.
+      // Cross-device dedup: pre-mint a userMessageId. It ships with
+      // the POST body → upstream's user_message broadcast echoes it →
+      // projection dedups on the originator, renders fresh on other
+      // devices.
       const userMessageId = `umsg_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
-      const bubble = renderedMessages.upsert(userMessageId, {
-        role: 'user',
-        text: text || '',
-        status: 'finalized',
-        speaker: 'You',
-        cls: 's0',
-        source: 'text',
-        attachments: hasAttachments ? attachments.toChatEcho() : undefined,
-        pending: true,
-      });
-      const sendChatId = backend.getCurrentSessionId?.() ?? null;
-      if (bubble && sendChatId) {
-        trackPendingBubble(sendChatId, bubble);
+      const sendChatId = resolveOrMintSendChatId();
+      if (sendChatId) {
+        transcriptStore.addPendingSend(sendChatId, {
+          messageId: userMessageId,
+          text: text || '',
+          source: 'text',
+          sentAt: Date.now(),
+          attachments: hasAttachments ? attachments.toChatEcho() : undefined,
+        });
       }
       // Optimistic sidebar entry — show this chat in the drawer with
       // the user's text as the snippet IMMEDIATELY, before the agent
@@ -1596,18 +1618,8 @@ async function boot() {
       const failBubble = (msg: string) => {
         diag(`sendMessage failed: ${msg}`);
         status.setStatus(`Send failed: ${msg}`, 'err');
-        if (bubble) {
-          chat.markBubbleFailed(bubble, {
-            onRetry: () => {
-              composerInput.value = text;
-              autoResize();
-              updateSendButtonState();
-              composerInput.focus();
-            },
-          });
-          if (sendChatId) {
-            untrackPendingBubble(sendChatId, bubble);
-          }
+        if (sendChatId) {
+          transcriptStore.markPendingSendFailed(sendChatId, userMessageId);
         }
       };
       try {
@@ -1655,17 +1667,59 @@ async function boot() {
     onChange: updateSendButtonState,
     onSubmit: sendTypedMessage,
   });
+  // Retry-send wire-up (Crack A): reconciler renders a Retry button
+  // on a `.failed` user bubble and dispatches `sidekick:retry-send`
+  // on click. Restore the composer with the original text + drop
+  // the failed pendingSend so the user can re-send. Mirrors the old
+  // chat.markBubbleFailed onRetry callback the reconciler replaces.
+  document.addEventListener('sidekick:retry-send', (ev) => {
+    const detail = (ev as CustomEvent).detail || {};
+    const text = typeof detail.text === 'string' ? detail.text : '';
+    const messageId = typeof detail.messageId === 'string' ? detail.messageId : '';
+    const chatId = sessionDrawer.getViewed();
+    if (chatId && messageId) {
+      transcriptStore.clearPendingSend(chatId, messageId);
+    }
+    if (text) {
+      composerInput.value = text;
+      composerInput.dispatchEvent(new Event('input'));  // triggers autoResize + updateSendButtonState
+      composerInput.focus();
+    }
+  });
   // Slash-command popover. Backend-declared registry, frontend-rendered
   // — see src/slashCommands.ts. The onResetSignal callback is the only
   // sidekick-side state callback (per design): main.ts owns the local
-  // wipe, slashCommands owns the dispatch + popover. onDispatch here
-  // is the bare-bones backend send (no optimistic bubble — the agent's
-  // reply IS the response).
+  // wipe, slashCommands owns the dispatch + popover.
+  //
+  // onDispatch renders an OPTIMISTIC user bubble before POSTing, same
+  // as sendTypedMessage's regular-text path. Field bug 2026-05-17:
+  // without the optimistic bubble, slash-command replies (which
+  // are fast — millisecond turns for diagnostic commands like
+  // /agents) raced ahead of the server's out-of-turn user_message
+  // envelope. The reply rendered FIRST, the user's "/agents" bubble
+  // landed below it. Local-first upsert under a PWA-minted
+  // userMessageId fixes the order; the server's later user_message
+  // broadcast dedups via the same id.
   slashCommands.init({
     input: composerInput,
     onDispatch: (cmdText) => {
       const hasAtt = attachments.hasPending();
-      const opts = hasAtt ? { attachments: attachments.toSendPayload() } : {};
+      const userMessageId = `umsg_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+      // Optimistic user bubble — slash commands succeed optimistically
+      // (server-side validation produces an error envelope, not a
+      // !ok response, so no .failed flip needed).
+      const sendChatId = resolveOrMintSendChatId();
+      if (sendChatId) {
+        transcriptStore.addPendingSend(sendChatId, {
+          messageId: userMessageId,
+          text: cmdText,
+          source: 'text',
+          sentAt: Date.now(),
+          attachments: hasAtt ? attachments.toChatEcho() : undefined,
+        });
+      }
+      const opts: Record<string, any> = { userMessageId };
+      if (hasAtt) opts.attachments = attachments.toSendPayload();
       try { backend.sendMessage(cmdText, opts); }
       catch (e: any) {
         const msg = e?.message || String(e);
@@ -1891,8 +1945,8 @@ async function boot() {
       // stays open if open). If memo has an in-flight blob queued in the
       // outbox, it'll send against the NEW session. That's a conscious
       // trade: user asked for a fresh thread, they get one.
-      renderedMessages.clear();
-      activityRow.clearAll();
+      const prevViewed = sessionDrawer.getViewed();
+      if (prevViewed) transcriptStore.clearAll(prevViewed);
       draft.dismiss();
       voiceMemos.clearAll().catch(() => {});
       // Clear remaining input surfaces atomically. Without this,
@@ -1914,7 +1968,14 @@ async function boot() {
       // Pin the viewed-session to the freshly-rotated chat_id. Invariant:
       // getViewed() mirrors the session on screen so handleReplyDelta /
       // handleReplyFinal don't drop incoming envelopes for it.
-      sessionDrawer.setViewed(backend.getCurrentSessionId?.() || null);
+      const newChatId = backend.getCurrentSessionId?.() || null;
+      sessionDrawer.setViewed(newChatId);
+      // Mirror into chat.viewedSessionIdRef so subsequent in-bubble
+      // chat-id resolution (pin button, snapshot persist) sees the
+      // new chat. Without this, pin-on-bubble in a fresh chat resolves
+      // the chatId to whatever the prior viewed was (smoke
+      // `pin-drawer-jump` regression).
+      chat.trackViewedSession(newChatId);
       // New chat is always sidekick-source; ensure composer is enabled
       // (in case user just rotated away from a non-sidekick chat).
       setComposerReadOnly(false);
@@ -3330,6 +3391,22 @@ async function boot() {
     if (btnNewChatEl) {
       setTooltip(btnNewChatEl, `New chat  ·  ${formatHotkey('Cmd+Shift+O')}`);
     }
+    // Pin-drawer toggle tooltips — desktop rail variant + mobile
+    // toolbar variant. Hardcoded Cmd+Shift+P, mirrors the matching
+    // branch in the global hotkey handler. Mobile suppresses titles
+    // via util/mobileTooltips.ts anyway so the toolbar setTooltip is
+    // mostly belt-and-suspenders for tablet/landscape edge cases.
+    const pinHotkeyLabel = `Pinned messages  ·  ${formatHotkey('Cmd+Shift+P')}`;
+    for (const id of ['btn-pin-drawer-rail', 'btn-pin-drawer']) {
+      const el = document.getElementById(id);
+      if (el) setTooltip(el, pinHotkeyLabel);
+    }
+    // Sidebar toggle gets its existing Cmd+Shift+S hint here too so
+    // we don't have a tooltip-symmetry gap between the two drawers.
+    const sbToggleEl = document.getElementById('sb-toggle');
+    if (sbToggleEl) {
+      setTooltip(sbToggleEl, `Toggle sessions  ·  ${formatHotkey('Cmd+Shift+S')}`);
+    }
   }
   applyMicModeUi();
   // Hotkey rebinds in the settings panel should refresh tooltips. Fire
@@ -3967,38 +4044,14 @@ async function backfillHistory() {
   finally { backfillInFlight = null; }
 }
 
-// ─── Activity handler — drives the streaming bubble's dot label ─────────────
+// ─── Activity handler ───────────────────────────────────────────────────────
 
-/** Activity signal from the backend — positive evidence that the agent
- *  has acknowledged our send and is actively working. Transitions the
- *  thinking bubble from "sending…" (optimistic, .pending class) to
- *  "thinking…" / "using <tool>…" (confirmed, bright dots). Fires on
- *  every incremental activity event; we just update the label, the
- *  replyId swap happens in showStreamingIndicator. */
+/** Activity signal — only kept around for the diag log + the future
+ *  drawer-side "agent typing" indicator. Rendering itself is now
+ *  driven by the projection's BubbleSpec.streaming flag, so this
+ *  handler no longer touches the DOM. */
 function handleActivity({ working, detail, conversation }: any) {
-  // Drop only for an explicitly DIFFERENT viewed session — null gets
-  // through (covers fresh-chat / first-message / boot races).
-  const viewed = sessionDrawer.getViewed();
-  if (viewed && conversation && conversation !== viewed) return;
-  // Q1: typing/working envelope is the agent's first ack — finalize
-  // the oldest pending user bubble for this chat.
-  if (working) finalizeOldestPending(conversation);
-  const el = renderedMessages.getStreaming();
-  if (!el) return;
-  el.classList.remove('pending');
-  const dots = el.querySelector('.thinking-dots');
-  if (!dots || !working) return;
-  if (dots.classList.contains('hidden')) return;  // text already populated
-  // Friendly labels for common tools; generic "using X" for anything else.
-  let label = 'thinking…';
-  if (detail === 'streaming') label = 'thinking…';
-  else if (detail === 'canvas.show') label = 'sharing card…';
-  else if (detail && detail !== 'tool') label = `using ${detail}…`;
-  else if (detail === 'tool') label = 'using tool…';
-  dots.textContent = label;
-  // Reset idle timer on every real signal — an active agent shouldn't
-  // time out while it's visibly working.
-  resetStreamingIdleTimer();
+  void working; void detail; void conversation;
 }
 
 /** Find the most-recent non-streaming agent bubble and attach a card.
@@ -4010,7 +4063,8 @@ function attachCardToLatestAgentBubble(card) {
   const bubbles = Array.from(
     el.querySelectorAll('.line.agent[data-reply-id]:not(.streaming)')
   ) as HTMLElement[];
-  const target = bubbles[bubbles.length - 1] || renderedMessages.getStreaming();
+  const streaming = el.querySelector('.line.agent.streaming') as HTMLElement | null;
+  const target = bubbles[bubbles.length - 1] || streaming;
   if (!target) {
     log('attachCard: no agent bubble to attach to — dropping card', card.kind);
     return;
@@ -4030,197 +4084,135 @@ function attachCardToLatestAgentBubble(card) {
  *  talk-mode track on the server side and arrives as audio independently. */
 function handleReplyDelta({ replyId, cumulativeText, conversation, messageId, isReplay = false }: any) {
   if (!cumulativeText) return;
-  // Drop deltas only for explicitly off-screen conversations: getViewed()
-  // pinned to a DIFFERENT id. When getViewed() is null (boot before
-  // setViewed pinned, race between async newSession and the next reply,
-  // first-message-on-fresh-install where no setViewed has fired yet),
-  // there's no on-screen session to protect — render. Otherwise we drop
-  // the agent's reply on the floor while waiting for an IDB write the
-  // user has no idea they're racing against.
+  // Always store the envelope — even for background chats, so a
+  // future switch-back finds the streamed text already there.
+  if (conversation && messageId) {
+    transcriptStore.appendInflight(conversation, {
+      type: 'reply_delta',
+      chat_id: conversation,
+      message_id: messageId,
+      text: cumulativeText,
+      edit: true,
+    });
+  }
+  // Audio + feedback side effects are scoped to the on-screen chat.
   const viewed = sessionDrawer.getViewed();
   if (viewed && conversation && conversation !== viewed) return;
-  // First-delta-of-turn signal: fire 'send' chime + open the suppress
-  // envelope (drop user transcripts during agent reply). Detected via
-  // renderedMessages.has(messageId) BEFORE upsert runs — first delta
-  // is the one where the map doesn't yet have the id. Replaces the
-  // duplicate path that lived in the data-channel ev.role==='assistant'
-  // branch (now dead). SSE is the single source of assistant events.
-  const isFirstDelta = !!messageId && !renderedMessages.has(messageId);
-  // Guard the 'send' chime on !isReplay — SSE ring-replay envelopes
-  // (catch-up after a fresh subscriber attaches, e.g. switching to a
-  // chat with recent activity) hit this same code path and would
-  // otherwise fire the chime on every switch-in to a cron-active
-  // chat (Jonathan field bug 2026-05-13).
-  if (isFirstDelta && !isReplay) {
-    try { playFeedback('send'); } catch { /* feedback is best-effort */ }
+  // First-delta-of-turn signal: chime + suppress envelope. With the
+  // store the "first delta" predicate is "no prior reply_delta with
+  // this message_id" — checked via the store before appendInflight
+  // would have added it. Since we already appended above, query the
+  // pre-append state by looking for a duplicate message_id in the
+  // already-stored envelopes; cheap enough.
+  if (!isReplay && messageId && conversation) {
+    const envs = transcriptStore.getState(conversation).inflight;
+    const isFirstDelta = envs.filter(e =>
+      e.type === 'reply_delta' && (e as any).message_id === messageId,
+    ).length === 1;  // exactly 1 = the one we just pushed
+    if (isFirstDelta) {
+      try { playFeedback('send'); } catch { /* best-effort */ }
+    }
   }
-  // Suppress envelope is idempotent — calling onAssistantDelta on every
-  // delta is fine; first call flips state, subsequent calls extend the
-  // tail. See src/pipelines/webrtc/suppress.ts.
   webrtcSuppress.onAssistantDelta();
-  // New turn arriving — cancel any paused per-bubble TTS player from
-  // a prior reply. Without this, the old paused HTMLAudioElement sits
-  // in tts.active across call open/close cycles. The bug surface
-  // (Jonathan, 2026-05-03 ~12:30 BT-headset test): user barge'd to
-  // pause an old reply mid-playback, ended call, started a new call,
-  // asked a new question — pressing BT play resumed the OLD paused
-  // player from its barge location instead of routing to the NEW
-  // reply's audio path. Once a fresh assistant_delta arrives, the
-  // previous turn's playhead state is moot; clear it.
   if (ttsModule.isPaused()) {
     cancelReplyTts('new-turn');
   }
-  // Q1: agent ack for our optimistic bubble — flip pending → finalized.
-  finalizeOldestPending(conversation);
-  // renderedMessages.upsert (called inside showStreamingIndicator) is
-  // idempotent on message_id, so re-delivery from the SSE replay ring
-  // for a message history already rendered just updates the same
-  // bubble in place rather than creating a duplicate.
-  showStreamingIndicator(cumulativeText, replyId, messageId);
+  void replyId;  // retained in signature for adapter contract; unused now
 }
 
 /** Complete reply. `content` (if present) is the raw block array used to
  *  pull out image attachments. */
 function handleReplyFinal({ replyId, text, content = [], conversation, messageId, isReplay = false }: any) {
-  // A completed turn means hermes has persisted this response to
-  // response_store.db (+ state.db/sessions gets the derived entry). If
-  // this was the first turn of a brand-new session, the drawer's
-  // placeholder row needs to be replaced with the real row — trigger a
-  // refresh. Background fetch will repopulate the cached list.
-  // ALWAYS refresh the drawer, even when the reply belongs to an
-  // off-screen conversation — that's the whole point of letting the
-  // stream complete in the background: the user needs the row to find.
-  // Coalesced: handleReplyFinal can fire multiple times in a burst
-  // (multi-bubble turns); a single eventual refresh is enough.
   sessionDrawer.scheduleRefresh();
 
-  // Same null-tolerant gate as handleReplyDelta: drop only for an
-  // explicitly DIFFERENT viewed session. getViewed()=null = no
-  // constraint (render). Side effects above (drawer refresh) already
-  // fired regardless.
+  // Push the envelope into the store unconditionally — even for
+  // background chats. The store is per-chat; the active chat re-renders
+  // and finalizes the bubble; background chats stay correct for the
+  // next switch-back.
+  if (conversation && messageId) {
+    transcriptStore.appendInflight(conversation, {
+      type: 'reply_final',
+      chat_id: conversation,
+      message_id: messageId,
+      text: text || undefined,
+    });
+    // Reply_final = whole turn ack'd; drop any remaining optimistic
+    // pending sends for this chat (defensive — user_message echo
+    // normally clears them earlier).
+    const state = transcriptStore.getState(conversation);
+    for (const p of state.pendingSends.slice()) {
+      transcriptStore.clearPendingSend(conversation, p.messageId);
+    }
+  }
+
   const viewed = sessionDrawer.getViewed();
   if (viewed && conversation && conversation !== viewed) {
-    // Off-screen reply — bump the app-icon badge so the user notices.
-    // Mirrors backendEvents.handleNotification's off-screen branch.
-    // Skip on isReplay (re-rendering an already-seen reply during
-    // resume) — replay means we're catching the client up to known
-    // state, not announcing a new arrival.
     if (!isReplay) badge.incrementUnread(conversation);
     return;
   }
 
-  // No bubble-id dedup needed: renderedMessages.upsert is idempotent
-  // on message_id, so a re-delivery for an already-rendered message
-  // updates the same bubble in place rather than creating a duplicate.
+  if (!isReplay && viewed && conversation) {
+    void badge.clearUnread(conversation);
+  }
 
-  // Suppress envelope close — schedules grace-period drop of user-
-  // transcript suppression. Idempotent (no-op if not currently
-  // suppressing). Mirrors handleReplyDelta's onAssistantDelta call.
-  // Replaces the duplicate path in the data-channel listener.
   webrtcSuppress.onAssistantFinal();
 
   const imageBlocks = extractImageBlocks(content);
 
-  if (NO_REPLY_RE.test(text)) {
+  // Fall back to the accumulated reply_delta text when the adapter
+  // sends an empty reply_final (telegram-shape adapters do this).
+  let finalText = text || '';
+  if (!finalText && conversation && messageId) {
+    const envs = transcriptStore.getState(conversation).inflight;
+    for (const env of envs) {
+      if (env.type === 'reply_delta' && env.message_id === messageId) {
+        finalText = env.text;
+      }
+    }
+  }
+
+  if (NO_REPLY_RE.test(finalText)) {
     log('suppressed NO_REPLY from agent');
-    clearStreamingIndicator();
     return;
   }
 
-  // reply_final is "this bubble is done streaming" — but adapters
-  // differ in whether the final envelope carries the full text. The
-  // legacy hermes /v1/responses adapter packed final text into the
-  // last event (`response.completed`) so handleReplyFinal could just
-  // use env.text. The hermes-gateway adapter (matching telegram /
-  // slack / signal protocol shape) sends text only via reply_delta
-  // and treats reply_final as a pure terminator. So `text` here is
-  // often empty even when the bubble has streamed content visible
-  // on screen — fall back to the streaming bubble's accumulated
-  // text in that case.
-  const streamingBubble = renderedMessages.getStreaming();
-  const accumulated = (streamingBubble && streamingBubble.dataset.text) || '';
-  const finalText = text || accumulated;
+  // Resolve the freshly-finalized bubble via data-key — the
+  // reply_final envelope above already triggered a reconcile pass, so
+  // the bubble is in the DOM with .text/markdown applied.
+  const bubble = messageId
+    ? document.querySelector(`#transcript [data-key="${CSS.escape(messageId)}"]`) as HTMLElement | null
+    : null;
 
   if (finalText) {
-    let bubble = finalizeStreamingBubble(finalText, messageId);
-    if (!bubble) {
-      // No streaming bubble in flight — adapter sent reply_final
-      // without a preceding delta. Mint a finalized bubble directly
-      // through the rendered-messages map so the same id can dedup
-      // on a subsequent re-delivery.
-      const key = messageId || `live:${replyId}`;
-      bubble = renderedMessages.upsert(key, {
-        role: 'assistant',
-        text: finalText,
-        status: 'finalized',
-        speaker: getAgentLabel(),
-        cls: 'agent',
-        markdown: true,
-        replyId,
-      });
-    } else if (messageId && !bubble.dataset.messageId) {
-      // Streaming bubble was finalized but the messageId wasn't set
-      // earlier (e.g. delta arrived without one, final has it).
-      bubble.dataset.messageId = messageId;
-    }
     if (!isReplay) playFeedback('receive');
 
-    // Speak-replies (CALL-ONLY since 2026-05): TTS auto-fires only
-    // inside an active call. In a turn-based call (Listen), we synth
-    // the reply through /tts so the user hears the answer handsfree.
-    // In a WebRTC call (talk mode), the peer track owns audio — we
-    // don't double-up. Outside a call (text-only chat, memo dictation),
-    // the user reads replies on screen; the per-bubble play button
-    // handles on-demand replay. The `settings.tts` setting still
-    // matters INSIDE a call (talk vs. stream WebRTC mode); it just
-    // doesn't trigger TTS outside one.
-    //
-    // Note that `inListen` covers turnbased = armed/recording/sending/
-    // playing/cooldown — i.e. any state where Listen owns the mic.
-    // Idle-state turnbased means the call ended, so no TTS.
-    //
-    // isReplay gates the whole block: SSE ring replay on page-load /
-    // reconnect re-emits old reply_finals; without this guard the
-    // PWA would read the chat aloud from the top every refresh.
+    // Speak-replies (CALL-ONLY): turnbased-tts when in Listen and not
+    // in a WebRTC call (where the peer track owns audio). Outside a
+    // call, the user reads replies; per-bubble play handles on-demand
+    // replay.
     const inListen = turnbased.getState() !== 'idle';
     const webrtcOpen = webrtcControls.isOpen();
-    // Diagnose TTS-not-firing-after-tool-call: log every reply_final
-    // routing decision so we can see whether the silent paragraph took
-    // the turnbased-tts path, the webrtc-peer path (audio comes from
-    // peer track), or no-audio (replay / call ended). Pair with the
-    // [reply-tts] enter/cancel logs in tts.ts to follow the chain.
     const route = isReplay ? 'no-audio (replay)'
       : !inListen ? 'no-audio (call idle)'
       : webrtcOpen ? 'webrtc-peer'
       : 'turnbased-tts';
     diag(`[reply-route] ${route} replyId=${replyId} len=${finalText.length} turnbased=${turnbased.getState()} webrtcOpen=${webrtcOpen} isReplay=${isReplay}`);
     if (!isReplay && inListen && !webrtcOpen) {
-      // Pass replyId so the per-bubble UX (loading bar, played-ratio
-      // bar, play↔pause glyph) wires up. Listen-state notifications
-      // happen via the centralized tts event subscribers above
-      // (play-start / paused / ended / stopped) — no need for
-      // per-call addEventListener('ended', ...) plumbing here.
       void playReplyTts(finalText, settings.get().voice, replyId);
     } else if (inListen) {
-      // No TTS in flight (rare — settings.tts off AND not in Listen
-      // would have skipped). Still notify so re-arm fires.
       turnbased.notifyReplyPlayback(true);
       turnbased.notifyReplyPlayback(false);
     }
 
-    try {
-      const cards = parseCardsFromText(finalText);
-      for (const c of cards) attachCard(bubble, c);
-    } catch (e) { log('card parse err:', e.message); }
-
-    for (const b of imageBlocks) attachCard(bubble, b);
+    if (bubble) {
+      try {
+        const cards = parseCardsFromText(finalText);
+        for (const c of cards) attachCard(bubble, c);
+      } catch (e) { log('card parse err:', e.message); }
+      for (const b of imageBlocks) attachCard(bubble, b);
+    }
   } else if (imageBlocks.length) {
-    clearStreamingIndicator();
     for (const b of imageBlocks) attachCardToLatestAgentBubble(b);
-  } else {
-    // Truly empty turn (no streamed text, no images, no text in the
-    // final envelope). Clear the placeholder so it doesn't linger.
-    clearStreamingIndicator();
   }
 }
 

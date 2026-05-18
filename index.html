@@ -124,43 +124,49 @@
      on mobile (slide-in overlay, no rail). -->
 <aside id="pin-drawer" class="pin-drawer collapsed" aria-expanded="false" aria-label="Pinned messages">
   <!-- Drag handle on the LEFT edge of the right drawer (mirror of
-       the sidebar's right-edge handle). Hidden via CSS on the
-       collapsed rail and on mobile (overlay layout). -->
+       the sidebar's right-edge #sidebar-resizer). Hidden via CSS on
+       the collapsed rail and on mobile (overlay layout). -->
   <div id="pin-drawer-resizer" role="separator" aria-orientation="vertical"
        aria-label="Drag to resize pinned messages" tabindex="-1"></div>
-  <!-- RAIL — always visible on desktop, hidden on mobile. Just the
-       pin-toggle button. Ambient widget reverted to its legacy
-       floating bottom-right pill (Jonathan field bug 2026-05-13:
-       embedded variant rendered badly when expanded). -->
-  <div class="pin-drawer-rail">
-    <button id="btn-pin-drawer-rail" class="sb-icon-btn pin-rail-btn" title="Pinned messages" aria-label="Pinned messages">
-      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 10.76V4h6v6.76l3 1.74v2.5H6v-2.5z"/></svg>
-      <span id="pin-drawer-count-rail" class="pin-count-banner" hidden>0</span>
-    </button>
-    <!-- Ambient clock + weather, stacked vertically in the rail (clock
-         on top, temp+icon below — fits the 48px column). When the
-         drawer is expanded, the widget's expanded card renders here
-         in the rail too; CSS hides the rail-form and shows the
-         expanded form pinned to the bottom of the content area. -->
-    <div id="ambient-mount" class="ambient-mount"></div>
-  </div>
-  <!-- CONTENT — visible when drawer is expanded. -->
-  <div class="pin-drawer-content">
-    <div class="pin-drawer-header">
+
+  <!-- Skeleton mirrors #sidebar exactly: .pin-drawer-top (always
+       visible — title + actions + toggle), .pin-drawer-content
+       (scrollable middle — list), .pin-drawer-bottom (always visible
+       — ambient widget HUD, mirror of .sidebar-bottom's icon-button
+       column).
+       Field UX 2026-05-16 (Jonathan, round 2): the previous version
+       had only the toggle in the top section with "Pinned" + Clear
+       moved DOWN into the content area, which left the top looking
+       sparse and "shifted funny." This restores the dense header
+       (title + Clear + toggle) while keeping the skeleton-mirror
+       structure (top + content + bottom slots). -->
+  <div class="pin-drawer-top">
+    <div class="pin-drawer-top-row">
       <h3 class="pin-drawer-title">Pinned</h3>
-      <div class="pin-drawer-header-actions">
-        <button id="pin-drawer-clear" class="pin-drawer-clear-btn" title="Clear all pinned messages" aria-label="Clear all pinned messages" hidden>
-          Clear
-        </button>
-        <button id="pin-drawer-close" class="sb-icon-btn" title="Close" aria-label="Close pinned messages">
-          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-        </button>
-      </div>
+      <button id="pin-drawer-clear" class="pin-drawer-clear-btn" title="Clear all pinned messages" aria-label="Clear all pinned messages" hidden>
+        Clear
+      </button>
+      <button id="btn-pin-drawer-rail" class="sb-icon-btn pin-drawer-toggle" title="Toggle pinned messages" aria-label="Toggle pinned messages">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 10.76V4h6v6.76l3 1.74v2.5H6v-2.5z"/></svg>
+        <span id="pin-drawer-count-rail" class="pin-count-banner" hidden>0</span>
+      </button>
     </div>
+  </div>
+
+  <div class="pin-drawer-content">
     <ul id="pin-drawer-list" class="pin-drawer-list"></ul>
     <div id="pin-drawer-empty" class="pin-drawer-empty" hidden>
       No pinned messages.<br><span class="pin-drawer-hint">Tap the pin icon on any message to add it here.</span>
     </div>
+  </div>
+
+  <div class="pin-drawer-bottom">
+    <!-- Ambient clock + weather widget mounts here. Mirror slot of
+         .sidebar-bottom's icon-button column. ambient.ts reads its
+         expanded state from the parent drawer's body class
+         (pin-drawer-open) so the widget renders compact in rail mode
+         and expanded when the drawer is open. -->
+    <div id="ambient-mount" class="ambient-mount"></div>
   </div>
 </aside>
 
@@ -585,7 +591,7 @@
     </button>
     <div class="composer">
       <div class="composer-attachments" id="composer-attachments" style="display:none"></div>
-      <textarea id="composer-input" rows="1" placeholder="Ask anything"></textarea>
+      <textarea id="composer-input" rows="1" placeholder="Type / for commands"></textarea>
       <!-- Live STT interim preview when autoSend is OFF. Sits below the
            textarea, faded; hidden when empty or when auto-send is on. -->
       <div id="composer-interim" class="composer-interim"></div>
@@ -600,7 +606,7 @@
                button on the right handles memo + dictation. -->
           <div class="call-mode-wrap">
             <button id="btn-call" class="icon-btn-plain" aria-label="Start call" title="Start call  ·  ⌘⇧C">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11v-1a8 8 0 0 1 16 0v1"/><rect x="2" y="11" width="5" height="8" rx="1.5"/><rect x="17" y="11" width="5" height="8" rx="1.5"/></svg>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11v-1a8 8 0 0 1 16 0v1"/><rect x="2" y="11" width="5" height="8" rx="1.5"/><rect x="17" y="11" width="5" height="8" rx="1.5"/><path d="M19.5 19q-1 3.2-4.2 3.2"/><circle cx="15.3" cy="22.2" r="0.9" fill="currentColor" stroke="none"/></svg>
             </button>
             <button id="btn-call-mode" class="mic-mode-chevron" aria-label="Call options" aria-haspopup="true" aria-expanded="false">
               <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 5 6 8 9 5"/></svg>

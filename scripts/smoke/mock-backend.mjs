@@ -53,6 +53,10 @@ export async function installMockBackend(page) {
    *  mock.setAutoReplyEnabled(false) to suppress the auto-reply
    *  and push their own envelopes via pushEnvelope. */
   let autoReplyEnabled = true;
+  // When true, POST /messages skips the user_message envelope echo.
+  // Used by smokes that need to assert the PWA's optimistic user-
+  // bubble path renders WITHOUT relying on a server-side echo.
+  let suppressUserMessageBroadcast = false;
   /** Mirror hermes-core's post-turn persistence semantics. When true,
    *  the sessions list endpoint suppresses `first_user_message` for
    *  chats that have no assistant message yet — i.e. mid-turn, hermes
@@ -235,6 +239,15 @@ export async function installMockBackend(page) {
       // Tests can opt in per-message by setting `sidekick_id` on the
       // mock chat's message dict.
       if (m.sidekick_id) out.sidekick_id = m.sidekick_id;
+      // Tool-call linkage (hermes plugin /items extension, 2026-05-17).
+      // role='tool' rows carry tool_call_id referencing back to the
+      // assistant message that issued the call. role='assistant'
+      // rows that orchestrated tool calls carry `tool_calls` (JSON
+      // string — already serialized on disk; pass through verbatim).
+      // PWA renderHistoryMessage routes these to activityRow to
+      // reconstruct the "N tools · done" surface on history replay.
+      if (m.tool_call_id) out.tool_call_id = m.tool_call_id;
+      if (m.tool_calls) out.tool_calls = m.tool_calls;
       return out;
     }) : [];
     // Apply pagination. `before` is exclusive (return messages with
@@ -327,15 +340,19 @@ export async function installMockBackend(page) {
       if (!autoReplyEnabled) {
         // Test wants to drive envelopes manually — skip the auto-
         // reply but still broadcast user_message so cross-device
-        // optimistic-bubble dedup works.
-        setTimeout(() => {
-          broadcast({
-            type: 'user_message',
-            chat_id: chatId,
-            message_id: userMsgId,
-            text,
-          });
-        }, 0);
+        // optimistic-bubble dedup works. Tests that explicitly want
+        // to assert the PWA's optimistic user-bubble path can set
+        // suppressUserMessageBroadcast=true to silence this echo.
+        if (!suppressUserMessageBroadcast) {
+          setTimeout(() => {
+            broadcast({
+              type: 'user_message',
+              chat_id: chatId,
+              message_id: userMsgId,
+              text,
+            });
+          }, 0);
+        }
       } else {
       setTimeout(() => {
         broadcast({
@@ -505,6 +522,111 @@ export async function installMockBackend(page) {
     });
   });
 
+  // ── Server-driven unread state (SSOT after the 2026-05 refactor) ──
+  //
+  // Real plugin owns unread_state in sidekick.db; the proxy forwards
+  // /api/sidekick/notifications/{unread,seen,mark} to /v1/unread/*.
+  // Mock mirrors that surface here so tests can drive the badge flow
+  // through the same code paths the PWA uses in production.
+  //
+  // Auto-bumping: pushEnvelope() detects `notification` and
+  // `reply_final` envelopes and increments the per-chat unread count
+  // (mimics what the plugin's responses-handler does when an
+  // assistant row lands). POST /notifications/seen clears the count
+  // for one chat. The PWA's 1500ms debounced refresh picks up the
+  // new state on its next fetch.
+  const unreadByChat = new Map();   // chat_id → unread_count
+  const markedUnread = new Set();   // chat_ids with sticky-unread
+  function bumpUnread(chatId) {
+    if (!chatId) return;
+    unreadByChat.set(chatId, (unreadByChat.get(chatId) || 0) + 1);
+  }
+  function clearUnreadFor(chatId) {
+    unreadByChat.delete(chatId);
+    markedUnread.delete(chatId);
+  }
+  await page.route(/.*\/api\/sidekick\/notifications\/unread$/, async (route) => {
+    if (route.request().method() !== 'GET') return route.fallback();
+    const out = [];
+    const seen = new Set();
+    for (const [cid, n] of unreadByChat) {
+      out.push({ chat_id: cid, unread_count: n, marked_unread: markedUnread.has(cid) });
+      seen.add(cid);
+    }
+    for (const cid of markedUnread) {
+      if (!seen.has(cid)) out.push({ chat_id: cid, unread_count: 0, marked_unread: true });
+    }
+    await route.fulfill({
+      status: 200, contentType: 'application/json',
+      body: JSON.stringify({ chats: out, total: out.reduce((a, c) => a + Math.max(c.unread_count, c.marked_unread ? 1 : 0), 0) }),
+    });
+  });
+  await page.route(/.*\/api\/sidekick\/notifications\/seen$/, async (route) => {
+    if (route.request().method() !== 'POST') return route.fallback();
+    let body; try { body = JSON.parse(route.request().postData() || '{}'); }
+    catch { body = {}; }
+    if (body.chat_id) clearUnreadFor(body.chat_id);
+    await route.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' });
+  });
+  await page.route(/.*\/api\/sidekick\/notifications\/mark$/, async (route) => {
+    if (route.request().method() !== 'POST') return route.fallback();
+    let body; try { body = JSON.parse(route.request().postData() || '{}'); }
+    catch { body = {}; }
+    if (body.chat_id) {
+      if (body.marked === true) markedUnread.add(body.chat_id);
+      else markedUnread.delete(body.chat_id);
+    }
+    await route.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' });
+  });
+
+  // ── Server-driven pin state (SSOT after the 2026-05 refactor) ──
+  //
+  // Real plugin owns the `pins` table in sidekick.db; the proxy
+  // forwards /api/sidekick/pins/* to /v1/pins/*. Mock mirrors that
+  // surface here so tests that use pinMessage() / unpinMessage() drive
+  // the real server-roundtrip code paths.
+  const pinsByKey = new Map();  // `${chatId}|${msgId}` → pin record
+  const pkey = (cid, mid) => `${cid}|${mid}`;
+  await page.route(/.*\/api\/sidekick\/pins(\?.*)?$/, async (route) => {
+    const method = route.request().method();
+    if (method === 'GET') {
+      const out = Array.from(pinsByKey.values()).sort((a, b) => b.pinnedAt - a.pinnedAt);
+      await route.fulfill({
+        status: 200, contentType: 'application/json',
+        body: JSON.stringify({ pins: out }),
+      });
+      return;
+    }
+    if (method === 'POST') {
+      let body; try { body = JSON.parse(route.request().postData() || '{}'); }
+      catch { body = {}; }
+      const { chat_id, msg_id, role, text, timestamp } = body;
+      if (chat_id && msg_id) {
+        pinsByKey.set(pkey(chat_id, msg_id), {
+          chatId: chat_id, msgId: msg_id,
+          role: role || 'user',
+          text: text || '',
+          timestamp: typeof timestamp === 'number' ? timestamp : Date.now(),
+          pinnedAt: Date.now(),
+        });
+      }
+      await route.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' });
+      return;
+    }
+    return route.fallback();
+  });
+  await page.route(/.*\/api\/sidekick\/pins\/[^/]+\/[^/]+$/, async (route) => {
+    if (route.request().method() !== 'DELETE') return route.fallback();
+    const url = new URL(route.request().url());
+    const m = url.pathname.match(/\/pins\/([^/]+)\/([^/]+)$/);
+    if (m) {
+      const cid = decodeURIComponent(m[1]);
+      const mid = decodeURIComponent(m[2]);
+      pinsByKey.delete(pkey(cid, mid));
+    }
+    await route.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"removed":true}' });
+  });
+
   return {
     /** Add a synthetic chat to the mock's in-memory state. The PWA
      *  drawer will list it; clicking it returns the canned messages.
@@ -563,8 +685,56 @@ export async function installMockBackend(page) {
      *  built-in helpers don't cover (tool_call, tool_result, custom
      *  notification kinds) call this directly. The envelope must
      *  include a `type` field; `chat_id` is also required by the PWA's
-     *  router. */
-    pushEnvelope(env) { broadcast(env); },
+     *  router.
+     *
+     *  Side effect: `notification` and `reply_final` envelopes also
+     *  bump the per-chat unread counter (mirrors the plugin's
+     *  responses-handler write into `unread_state` when an assistant
+     *  row lands). The PWA reads this state via the
+     *  /api/sidekick/notifications/unread route mocked above. */
+    pushEnvelope(env) {
+      broadcast(env);
+      if (env && (env.type === 'notification' || env.type === 'reply_final')) {
+        bumpUnread(env.chat_id);
+      }
+      // Mirror what the real plugin does on a DELETE: remove from
+      // server-side state so subsequent /sessions list fetches don't
+      // bring the row back. Tests that simulate a "remote delete" can
+      // just push the envelope; the mock keeps state coherent.
+      if (env && env.type === 'conversation_deleted' && env.chat_id) {
+        chats.delete(env.chat_id);
+        clearUnreadFor(env.chat_id);
+      }
+    },
+    /** Test escape hatch: set raw unread state. Use this when a test
+     *  needs to simulate the plugin having pre-existing unread (e.g.
+     *  cross-device scenarios where another device left mark-unread). */
+    setUnread(chatId, count) {
+      if (count > 0) unreadByChat.set(chatId, count);
+      else unreadByChat.delete(chatId);
+    },
+    setMarkedUnread(chatId, marked) {
+      if (marked) markedUnread.add(chatId);
+      else markedUnread.delete(chatId);
+    },
+    clearUnread(chatId) { clearUnreadFor(chatId); },
+    getUnreadState() {
+      return { byChat: new Map(unreadByChat), marked: new Set(markedUnread) };
+    },
+    /** Test escape hatch: seed a pin directly in the mock's server-
+     *  side store. Use this when a test wants to verify cross-device
+     *  hydration (pre-existing pins from another device) without
+     *  going through the PWA's POST path. */
+    seedPin(chatId, msgId, opts = {}) {
+      pinsByKey.set(pkey(chatId, msgId), {
+        chatId, msgId,
+        role: opts.role || 'user',
+        text: opts.text || '',
+        timestamp: opts.timestamp || Date.now(),
+        pinnedAt: opts.pinnedAt || Date.now(),
+      });
+    },
+    getPinState() { return new Map(pinsByKey); },
     /** Set the inflight envelope list for a chat. The next
      *  /api/sidekick/sessions/<chatId>/messages GET will include
      *  these as the `inflight` field, mirroring the real proxy's
@@ -586,6 +756,15 @@ export async function installMockBackend(page) {
      *  expects it); the typing + reply envelopes do not. */
     setAutoReplyEnabled(enabled) {
       autoReplyEnabled = !!enabled;
+    },
+    /** Suppress the user_message envelope echo on POST. Use when a
+     *  test needs to prove the PWA renders the user bubble via its
+     *  own optimistic upsert path, without an envelope arriving from
+     *  the server to mask the failure. Has no effect when
+     *  autoReplyEnabled is true (that path doesn't gate on the flag
+     *  — it always emits the full envelope sequence). */
+    setSuppressUserMessageBroadcast(enabled) {
+      suppressUserMessageBroadcast = !!enabled;
     },
     /** Toggle the in-flight persistence semantics. Default `false`
      *  (legacy: chats are visible in /sessions immediately on POST).

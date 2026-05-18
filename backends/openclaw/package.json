@@ -1,0 +1,20 @@
+{
+  "name": "@jscholz/sidekick-openclaw-plugin",
+  "version": "0.0.1",
+  "private": true,
+  "description": "OpenClaw plugin that exposes the sidekick /v1/* HTTP+SSE contract.",
+  "type": "module",
+  "openclaw": {
+    "extensions": [
+      "./index.js"
+    ],
+    "compat": {
+      "pluginApi": ">=2026.3.24-beta.2",
+      "minGatewayVersion": "2026.3.24-beta.2"
+    }
+  },
+  "dependencies": {
+    "web-push": "^3.6.7",
+    "ws": "^8.20.1"
+  }
+}

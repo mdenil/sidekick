@@ -276,7 +276,6 @@ export function initPinDrawer(opts: {
     document.getElementById('pin-drawer-count-rail'),
   ].filter((el): el is HTMLElement => el !== null);
   clearBtn = document.getElementById('pin-drawer-clear');
-  const closeBtn = document.getElementById('pin-drawer-close');
   onPinClickCb = opts.onPinClick;
 
   if (!drawerEl || !listEl || !emptyEl) {
@@ -307,9 +306,10 @@ export function initPinDrawer(opts: {
     onOpen: () => render(),  // refresh list when drawer opens
   });
 
-  // Per-row controls — Close (X) + Clear-all. These are pin-drawer-
-  // specific UI and stay here, not in the chrome module.
-  if (closeBtn) closeBtn.addEventListener('click', () => closeDrawer());
+  // Per-row controls — Clear-all only. The X close button was dropped
+  // 2026-05-16 (Jonathan: pin/session-drawer symmetry — session drawer
+  // closes via the rail toggle / Esc / click-outside / swipe; pin
+  // drawer now uses the same affordances, no header X).
   if (clearBtn) clearBtn.addEventListener('click', () => {
     if (!window.confirm('Clear all pinned messages?')) return;
     void clearAllPins();
