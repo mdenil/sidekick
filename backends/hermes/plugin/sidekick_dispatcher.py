@@ -102,19 +102,34 @@ class PushDispatcher:
         the aiohttp worker, but pywebpush itself is sync-blocking;
         per-subscription HTTP is the dominant cost). Returns
         ``{delivered, pruned, skipped?}``.
+
+        Each gate logs at WARNING so the decision shows up in the
+        journal without bumping the root logger level. Mirrors the
+        proxy-side `[notifications] skip ...` observability so
+        "why didn't push fire for chat X?" is answerable from the
+        log alone. (Default Python root level is WARNING; INFO is
+        silenced in stock hermes-gateway, so the prior INFO-only
+        success log was invisible — Jonathan field bug 2026-05-18.)
         """
+        env_type = env.get("type", "?")
+        chat_id_for_log = env.get("chat_id", "?") if isinstance(env.get("chat_id"), str) else "?"
         if not _is_push_eligible(env):
+            logger.warning("skip type=%s chat=%s reason=not_eligible", env_type, chat_id_for_log)
             return {"delivered": 0, "pruned": 0, "skipped": "not_eligible"}
         chat_id = env.get("chat_id")
         if not isinstance(chat_id, str) or not chat_id:
+            logger.warning("skip type=%s chat=%s reason=missing_chat_id", env_type, chat_id_for_log)
             return {"delivered": 0, "pruned": 0, "skipped": "missing_chat_id"}
         if self.engagement.is_engaged(chat_id):
+            logger.warning("skip type=%s chat=%s reason=user_engaged", env_type, chat_id)
             return {"delivered": 0, "pruned": 0, "skipped": "user_engaged"}
         if is_muted(self.db, chat_id):
+            logger.warning("skip type=%s chat=%s reason=muted", env_type, chat_id)
             return {"delivered": 0, "pruned": 0, "skipped": "muted"}
         vapid = self._ensure_vapid()
         subs = list_subscriptions(self.db)
         if not subs:
+            logger.warning("skip type=%s chat=%s reason=no_subscribers", env_type, chat_id)
             return {"delivered": 0, "pruned": 0, "skipped": "no_subscribers"}
         payload = json.dumps(_build_payload(env, body_override=body_override))
         delivered = 0
@@ -143,5 +158,8 @@ class PushDispatcher:
                     logger.warning("push send failed (%s): %s", code, err)
             except Exception as err:  # network / unexpected
                 logger.warning("push send error: %s", err)
-        logger.info("dispatch chat=%s delivered=%d pruned=%d", chat_id, delivered, pruned)
+        logger.warning(
+            "dispatch type=%s chat=%s delivered=%d pruned=%d (of %d subs)",
+            env_type, chat_id, delivered, pruned, len(subs),
+        )
         return {"delivered": delivered, "pruned": pruned}
