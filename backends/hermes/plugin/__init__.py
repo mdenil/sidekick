@@ -1543,12 +1543,17 @@ class SidekickAdapter(BasePlatformAdapter):
         # which channel the envelope rides client-side.
         if self._push_dispatcher and self._push_owned_by_plugin():
             try:
-                # body for the push payload: env.content/text, or the
-                # accumulated reply text for reply_final. Reuse the
-                # plugin's existing replyBuffer-like state if needed;
-                # for now use env contents directly.
-                body_override = None
-                if env_type == "reply_final":
+                # Reply-buffer side-channel: reply_delta envelopes
+                # carry cumulative agent text; reply_final carries
+                # only the terminator. observe_envelope stashes
+                # delta text per-chat and drains on final, returning
+                # the body for dispatch. Notification envelopes pass
+                # through unchanged.
+                body_override = self._push_dispatcher.observe_envelope(env)
+                if body_override is None and env_type == "reply_final":
+                    # Pre-buffer state (proxy started mid-turn) or
+                    # adapter emitted text on the final itself —
+                    # fall back to env.text/content.
                     body_override = env.get("text") or env.get("content") or ""
                 self._push_dispatcher.dispatch_envelope(env, body_override=body_override)
             except Exception as exc:

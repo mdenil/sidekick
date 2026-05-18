@@ -26,6 +26,23 @@ from aiohttp import web
 from . import sidekick_state as state
 from .sidekick_unread import compute_unread
 from .sidekick_state import vapid_public_key_b64url, ensure_vapid_keys
+from .sidekick_ids import _parse_gateway_id
+
+
+def _strip_source_prefix(chat_id: Any) -> str:
+    """Normalize a chat_id to the form the plugin's envelope handlers
+    use internally (no `<source>:` prefix). PWA-facing routes accept
+    either shape — the sidekick proxy passes the FULL `sidekick:<uuid>`
+    form, but the plugin's _safe_send_envelope downstream uses the
+    stripped UUID. Without this normalization, e.g.
+    EngagementState.mark_visible records under the prefixed key while
+    is_engaged checks the stripped key → engagement gate never fires.
+    Field bug 2026-05-18 (Jonathan): push fired despite desktop being
+    visibly engaged with the source chat."""
+    if not isinstance(chat_id, str) or not chat_id:
+        return ""
+    _, stripped = _parse_gateway_id(chat_id)
+    return stripped
 
 
 # ── Plumbing helpers ─────────────────────────────────────────────────
@@ -104,8 +121,14 @@ async def handle_prefs(ctx, request: web.Request) -> web.Response:
 
 async def handle_visibility(ctx, request: web.Request) -> web.Response:
     body = await _read_json(request)
-    chat_id = body.get("chat_id") or body.get("chatId")
+    raw_chat_id = body.get("chat_id") or body.get("chatId")
     visible = body.get("visible") is True or body.get("state") in ("visible", "focus")
+    if not raw_chat_id:
+        return _json({"error": "invalid_request", "message": "chat_id required"}, status=400)
+    # Normalize before recording — dispatch path keys engagement on the
+    # stripped chat_id. See _strip_source_prefix docstring for the
+    # asymmetric-key field bug.
+    chat_id = _strip_source_prefix(raw_chat_id)
     if not chat_id:
         return _json({"error": "invalid_request", "message": "chat_id required"}, status=400)
     if visible:
