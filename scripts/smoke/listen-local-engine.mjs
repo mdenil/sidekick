@@ -28,8 +28,13 @@ export const BACKEND = 'mocked';
 
 export default async function run({ page, log, fail, url }) {
   // Flip the canonical body-STT switch BEFORE the page boots so the
-  // PWA reads the local engine on settings.load().
+  // PWA reads the local engine on settings.load(). Restored in the
+  // try/finally below — otherwise the shared dev proxy's settings
+  // table holds streamingEngine='local' and EVERY subsequent smoke
+  // in the same run boots against the wrong engine. Root cause of
+  // the listen-*/slash-commands full-suite flakes 2026-05-18.
   await resetServerSettings(page, { streamingEngine: 'local' });
+  try {
 
   const transcribePosts = [];
   await page.route('**/transcribe*', async (route) => {
@@ -133,4 +138,9 @@ export default async function run({ page, log, fail, url }) {
     fail(`/transcribe was called ${transcribePosts.length}x; local engine should bypass it`);
   }
   log('/transcribe never fired (correct — local engine handled body in-browser)');
+  } finally {
+    // Restore so the next smoke in the suite boots against the default
+    // server engine.
+    await resetServerSettings(page, { streamingEngine: 'server' });
+  }
 }

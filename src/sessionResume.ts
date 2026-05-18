@@ -316,10 +316,14 @@ async function drillToOlderMessage(
       if (!older.length) { hasMore = false; break; }
       // Prepend into the store — projection orders by timestamp; the
       // reconciler walks the spec list and DOM-positions the new
-      // bubbles above the existing ones.
-      transcriptStore.prependDurable(chatId, older, {
-        firstId: result.firstId ?? null,
-        hasMore: !!result.hasMore,
+      // bubbles above the existing ones. Wrap in chat.prependHistory
+      // so scrollTop is held to the pre-prepend logical position
+      // (otherwise drilling lurches the viewport upward at each page).
+      chat.prependHistory(() => {
+        transcriptStore.prependDurable(chatId, older, {
+          firstId: result.firstId ?? null,
+          hasMore: !!result.hasMore,
+        });
       });
       cursor = result.firstId ?? null;
       hasMore = !!result.hasMore;
@@ -344,7 +348,15 @@ async function drillToOlderMessage(
 
 /** Scroll-to-top lazy-load. Fetches messages older than `beforeId`
  *  via backend.loadEarlier and prepends them into the store. No-op
- *  if no chat is currently being viewed. */
+ *  if no chat is currently being viewed.
+ *
+ *  Scroll preservation: wrap the store mutation in `chat.prependHistory`
+ *  so the transcript's scrollTop is adjusted by exactly the amount of
+ *  new content inserted above the user's viewport. Without this, the
+ *  same logical message they were looking at appears to JUMP upward
+ *  by `newScrollHeight - oldScrollHeight` pixels — the field-bug
+ *  Jonathan hits when scrolling through long chats on mobile (2026-05-18,
+ *  Crack A regression from the legacy chat.prependHistory wrapper). */
 export async function loadEarlierHistory(beforeId: number): Promise<void> {
   const id = viewedSessionForLoadEarlier;
   if (!id) return;
@@ -354,9 +366,14 @@ export async function loadEarlierHistory(beforeId: number): Promise<void> {
     chat.setPaginationState(null, false);
     return;
   }
-  transcriptStore.prependDurable(id, older, {
-    firstId: result.firstId ?? null,
-    hasMore: !!result.hasMore,
+  // Store mutation fires the reconciler subscriber synchronously, so by
+  // the time the renderFn returns the new bubbles are in the DOM and
+  // prependHistory's scrollHeight delta is accurate.
+  chat.prependHistory(() => {
+    transcriptStore.prependDurable(id, older, {
+      firstId: result.firstId ?? null,
+      hasMore: !!result.hasMore,
+    });
   });
   chat.setPaginationState(result.firstId ?? null, !!result.hasMore);
 }
