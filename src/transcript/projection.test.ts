@@ -199,6 +199,129 @@ describe('project: dedup keys', () => {
     const out = project(s);
     assert.equal(out[0].key, '42');
   });
+
+  it('inflight reply_final does NOT duplicate a durable assistant row that arrived without sidekick_id (field bug 2026-05-19)', () => {
+    // Active-chat dupe field repro: user sent a message, plugin mirrored
+    // the assistant row but the link write didn't land (sidekick_id NULL).
+    // Without content-fallback dedup, durable keyed by integer "101" and
+    // inflight keyed by "msg_xyz" rendered as two separate bubbles.
+    const s = state({
+      durable: [
+        { id: 100, sidekick_id: 'umsg_q', role: 'user', content: 'hey test message', timestamp: T0 },
+        // Assistant row arrived without sidekick_id — the bug shape.
+        { id: 101, role: 'assistant', content: 'Hey — received.', timestamp: T0 + 1000 },
+      ],
+      inflight: [
+        { type: 'reply_delta', chat_id: 'c', message_id: 'msg_xyz', text: 'Hey — received.' },
+        { type: 'reply_final', chat_id: 'c', message_id: 'msg_xyz' },
+      ],
+    });
+    const out = project(s);
+    const assistantBubbles = out.filter(o => o.kind === 'assistant');
+    assert.equal(assistantBubbles.length, 1,
+      `expected exactly 1 assistant bubble (durable keyed by integer id); `
+      + `got ${assistantBubbles.length}: ${JSON.stringify(assistantBubbles.map(a => ({ key: a.key, text: (a as any).text })))}`);
+    // The surviving bubble is the durable one (keyed by integer id), not
+    // the inflight one — durable is the canonical source once both exist.
+    assert.equal(assistantBubbles[0].key, '101');
+  });
+
+  it('inflight reply_final preserved when no matching durable assistant row exists (background-race contract)', () => {
+    // Counterpart to the dupe test: when durable doesn't have the
+    // assistant row yet (background-chat reply landed via SSE but
+    // mirror hasn't caught up), the inflight envelope must render.
+    const s = state({
+      durable: [
+        { id: 100, sidekick_id: 'umsg_q', role: 'user', content: 'hey', timestamp: T0 },
+      ],
+      inflight: [
+        { type: 'reply_delta', chat_id: 'c', message_id: 'msg_xyz', text: 'Hi back.' },
+        { type: 'reply_final', chat_id: 'c', message_id: 'msg_xyz' },
+      ],
+    });
+    const out = project(s);
+    const assistantBubbles = out.filter(o => o.kind === 'assistant');
+    assert.equal(assistantBubbles.length, 1);
+    assert.equal(assistantBubbles[0].key, 'msg_xyz');
+    assert.equal((assistantBubbles[0] as any).text, 'Hi back.');
+  });
+
+  it('durable-vs-durable: items endpoint returning two assistant rows with same content renders ONE bubble (field bug 2026-05-19)', () => {
+    // Server-side bug shape: `sidekick.db.msg_links` had two rows for
+    // the same logical assistant message — one from envelope write-
+    // through (sidekick_id="msg_xyz", real timestamp), one from
+    // reconcile Pass 2 fallback (sidekick_id="legacy:101", timestamp=0
+    // because... still unknown). The items endpoint returned both;
+    // projection's key-based dedup saw them as different (different
+    // sidekick_ids); both rendered. Result: one user-visible reply
+    // duplicated, with one copy showing 01:00 BST (= unix 0 → UTC+1).
+    const s = state({
+      durable: [
+        { id: 100, sidekick_id: 'umsg_q', role: 'user', content: 'hey test message', timestamp: T0 },
+        // Bad duplicate row — timestamp=0.
+        { id: 101, sidekick_id: 'legacy:101', role: 'assistant', content: 'Hey — received.', timestamp: 0 },
+        // Good row — real timestamp.
+        { id: 102, sidekick_id: 'msg_xyz', role: 'assistant', content: 'Hey — received.', timestamp: T0 + 1000 },
+      ],
+    });
+    const out = project(s);
+    const assistantBubbles = out.filter(o => o.kind === 'assistant');
+    assert.equal(assistantBubbles.length, 1,
+      `expected ONE assistant bubble (dedup by content); got ${assistantBubbles.length}: `
+      + `${JSON.stringify(assistantBubbles.map(b => ({ key: b.key, ts: b.timestamp, text: (b as any).text })))}`);
+    // Winner is the row with the real timestamp (msg_xyz at T0+1000).
+    assert.equal(assistantBubbles[0].key, 'msg_xyz');
+  });
+
+  it('durable-vs-durable: two assistant rows with same content + same valid timestamp picks the higher id deterministically', () => {
+    // Defensive: if BOTH rows have real timestamps that happen to match
+    // (e.g. plugin write-through + reconcile Pass 2 fired in the same
+    // second), the projection must still emit one bubble — pick by
+    // a stable tiebreak so future runs render identically.
+    const s = state({
+      durable: [
+        { id: 100, sidekick_id: 'msg_a', role: 'assistant', content: 'same text', timestamp: T0 + 1000 },
+        { id: 101, sidekick_id: 'msg_b', role: 'assistant', content: 'same text', timestamp: T0 + 1000 },
+      ],
+    });
+    const out = project(s);
+    const assistantBubbles = out.filter(o => o.kind === 'assistant');
+    assert.equal(assistantBubbles.length, 1);
+    // Higher id wins on tie ("msg_b" > "msg_a" lex order).
+    assert.equal(assistantBubbles[0].key, 'msg_b');
+  });
+
+  it('durable-vs-durable dedup does NOT collapse genuinely different content', () => {
+    const s = state({
+      durable: [
+        { id: 100, sidekick_id: 'msg_a', role: 'assistant', content: 'first reply', timestamp: T0 + 1000 },
+        { id: 101, sidekick_id: 'msg_b', role: 'assistant', content: 'second reply', timestamp: T0 + 2000 },
+      ],
+    });
+    const out = project(s);
+    const assistantBubbles = out.filter(o => o.kind === 'assistant');
+    assert.equal(assistantBubbles.length, 2);
+  });
+
+  it('inflight reply_final preserved when durable has DIFFERENT-content assistant row without sidekick_id', () => {
+    // Defensive: the content match must be exact. A no-link durable row
+    // with text "old reply" must not steal the inflight bubble for
+    // "new reply".
+    const s = state({
+      durable: [
+        { id: 100, sidekick_id: 'umsg_q', role: 'user', content: 'q', timestamp: T0 },
+        { id: 101, role: 'assistant', content: 'old reply', timestamp: T0 + 1000 },
+      ],
+      inflight: [
+        { type: 'reply_delta', chat_id: 'c', message_id: 'msg_new', text: 'new reply' },
+        { type: 'reply_final', chat_id: 'c', message_id: 'msg_new' },
+      ],
+    });
+    const out = project(s);
+    const assistantBubbles = out.filter(o => o.kind === 'assistant');
+    assert.equal(assistantBubbles.length, 2);
+    assert.deepEqual(assistantBubbles.map(b => b.key).sort(), ['101', 'msg_new']);
+  });
 });
 
 describe('project: ordering across turns', () => {

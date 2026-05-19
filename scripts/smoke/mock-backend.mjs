@@ -231,7 +231,10 @@ export async function installMockBackend(page) {
         id: m.message_id != null ? m.message_id : integerId,
         role: m.role,
         content: m.content,
-        timestamp: m.timestamp || (chat.lastActiveAt / 1000),
+        // Use `!=` so smokes can intentionally drive timestamp=0
+        // (mirrors the field-bug shape where sidekick.db.msg_links
+        // had `created_at=0` and the bubble rendered at unix 0).
+        timestamp: m.timestamp != null ? m.timestamp : (chat.lastActiveAt / 1000),
       };
       // Mirror the real plugin's surfacing of sidekick_id from
       // sidekick_msg_links — present when the live SSE round-trip

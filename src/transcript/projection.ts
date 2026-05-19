@@ -38,6 +38,28 @@ export function project(state: ChatState): BubbleSpec[] {
   const userKeys = new Set<string>();
   const assistantKeys = new Set<string>();
   const activityByKey = new Map<string, ActivityRowSpec>();
+  // Content fallback for the ghost-tail safety net: durable assistant
+  // rows whose plugin-side link write failed (sidekick_id NULL) can't
+  // dedup against inflight envelopes by key, so we also track their
+  // content. After the inflight pass we drop any inflight assistant
+  // spec whose final text matches one of these contents — durable
+  // owns the bubble. This used to live in `store.ts` (drop all
+  // completed-turn envelopes on setDurable) but that nuked inflight
+  // for background-chat replies whose mirror hadn't landed yet.
+  const noLinkAssistantContents = new Set<string>();
+
+  // Durable-vs-durable dedup pre-pass. The items endpoint can return
+  // the same logical assistant message TWICE when the plugin's
+  // reconciler links the envelope-written row to its state.db twin by
+  // content match and fails (whitespace difference, etc.) — Pass 2
+  // then inserts a parallel `legacy:<state_id>` row alongside the
+  // existing `msg_xyz` row. The PWA can't tell them apart by key
+  // alone (different sidekick_ids), so we dedup here by content +
+  // role. The "winner" is the row with the highest timestamp;
+  // duplicates with `created_at=0` (the bug Jonathan hit 2026-05-19,
+  // rendering at 01:00 BST because unix 0 + UTC+1) lose to the row
+  // that has a real wall-clock timestamp.
+  const durableWinnerKey = pickDurableContentWinners(state.durable);
 
   // Track the current turn so tool rows attach to the right activity
   // row. Updated when we walk past a user message in durable OR an
@@ -84,9 +106,22 @@ export function project(state: ChatState): BubbleSpec[] {
           if (!row.tools.find(t => t.callId === c.callId)) row.tools.push(c);
         }
       }
+      // Durable-vs-durable dedup: only the "winning" copy of a given
+      // (role, content) pair lands as a bubble. Losers are silently
+      // dropped — they're sidekick.db reconcile duplicates.
+      const itemKey = identityKey(item);
+      const winnerForContent = durableWinnerKey.get(`assistant:${item.content || ''}`);
+      if (winnerForContent && winnerForContent !== itemKey) {
+        continue;
+      }
       if (item.content && !assistantKeys.has(akey)) {
         assistantKeys.add(akey);
         specs.push({ kind: 'assistant', key: akey, text: item.content, timestamp: ts });
+        // Track content for the no-link dedup pass below (only if
+        // sidekick_id is absent — otherwise assistantKeys covers it).
+        if (!item.sidekick_id) {
+          noLinkAssistantContents.add(item.content);
+        }
       }
     } else if (item.role === 'tool') {
       const callId = item.tool_call_id;
@@ -237,6 +272,33 @@ export function project(state: ChatState): BubbleSpec[] {
     }
   }
 
+  // ── 2.5. No-link dedup pass: inflight assistant specs whose text
+  // matches a durable assistant row that arrived without sidekick_id
+  // are dropped — durable owns the bubble. Without this we'd render
+  // both (durable keyed by integer id, inflight keyed by SSE message_id)
+  // because they look like different rows to the key-based dedup.
+  //
+  // Active-chat dupe field bug 2026-05-19 (Jonathan): sent a message,
+  // got TWO identical "Hey — received." bubbles. Plugin's mirror
+  // landed the assistant row but the link write hadn't completed yet
+  // (or it landed without sidekick_id for some other reason), so the
+  // key-based dedup couldn't recognize them as the same message.
+  //
+  // Why not drop earlier in the inflight loop: reply_delta text grows
+  // incrementally, so we can't reliably content-match mid-stream. By
+  // the time we reach this point, the inflight assistant spec has its
+  // full accumulated text and we can compare 1:1.
+  if (noLinkAssistantContents.size > 0 && inflightAssistantByKey.size > 0) {
+    for (const [key, spec] of inflightAssistantByKey) {
+      if (spec.text && noLinkAssistantContents.has(spec.text)) {
+        const idx = specs.indexOf(spec);
+        if (idx >= 0) specs.splice(idx, 1);
+        inflightAssistantByKey.delete(key);
+        assistantKeys.delete(key);
+      }
+    }
+  }
+
   // ── 3. Pending sends not yet acknowledged
   for (const p of state.pendingSends) {
     if (userKeys.has(p.messageId)) continue;
@@ -370,5 +432,65 @@ function kindOrder(s: BubbleSpec): number {
     case 'assistant': return 2;
     case 'notification': return 3;
   }
+}
+
+/** Stable identity for a ConversationItem — used by the durable-vs-
+ *  durable dedup so the "winner" check compares the same object that
+ *  we'll later inspect when walking durable. */
+function identityKey(item: ConversationItem): string {
+  return `${item.sidekick_id || ''}:${String(item.id)}`;
+}
+
+/** Pre-pass over durable: for each (role, content) pair, pick a single
+ *  winning ConversationItem. Used to dedup duplicate rows that the
+ *  items endpoint can return (sidekick.db.msg_links reconcile failed
+ *  to link → two rows for the same logical message). The winner is
+ *  the row with the highest non-zero timestamp; if all timestamps
+ *  match (or are all zero), the row with the higher id wins (stable
+ *  per sqlite ordering). Returns Map<role:content, identityKey> so
+ *  callers can check `winnerForContent === identityKey(item)`.
+ *
+ *  Skips items with empty content (nothing to dedup; tool-only
+ *  assistant rows fold into activity rows, not bubbles).
+ *
+ *  Scope: assistant-only for now. User dupes haven't been observed
+ *  in the field; user_message envelopes are well-keyed by umsg_* and
+ *  the optimistic-send path already dedups by messageId. */
+function pickDurableContentWinners(items: ConversationItem[]): Map<string, string> {
+  const winners = new Map<string, ConversationItem>();
+  for (const item of items) {
+    if (item.role !== 'assistant') continue;
+    if (!item.content) continue;
+    const key = `assistant:${item.content}`;
+    const prev = winners.get(key);
+    if (!prev) {
+      winners.set(key, item);
+      continue;
+    }
+    if (compareDurableForDedup(item, prev) > 0) {
+      winners.set(key, item);
+    }
+  }
+  const out = new Map<string, string>();
+  for (const [key, item] of winners) out.set(key, identityKey(item));
+  return out;
+}
+
+/** Returns > 0 when `a` wins, < 0 when `b` wins, 0 when tied.
+ *  Tier order: (real-timestamp beats zero-timestamp) → higher timestamp
+ *  → higher id. */
+function compareDurableForDedup(a: ConversationItem, b: ConversationItem): number {
+  const aTs = a.timestamp ?? a.created_at ?? 0;
+  const bTs = b.timestamp ?? b.created_at ?? 0;
+  const aIsReal = aTs > 0;
+  const bIsReal = bTs > 0;
+  if (aIsReal && !bIsReal) return 1;
+  if (!aIsReal && bIsReal) return -1;
+  if (aTs !== bTs) return aTs > bTs ? 1 : -1;
+  // Both have the same timestamp (and both real, or both zero).
+  // Tie-break by id (string compare works for both integer-id and
+  // sidekick_id-string-id shapes; consistent ordering is what we
+  // need, not numeric correctness).
+  return String(a.id) > String(b.id) ? 1 : -1;
 }
 
