@@ -253,21 +253,25 @@ def upsert_msg_link(db, *, id: str, chat_id: str, role: str, content: str,
                     status: str = "final",
                     kind: Optional[str] = None,
                     tool_name: Optional[str] = None,
-                    tool_call_id: Optional[str] = None) -> None:
+                    tool_call_id: Optional[str] = None,
+                    tool_calls: Optional[str] = None) -> None:
     now = time.time()
     db.exec(
         "INSERT INTO msg_links (id, chat_id, role, content, kind, tool_name, "
-        "                       tool_call_id, created_at, updated_at, status, agent_row_id) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+        "                       tool_call_id, tool_calls, "
+        "                       created_at, updated_at, status, agent_row_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
         "ON CONFLICT(id) DO UPDATE SET "
         "  content = excluded.content, "
         "  kind = COALESCE(excluded.kind, msg_links.kind), "
         "  tool_name = COALESCE(excluded.tool_name, msg_links.tool_name), "
         "  tool_call_id = COALESCE(excluded.tool_call_id, msg_links.tool_call_id), "
+        "  tool_calls = COALESCE(excluded.tool_calls, msg_links.tool_calls), "
         "  updated_at = excluded.updated_at, "
         "  status = excluded.status, "
         "  agent_row_id = COALESCE(excluded.agent_row_id, msg_links.agent_row_id)",
-        (id, chat_id, role, content, kind, tool_name, tool_call_id, now, now, status, agent_row_id),
+        (id, chat_id, role, content, kind, tool_name, tool_call_id, tool_calls,
+         now, now, status, agent_row_id),
     )
 
 
@@ -280,3 +284,485 @@ def list_msg_links_for_chat(db, chat_id: str, *, limit: int = 500) -> List[Dict[
         (chat_id, limit),
     )
     return [dict(r) for r in rows]
+
+
+# ── Items-endpoint reads + state.db reconciliation (Phase 2) ──────────
+#
+# `list_messages_for_chat` returns rows in the wire shape the items
+# endpoint hands to the PWA. `reconcile_from_state_db` is the
+# opportunistic backfill: any state.db rows for this chat that don't
+# have a sidekick.db twin get inserted with `legacy:<state_id>` keys.
+# Runs at items-endpoint enter time, before the read, so the response
+# always reflects the union.
+#
+# Pagination cursor: sidekick.db.msg_links's implicit `rowid`. SQLite
+# guarantees monotonicity ("ROWID of any new row will be one larger
+# than the largest ROWID that has ever before existed in that same
+# table"). PWA passes `before` cursor as an integer rowid; we filter
+# `WHERE rowid < ?`.
+
+def list_messages_for_chat(
+    db, chat_id: str, *,
+    limit: int = 200,
+    before_rowid: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Paginate the message store for one chat in chronological order.
+
+    Returns ``{items, first_id, has_more}``.
+
+    Ordering is by ``created_at`` ASC (wallclock timestamp), with
+    ``rowid`` ASC as a deterministic tiebreaker. We can't use rowid
+    alone because reconcile inserts legacy: rows from state.db in
+    state-db-id order, which is NOT chronological for chats that
+    pre-date Phase 1's write-through — a reload would push the just-
+    sent envelope row out of the "recent" window behind the historic
+    backfill (Jonathan field bug 2026-05-19 right after restart:
+    his fresh user message at rowid 29 was hidden behind 622 legacy
+    inserts that arrived during reconcile).
+
+    Cursor (`before_rowid`, kept named for wire-back-compat) is the
+    millisecond-precision timestamp of the cursor item:
+    ``int(created_at * 1000)``. PWA treats it as an opaque integer.
+    """
+    if before_rowid is None:
+        sql = (
+            "SELECT rowid AS rowid, id AS sidekick_id, role, content, kind, "
+            "       tool_name, tool_call_id, tool_calls, agent_row_id, created_at, status "
+            "FROM msg_links WHERE chat_id = ? "
+            "ORDER BY created_at ASC, rowid ASC"
+        )
+        params: tuple = (chat_id,)
+    else:
+        # `before_rowid` is actually a millis cursor; convert back.
+        cursor_ts = before_rowid / 1000.0
+        sql = (
+            "SELECT rowid AS rowid, id AS sidekick_id, role, content, kind, "
+            "       tool_name, tool_call_id, tool_calls, agent_row_id, created_at, status "
+            "FROM msg_links WHERE chat_id = ? AND created_at < ? "
+            "ORDER BY created_at ASC, rowid ASC"
+        )
+        params = (chat_id, cursor_ts)
+    rows = db.fetchall(sql, params)
+    rows_list = [dict(r) for r in rows]
+    first_id: Optional[int] = None
+    has_more = False
+    if before_rowid is None:
+        if len(rows_list) > limit:
+            rows_list = rows_list[-limit:]
+            has_more = True
+    else:
+        if len(rows_list) >= limit:
+            rows_list = rows_list[:limit]
+            has_more = True
+    if rows_list:
+        first_id = int(float(rows_list[0]["created_at"]) * 1000)
+    items = []
+    for r in rows_list:
+        ts_ms = int(float(r["created_at"]) * 1000) if r["created_at"] else 0
+        item: Dict[str, Any] = {
+            "id": ts_ms,
+            "object": "message",
+            "role": r["role"],
+            "content": r["content"] or "",
+            "created_at": int(r["created_at"]) if r["created_at"] else 0,
+            "sidekick_id": r["sidekick_id"],
+        }
+        if r["kind"]:
+            item["kind"] = r["kind"]
+        if r["tool_name"]:
+            item["tool_name"] = r["tool_name"]
+        if r["tool_call_id"]:
+            item["tool_call_id"] = r["tool_call_id"]
+        if r["tool_calls"]:
+            # PWA projection's parseToolCalls reads this OpenAI-shape
+            # JSON to populate tool-row names + args on reload.
+            item["tool_calls"] = r["tool_calls"]
+        items.append(item)
+    return {"items": items, "first_id": first_id, "has_more": has_more}
+
+
+def reconcile_from_state_db(
+    db, state_db_path, chat_id: str, source: str = "sidekick",
+) -> int:
+    """Bidirectional reconciliation between state.db and sidekick.db
+    for one chat. Runs at items-endpoint enter and on session_changed.
+
+    Three-pass operation:
+      1. **Link pass (Phase 3)**: each unlinked sidekick.db row
+         (agent_row_id IS NULL) finds a state.db row with matching
+         role + content that hasn't been claimed yet. Earliest match
+         wins; duplicates resolved in chronological order.
+      2. **Insert pass**: state.db rows still without a sidekick.db
+         twin get inserted as ``legacy:<state_id>`` (INSERT OR IGNORE).
+      3. **Orphan-drop pass (Phase 4)**: sidekick.db rows with
+         ``agent_row_id`` pointing at a state.db row that no longer
+         exists (i.e. ``/retry``, ``/undo``, ``/compress`` rewrote
+         the session; explicit delete dropped it; 90-day prune ran)
+         get removed. Rows with NULL agent_row_id are NEVER dropped
+         — they're either in-flight or pre-link, both legitimate.
+
+    Pass 3 is the self-healing fix Jonathan signed off 2026-05-19:
+    state.db is authoritative for whole-session mutations, so any
+    sidekick.db row linked to a vanished state.db row is provably
+    stale. The orphan check runs every reconcile (cheap O(N) set
+    ops on already-fetched data) which means /retry-style mutations
+    self-heal on the next PWA poll without a separate trigger.
+
+    Returns count of (linked + inserted + dropped) rows changed.
+    Best-effort: sqlite errors return 0 without raising; the items
+    endpoint still returns whatever's in sidekick.db.
+
+    SAFETY: if state.db is unreachable (file missing, locked), the
+    function returns 0 *without dropping anything* — the early
+    return on `not state_rows` covers this. Brand-new chats where
+    state.db hasn't flushed yet keep their envelope-written rows
+    intact because those rows have NULL agent_row_id (not orphan
+    candidates).
+    """
+    import contextlib
+    import sqlite3
+    if state_db_path is None:
+        return 0
+    # Reachability gate: only proceed with pass 3 (orphan drops) when
+    # state.db opened cleanly. A locked / missing state.db means
+    # `state_reachable=False` and orphan drops are skipped — otherwise
+    # a transient state.db hiccup would wipe legitimate rows.
+    state_reachable = False
+    try:
+        uri = f"file:{state_db_path}?mode=ro"
+        with contextlib.closing(sqlite3.connect(uri, uri=True, timeout=2.0)) as conn:
+            conn.row_factory = sqlite3.Row
+            sql = """
+                WITH RECURSIVE session_root(id, root_system_prompt) AS (
+                    SELECT id, system_prompt FROM sessions
+                     WHERE user_id = ? AND source = ?
+                    UNION ALL
+                    SELECT s.id, sr.root_system_prompt
+                      FROM sessions s
+                      JOIN session_root sr ON s.parent_session_id = sr.id
+                     WHERE s.user_id IS NULL
+                       AND LENGTH(COALESCE(sr.root_system_prompt, '')) >= 200
+                       AND SUBSTR(COALESCE(s.system_prompt, ''), 1, 200)
+                           = SUBSTR(sr.root_system_prompt, 1, 200)
+                )
+                SELECT m.id, m.role, m.content, m.tool_name,
+                       m.tool_call_id, m.tool_calls, m.timestamp
+                FROM messages m
+                JOIN session_root sr ON m.session_id = sr.id
+                ORDER BY m.id ASC
+            """
+            state_rows = list(conn.execute(sql, (chat_id, source)).fetchall())
+            state_reachable = True
+    except Exception:
+        return 0
+
+    # Drop compaction-injected seed rows (the `[CONTEXT COMPACTION]`
+    # marker that hermes injects when minting a child session — never
+    # surfaced to the PWA).
+    state_rows = [
+        r for r in state_rows
+        if not (r["content"] or "").startswith("[CONTEXT COMPACTION")
+    ]
+
+    # Linked agent_row_ids already in sidekick.db.
+    linked_rows = db.fetchall(
+        "SELECT agent_row_id FROM msg_links WHERE chat_id = ? AND agent_row_id IS NOT NULL",
+        (chat_id,),
+    )
+    claimed_state_ids = {str(r["agent_row_id"]) for r in linked_rows}
+
+    # ── Pass 1: link unlinked sidekick.db rows by content fingerprint.
+    # Match envelope-written rows (umsg_*/msg_*/tc:*/tr:*/notif_*) to
+    # their state.db twins so Phase 4 self-heal can identify orphans
+    # vs in-flight rows correctly.
+    unlinked = db.fetchall(
+        "SELECT id, role, content FROM msg_links "
+        "WHERE chat_id = ? AND agent_row_id IS NULL "
+        "ORDER BY created_at ASC",
+        (chat_id,),
+    )
+    links = 0
+    if unlinked:
+        # Build a (role, content) → list-of-state.db-ids index of
+        # unclaimed candidates, in id-ASC order. Matching pops from
+        # the front so duplicate-content rows (e.g. user typed "ok"
+        # twice) link to state.db rows in chronological order.
+        candidates: Dict[tuple, List[str]] = {}
+        for r in state_rows:
+            sid = str(r["id"])
+            if sid in claimed_state_ids:
+                continue
+            key = (r["role"], r["content"] or "")
+            candidates.setdefault(key, []).append(sid)
+        for sk in unlinked:
+            key = (sk["role"], sk["content"] or "")
+            queue = candidates.get(key)
+            if not queue:
+                continue
+            state_id = queue.pop(0)
+            try:
+                db.exec(
+                    "UPDATE msg_links SET agent_row_id = ?, updated_at = ? "
+                    "WHERE id = ?",
+                    (state_id, time.time(), sk["id"]),
+                )
+                claimed_state_ids.add(state_id)
+                links += 1
+            except Exception:
+                continue
+
+    # ── Pass 2: insert state.db rows that still have no sidekick.db
+    # twin. These are legacy chats from before Phase 1's write-through,
+    # OR rows that drifted (sidekick.db write-path bug missed them).
+    inserted = 0
+    for r in state_rows:
+        state_id = str(r["id"])
+        if state_id in claimed_state_ids:
+            continue
+        sk_id = f"legacy:{state_id}"
+        ts = float(r["timestamp"]) if r["timestamp"] is not None else time.time()
+        # state.db's tool_calls column lives on assistant rows that
+        # orchestrated tool calls. Propagating it to sidekick.db means
+        # PWA projection's parseToolCalls() can populate tool-row
+        # names + args on reload — without this, reconciled chats
+        # render as "(unknown)" + args="{}" (Jonathan field bug
+        # 2026-05-19, chat 5308f030).
+        tool_calls_raw = r["tool_calls"] if "tool_calls" in r.keys() else None
+        try:
+            db.exec(
+                "INSERT OR IGNORE INTO msg_links "
+                "(id, chat_id, role, content, kind, tool_name, tool_call_id, "
+                " tool_calls, created_at, updated_at, status, agent_row_id) "
+                "VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, 'final', ?)",
+                (
+                    sk_id, chat_id, r["role"], r["content"] or "",
+                    r["tool_name"], r["tool_call_id"], tool_calls_raw,
+                    ts, ts, state_id,
+                ),
+            )
+            inserted += 1
+        except Exception:
+            continue
+
+    # ── Pass 2.5: heal tool_calls on existing legacy: rows that
+    # were inserted by a previous reconcile before this column was
+    # propagated. Bumps any row whose tool_calls is NULL but state.db
+    # has it. One-shot during the rollout window; idempotent.
+    healed_tc = 0
+    for r in state_rows:
+        raw_tc = r["tool_calls"] if "tool_calls" in r.keys() else None
+        if not raw_tc:
+            continue
+        state_id = str(r["id"])
+        try:
+            cur = db.exec(
+                "UPDATE msg_links SET tool_calls = ?, updated_at = ? "
+                "WHERE chat_id = ? AND agent_row_id = ? AND tool_calls IS NULL",
+                (raw_tc, time.time(), chat_id, state_id),
+            )
+            if cur.rowcount > 0:
+                healed_tc += cur.rowcount
+        except Exception:
+            continue
+
+    # ── Pass 3: orphan drop (Phase 4 self-heal).
+    # sidekick.db rows with agent_row_id set but the state.db row gone
+    # are provable orphans: hermes did a whole-session DELETE (/retry,
+    # /undo, /compress rewrote the transcript; explicit delete; 90-day
+    # prune). Drop them so the next read doesn't show stale bubbles.
+    #
+    # Skipped when state.db wasn't reachable (state_reachable=False
+    # already returned 0 above) — defensive against a sqlite hiccup
+    # wiping legitimate rows.
+    dropped = 0
+    if state_reachable:
+        live_state_ids = {str(r["id"]) for r in state_rows}
+        linked_now = db.fetchall(
+            "SELECT id, agent_row_id FROM msg_links "
+            "WHERE chat_id = ? AND agent_row_id IS NOT NULL",
+            (chat_id,),
+        )
+        for row in linked_now:
+            arid = str(row["agent_row_id"])
+            if arid in live_state_ids:
+                continue
+            try:
+                db.exec("DELETE FROM msg_links WHERE id = ?", (row["id"],))
+                dropped += 1
+            except Exception:
+                continue
+    if dropped or healed_tc:
+        # Log every heal event — write-path bugs and whole-session
+        # mutations both surface here. Threshold for alerting is a
+        # future concern; for now bake into a single warning line a
+        # grep can find.
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            "[sidekick] heal chat=%s links=%d inserted=%d dropped=%d tc_healed=%d",
+            chat_id, links, inserted, dropped, healed_tc,
+        )
+    return links + inserted + dropped + healed_tc
+
+
+# ── Envelope → row upsert ────────────────────────────────────────────
+#
+# Phase 1 of the sidekick.db-as-message-store migration. Every outbound
+# envelope routed through ``_safe_send_envelope`` is recorded here at
+# emit time. Items endpoint still reads from state.db in Phase 1;
+# Phase 2 switches the read path. See top-of-file design block in
+# ``sidekick_db.py``.
+#
+# Envelope → row mapping:
+#
+#   * ``user_message``  → role='user',      content=env.text,
+#                         status='final',   id=message_id
+#   * ``reply_delta``   → role='assistant', content=env.text (cumulative),
+#                         status='streaming', id=message_id
+#                         (subsequent deltas overwrite content)
+#   * ``reply_final``   → role='assistant', content=env.text OR last
+#                         delta's accumulated text, status='final',
+#                         id=message_id
+#   * ``tool_call``     → role='tool',      content=JSON-encoded args,
+#                         tool_name=env.tool_name,
+#                         tool_call_id=env.call_id,
+#                         status='streaming', id='tc:'+call_id
+#   * ``tool_result``   → role='tool',      content=env.result (string),
+#                         tool_name=env.tool_name,
+#                         tool_call_id=env.call_id,
+#                         status='final',   id='tr:'+call_id
+#   * ``notification``  → role='assistant', content=env.content,
+#                         kind=env.kind,    status='final',
+#                         id=env.message_id or minted notif_*
+#
+# Other envelope types (typing, session_changed, error, image,
+# unread_changed) are intentionally NOT persisted — they're transient
+# UI signals, not message rows.
+
+_PERSISTED_ENVELOPE_TYPES = frozenset({
+    "user_message",
+    "reply_delta",
+    "reply_final",
+    "tool_call",
+    "tool_result",
+    "notification",
+})
+
+
+def record_envelope(db, env: Dict[str, Any]) -> Optional[str]:
+    """Upsert sidekick.db row for one outbound envelope.
+
+    Returns the row id written (for tests/diagnostics), or None when
+    the envelope type isn't a persisted one (typing, etc.).
+
+    Idempotent: re-recording the same envelope updates the row in place.
+    Reply_delta accumulation: each delta overwrites content with its
+    own text (envelope-stream convention — deltas carry cumulative text,
+    not deltas).
+    """
+    etype = env.get("type")
+    if etype not in _PERSISTED_ENVELOPE_TYPES:
+        return None
+    chat_id = env.get("chat_id")
+    if not isinstance(chat_id, str) or not chat_id:
+        return None
+    # Strip any source-prefix the dispatcher added; rows are keyed by
+    # the bare chat_id internally. (Matches items-endpoint parse_gateway_id
+    # normalization upstream.)
+    if ":" in chat_id:
+        _, _, chat_id = chat_id.partition(":")
+    now = time.time()
+
+    if etype == "user_message":
+        row_id = env.get("message_id")
+        if not isinstance(row_id, str) or not row_id:
+            return None
+        upsert_msg_link(
+            db, id=row_id, chat_id=chat_id, role="user",
+            content=env.get("text") or "", status="final",
+        )
+        return row_id
+
+    if etype == "reply_delta":
+        row_id = env.get("message_id")
+        if not isinstance(row_id, str) or not row_id:
+            return None
+        upsert_msg_link(
+            db, id=row_id, chat_id=chat_id, role="assistant",
+            content=env.get("text") or "", status="streaming",
+        )
+        return row_id
+
+    if etype == "reply_final":
+        row_id = env.get("message_id")
+        if not isinstance(row_id, str) or not row_id:
+            return None
+        # Pull the latest accumulated text from the existing row if the
+        # final envelope itself omits text (some adapters terminate
+        # with an empty payload; the cumulative content lives on the
+        # last delta).
+        text = env.get("text")
+        if not text:
+            existing = db.fetchone(
+                "SELECT content FROM msg_links WHERE id = ?", (row_id,),
+            )
+            if existing and existing["content"]:
+                text = existing["content"]
+        upsert_msg_link(
+            db, id=row_id, chat_id=chat_id, role="assistant",
+            content=text or "", status="final",
+        )
+        return row_id
+
+    if etype == "tool_call":
+        call_id = env.get("call_id")
+        if not isinstance(call_id, str) or not call_id:
+            return None
+        row_id = f"tc:{call_id}"
+        args = env.get("args")
+        try:
+            args_str = json.dumps(args) if args is not None else ""
+        except Exception:
+            args_str = str(args) if args is not None else ""
+        upsert_msg_link(
+            db, id=row_id, chat_id=chat_id, role="tool",
+            content=args_str, status="streaming",
+            tool_name=env.get("tool_name") or "",
+            tool_call_id=call_id,
+        )
+        return row_id
+
+    if etype == "tool_result":
+        call_id = env.get("call_id")
+        if not isinstance(call_id, str) or not call_id:
+            return None
+        row_id = f"tr:{call_id}"
+        result = env.get("result")
+        if not isinstance(result, str):
+            try:
+                result = json.dumps(result) if result is not None else ""
+            except Exception:
+                result = str(result) if result is not None else ""
+        upsert_msg_link(
+            db, id=row_id, chat_id=chat_id, role="tool",
+            content=result, status="final",
+            tool_name=env.get("tool_name") or "",
+            tool_call_id=call_id,
+        )
+        return row_id
+
+    if etype == "notification":
+        # Notifications minted by cron/scheduler don't always carry a
+        # message_id on the wire; fall back to a synthesized one tied
+        # to the timestamp + chat (good enough for dedup since the
+        # plugin never re-sends the same notification).
+        row_id = env.get("message_id") or env.get("notif_id") \
+            or f"notif_{int(now * 1000)}_{chat_id[:8]}"
+        upsert_msg_link(
+            db, id=row_id, chat_id=chat_id, role="assistant",
+            content=env.get("content") or env.get("text") or "",
+            status="final",
+            kind=env.get("kind"),
+        )
+        return row_id
+
+    return None

@@ -96,7 +96,6 @@ async def _handle_blocking(
     response_id: str, message_id: str, created_at: int,
     attachments: Optional[list] = None,
     user_message_id: str = "",
-    pre_high_water: Optional[int] = None,
 ) -> "web.Response":
     """Non-streaming /v1/responses path. Dispatch, drain the queue
     until reply_final, return single JSON envelope."""
@@ -128,16 +127,12 @@ async def _handle_blocking(
         )
     finally:
         adapter._turn_queues.pop(chat_id, None)
-        # Link the just-persisted state.db rows to the PWA's known
-        # SSE-shape ids so a future history-fetch reload can dedup
-        # against the IDB-cached bubbles. Only fires when a turn
-        # actually completed; on timeout / error the rows hermes
-        # may or may not have written aren't ours to claim.
-        if reply_final_seen:
-            await asyncio.to_thread(
-                adapter._write_msg_links_after_turn,
-                chat_id, pre_high_water, user_message_id, message_id,
-            )
+        # Linking is now done by sidekick.db's content-fingerprint
+        # match (Phase 3, see sidekick_state.reconcile_from_state_db).
+        # The legacy `_write_msg_links_after_turn` heuristic is dead
+        # code as of 2026-05-19 — kept on the class for one more
+        # release so emergency rollback can re-enable it via a flag,
+        # then deleted in the cleanup commit.
 
 
 async def _handle_streaming(
@@ -148,7 +143,6 @@ async def _handle_streaming(
     response_id: str, message_id: str, created_at: int,
     attachments: Optional[list] = None,
     user_message_id: str = "",
-    pre_high_water: Optional[int] = None,
 ) -> "web.StreamResponse":
     """Streaming /v1/responses. Emits OpenAI Responses-API SSE
     events as the agent produces output."""
@@ -284,14 +278,8 @@ async def _handle_streaming(
         adapter._turn_queues.pop(chat_id, None)
         with contextlib.suppress(Exception):
             await resp.write_eof()
-        # Mirror of the blocking handler's link-write — only fires
-        # when reply_final actually completed (`completed_emitted`).
-        # See _write_msg_links_after_turn for full rationale.
-        if completed_emitted:
-            await asyncio.to_thread(
-                adapter._write_msg_links_after_turn,
-                chat_id, pre_high_water, user_message_id, message_id,
-            )
+        # Linking handled by reconcile_from_state_db on next items
+        # endpoint enter. Legacy link-write call removed 2026-05-19.
     return resp
 
 
@@ -426,26 +414,19 @@ async def handle_responses(adapter, request: "web.Request") -> "web.StreamRespon
             user_message_id=user_message_id,
         )
 
-    # Capture state.db's id high-water mark for this chat BEFORE
-    # dispatching. After reply_final fires, any messages.id strictly
-    # greater than this is a row hermes persisted during this turn —
-    # used by _write_msg_links_after_turn to link the SSE-shape ids
-    # the PWA knows (user_message_id, message_id) back to the
-    # canonical state.db ids history-fetch will surface later.
-    pre_high_water = await asyncio.to_thread(
-        adapter._capture_msg_high_water_mark, chat_id,
-    )
-
+    # pre_high_water + _capture_msg_high_water_mark removed 2026-05-19
+    # with the Phase 3-4 migration — content-fingerprint linking +
+    # state.db reconciliation make the watermark heuristic obsolete.
     if not stream:
         return await _handle_blocking(
             adapter,
             chat_id, text, queue, response_id, message_id, created_at,
             attachments=attachments,
-            user_message_id=user_message_id, pre_high_water=pre_high_water,
+            user_message_id=user_message_id,
         )
     return await _handle_streaming(
         adapter,
         request, chat_id, text, queue, response_id, message_id, created_at,
         attachments=attachments,
-        user_message_id=user_message_id, pre_high_water=pre_high_water,
+        user_message_id=user_message_id,
     )

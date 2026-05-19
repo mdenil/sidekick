@@ -241,23 +241,22 @@ def _items_by_user_id(
 async def handle_get_items(adapter, request: "web.Request") -> "web.Response":
     """GET /v1/conversations/{id}/items — transcript replay.
 
-    Aggregates messages across every state.db session whose
-    ``(user_id, source)`` matches this chat. user_id IS the
-    platform chat_id; rotations under the hood (compression forks
-    AND session_reset auto-reset) all roll up into a single flat
-    transcript ordered by ``(timestamp ASC, id ASC)``.
+    Phase 2 (2026-05-19): read source is sidekick.db.msg_links, not
+    state.db. Before each read, an opportunistic reconciliation pulls
+    any state.db rows that don't have a sidekick.db twin into the
+    message store with `legacy:<state_id>` keys. The aggregation
+    across compaction-rotated sessions is done INSIDE the reconciler
+    via the same recursive CTE the legacy path used.
 
-    Source is resolved at query time by probing state.db for any
-    source associated with this user_id, preferring ``sidekick``
-    on a collision (sidekick chat_ids are UUIDs, telegram chat_ids
-    are short ints, so collisions are vanishingly unlikely in
-    practice but the deterministic preference keeps behavior
-    reproducible).
+    Pagination cursor: sidekick.db.msg_links's implicit rowid. PWA
+    treats it as an integer (same wire shape as before); the cursor's
+    monotonicity is sqlite-guaranteed.
+
+    Returns 404 only when the chat has zero rows in sidekick.db AND
+    state.db has no session for the chat AND no in-flight turn buffer
+    exists — i.e. genuinely unknown chat. A chat with sidekick.db rows
+    (envelope-time writes from Phase 1) always responds with a list.
     """
-    # [items-trace] instrumentation (Jonathan, 2026-05-04 overnight)
-    # — diagnose the 4-20s `/messages` latency. Print() bypasses
-    # hermes logger config (which seemingly drops INFO from journal).
-    # Removes once the bottleneck is identified.
     _trace_id = secrets.token_hex(3)
     _t0 = _time.monotonic()
     def _trace(event: str, extra: str = "") -> None:
@@ -281,10 +280,12 @@ async def handle_get_items(adapter, request: "web.Request") -> "web.Response":
         except ValueError:
             return web.Response(status=400, text="invalid before cursor")
 
-    # Prefer the source carried in the prefixed id — that's what
-    # disambiguates `(source, chat_id)` collisions. Fall back to
-    # state.db source resolution for legacy un-prefixed callers.
+    # Source resolution still hits state.db — it's the canonical
+    # mapping of chat_id → source (sidekick / telegram / slack /…).
+    # Track whether state.db has ANY session for this chat so the
+    # final 404-vs-empty decision can incorporate it.
     parsed_source, chat_id = _parse_gateway_id(raw_id)
+    state_db_knows_chat = parsed_source is not None
     if parsed_source is not None:
         source = parsed_source
         _trace("source-from-prefix", f"source={source} chat={chat_id[:24]}")
@@ -292,26 +293,34 @@ async def handle_get_items(adapter, request: "web.Request") -> "web.Response":
         _trace("source-resolve-start", f"chat={chat_id[:24]}")
         source = await asyncio.to_thread(_resolve_source_for_chat_id, adapter, chat_id)
         _trace("source-resolve-end", f"source={source}")
+        state_db_knows_chat = source is not None
         if source is None:
-            return web.Response(status=404, text="conversation not found")
+            source = "sidekick"  # assume sidekick for the reconcile/query below
+
+    from . import sidekick_state as _sstate
+
+    # Opportunistic reconciliation: pull any state.db rows missing
+    # from sidekick.db. No-op when state.db has no rows for this
+    # chat. Cheap on second + subsequent reads (linked_ids set
+    # covers everything).
+    inserted = await asyncio.to_thread(
+        _sstate.reconcile_from_state_db,
+        adapter._sidekick_db, adapter._state_db_path, chat_id, source,
+    )
+    if inserted:
+        _trace("reconcile", f"inserted={inserted}")
 
     _trace("query-start", f"limit={limit} before={before_id}")
     result = await asyncio.to_thread(
-        _items_by_user_id, adapter, chat_id, source, limit, before_id,
+        _sstate.list_messages_for_chat,
+        adapter._sidekick_db, chat_id,
+        limit=limit, before_rowid=before_id,
     )
-    _trace("query-end", f"rows={len(result[0]) if result else 0}")
-    # Check the in-flight turn buffer BEFORE the 404 — a brand-new
-    # chat (POST landed seconds ago, state.db rotation hasn't
-    # written the session row yet) needs to return the buffered
-    # rows or the PWA's mid-flight reload would see 404 and wipe
-    # the prompt. The plugin's TurnBuffer is the source of truth
-    # for the in-flight slice; we now surface it as ENVELOPES (the
-    # live SSE shape) under `inflight: [...]` so the PWA's
-    # replayInflight() path renders streaming bubbles keyed by
-    # message_id — matching subsequent live deltas instead of
-    # forking duplicate bubbles. See Crack C, 2026-05-17 audit:
-    # the older items-merge approach folded finalized items into
-    # the durable array which caused visible double-renders.
+    items = result["items"]
+    first_id = result["first_id"]
+    has_more = result["has_more"]
+    _trace("query-end", f"rows={len(items)}")
+
     inflight_entry = None
     inflight_envelopes: list = []
     if adapter._turn_buffer is not None:
@@ -319,12 +328,11 @@ async def handle_get_items(adapter, request: "web.Request") -> "web.Response":
         if inflight_entry is not None:
             inflight_envelopes = adapter._turn_buffer.render_envelopes(inflight_entry)
 
-    if result is None and inflight_entry is None:
+    # 404 only when truly unknown chat: no sidekick.db rows + no
+    # state.db session + no in-flight turn. Preserves the original
+    # cmdk drill-to-message fall-through behavior.
+    if not items and not inflight_envelopes and not state_db_knows_chat:
         return web.Response(status=404, text="conversation not found")
-    if result is None:
-        items, first_id, has_more = [], None, False
-    else:
-        items, first_id, has_more = result
 
     body: Dict[str, Any] = {
         "object": "list",
@@ -332,9 +340,6 @@ async def handle_get_items(adapter, request: "web.Request") -> "web.Response":
         "first_id": first_id,
         "has_more": has_more,
     }
-    # Older callers expect a missing `inflight` field when nothing's in
-    # flight (existing dedup logic is shape-tolerant). Only emit the
-    # field when non-empty to keep the response minimal.
     if inflight_envelopes:
         body["inflight"] = inflight_envelopes
     response = web.json_response(body)

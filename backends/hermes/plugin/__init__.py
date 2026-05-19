@@ -1536,6 +1536,20 @@ class SidekickAdapter(BasePlatformAdapter):
             except Exception as exc:
                 logger.warning("[sidekick] turn buffer observe failed: %s", exc)
 
+        # Phase 1: sidekick.db write-through. Every persisted envelope
+        # type (user_message / reply_delta / reply_final / tool_call /
+        # tool_result / notification) upserts a row into the sidekick.db
+        # message store. Items endpoint doesn't read from this yet
+        # (Phase 2 switches the read path) — rows accumulate alongside
+        # the existing state.db path so a write-path bug here can't
+        # break reads. See top-of-file design block in sidekick_db.py.
+        if self._sidekick_db is not None:
+            try:
+                from . import sidekick_state as _sstate  # local import
+                _sstate.record_envelope(self._sidekick_db, env)
+            except Exception as exc:
+                logger.warning("[sidekick] sidekick.db record failed: %s", exc)
+
         # Plugin-owned push dispatch. Fires on push-eligible envelopes
         # (reply_final, notification) when SIDEKICK_PUSH_OWNED_BY_PLUGIN
         # is set on the matching proxy. Independent of the in-turn vs
@@ -2043,141 +2057,21 @@ class SidekickAdapter(BasePlatformAdapter):
                         "idx_sessions_user_id_source "
                         "ON sessions(user_id, source)"
                     )
-                    # Plugin-owned side table mapping hermes' canonical
-                    # state.db integer message ids to the SSE-shape ids
-                    # the plugin emits to the PWA. Closes the dedup
-                    # gap between live SSE bubbles (keyed by umsg_*/
-                    # msg_*) and history-fetch reconciliation (which
-                    # only sees integer ids). Without it, every PWA
-                    # reload duplicates the IDB-restored transcript on
-                    # top of the server replay because no key matches.
-                    # See agent/image_routing.py-style architectural
-                    # note: hermes core's `messages` schema is upstream-
-                    # owned and has no client_id column; carrying our
-                    # own table keeps the change plugin-local.
-                    conn.execute(
-                        "CREATE TABLE IF NOT EXISTS sidekick_msg_links ("
-                        "state_db_id INTEGER PRIMARY KEY, "
-                        "sidekick_id TEXT NOT NULL UNIQUE)"
-                    )
-                    conn.execute(
-                        "CREATE INDEX IF NOT EXISTS "
-                        "idx_sidekick_msg_links_sidekick_id "
-                        "ON sidekick_msg_links(sidekick_id)"
-                    )
-                    # `kind` column (added 2026-05-14) attaches discriminator
-                    # metadata to notification rows. The row itself lives
-                    # in state.db.messages as role='assistant' — single
-                    # source of truth, same path turn replies take — and
-                    # `kind` is the field the PWA reads to render the row
-                    # as a styled notification (cron/reminder/approval)
-                    # rather than a regular assistant reply. Telegram
-                    # gateway doesn't need this column because Telegram
-                    # has no notion of "notification kind" in its
-                    # transcript; the PWA does. ALTER TABLE without
-                    # IF NOT EXISTS isn't an SQLite thing — swallow the
-                    # duplicate-column error so this runs idempotently
-                    # on every plugin start.
-                    try:
-                        conn.execute(
-                            "ALTER TABLE sidekick_msg_links ADD COLUMN kind TEXT"
-                        )
-                    except sqlite3.OperationalError as exc:
-                        if "duplicate column" not in str(exc).lower():
-                            raise
         except Exception as exc:
             logger.warning(
                 "[sidekick] index ensure failed (non-fatal): %s", exc
             )
 
-    def _capture_msg_high_water_mark(self, chat_id: str) -> Optional[int]:
-        """Return the largest state.db `messages.id` for this sidekick
-        chat, or None when the chat is brand new / state.db missing.
-        Read just before dispatching a turn so we can identify which
-        rows the turn newly persisted (ids strictly greater than the
-        captured value)."""
-        if self._state_db_path is None or not self._state_db_path.exists():
-            return None
-        uri = f"file:{self._state_db_path}?mode=ro"
-        try:
-            with contextlib.closing(
-                sqlite3.connect(uri, uri=True, timeout=2.0)
-            ) as conn:
-                row = conn.execute(
-                    "SELECT MAX(m.id) FROM messages m "
-                    "JOIN sessions s ON m.session_id = s.id "
-                    "WHERE s.user_id = ? AND s.source = ?",
-                    (chat_id, SIDEKICK_SOURCE),
-                ).fetchone()
-            return int(row[0]) if row and row[0] is not None else None
-        except Exception:
-            return None
-
-    def _write_msg_links_after_turn(
-        self,
-        chat_id: str,
-        pre_high_water: Optional[int],
-        user_message_id: str,
-        assistant_message_id: str,
-    ) -> None:
-        """Link the two state.db rows hermes just persisted (one user,
-        one assistant) to the SSE-shape ids the PWA already knows.
-
-        Called once per completed turn, after the streaming handler
-        sees `reply_final` (which the upstream emits AFTER persisting
-        the assistant message; the user message persists earlier in
-        the same dispatch). The first new row with role='user' gets
-        linked to the PWA's user_message_id; the first new row with
-        role='assistant' gets linked to the plugin-minted message_id.
-        Tool / system rows are intentionally not linked — the PWA's
-        history-fetch dedup keys off these two roles only.
-
-        Idempotent via UNIQUE constraint on `sidekick_id` plus INSERT
-        OR IGNORE — replaying a turn never produces duplicate rows.
-
-        Best-effort: a write failure here doesn't break the turn (the
-        envelope was already streamed to the client). It only means
-        the next reload of THIS turn's bubbles falls through to the
-        integer-id path, which is the same behavior we'd get for
-        legacy pre-fix messages anyway."""
-        if self._state_db_path is None or not self._state_db_path.exists():
-            return
-        if not user_message_id and not assistant_message_id:
-            return
-        after = pre_high_water if pre_high_water is not None else 0
-        try:
-            with contextlib.closing(
-                sqlite3.connect(self._state_db_path, timeout=5.0)
-            ) as conn:
-                rows = conn.execute(
-                    "SELECT m.id, m.role FROM messages m "
-                    "JOIN sessions s ON m.session_id = s.id "
-                    "WHERE s.user_id = ? AND s.source = ? AND m.id > ? "
-                    "ORDER BY m.id ASC",
-                    (chat_id, SIDEKICK_SOURCE, after),
-                ).fetchall()
-                mapping: List[Tuple[int, str]] = []
-                seen_user = False
-                seen_assistant = False
-                for state_db_id, role in rows:
-                    if role == "user" and not seen_user and user_message_id:
-                        mapping.append((int(state_db_id), user_message_id))
-                        seen_user = True
-                    elif role == "assistant" and not seen_assistant and assistant_message_id:
-                        mapping.append((int(state_db_id), assistant_message_id))
-                        seen_assistant = True
-                if not mapping:
-                    return
-                with conn:
-                    conn.executemany(
-                        "INSERT OR IGNORE INTO sidekick_msg_links "
-                        "(state_db_id, sidekick_id) VALUES (?, ?)",
-                        mapping,
-                    )
-        except Exception as exc:
-            logger.warning(
-                "[sidekick] msg-link write failed (non-fatal): %s", exc
-            )
+    # Legacy linker methods (_capture_msg_high_water_mark,
+    # _write_msg_links_after_turn) + the state.db sidekick_msg_links
+    # side-table were deleted 2026-05-19 as part of the supplemental-
+    # store migration. The replacement is sidekick.db.msg_links plus
+    # the content-fingerprint linker in
+    # `sidekick_state.reconcile_from_state_db`. See top-of-file design
+    # block in `sidekick_db.py` for the full architecture.
+    #
+    # If a rollback is ever needed, the deleted code lives in git
+    # history at commit a7d6c17's parent (8d4820a).
 
     async def _session_poll_loop(self) -> None:
         """Background task: poll state.db every ~1.5s and emit

@@ -52,7 +52,8 @@ export const FRONTEND_SETTINGS = {
   // Agent-activity surfacing (tool-call + tool-result row rendering)
   agentActivity:          { category: 'agent_activity',  default: 'summary' },
   // Display
-  contentSize:            { category: 'display',         default: 15 },
+  // contentSize moved to per-device localStorage 2026-05-19.
+  // See src/settings.ts PER_DEVICE_KEYS for the new home.
   theme:                  { category: 'display',         default: 'dark' },
   // Call-button transport selector. micCall + streaming + micAutoSend
   // were retired (two-button split + mic-gesture model); silent

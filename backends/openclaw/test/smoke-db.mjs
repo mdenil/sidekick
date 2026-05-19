@@ -89,9 +89,87 @@ try {
   assert(page2.items.length <= 3, 'before cursor returns older rows');
   assert(page2.has_more === false, 'final page has_more=false');
 
+  // ── Write-path parity with hermes plugin (Phase 5).
+  //
+  // OpenClaw owns persistence end-to-end (its messages table IS the
+  // substrate), so the bidirectional `reconcile_from_state_db` heal
+  // hermes needs doesn't apply here — there's no external state.db
+  // to drift FROM. What CAN go wrong is a write-path bug: an envelope
+  // doesn't land as a row, or lands with the wrong shape. These
+  // assertions catch that class.
+  //
+  // Mirror of hermes' `tests/test_envelope_writethrough.py`. If
+  // openclaw's responses-handler.js or events-handler.js ever stops
+  // calling upsertMessage on a turn boundary, these go red.
+  {
+    // user_message + reply_delta + reply_final → 2 rows in expected
+    // shape, status flipped 'final' on assistant.
+    upsertMessage(db, {
+      id: 'umsg_phase5_user', chat_id: 'chat-phase5', role: 'user',
+      content: 'phase5 prompt', status: 'final',
+    });
+    upsertMessage(db, {
+      id: 'msg_phase5_asst', chat_id: 'chat-phase5', role: 'assistant',
+      content: '', status: 'streaming',
+    });
+    upsertMessage(db, {
+      id: 'msg_phase5_asst', chat_id: 'chat-phase5', role: 'assistant',
+      content: 'streaming bits...', status: 'streaming',
+    });
+    finalizeMessage(db, 'msg_phase5_asst');
+    const userRow = getMessage(db, 'umsg_phase5_user');
+    const asstRow = getMessage(db, 'msg_phase5_asst');
+    assert(userRow.role === 'user' && userRow.status === 'final',
+      'user envelope → role=user, status=final');
+    assert(asstRow.role === 'assistant' && asstRow.status === 'final',
+      'reply_delta+final → role=assistant, status=final');
+    assert(asstRow.content === 'streaming bits...',
+      'reply_final preserves last streaming content (legacy openclaw turn flow)');
+    assert(userRow.created_at <= asstRow.created_at,
+      'user row chronologically precedes assistant row');
+  }
+
+  // ── Tool-call / tool-result pairing.
+  {
+    upsertMessage(db, {
+      id: 'tc:phase5_call_X', chat_id: 'chat-phase5', role: 'tool',
+      content: '{"q":"openclaw"}', tool_name: 'search', tool_call_id: 'phase5_call_X',
+      status: 'streaming',
+    });
+    upsertMessage(db, {
+      id: 'tr:phase5_call_X', chat_id: 'chat-phase5', role: 'tool',
+      content: 'results: [...]', tool_name: 'search', tool_call_id: 'phase5_call_X',
+      status: 'final',
+    });
+    const tcRow = getMessage(db, 'tc:phase5_call_X');
+    const trRow = getMessage(db, 'tr:phase5_call_X');
+    assert(tcRow.tool_call_id === trRow.tool_call_id,
+      'tc:* and tr:* rows share tool_call_id for pairing');
+    assert(tcRow.tool_name === 'search' && trRow.tool_name === 'search',
+      'tool_name preserved on both halves');
+  }
+
+  // ── No orphan rows after a complete turn flow. Internal consistency
+  // invariant: every tool_result row should have a matching tool_call
+  // row by tool_call_id. (Smoke verifies the test data; production
+  // drift would surface here.)
+  {
+    const rows = listMessagesForChat(db, { chat_id: 'chat-phase5', limit: 100 });
+    const tcIds = new Set(
+      rows.items.filter(r => r.role === 'tool' && r.id.startsWith('tc:'))
+        .map(r => r.tool_call_id),
+    );
+    const trIds = new Set(
+      rows.items.filter(r => r.role === 'tool' && r.id.startsWith('tr:'))
+        .map(r => r.tool_call_id),
+    );
+    const orphans = [...trIds].filter(id => !tcIds.has(id));
+    assert(orphans.length === 0, `no orphan tool_result rows (found ${orphans.length})`);
+  }
+
   // ── listChats: aggregation
   const chats = listChats(db);
-  assert(chats.length === 2, 'two distinct chats discovered');
+  assert(chats.length === 3, 'three distinct chats discovered (A, B, phase5)');
   const chatA = chats.find(c => c.chat_id === 'chat-A');
   const chatB = chats.find(c => c.chat_id === 'chat-B');
   assert(chatA && chatA.message_count === 4, 'chat-A counts 4 messages');

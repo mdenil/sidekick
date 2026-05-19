@@ -1,15 +1,96 @@
 """Supplemental sqlite for sidekick-shaped state — push subs, mutes,
-prefs, VAPID keys, pins, unread state, in-flight message link map.
+prefs, VAPID keys, pins, unread state, and the message store.
 
 Mirrors the openclaw plugin's ``src/schema.sql`` so the two backends
 expose an identical /v1/* contract. Per-backend isolation: openclaw
 stores at ``~/.openclaw-sk-integ/sidekick.db``; hermes stores at
 ``$HERMES_STATE_DIR/sidekick.db`` (default ``~/.hermes/sidekick.db``).
 
-The proxy used to keep this state as JSON files under
-``~/.sidekick/notifications/``; that was the legacy path because the
-proxy was originally hermes-only. With the per-backend supplemental
-DB pattern, all sidekick state moves into each backend's plugin.
+# Architecture — sidekick.db as the message store
+
+This file is the **canonical local store for messages the sidekick PWA
+renders.** Hermes' own ``state.db`` remains the LLM-context substrate
+(turn limits, compaction, etc.); sidekick.db is the UI-facing view that
+the items endpoint reads from. The two are decoupled so hermes-core can
+evolve its schema without breaking the PWA.
+
+## The ``messages`` table (today still named ``msg_links`` — rename
+queued, see Phase 2 below)
+
+- **Primary key** is the SSE-shape id (``umsg_*``, ``msg_*``,
+  ``notif_*``, ``sk-*``). NEVER an integer auto-increment — that forces
+  consumers to dedup against two id spaces. The plugin mints these at
+  envelope-emit time.
+- ``agent_row_id`` is a nullable cross-link to ``state.db.messages.id``.
+  Populated by the linker (content-fingerprint match, in Phase 2) or
+  left NULL — purely traceability metadata, not load-bearing for any
+  read.
+- ``content`` is the full message text. Yes, this duplicates state.db's
+  content column. This is the **deliberate pattern** the design memo
+  ``hosts/cortex/sidekick-supplemental-store-schema.md`` (signed off
+  2026-05-15) called for, matching what iMessage / Slack / WhatsApp do
+  for the same problem: one local store keyed by a stable UI id with
+  full content, server is sync substrate not content cache.
+- ``status`` is ``streaming`` during a turn, ``final`` after reply_final,
+  ``cancelled`` if the user aborted.
+
+## Why duplicate state.db.messages content
+
+Audit (2026-05-19) confirmed hermes is effectively append-only at the
+row level: no UPDATE on content, no per-row DELETE. The only mutations
+are **whole-session ops** (``/retry``, ``/undo``, ``/compress`` →
+delete+reinsert all rows in session; explicit session delete; 90-day
+prune). These trigger a session_changed envelope which the heal path
+hooks (Phase 4 below).
+
+Bug-driven drift (a sidekick.db write-path bug producing a row that
+disagrees with state.db) is mitigated by:
+
+1. **Smoke tests** asserting ``COUNT(*) state.db == COUNT(*) sidekick.db``
+   per session after each turn flow.
+2. **Self-heal on session_changed** — bidirectional reconciliation:
+   missing rows pulled from state.db into sidekick.db; orphan rows
+   (sidekick.db has, state.db doesn't, agent_row_id NOT NULL) removed.
+   Logs on every heal event so write-path bugs surface in production.
+3. **Admin audit command** (``sidekick-audit``) for deep dives.
+
+The duplicated-content design has STRICTLY BETTER bug surface than
+the alternative JOIN-based hybrid (state.db owns content, sidekick.db
+owns metadata, items endpoint JOINs): the duplication design's bugs
+are trivially countable (per-session row count check); the hybrid's
+bugs are silent NULL content in JOIN results that ship without warning.
+
+# Migration phasing
+
+**Phase 1 (this commit) — Write-through + smoke.** ``_safe_send_envelope``
+calls into ``sidekick_state.record_envelope`` which upserts the row to
+``msg_links`` (renamed to ``messages`` in Phase 2). Items endpoint
+still reads from state.db; sidekick.db rows accumulate alongside but
+aren't read yet. Smokes assert the write path is sound.
+
+**Phase 2 — Items endpoint switch.** Rewrite
+``sidekick_route_items.handle_get_items`` to read from sidekick.db
+instead of state.db. Rename ``msg_links`` → ``messages``. Delete
+the legacy ``sidekick_msg_links`` table on state.db plus
+``_write_msg_links_after_turn`` + ``_capture_msg_high_water_mark``.
+
+**Phase 3 — Linker.** Content-fingerprint match of sidekick.db rows
+against state.db rows to populate ``agent_row_id``. Runs on each
+``reply_final``. Best-effort; failure just leaves agent_row_id NULL.
+
+**Phase 4 — Self-heal on session_changed.** Bidirectional drift
+reconciliation. ``state.db`` rows missing from sidekick.db get pulled
+in (minted as ``legacy:<state_id>`` keys); orphan sidekick.db rows
+(``agent_row_id`` set but state.db row gone — i.e. /retry, /undo,
+/compress, delete, prune happened) get dropped.
+
+**Phase 5 — Openclaw parity.** Port self-heal + drift smoke to the
+openclaw plugin. (Openclaw's write path is already correct; only the
+defensive heal needs adding.)
+
+Each phase lands as its own commit with its own smoke. The current
+phase shipped is recorded in the ``meta`` table under
+``sidekick_db_phase``.
 """
 
 import os
@@ -32,6 +113,12 @@ CREATE TABLE IF NOT EXISTS msg_links (
   kind          TEXT,
   tool_name     TEXT,
   tool_call_id  TEXT,
+  -- tool_calls JSON (added 2026-05-19): for assistant rows that
+  -- orchestrate tool calls, holds the OpenAI Responses-API-shape
+  -- array — `[{ id, function: { name, arguments } }, ...]`. The PWA
+  -- projection reads this to populate tool-row names + args on
+  -- reload; without it, reconciled chats render as "(unknown)".
+  tool_calls    TEXT,
   created_at    REAL NOT NULL,
   updated_at    REAL NOT NULL,
   status        TEXT NOT NULL DEFAULT 'final',
@@ -39,6 +126,9 @@ CREATE TABLE IF NOT EXISTS msg_links (
 );
 CREATE INDEX IF NOT EXISTS idx_msg_links_chat ON msg_links(chat_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_msg_links_agent ON msg_links(agent_row_id);
+-- Idempotent migration: existing installs added the column 2026-05-19.
+-- ALTER TABLE in sqlite is forgiving when the column already exists
+-- (it'd raise; we catch in Python).
 
 CREATE TABLE IF NOT EXISTS pins (
   chat_id    TEXT NOT NULL,
@@ -101,6 +191,17 @@ class SidekickDB:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.executescript(SCHEMA)
+        # Idempotent column adds for forward migrations. SQLite has no
+        # IF NOT EXISTS on ALTER TABLE ADD COLUMN, so we swallow the
+        # "duplicate column" error.
+        for stmt in [
+            "ALTER TABLE msg_links ADD COLUMN tool_calls TEXT",
+        ]:
+            try:
+                self._conn.execute(stmt)
+            except sqlite3.OperationalError as exc:
+                if "duplicate column" not in str(exc).lower():
+                    raise
 
     def exec(self, sql: str, params=()) -> sqlite3.Cursor:
         """Run a write/query under the lock. Use `fetch*` on the cursor."""

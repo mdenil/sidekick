@@ -147,18 +147,53 @@ function startModelPoll() {
   modelPollTimer = setInterval(() => { refreshModelState().catch(() => {}); }, 30_000);
 }
 
-// Built-in fallbacks. Two storage backends:
+// Built-in fallbacks. Two storage backends — keep the split principled,
+// not opportunistic.
 //
-//   - Per-device keys (PER_DEVICE_KEYS below) — `micDevice`,
-//     `ttsVoiceLocal` — stay in browser localStorage. Their values
-//     are hardware-specific (mic device IDs differ Mac vs iPhone;
-//     Web Speech voice names differ per OS) so they can't be
-//     deployment-wide.
-//   - Everything else lives in `sidekick.config.yaml` under
-//     `frontend.<category>.<key>:`, served by GET /api/sidekick/config
-//     and written by POST /api/sidekick/config/<key>. The proxy is
-//     the source of truth; localStorage is no longer consulted for
-//     these keys.
+// ## Device-local (localStorage) — `PER_DEVICE_KEYS` set below
+//
+// Settings whose right value differs per device by nature:
+//   * **Hardware-bound**: `micDevice`, `ttsVoiceLocal`. The actual
+//     device id only exists on this browser; cross-device sync would
+//     be meaningless.
+//   * **Form-factor-bound**: `contentSize` (text size — phone wants
+//     16px, desktop wants 18px), `listenSttEngine` (Safari has Web
+//     Speech, Firefox doesn't).
+//
+// Persists across reload + browser restart via `localStorage`. **Reset
+// triggers**: explicit user clear ("Clear site data" in browser
+// settings), PWA reinstall on iOS, or a localStorage corruption (we
+// fall through to DEFAULTS on parse failure). Schema version bumps do
+// NOT reset — we read the old shape and migrate in-place.
+//
+// ## Server-side (sidekick.config.yaml) — everything else
+//
+// Settings whose right value is the user's account-level preference,
+// independent of which device they're on:
+//   * **Voice + speech-flow**: voice id, commit phrase, silence
+//     timeout, barge threshold, TTS engine choice.
+//   * **Account-bound**: push prefs, quiet hours, kind toggles,
+//     theme, agent-activity verbosity.
+//   * **Workflow defaults**: model selection, attach-image vision
+//     gate, realtime call mode.
+//
+// Persists in `~/.hermes/config.yaml` under `frontend.<category>.<key>`.
+// Served by GET /api/sidekick/config, written by POST
+// /api/sidekick/config/<key>. **Reset triggers**: only an explicit
+// edit to the yaml (CLI or another PWA tab via cross-tab broadcast).
+// Survives all device-level state clears.
+//
+// ## The DEFAULTS object below
+//
+// Used when:
+//   1. proxy fetch fails (offline / 503) — last-resort fallback so
+//      the UI still renders.
+//   2. A new key was added to the schema and existing yamls don't
+//      have it yet.
+//
+// Keys + values match `proxy/sidekick/frontend-config.ts`'s
+// FRONTEND_SETTINGS table for the server-side keys. For per-device
+// keys, only DEFAULTS holds the fallback (no server entry).
 //
 // The DEFAULTS object below is only used when:
 //   1. The proxy-fetch fails (offline / 503 / unconfigured) — last-
@@ -250,13 +285,21 @@ const DEFAULTS = {
   listenSttEngine: 'local' as 'local' | 'silence-only',
 };
 
-/** Settings whose value is hardware-specific to the browser; stay
- *  in localStorage rather than yaml. Everything else is yaml-backed.
- *  listenSttEngine is per-device because Web Speech API support varies
- *  by browser (Safari quirks, Firefox unsupported) and 'silence-only'
- *  may be a sensible local fallback even when the deployment-wide
- *  default is 'local'. */
-const PER_DEVICE_KEYS = new Set<string>(['micDevice', 'ttsVoiceLocal', 'listenSttEngine']);
+/** Settings stored in localStorage rather than the yaml. See the
+ *  device-local-vs-server-side discussion in the file-level docstring
+ *  for the criteria. Adding a key here means it stops being deployment-
+ *  wide and becomes per-browser; existing yaml values (if any) are
+ *  ignored on subsequent loads (the proxy keeps returning them but
+ *  load() prefers localStorage for these keys). */
+const PER_DEVICE_KEYS = new Set<string>([
+  'micDevice',
+  'ttsVoiceLocal',
+  'listenSttEngine',
+  // Text size moved to per-device 2026-05-19 (Jonathan field request:
+  // desktop needs ~18px, phone needs ~14-16px — sharing one value
+  // either bloats desktop or shrinks phone illegible).
+  'contentSize',
+]);
 
 let current = { ...DEFAULTS };
 

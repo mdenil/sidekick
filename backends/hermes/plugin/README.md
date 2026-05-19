@@ -41,8 +41,64 @@ modifying the plugin.
 | File | Purpose |
 |------|---------|
 | `__init__.py` | The adapter — `BasePlatformAdapter` subclass + aiohttp HTTP server speaking the agent contract. The plugin loader walks `<plugin-dir>/__init__.py`. |
+| `sidekick_db.py` | Supplemental sqlite (`~/.hermes/sidekick.db`). **Read the top-of-file design block** for the message-store architecture. |
+| `sidekick_state.py` | All CRUD against `sidekick.db` — push subs, mutes, prefs, VAPID, pins, unread, msg_links. Plus `record_envelope()` (write-through) + `reconcile_from_state_db()` (linker + self-heal). |
+| `sidekick_route_items.py` | `GET /v1/conversations/{id}/items` — reads from sidekick.db, opportunistically reconciles from state.db on enter. |
+| `sidekick_route_*.py` | Other route handlers (responses, events, conversations, settings, push). |
+| `sidekick_dispatcher.py` | Plugin-owned web-push dispatch (engagement gate, kind toggles, body shaping). |
+| `sidekick_turn_buffer.py` | In-memory mid-turn buffer for mid-flight reload (transient). |
 | `plugin.yaml` | Hermes plugin manifest. |
 | `0001-add-sidekick-platform.patch` | Required `hermes-agent` patch (see below). |
+
+## Message store (`~/.hermes/sidekick.db`)
+
+The PWA's transcript is rendered from sidekick.db, not state.db.
+State.db is hermes' LLM-context substrate; sidekick.db is the UI-facing
+view. They're kept in sync by:
+
+1. **Write-through** on every persisted envelope (`user_message`,
+   `reply_delta`, `reply_final`, `tool_call`, `tool_result`,
+   `notification`) — `_safe_send_envelope` → `record_envelope()`.
+   Rows are keyed by the SSE-shape id (`umsg_*`, `msg_*`, `tc:*`,
+   `tr:*`, `notif_*`).
+2. **Opportunistic reconciliation** every items-endpoint request
+   (`reconcile_from_state_db`):
+   - Link pass: content-fingerprint match populates `agent_row_id`
+   - Insert pass: state.db rows missing from sidekick.db get added
+     as `legacy:<state_id>` (chats predating the migration)
+   - Orphan-drop pass: sidekick.db rows linked to vanished state.db
+     rows (i.e. `/retry`, `/undo`, `/compress`, delete, prune
+     happened) get removed
+3. **Self-healing**: orphan + insert passes run on every items read,
+   so whole-session mutations recover on the next PWA poll. The heal
+   logs `[sidekick] heal chat=… links=N inserted=N dropped=N` —
+   non-zero in the journal means a write-path bug or a hermes-side
+   session mutation just happened.
+
+### Failure modes
+
+- **state.db unreachable**: reconcile returns 0, orphan drops are
+  skipped (defensive — a transient sqlite hiccup must not wipe rows).
+- **Linker can't match by content**: row's `agent_row_id` stays NULL,
+  it's never an orphan candidate. Self-corrects when state.db catches
+  up + content match succeeds.
+- **Bug in the write path**: smoke tests catch it (see
+  `tests/test_envelope_writethrough.py` and
+  `tests/test_items_endpoint_sidekick_db.py`). Production drift
+  surfaces as `legacy:<id>` rows in sidekick.db that should have
+  been envelope-written.
+
+### Schema migration log
+
+| Phase | When | What |
+|-------|------|------|
+| 1 | 2026-05-19 | Write-through hook added in `_safe_send_envelope` |
+| 2 | 2026-05-19 | Items endpoint switched to sidekick.db reads |
+| 3 | 2026-05-19 | Content-fingerprint linker (replaces `_write_msg_links_after_turn`) |
+| 4 | 2026-05-19 | Bidirectional self-heal on every reconcile |
+| Cleanup | 2026-05-19 | Legacy `_write_msg_links_after_turn`, `_capture_msg_high_water_mark` callers removed |
+| Cleanup-2 | 2026-05-19 | Legacy method bodies deleted, `sidekick_msg_links` state.db side-table CREATE removed. Rollback target: git history at `a7d6c17`. |
+| 5 (pending) | TBD | Openclaw parity — port self-heal pattern to openclaw's jsonl substrate |
 
 ## Install
 
