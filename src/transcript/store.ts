@@ -70,31 +70,54 @@ export function setDurable(
   const s = getState(chatId);
   s.durable = items.slice();
   s.pagination = { ...pagination };
-  s.inflight = dropCompletedTurnEnvelopes(s.inflight);
+  s.inflight = dropCompletedTurnEnvelopes(s.inflight, s.durable);
   notify(chatId);
 }
 
-/** Walk an envelope array and drop everything except envelopes that
- *  belong to a turn we have NOT yet seen reply_final for. A turn is
- *  identified by the user-side message_id seeded by user_message, then
- *  carried implicitly until the next user_message. reply_final closes
- *  the assistant side; once seen, the whole turn's envelopes are
- *  considered "complete" and durable owns them. */
-function dropCompletedTurnEnvelopes(envs: SidekickEnvelope[]): SidekickEnvelope[] {
+/** Walk an envelope array and drop completed-turn envelopes whose
+ *  reply_final's message_id is present in durable as a `sidekick_id`.
+ *  "Completed" = reply_final has fired; "present in durable" = the
+ *  server-side mirror caught up and the projection can dedup off
+ *  durable. When the mirror hasn't caught up (e.g. background-chat
+ *  reply arrived via SSE but state.db/sidekick.db write-through
+ *  hasn't landed yet), the inflight envelope is the ONLY copy of
+ *  the content and we must NOT drop it (field bug 2026-05-19:
+ *  background-reply-first-switch-shows-content.mjs).
+ *
+ *  Original motivation (commit 4d2f7dd): plugin's link-table write
+ *  silently failed → durable had assistant rows with sidekick_id
+ *  NULL → projection couldn't dedup integer-id durable keys against
+ *  SSE-shape inflight keys → ghost-tail of the just-finished turn.
+ *  With phase-3 self-heal landed in supplemental store, the NULL
+ *  sidekick_id case is rare; when it still occurs the inflight
+ *  envelope stays and the projection's own dedup (text match by
+ *  key) handles it.
+ */
+function dropCompletedTurnEnvelopes(
+  envs: SidekickEnvelope[],
+  durable: ConversationItem[],
+): SidekickEnvelope[] {
   if (envs.length === 0) return envs;
-  // First pass: collect the indices that belong to the CURRENT
-  // (trailing) turn. Walk from the end backward, including envelopes
-  // until we hit a reply_final (the most recent closed turn boundary).
-  // Everything before that reply_final is "completed" turns.
-  let lastClosedIdx = -1;
+  const durableSidekickIds = new Set<string>();
+  for (const d of durable) {
+    if (d.sidekick_id) durableSidekickIds.add(d.sidekick_id);
+  }
+  // Walk from end; find the most recent reply_final whose message_id
+  // IS present in durable. Only completed turns whose mirror has
+  // landed are safe to drop. Everything earlier (and everything since)
+  // stays — the inflight is still the source of truth for those.
+  let lastSafeIdx = -1;
   for (let i = envs.length - 1; i >= 0; i--) {
-    if (envs[i].type === 'reply_final') {
-      lastClosedIdx = i;
+    const e = envs[i];
+    if (e.type !== 'reply_final') continue;
+    const mid = (e as { message_id?: string }).message_id;
+    if (mid && durableSidekickIds.has(mid)) {
+      lastSafeIdx = i;
       break;
     }
   }
-  if (lastClosedIdx < 0) return envs;  // no closed turn — nothing to drop
-  return envs.slice(lastClosedIdx + 1);
+  if (lastSafeIdx < 0) return envs;
+  return envs.slice(lastSafeIdx + 1);
 }
 
 /** Prepend older rows from a load-earlier fetch. `pagination` reflects

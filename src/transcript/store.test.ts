@@ -2,16 +2,34 @@
  * @fileoverview Store-level tests — specifically the contract for
  * draining stale inflight envelopes on durable refresh.
  *
- * Bug context (Jonathan field repro 2026-05-18, chat 54f0e929):
- * `_write_msg_links_after_turn` on the plugin side silently failed
- * for some state.db rows, leaving sidekick_id NULL. The PWA's
- * projection then couldn't dedup those rows' integer-id keys against
- * the inflight envelopes' SSE-shape umsg_ / msg_ keys, so completed
- * turns produced duplicate "ghost" bubbles at the bottom of the
- * transcript with synthetic timestamps. The fix below ensures the
- * store drops envelopes for turns whose reply_final has fired,
- * because durable is authoritative for those turns regardless of
- * whether the link-table write landed.
+ * Contract evolution:
+ *
+ * v1 (commit 4d2f7dd, 2026-05-18): `setDurable` dropped EVERY
+ * completed-turn envelope (anything up to & including the last
+ * reply_final), assuming durable was authoritative for those turns.
+ * Fixed the ghost-tail bug where durable rows arrived with
+ * sidekick_id NULL (the plugin's link-table write had silently
+ * failed) — projection couldn't dedup against inflight by key,
+ * resulting in duplicate ghost bubbles. Dropping inflight removed
+ * the duplicate at the cost of trusting durable absolutely.
+ *
+ * v2 (this file, 2026-05-19): `setDurable` only drops envelopes
+ * whose `reply_final.message_id` is present in durable's
+ * `sidekick_id` set. The v1 assumption broke for background-chat
+ * replies: SSE delivered reply_final to the inflight store, but
+ * a subsequent switch-in fired setDurable BEFORE the plugin had
+ * mirrored the assistant row into state.db / sidekick.db. With
+ * v1 the inflight envelope (the only source of truth) got nuked
+ * and the user saw a blank session until a second switch-away-
+ * and-back (by which time the mirror caught up).
+ *
+ * The v1 ghost-tail symptom is addressed at the source by the
+ * supplemental store self-heal (phase-3 fingerprint linker,
+ * phase-4 orphan drop) — durable rows should now reliably arrive
+ * with sidekick_id. When the link write somehow still fails, v2
+ * leaves the inflight envelope alone; the user sees a brief
+ * duplicate rather than missing content, which is the safer
+ * trade.
  */
 
 import { describe, it } from 'node:test';
@@ -41,11 +59,18 @@ function replyFinal(message_id: string, text?: string): SidekickEnvelope {
 function typing(): SidekickEnvelope {
   return { type: 'typing', chat_id: CHAT };
 }
-function durableRow(id: number, role: 'user' | 'assistant', content: string, ts = 1_779_120_000 + id): ConversationItem {
-  return { id, role, content, timestamp: ts };
+function durableUserRow(id: number, content: string, sidekick_id?: string): ConversationItem {
+  const row: ConversationItem = { id, role: 'user', content, timestamp: 1_779_120_000 + id };
+  if (sidekick_id) row.sidekick_id = sidekick_id;
+  return row;
+}
+function durableAssistantRow(id: number, content: string, sidekick_id?: string): ConversationItem {
+  const row: ConversationItem = { id, role: 'assistant', content, timestamp: 1_779_120_000 + id };
+  if (sidekick_id) row.sidekick_id = sidekick_id;
+  return row;
 }
 
-describe('store: setDurable drains completed-turn inflight envelopes', () => {
+describe('store: setDurable conditionally drains completed-turn inflight envelopes', () => {
   it('keeps in-progress turn envelopes untouched when no reply_final present', () => {
     reset();
     appendInflight(CHAT, userMsg('umsg_A', 'hello'));
@@ -59,28 +84,30 @@ describe('store: setDurable drains completed-turn inflight envelopes', () => {
     assert.equal(s.inflight[2].type, 'reply_delta');
   });
 
-  it('drops a completed turn (reply_final at tail) on next setDurable', () => {
+  it('drops a completed turn when durable contains the reply_final.message_id as sidekick_id', () => {
     reset();
     appendInflight(CHAT, userMsg('umsg_A', 'hello'));
     appendInflight(CHAT, typing());
     appendInflight(CHAT, replyDelta('msg_A', 'hi'));
     appendInflight(CHAT, replyFinal('msg_A', 'hi'));
-    // Turn closed → setDurable considers durable authoritative.
-    setDurable(CHAT, [durableRow(1, 'user', 'hello'), durableRow(2, 'assistant', 'hi')], {
-      firstId: null,
-      hasMore: false,
-    });
+    // Durable mirror caught up: assistant row carries the SSE-shape
+    // message_id as sidekick_id. Projection dedup will key off this
+    // sidekick_id, so the store can safely drain the inflight copy.
+    setDurable(CHAT, [
+      durableUserRow(1, 'hello', 'umsg_A'),
+      durableAssistantRow(2, 'hi', 'msg_A'),
+    ], { firstId: null, hasMore: false });
     const s = getState(CHAT);
     assert.equal(s.inflight.length, 0);
   });
 
-  it('drops only the completed-turn envelopes, preserves the trailing in-progress turn', () => {
+  it('drops only the completed-turn envelopes whose mirror landed; preserves the trailing in-progress turn', () => {
     reset();
-    // Turn 1 — closed
+    // Turn 1 — closed, mirrored
     appendInflight(CHAT, userMsg('umsg_A', 'q1'));
     appendInflight(CHAT, replyDelta('msg_A', 'a1'));
     appendInflight(CHAT, replyFinal('msg_A', 'a1'));
-    // Turn 2 — closed
+    // Turn 2 — closed, mirrored
     appendInflight(CHAT, userMsg('umsg_B', 'q2'));
     appendInflight(CHAT, replyDelta('msg_B', 'a2'));
     appendInflight(CHAT, replyFinal('msg_B', 'a2'));
@@ -88,7 +115,12 @@ describe('store: setDurable drains completed-turn inflight envelopes', () => {
     appendInflight(CHAT, userMsg('umsg_C', 'q3'));
     appendInflight(CHAT, typing());
     appendInflight(CHAT, replyDelta('msg_C', 'a3 streaming…'));
-    setDurable(CHAT, [], { firstId: null, hasMore: false });
+    setDurable(CHAT, [
+      durableUserRow(1, 'q1', 'umsg_A'),
+      durableAssistantRow(2, 'a1', 'msg_A'),
+      durableUserRow(3, 'q2', 'umsg_B'),
+      durableAssistantRow(4, 'a2', 'msg_B'),
+    ], { firstId: null, hasMore: false });
     const s = getState(CHAT);
     // Only the trailing in-progress turn 3 envelopes survive.
     assert.equal(s.inflight.length, 3);
@@ -97,29 +129,52 @@ describe('store: setDurable drains completed-turn inflight envelopes', () => {
     assert.equal(s.inflight[2].type, 'reply_delta');
   });
 
-  it('regression: ghost-turn tail does not survive a refresh', () => {
-    // Mirrors Jonathan's 2026-05-18 field bug. Plugin failed to write
-    // the link table for "This is great" turn (3 envelopes never got
-    // their state.db rows linked to SSE-shape umsg_*/msg_* keys). Then
-    // user sent more turns. Local inflight kept growing with envelopes
-    // whose keys would never dedup against durable.
-    //
-    // With the fix, the moment durable refreshes after the orphan
-    // turn's reply_final fired, those envelopes drain.
+  it('preserves completed-turn envelopes when durable is stale (background-chat race)', () => {
+    // Field bug 2026-05-19 (Jonathan): reply lands in chat A via SSE
+    // while user is on chat B. User switches to A; replaySessionMessages
+    // calls setDurable(A, server_messages_for_A, ...) and the server's
+    // /messages response doesn't include the new reply yet (state.db
+    // / sidekick.db write-through hasn't landed). Without this fix,
+    // the inflight reply_final got nuked under the v1 assumption that
+    // durable was authoritative — and the user saw a blank session
+    // until they switched away and back.
+    reset();
+    appendInflight(CHAT, userMsg('umsg_A', 'hello'));
+    appendInflight(CHAT, replyDelta('msg_A', 'hi'));
+    appendInflight(CHAT, replyFinal('msg_A', 'hi'));
+    // Server-side mirror hasn't caught up: durable has the user row
+    // but NOT the assistant row. Inflight is the only copy of the
+    // reply — must not be dropped.
+    setDurable(CHAT, [
+      durableUserRow(1, 'hello', 'umsg_A'),
+    ], { firstId: null, hasMore: false });
+    const s = getState(CHAT);
+    assert.equal(s.inflight.length, 3,
+      `expected all 3 envelopes preserved (durable stale); got ${s.inflight.length}`);
+    assert.equal((s.inflight[2] as any).message_id, 'msg_A');
+  });
+
+  it('preserves completed-turn envelopes when durable rows lack sidekick_id', () => {
+    // Historical scenario (Jonathan field bug 2026-05-18, ghost tail):
+    // the plugin's link-table write silently failed, leaving durable
+    // assistant rows with sidekick_id NULL. Under v1 the store
+    // nuked the inflight on the assumption that durable was good;
+    // under v2 we don't assume — supplemental-store's phase-3/4
+    // self-heal is the real fix for the underlying NULL-sidekick_id
+    // bug, and v2 keeping the inflight envelope shows a brief
+    // duplicate at worst (the projection will eventually dedup once
+    // the link gets re-established), never blank content.
     reset();
     appendInflight(CHAT, userMsg('umsg_ghost', 'This is great'));
     appendInflight(CHAT, replyDelta('msg_ghost', 'Yep'));
     appendInflight(CHAT, replyFinal('msg_ghost', 'Yep'));
-    // Durable comes back with the row but WITHOUT a sidekick_id link
-    // (no `sidekick_id` field). That's exactly the bug shape.
+    // Durable rows arrive without sidekick_id — the bug shape.
     setDurable(CHAT, [
       { id: 100, role: 'user', content: 'This is great', timestamp: 1_779_121_069 },
       { id: 101, role: 'assistant', content: 'Yep', timestamp: 1_779_121_069 },
     ], { firstId: null, hasMore: false });
     const s = getState(CHAT);
-    // Inflight drained → projection won't produce a duplicate ghost
-    // turn from these envelopes. The durable rows render under their
-    // integer-id keys; that's a single bubble, not two.
-    assert.equal(s.inflight.length, 0);
+    assert.equal(s.inflight.length, 3,
+      `expected inflight preserved when durable lacks sidekick_id (safer than nuking content); got ${s.inflight.length}`);
   });
 });
