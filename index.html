@@ -301,16 +301,134 @@
   -->
   <div class="settings-shell">
     <nav class="settings-nav" aria-label="Settings sections">
-      <button type="button" class="settings-nav-btn active" data-target="agent">Agent</button>
+      <!-- Order optimized for mobile reach: the sections users touch
+           most (Notifications + Display) lead so they're a short
+           thumb stretch from the top, instead of buried under the
+           voice + agent rows. Stack collapses on <700px so this
+           order also drives top-to-bottom render on phones. -->
+      <button type="button" class="settings-nav-btn active" data-target="notifications">Notifications</button>
+      <button type="button" class="settings-nav-btn" data-target="display">Display</button>
+      <button type="button" class="settings-nav-btn" data-target="agent">Agent</button>
       <button type="button" class="settings-nav-btn" data-target="voice-input">Voice input</button>
       <button type="button" class="settings-nav-btn" data-target="voice-output">Voice output</button>
       <button type="button" class="settings-nav-btn" data-target="voice-phrases">Voice phrases</button>
       <button type="button" class="settings-nav-btn" data-target="interaction">Interaction</button>
-      <button type="button" class="settings-nav-btn" data-target="notifications">Notifications</button>
-      <button type="button" class="settings-nav-btn" data-target="display">Display</button>
     </nav>
     <div class="settings-content">
-  <div class="settings-group" id="settings-group-agent" data-section="agent">
+  <!-- Notifications + Display moved to top of the group list so the
+       mobile stacked render (all groups visible, top-to-bottom) puts
+       the most-touched knobs within easy thumb reach. Order matches
+       the nav above; nav buttons drive [hidden] on desktop. -->
+
+  <!-- Notifications — push delivery, audio chimes, quiet hours, per-kind
+       toggles, last-decision diagnostic, and a fire-test-push
+       affordance. All the "what disturbs me and when" knobs in one place. -->
+  <div class="settings-group" data-section="notifications">
+    <div class="group-label">Notifications</div>
+    <!-- Push notifications master switch. Disabled when the API isn't
+         available (non-PWA Safari, browsers without PushManager) or
+         permission is denied at OS level; drives subscribe()/unsubscribe()
+         in src/notifications/. -->
+    <div class="row">
+      <label for="set-push">Push notifications</label>
+      <input type="checkbox" id="set-push" disabled>
+      <span class="hint" id="set-push-hint">checking support…</span>
+    </div>
+    <!-- Per-kind toggles. Each push-eligible envelope type / notification
+         kind has its own preference (push_kind_<name>). The plugin-side
+         dispatcher (backends/hermes/plugin/sidekick_dispatcher.py:_is_kind_enabled)
+         consults the matching pref before dispatching; default unset =
+         enabled. UX is a collapsed disclosure to keep mobile vertical
+         budget tight — the trigger label summarises state ("All on" /
+         "N muted") so most users never expand. -->
+    <div class="row">
+      <label for="set-push-categories-toggle">Categories</label>
+      <button type="button" id="set-push-categories-toggle" class="settings-btn" aria-expanded="false" aria-controls="set-push-categories-grid">
+        <span id="set-push-categories-summary">All on</span>
+        <span class="chevron" aria-hidden="true">▾</span>
+      </button>
+      <span class="hint">which event types fire a push</span>
+    </div>
+    <div class="push-categories-grid" id="set-push-categories-grid" hidden>
+      <label class="push-cat"><input type="checkbox" data-push-kind="agent_reply"> <span class="cat-emoji" aria-hidden="true">💬</span> Agent replies</label>
+      <label class="push-cat"><input type="checkbox" data-push-kind="cron"> <span class="cat-emoji" aria-hidden="true">⏰</span> Cron output</label>
+      <label class="push-cat"><input type="checkbox" data-push-kind="reminder"> <span class="cat-emoji" aria-hidden="true">📌</span> Reminders</label>
+      <label class="push-cat"><input type="checkbox" data-push-kind="approval"> <span class="cat-emoji" aria-hidden="true">🛑</span> Approvals</label>
+      <label class="push-cat"><input type="checkbox" data-push-kind="alert"> <span class="cat-emoji" aria-hidden="true">⚠️</span> Alerts</label>
+      <label class="push-cat"><input type="checkbox" data-push-kind="achievement"> <span class="cat-emoji" aria-hidden="true">🎉</span> Achievements</label>
+      <label class="push-cat"><input type="checkbox" data-push-kind="background"> <span class="cat-emoji" aria-hidden="true">🌀</span> Background</label>
+      <label class="push-cat"><input type="checkbox" data-push-kind="tool"> <span class="cat-emoji" aria-hidden="true">🔧</span> Tool events</label>
+      <label class="push-cat"><input type="checkbox" data-push-kind="notification"> <span class="cat-emoji" aria-hidden="true">🔔</span> Other</label>
+    </div>
+    <div class="row">
+      <label for="set-audio-feedback">Chime volume</label>
+      <input type="range" id="set-audio-feedback" min="0" max="100" step="10" value="50">
+      <span class="val" id="set-audio-feedback-val">50%</span>
+    </div>
+    <div class="row">
+      <label for="set-quiet-hours-enabled">Quiet hours</label>
+      <input type="checkbox" id="set-quiet-hours-enabled">
+      <span class="hint">suppress non-urgent push during the window below</span>
+    </div>
+    <div class="row" id="set-quiet-hours-times-row">
+      <label for="set-quiet-hours-start">&nbsp;&nbsp;Start / end</label>
+      <span>
+        <input type="time" id="set-quiet-hours-start" value="22:00" step="60">
+        &nbsp;–&nbsp;
+        <input type="time" id="set-quiet-hours-end" value="07:00" step="60">
+      </span>
+    </div>
+    <div class="row">
+      <label for="set-push-test">Send test push</label>
+      <button type="button" id="set-push-test" class="settings-btn">Fire test</button>
+      <span class="hint" id="set-push-test-hint">delivers to every subscribed device</span>
+    </div>
+    <div class="row">
+      <label for="set-mark-all-read">App-icon badge</label>
+      <button type="button" id="set-mark-all-read" class="settings-btn">Mark all read</button>
+      <span class="hint" id="set-mark-all-read-hint">clear the unread count across all chats</span>
+    </div>
+    <div class="row">
+      <label for="set-push-diagnostics">Recent dispatch decisions</label>
+      <span>
+        <button type="button" id="set-push-diagnostics" class="settings-btn">Refresh</button>
+      </span>
+    </div>
+    <div class="row">
+      <span></span>
+      <pre id="set-push-diagnostics-out" class="settings-diagnostics" style="font-family: ui-monospace, monospace; font-size: 11px; max-height: 180px; overflow-y: auto; white-space: pre-wrap; margin: 0; opacity: 0.85;">(click Refresh to load)</pre>
+    </div>
+  </div>
+
+  <div class="settings-group" data-section="display" hidden>
+    <div class="group-label">Display</div>
+    <div class="row">
+      <label for="set-fontsize">Text size</label>
+      <input type="range" id="set-fontsize" min="13" max="28" step="1" value="15">
+      <span class="val" id="set-fontsize-val">15px</span>
+    </div>
+    <div class="row">
+      <label for="set-theme">Theme</label>
+      <select id="set-theme">
+        <option value="dark">Dark</option>
+        <option value="light">Light</option>
+        <option value="auto">Match system</option>
+      </select>
+    </div>
+    <!-- Cap-only: posts a webkit.messageHandlers.sidekickReset message
+         which Swift translates into webView.load(URLRequest(bundle))
+         to reach the bootstrap. Hidden in PWA where the server is
+         whatever URL the user typed into Safari. data-platform=cap is
+         the single source of truth — applyPlatformGates() in main.ts
+         removes non-matching rows from DOM at boot. -->
+    <div class="row" data-platform="cap">
+      <label>Server URL</label>
+      <button type="button" id="set-reset-server" class="settings-action-btn">Reset…</button>
+      <span class="hint">re-pick the backend</span>
+    </div>
+  </div>
+
+  <div class="settings-group" id="settings-group-agent" data-section="agent" hidden>
     <div class="group-label">Agent</div>
     <!--
       Agent-declared settings render here at runtime via
@@ -428,18 +546,6 @@
       <input type="range" id="set-silence" min="0" max="60" step="1" value="30">
       <span class="val" id="set-silence-val">8s</span>
     </div>
-    <div class="row">
-      <label for="set-nav-prev">Prev phrase</label>
-      <input type="text" id="set-nav-prev" class="text-input" placeholder="previous chat (| for aliases)">
-    </div>
-    <div class="row">
-      <label for="set-nav-next">Next phrase</label>
-      <input type="text" id="set-nav-next" class="text-input" placeholder="next chat">
-    </div>
-    <div class="row">
-      <label for="set-nav-pause">Pause phrase</label>
-      <input type="text" id="set-nav-pause" class="text-input" placeholder="pause chat">
-    </div>
   </div>
 
   <div class="settings-group" data-section="interaction" hidden>
@@ -476,105 +582,6 @@
     </div>
   </div>
 
-  <!-- Notifications — push delivery, audio chimes, quiet hours, last-decision
-       diagnostic, and a fire-test-push affordance. All the "what disturbs me
-       and when" knobs in one place. -->
-  <div class="settings-group" data-section="notifications" hidden>
-    <div class="group-label">Notifications</div>
-    <!-- Push notifications row. Disabled when the API isn't available
-         (non-PWA Safari, browsers without PushManager) or permission is
-         denied at OS level; the toggle drives subscribe()/unsubscribe()
-         in src/notifications/. -->
-    <div class="row">
-      <label for="set-push">Push notifications</label>
-      <input type="checkbox" id="set-push" disabled>
-      <span class="hint" id="set-push-hint">checking support…</span>
-    </div>
-    <div class="row">
-      <label for="set-audio-feedback">Chime volume</label>
-      <input type="range" id="set-audio-feedback" min="0" max="100" step="10" value="50">
-      <span class="val" id="set-audio-feedback-val">50%</span>
-    </div>
-    <div class="row">
-      <label for="set-quiet-hours-enabled">Quiet hours</label>
-      <input type="checkbox" id="set-quiet-hours-enabled">
-      <span class="hint">suppress non-urgent push during the window below</span>
-    </div>
-    <div class="row" id="set-quiet-hours-times-row">
-      <label for="set-quiet-hours-start">&nbsp;&nbsp;Start / end</label>
-      <span>
-        <input type="time" id="set-quiet-hours-start" value="22:00" step="60">
-        &nbsp;–&nbsp;
-        <input type="time" id="set-quiet-hours-end" value="07:00" step="60">
-      </span>
-    </div>
-    <!-- Per-category toggles. agent_reply = the agent finishing a turn.
-         notification = out-of-band events (cron output, /background results,
-         scheduled reminders, approval prompts). Defaults ON; toggle off to
-         suppress without muting individual chats. Labels deliberately
-         distinct from the master "Push notifications" toggle above
-         (field bug 2026-05-13 — Jonathan saw two identical "Push
-         notifications" rows and couldn't tell which one drove
-         subscription vs filter). -->
-    <div class="row">
-      <label for="set-kind-agent-reply">Push agent replies</label>
-      <input type="checkbox" id="set-kind-agent-reply">
-      <span class="hint">banner when the agent finishes a turn</span>
-    </div>
-    <div class="row">
-      <label for="set-kind-notification">Push background events</label>
-      <input type="checkbox" id="set-kind-notification">
-      <span class="hint">cron output, background tasks, scheduled reminders</span>
-    </div>
-    <div class="row">
-      <label for="set-push-test">Send test push</label>
-      <button type="button" id="set-push-test" class="settings-btn">Fire test</button>
-      <span class="hint" id="set-push-test-hint">delivers to every subscribed device</span>
-    </div>
-    <div class="row">
-      <label for="set-mark-all-read">App-icon badge</label>
-      <button type="button" id="set-mark-all-read" class="settings-btn">Mark all read</button>
-      <span class="hint" id="set-mark-all-read-hint">clear the unread count across all chats</span>
-    </div>
-    <div class="row">
-      <label for="set-push-diagnostics">Recent dispatch decisions</label>
-      <span>
-        <button type="button" id="set-push-diagnostics" class="settings-btn">Refresh</button>
-      </span>
-    </div>
-    <div class="row">
-      <span></span>
-      <pre id="set-push-diagnostics-out" class="settings-diagnostics" style="font-family: ui-monospace, monospace; font-size: 11px; max-height: 180px; overflow-y: auto; white-space: pre-wrap; margin: 0; opacity: 0.85;">(click Refresh to load)</pre>
-    </div>
-  </div>
-
-  <div class="settings-group" data-section="display" hidden>
-    <div class="group-label">Display</div>
-    <div class="row">
-      <label for="set-fontsize">Text size</label>
-      <input type="range" id="set-fontsize" min="13" max="28" step="1" value="15">
-      <span class="val" id="set-fontsize-val">15px</span>
-    </div>
-    <div class="row">
-      <label for="set-theme">Theme</label>
-      <select id="set-theme">
-        <option value="dark">Dark</option>
-        <option value="light">Light</option>
-        <option value="auto">Match system</option>
-      </select>
-    </div>
-    <!-- Cap-only: posts a webkit.messageHandlers.sidekickReset message
-         which Swift translates into webView.load(URLRequest(bundle))
-         to reach the bootstrap. Hidden in PWA where the server is
-         whatever URL the user typed into Safari. data-platform=cap is
-         the single source of truth — applyPlatformGates() in main.ts
-         removes non-matching rows from DOM at boot. -->
-    <div class="row" data-platform="cap">
-      <label>Server URL</label>
-      <button type="button" id="set-reset-server" class="settings-action-btn">Reset…</button>
-      <span class="hint">re-pick the backend</span>
-    </div>
-  </div>
     </div><!-- /.settings-content -->
   </div><!-- /.settings-shell -->
   </div>

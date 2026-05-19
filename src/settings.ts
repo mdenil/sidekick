@@ -188,10 +188,6 @@ const DEFAULTS = {
   commitDelaySec: 0.5,
   silenceSec: 30,
   bargeIn: true,
-  navPrev: 'previous chat',
-  navNext: 'next chat',
-  navPause: 'pause chat',
-  autoAdvanceOnNew: false,
   // Legacy RMS-amplitude threshold. No longer used by the barge VAD
   // (slider now writes bargeVadThreshold below). Survives only as the
   // turnbased mode's silence-end RMS gate falls back through
@@ -510,9 +506,6 @@ export function hydrate(handlers: {
   const setCommitDelayVal = $any('set-commit-delay-val');
   const setSilence = $inp('set-silence');
   const setSilenceVal = $any('set-silence-val');
-  const setNavPrev = $inp('set-nav-prev');
-  const setNavNext = $inp('set-nav-next');
-  const setNavPause = $inp('set-nav-pause');
   const setListenStt = $sel('set-listen-stt');
   // Barge controls (set-barge, set-barge-sens) moved to call-mode menu
   // in v0.421 — see main.ts wiring of #call-mode-barge-slider. The
@@ -536,8 +529,30 @@ export function hydrate(handlers: {
   const setQuietHoursEnabled = $inp('set-quiet-hours-enabled');
   const setQuietHoursStart = $inp('set-quiet-hours-start');
   const setQuietHoursEnd = $inp('set-quiet-hours-end');
-  const setKindAgentReply = $inp('set-kind-agent-reply');
-  const setKindNotification = $inp('set-kind-notification');
+  // Per-kind push toggles — UX is a collapsible grid below the
+  // trigger row. Each checkbox carries `data-push-kind` matching the
+  // plugin's pref key suffix (`push_kind_<name>` server-side; here we
+  // POST as the `kinds.<name>` shape the proxy /preferences endpoint
+  // accepts). Settings panel renders the same 9 kinds the plugin's
+  // _icon_for / _is_kind_enabled know about.
+  const pushCategoriesToggle = $any('set-push-categories-toggle');
+  const pushCategoriesGrid = $any('set-push-categories-grid');
+  const pushCategoriesSummary = $any('set-push-categories-summary');
+  const pushKindInputs = Array.from(
+    document.querySelectorAll<HTMLInputElement>(
+      '#set-push-categories-grid input[type=checkbox][data-push-kind]',
+    ),
+  );
+  /** Roll up the current grid state into "All on" / "N muted" /
+   *  "All muted" so the user can read the state without expanding. */
+  function refreshPushCategoriesSummary(): void {
+    if (!pushCategoriesSummary) return;
+    const total = pushKindInputs.length;
+    const off = pushKindInputs.filter(i => !i.checked).length;
+    if (off === 0) pushCategoriesSummary.textContent = 'All on';
+    else if (off === total) pushCategoriesSummary.textContent = 'All muted';
+    else pushCategoriesSummary.textContent = `${off} muted`;
+  }
   const setPushTest = $any('set-push-test');
   const setPushTestHint = $any('set-push-test-hint');
   const setPushDiagnostics = $any('set-push-diagnostics');
@@ -563,9 +578,6 @@ export function hydrate(handlers: {
     if (setCommitDelayVal) setCommitDelayVal.textContent = `${current.commitDelaySec}s`;
     if (setSilence) setSilence.value = String(current.silenceSec);
     if (setSilenceVal) setSilenceVal.textContent = current.silenceSec === 0 ? 'Off' : `${current.silenceSec}s`;
-    if (setNavPrev) setNavPrev.value = current.navPrev;
-    if (setNavNext) setNavNext.value = current.navNext;
-    if (setNavPause) setNavPause.value = current.navPause;
     if (setListenStt) setListenStt.value = (current as any).listenSttEngine || 'local';
     if (setBarge) setBarge.checked = current.bargeIn;
     // Sensitivity slider is the INVERSE of Silero's positiveSpeechThreshold.
@@ -795,11 +807,13 @@ export function hydrate(handlers: {
         if (setQuietHoursStart) setQuietHoursStart.value = qh.start || '22:00';
         if (setQuietHoursEnd) setQuietHoursEnd.value = qh.end || '07:00';
       }
-      const kinds = prefs?.kinds;
-      if (kinds) {
-        if (setKindAgentReply) setKindAgentReply.checked = kinds.agent_reply !== false;
-        if (setKindNotification) setKindNotification.checked = kinds.notification !== false;
+      const kinds = prefs?.kinds || {};
+      // Default unset = enabled (matches plugin's _is_kind_enabled).
+      for (const cb of pushKindInputs) {
+        const kind = cb.dataset.pushKind || '';
+        cb.checked = kinds[kind] !== false;
       }
+      refreshPushCategoriesSummary();
     } catch (e: any) {
       log('[notifications] prefs load failed:', e?.message ?? e);
     }
@@ -832,12 +846,29 @@ export function hydrate(handlers: {
   if (setQuietHoursEnabled) setQuietHoursEnabled.onchange = pushQuietHours;
   if (setQuietHoursStart) setQuietHoursStart.onchange = pushQuietHours;
   if (setQuietHoursEnd) setQuietHoursEnd.onchange = pushQuietHours;
-  if (setKindAgentReply) setKindAgentReply.onchange = () => {
-    void pushPrefs({ kinds: { agent_reply: setKindAgentReply.checked } });
-  };
-  if (setKindNotification) setKindNotification.onchange = () => {
-    void pushPrefs({ kinds: { notification: setKindNotification.checked } });
-  };
+  // Per-kind toggles — partial-update POST per checkbox click. The
+  // proxy's preferences endpoint merges into the kinds blob, so we
+  // only need to ship the single delta. Summary label refreshes
+  // each click so the user can read state without reopening the grid.
+  for (const cb of pushKindInputs) {
+    cb.onchange = () => {
+      const kind = cb.dataset.pushKind || '';
+      if (!kind) return;
+      void pushPrefs({ kinds: { [kind]: cb.checked } });
+      refreshPushCategoriesSummary();
+    };
+  }
+  // Disclosure: button toggles aria-expanded + the grid's [hidden]
+  // attribute. CSS chevron rotation listens for aria-expanded="true".
+  if (pushCategoriesToggle && pushCategoriesGrid) {
+    pushCategoriesToggle.onclick = () => {
+      const expanded = pushCategoriesToggle.getAttribute('aria-expanded') === 'true';
+      const next = !expanded;
+      pushCategoriesToggle.setAttribute('aria-expanded', String(next));
+      if (next) pushCategoriesGrid.removeAttribute('hidden');
+      else pushCategoriesGrid.setAttribute('hidden', '');
+    };
+  }
 
   // ── Send test push — fires the proxy /test endpoint synchronously.
   // The button stays disabled mid-dispatch to prevent double-fire on
@@ -857,9 +888,17 @@ export function hydrate(handlers: {
       });
       const body = await r.json();
       if (setPushTestHint) {
-        setPushTestHint.textContent = body?.ok
-          ? `delivered=${body.dispatched} failed=${body.failed} pruned=${body.pruned}`
-          : `error: ${body?.error || `HTTP ${r.status}`}`;
+        if (body?.ok) {
+          const delivered = body.delivered ?? body.dispatched ?? 0;
+          const failed = body.failed ?? 0;
+          const pruned = body.pruned ?? 0;
+          const skipped = body.skipped;
+          setPushTestHint.textContent = skipped
+            ? `skipped: ${skipped}`
+            : `delivered=${delivered} failed=${failed} pruned=${pruned}`;
+        } else {
+          setPushTestHint.textContent = `error: ${body?.error || `HTTP ${r.status}`}`;
+        }
       }
     } catch (e: any) {
       if (setPushTestHint) setPushTestHint.textContent = `error: ${e?.message ?? e}`;
@@ -945,9 +984,6 @@ export function hydrate(handlers: {
   // Nav keyword strings — persisted on blur (text input is awkward
   // for per-keystroke saves). Empty = that command disabled; aliases
   // separated with "|" (e.g. "previous chat|back chat").
-  if (setNavPrev) setNavPrev.onchange = () => { set('navPrev', setNavPrev.value.trim().toLowerCase()); };
-  if (setNavNext) setNavNext.onchange = () => { set('navNext', setNavNext.value.trim().toLowerCase()); };
-  if (setNavPause) setNavPause.onchange = () => { set('navPause', setNavPause.value.trim().toLowerCase()); };
   // Listen-mode setting — STT engine local|silence-only (server reserved
   // for v1). Sendword + silence-cutoff for both modes live in the
   // Streaming group above (commitPhrase, silenceSec); they used to be

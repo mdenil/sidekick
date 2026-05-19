@@ -33,9 +33,6 @@ export const FRONTEND_SETTINGS = {
   silenceSec:             { category: 'streaming',       default: 30 },
   commitPhrase:           { category: 'streaming',       default: 'over' },
   commitDelaySec:         { category: 'streaming',       default: 0.5 },
-  navPrev:                { category: 'streaming',       default: 'previous chat' },
-  navNext:                { category: 'streaming',       default: 'next chat' },
-  navPause:               { category: 'streaming',       default: 'pause chat' },
   // Interaction (mic-meter + barge + wake lock + audio feedback)
   bargeIn:                { category: 'interaction',     default: true },
   bargeThreshold:         { category: 'interaction',     default: 0.10 },
@@ -72,7 +69,6 @@ export const FRONTEND_SETTINGS = {
   // src/audio/shared/handsfree.ts. listenSttEngine stays in
   // localStorage (per-device) — Web Speech API support varies by
   // browser; proxy doesn't carry it.
-  autoAdvanceOnNew:       { category: 'composer',        default: false },
   realtime:               { category: 'composer',        default: false },
 } as const;
 

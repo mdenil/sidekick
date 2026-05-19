@@ -1293,6 +1293,47 @@
   }
   #settings .settings-action-btn:hover { background: var(--surface); }
   #settings .row:has(input[type=checkbox]) { cursor: pointer; }
+
+  /* Push categories — collapsible per-kind toggle grid.
+   * Lives inline below the trigger row in the Notifications group.
+   * One row per push kind, 2 columns on desktop, 1 column on mobile.
+   * Each cell is an emoji + label + checkbox lined up; full row is
+   * clickable. */
+  #settings .push-categories-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px 14px;
+    padding: 4px 0 8px 162px;  /* indent matches the label column */
+  }
+  @media (max-width: 699px) {
+    #settings .push-categories-grid {
+      grid-template-columns: 1fr;
+      padding-left: 0;  /* mobile: full-width, no left rail */
+    }
+  }
+  #settings .push-categories-grid .push-cat {
+    display: flex; align-items: center; gap: 8px;
+    font-size: var(--content-size); font-weight: 500; color: var(--fg);
+    cursor: pointer; padding: 6px 4px; min-width: 0;
+    border-radius: 6px;
+  }
+  #settings .push-categories-grid .push-cat:hover { background: var(--surface); }
+  #settings .push-categories-grid .push-cat .cat-emoji {
+    font-size: 1.05em; min-width: 1.2em; text-align: center;
+  }
+  #settings .push-categories-grid .push-cat input[type=checkbox] {
+    margin: 0; flex-shrink: 0;
+  }
+  /* Trigger button — chevron rotates when expanded. The button itself
+   * reuses .settings-btn styling (whichever existing rule paints it). */
+  #settings #set-push-categories-toggle .chevron {
+    display: inline-block;
+    margin-left: 6px;
+    transition: transform 0.12s ease;
+  }
+  #settings #set-push-categories-toggle[aria-expanded="true"] .chevron {
+    transform: rotate(180deg);
+  }
   #settings label { color: var(--fg); min-width: 150px; font-size: var(--content-size); font-weight: 500; }
   #settings select, #settings input[type=range], #settings input[type=text], #settings textarea {
     background: var(--bg); color: var(--fg); border: 1px solid var(--border);
