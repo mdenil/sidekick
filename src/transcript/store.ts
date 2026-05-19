@@ -47,7 +47,21 @@ export function getState(chatId: string): ChatState {
   return s;
 }
 
-/** Replace durable rows wholesale (typical /messages response). */
+/** Replace durable rows wholesale (typical /messages response). Also
+ *  drops inflight envelopes that belong to turns we've already seen
+ *  reply_final for — durable is now authoritative for that turn, and
+ *  the local envelopes were only useful for the streaming window.
+ *
+ *  Why: when the plugin's `_write_msg_links_after_turn` fails to link a
+ *  state.db row to its SSE-shape sidekick_id, the projection sees two
+ *  keys for the same message — durable's integer-id key and inflight's
+ *  umsg_ / msg_ key — and can't dedup them. Result: an "orphan tail"
+ *  of duplicate ghost turns at the bottom of the transcript with
+ *  synthetic timestamps (Jonathan field bug 2026-05-18, chat
+ *  54f0e929 — the entire RFC turn re-appeared at 17:24/17:25).
+ *
+ *  Dropping completed-turn envelopes here breaks the accumulation: the
+ *  in-progress turn (no reply_final yet) is preserved for live render. */
 export function setDurable(
   chatId: string,
   items: ConversationItem[],
@@ -56,7 +70,31 @@ export function setDurable(
   const s = getState(chatId);
   s.durable = items.slice();
   s.pagination = { ...pagination };
+  s.inflight = dropCompletedTurnEnvelopes(s.inflight);
   notify(chatId);
+}
+
+/** Walk an envelope array and drop everything except envelopes that
+ *  belong to a turn we have NOT yet seen reply_final for. A turn is
+ *  identified by the user-side message_id seeded by user_message, then
+ *  carried implicitly until the next user_message. reply_final closes
+ *  the assistant side; once seen, the whole turn's envelopes are
+ *  considered "complete" and durable owns them. */
+function dropCompletedTurnEnvelopes(envs: SidekickEnvelope[]): SidekickEnvelope[] {
+  if (envs.length === 0) return envs;
+  // First pass: collect the indices that belong to the CURRENT
+  // (trailing) turn. Walk from the end backward, including envelopes
+  // until we hit a reply_final (the most recent closed turn boundary).
+  // Everything before that reply_final is "completed" turns.
+  let lastClosedIdx = -1;
+  for (let i = envs.length - 1; i >= 0; i--) {
+    if (envs[i].type === 'reply_final') {
+      lastClosedIdx = i;
+      break;
+    }
+  }
+  if (lastClosedIdx < 0) return envs;  // no closed turn — nothing to drop
+  return envs.slice(lastClosedIdx + 1);
 }
 
 /** Prepend older rows from a load-earlier fetch. `pagination` reflects
