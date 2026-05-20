@@ -35,18 +35,39 @@ import type {
 
 export function project(state: ChatState): BubbleSpec[] {
   const specs: BubbleSpec[] = [];
+  const durableOrder = new WeakMap<BubbleSpec, number>();
+  let nextDurableOrder = 0;
+  const pushDurableSpec = (spec: BubbleSpec): void => {
+    durableOrder.set(spec, nextDurableOrder++);
+    specs.push(spec);
+  };
+  const markDurableSpec = (spec: BubbleSpec): void => {
+    if (!durableOrder.has(spec)) durableOrder.set(spec, nextDurableOrder++);
+  };
   const userKeys = new Set<string>();
   const assistantKeys = new Set<string>();
+  const notificationKeys = new Set<string>();
   const activityByKey = new Map<string, ActivityRowSpec>();
-  // Content fallback for the ghost-tail safety net: durable assistant
-  // rows whose plugin-side link write failed (sidekick_id NULL) can't
-  // dedup against inflight envelopes by key, so we also track their
-  // content. After the inflight pass we drop any inflight assistant
-  // spec whose final text matches one of these contents — durable
-  // owns the bubble. This used to live in `store.ts` (drop all
-  // completed-turn envelopes on setDurable) but that nuked inflight
-  // for background-chat replies whose mirror hadn't landed yet.
-  const noLinkAssistantContents = new Set<string>();
+  // Content multiset for inflight dedup. Tracks durable assistant
+  // rows by content so an inflight envelope whose text matches a
+  // durable row's content can be dropped — durable owns the bubble.
+  //
+  // Why a multiset (Map<content, count>) rather than a Set:
+  // - When the same content appears in N durable rows (e.g. user
+  //   sends "ok" N times), inflight envelopes for the Nth turn
+  //   should only "consume" one slot, not collapse the whole group.
+  //   Each inflight match decrements the count.
+  // - When inflight is AHEAD of durable (background-chat-race shape
+  //   where SSE delivered reply_final before state.db caught up),
+  //   the count starts at 0 → no drop → inflight renders. ✓
+  //
+  // Tracks ALL durable assistant content (regardless of sidekick_id
+  // presence). The earlier no-sidekick_id-only restriction missed
+  // the field bug 2026-05-20 where state.db's assistant row had
+  // `sidekick_id="sk-<unix>-<seq>"` synthetic shape that didn't
+  // match the envelope's `message_id` envelope shape — both got
+  // sidekick_ids, neither dedup'd, both rendered.
+  const durableAssistantContentCounts = new Map<string, number>();
 
   // Durable-vs-durable dedup pre-pass. The items endpoint can return
   // the same logical assistant message TWICE when the plugin's
@@ -74,7 +95,7 @@ export function project(state: ChatState): BubbleSpec[] {
       const key = userKey(item);
       if (!userKeys.has(key)) {
         userKeys.add(key);
-        specs.push({ kind: 'user', key, text: item.content || '', timestamp: ts });
+        pushDurableSpec({ kind: 'user', key, text: item.content || '', timestamp: ts });
       }
       currentTurnKey = `turn:${key}`;
       currentTurnTs = ts;
@@ -87,7 +108,9 @@ export function project(state: ChatState): BubbleSpec[] {
       // (handleNotification → store envelope) rendering exactly.
       if (isNotificationLikeItem(item)) {
         const key = `notif:${item.sidekick_id || item.id}`;
-        specs.push({
+        if (notificationKeys.has(key)) continue;
+        notificationKeys.add(key);
+        pushDurableSpec({
           kind: 'notification',
           key,
           text: stripCronBoilerplate(item.content || '', item.kind),
@@ -102,6 +125,7 @@ export function project(state: ChatState): BubbleSpec[] {
       const calls = parseToolCalls(item.tool_calls);
       if (calls.length) {
         const row = ensureActivityRow(activityByKey, specs, currentTurnKey, currentTurnTs || ts, /*complete*/ true);
+        markDurableSpec(row);
         for (const c of calls) {
           if (!row.tools.find(t => t.callId === c.callId)) row.tools.push(c);
         }
@@ -116,17 +140,21 @@ export function project(state: ChatState): BubbleSpec[] {
       }
       if (item.content && !assistantKeys.has(akey)) {
         assistantKeys.add(akey);
-        specs.push({ kind: 'assistant', key: akey, text: item.content, timestamp: ts });
-        // Track content for the no-link dedup pass below (only if
-        // sidekick_id is absent — otherwise assistantKeys covers it).
-        if (!item.sidekick_id) {
-          noLinkAssistantContents.add(item.content);
-        }
+        pushDurableSpec({ kind: 'assistant', key: akey, text: item.content, timestamp: ts });
+        // Track content for the inflight dedup pass below — covers
+        // both the no-link case (sidekick_id missing) and the
+        // mismatched-link case (sidekick_id present but doesn't
+        // equal the envelope's message_id).
+        durableAssistantContentCounts.set(
+          item.content,
+          (durableAssistantContentCounts.get(item.content) || 0) + 1,
+        );
       }
     } else if (item.role === 'tool') {
       const callId = item.tool_call_id;
       if (!callId || !currentTurnKey) continue;
       const row = ensureActivityRow(activityByKey, specs, currentTurnKey, currentTurnTs || ts, /*complete*/ true);
+      markDurableSpec(row);
       const existing = row.tools.find(t => t.callId === callId);
       if (existing) {
         existing.result = item.content;
@@ -136,7 +164,9 @@ export function project(state: ChatState): BubbleSpec[] {
       }
     } else if (item.role === 'notification') {
       const key = `notif:${item.sidekick_id || item.id}`;
-      specs.push({
+      if (notificationKeys.has(key)) continue;
+      notificationKeys.add(key);
+      pushDurableSpec({
         kind: 'notification',
         key,
         text: item.content || '',
@@ -257,7 +287,9 @@ export function project(state: ChatState): BubbleSpec[] {
         break;
       }
       case 'notification': {
-        const key = `notif:inflight:${inflightTs}`;
+        const key = `notif:${env.sidekick_id || `inflight:${inflightTs}`}`;
+        if (notificationKeys.has(key)) break;
+        notificationKeys.add(key);
         specs.push({
           kind: 'notification',
           key,
@@ -272,25 +304,32 @@ export function project(state: ChatState): BubbleSpec[] {
     }
   }
 
-  // ── 2.5. No-link dedup pass: inflight assistant specs whose text
-  // matches a durable assistant row that arrived without sidekick_id
-  // are dropped — durable owns the bubble. Without this we'd render
-  // both (durable keyed by integer id, inflight keyed by SSE message_id)
-  // because they look like different rows to the key-based dedup.
+  // ── 2.5. Content-multiset dedup: inflight assistant specs whose
+  // text matches an unconsumed durable assistant row are dropped —
+  // durable owns the bubble. Without this we'd render both (durable
+  // keyed by its sidekick_id, inflight keyed by SSE message_id) when
+  // the two ids differ — either because durable's sidekick_id is
+  // missing (field bug 2026-05-19, "Hey — received." dupe with no
+  // sidekick_id), or because durable's sidekick_id is present but
+  // shaped differently from the envelope's message_id (field bug
+  // 2026-05-20, "sk-<unix>-<seq>" synthetic on durable vs envelope
+  // shape on the live SSE).
   //
-  // Active-chat dupe field bug 2026-05-19 (Jonathan): sent a message,
-  // got TWO identical "Hey — received." bubbles. Plugin's mirror
-  // landed the assistant row but the link write hadn't completed yet
-  // (or it landed without sidekick_id for some other reason), so the
-  // key-based dedup couldn't recognize them as the same message.
+  // Why a multiset rather than a Set: when the same content appears
+  // in N durable rows (user typed "ok" N times), each inflight
+  // envelope should consume only one slot, not collapse the group.
   //
-  // Why not drop earlier in the inflight loop: reply_delta text grows
-  // incrementally, so we can't reliably content-match mid-stream. By
-  // the time we reach this point, the inflight assistant spec has its
-  // full accumulated text and we can compare 1:1.
-  if (noLinkAssistantContents.size > 0 && inflightAssistantByKey.size > 0) {
+  // Why not drop earlier in the inflight loop: reply_delta text
+  // grows incrementally, so we can't reliably content-match mid-
+  // stream. By this point, the inflight assistant spec has its full
+  // accumulated text and we can compare 1:1.
+  if (durableAssistantContentCounts.size > 0 && inflightAssistantByKey.size > 0) {
     for (const [key, spec] of inflightAssistantByKey) {
-      if (spec.text && noLinkAssistantContents.has(spec.text)) {
+      const text = spec.text;
+      if (!text) continue;
+      const remaining = durableAssistantContentCounts.get(text) || 0;
+      if (remaining > 0) {
+        durableAssistantContentCounts.set(text, remaining - 1);
         const idx = specs.indexOf(spec);
         if (idx >= 0) specs.splice(idx, 1);
         inflightAssistantByKey.delete(key);
@@ -321,6 +360,11 @@ export function project(state: ChatState): BubbleSpec[] {
   // agent reply, which is the order the user expects.
   specs.sort((a, b) => {
     if (a.timestamp !== b.timestamp) return a.timestamp - b.timestamp;
+    const aDurableOrder = durableOrder.get(a);
+    const bDurableOrder = durableOrder.get(b);
+    if (aDurableOrder != null && bDurableOrder != null) {
+      return aDurableOrder - bDurableOrder;
+    }
     return kindOrder(a) - kindOrder(b);
   });
   return specs;
@@ -493,4 +537,3 @@ function compareDurableForDedup(a: ConversationItem, b: ConversationItem): numbe
   // need, not numeric correctness).
   return String(a.id) > String(b.id) ? 1 : -1;
 }
-

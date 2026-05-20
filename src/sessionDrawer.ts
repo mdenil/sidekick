@@ -456,6 +456,11 @@ export function setViewed(id: string | null) {
   }
 }
 export function getViewed(): string | null { return viewedSessionId; }
+/** Chat the user is focused on for engagement/notification decisions.
+ *  During a session switch, optimisticActiveId flips before the new
+ *  transcript fetch resolves; treating the old viewed chat as focused
+ *  in that window suppresses push and can clear background unread. */
+export function getFocused(): string | null { return optimisticActiveId || viewedSessionId; }
 
 function fmtRelativeTime(epochSec: number): string {
   if (!epochSec) return '';

@@ -327,11 +327,8 @@ def test_dispatcher_observe_envelope_buffers_and_drains(dispatcher):
 
 
 def test_icon_picks_kind_first():
-    """A `notification` envelope with kind=X uses the X-specific icon,
-    overriding the generic 🔔."""
+    """Cron notifications use the concrete cron icon."""
     assert _icon_for({"type": "notification", "kind": "cron"}) == "⏰"
-    assert _icon_for({"type": "notification", "kind": "reminder"}) == "📌"
-    assert _icon_for({"type": "notification", "kind": "approval"}) == "🛑"
 
 
 def test_icon_falls_back_to_type():

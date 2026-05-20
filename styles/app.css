@@ -2004,6 +2004,16 @@
   #pin-drawer:not(.collapsed) .pin-drawer-content {
     opacity: 1; pointer-events: auto;
   }
+  .pin-drawer-status {
+    margin: 8px 10px 2px;
+    padding: 8px 10px;
+    border: 1px solid color-mix(in srgb, var(--danger) 45%, var(--border));
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--danger) 10%, var(--surface));
+    color: var(--fg);
+    font-size: 12px;
+    line-height: 1.35;
+  }
   .pin-drawer-list {
     list-style: none; margin: 0; padding: 6px 0;
     overflow-y: auto; flex: 1;
@@ -3635,14 +3645,26 @@
 .tool-row-details[open] > .tool-row-summary .ar-icon-chevron {
   transform: rotate(90deg);
 }
+.tool-row-summary .tool-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .tool-row-summary .tool-name {
   color: var(--fg);
   font-weight: 500;
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
   font-size: 12.5px;
 }
+.tool-row-summary .tool-detail {
+  color: var(--muted, #888);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12.5px;
+}
 .tool-row-meta {
   margin-left: auto;
+  flex: 0 0 auto;
   font-size: 11.5px;
   color: var(--muted, #888);
   font-variant-numeric: tabular-nums;

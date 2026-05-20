@@ -107,6 +107,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import secrets
 import socket as _socket
 import sqlite3
@@ -135,6 +136,13 @@ logger = logging.getLogger(__name__)
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8645
 PROTOCOL_VERSION = 1
+
+_CRON_RESPONSE_RE = re.compile(
+    r"^Cronjob Response:\s*.+?\s*\n"
+    r"\(job_id:\s*[^)]+\)\s*\n"
+    r"-+\s*\n+",
+    re.DOTALL,
+)
 
 # ── PDF rasterization knobs ───────────────────────────────────────────
 # When the PWA uploads a PDF via /api/sidekick/messages, we shell out to
@@ -382,8 +390,12 @@ class SidekickAdapter(BasePlatformAdapter):
 
         # Adapter-assigned message ids (returned via SendResult.message_id) so
         # subsequent edit_message calls reference the right outbound bubble on
-        # the proxy/PWA side.
+        # the proxy/PWA side. When a /v1/responses request is active, the
+        # route reserves its OpenAI Responses item id here first; send() must
+        # reuse that id so the Sidekick envelope/write-through path and the
+        # Responses SSE path describe the same assistant bubble.
         self._message_seq = 0
+        self._response_message_ids: Dict[str, str] = {}
 
         # session_changed polling state. Map of chat_id → (session_id, title)
         # last seen in state.db. We only emit envelopes for transitions —
@@ -511,6 +523,7 @@ class SidekickAdapter(BasePlatformAdapter):
             dispatcher=self._push_dispatcher,
             state_db_path=self._state_db_path,
             emit_envelope=lambda env: _route_events.publish_out_of_turn(self, env),
+            send_envelope=self._safe_send_envelope,
             vapid_subject=vapid_subject,
         )
         _sroutes.register_routes(self._app, ctx)
@@ -1427,9 +1440,33 @@ class SidekickAdapter(BasePlatformAdapter):
     # Outbound
     # ------------------------------------------------------------------
 
-    def _next_message_id(self) -> str:
+    def _reserve_response_message_id(self, chat_id: str, message_id: str) -> None:
+        """Bind the current /v1/responses assistant item id to ``chat_id``.
+
+        The route handler mints the OpenAI Responses ``msg_*`` id before
+        dispatch. Hermes core then calls ``send()`` from inside the adapter.
+        Without this reservation, ``send()`` minted a separate ``sk-*`` id for
+        the Sidekick envelope/write-through row while the SSE response exposed
+        ``msg_*`` to the proxy/PWA. B2 then joined durable rows back with the
+        ``sk-*`` id, so inflight and durable bubbles no longer shared identity.
+        """
+        if chat_id and message_id:
+            self._response_message_ids[chat_id] = message_id
+
+    def _release_response_message_id(self, chat_id: str, message_id: str) -> None:
+        """Drop a reservation if it still points at this request's id."""
+        if not chat_id:
+            return
+        if self._response_message_ids.get(chat_id) == message_id:
+            self._response_message_ids.pop(chat_id, None)
+
+    def _next_message_id(self, chat_id: Optional[str] = None) -> str:
+        if chat_id:
+            reserved = self._response_message_ids.get(chat_id)
+            if reserved:
+                return reserved
         self._message_seq += 1
-        return f"sk-{int(time.time())}-{self._message_seq}"
+        return f"msg_{secrets.token_hex(10)}"
 
     @staticmethod
     def _push_owned_by_plugin() -> bool:
@@ -1536,6 +1573,14 @@ class SidekickAdapter(BasePlatformAdapter):
             except Exception as exc:
                 logger.warning("[sidekick] turn buffer observe failed: %s", exc)
 
+        # Notification persistence: cron output, /background results,
+        # scheduled reminders, approval prompts all flow as
+        # `type=notification` envelopes today. Persist first so the
+        # minted sidekick_id is the single identity used by state.db,
+        # sidekick.db write-through, and the live SSE envelope.
+        if env_type == "notification":
+            self._persist_notification(env)
+
         # Phase 1: sidekick.db write-through. Every persisted envelope
         # type (user_message / reply_delta / reply_final / tool_call /
         # tool_result / notification) upserts a row into the sidekick.db
@@ -1585,9 +1630,7 @@ class SidekickAdapter(BasePlatformAdapter):
                         chat_id, env_type,
                     )
 
-        # Notification persistence: cron output, /background results,
-        # scheduled reminders, approval prompts all flow as
-        # `type=notification` envelopes today. Out-of-band envelopes
+        # Out-of-band envelopes
         # only existed in the proxy's SSE replay ring (minutes of
         # retention) and Web Push delivery (one-shot banner) — never
         # persisted to state.db.messages because that table feeds the
@@ -1602,9 +1645,6 @@ class SidekickAdapter(BasePlatformAdapter):
         # into /v1/conversations/{id}/items so a refresh-and-scroll
         # finds the notification in the transcript with the same
         # data-message-id machinery cmdk + pin-drawer already use.
-        if env_type == "notification":
-            self._persist_notification(env)
-
         from . import sidekick_route_events as _route_events
         published = _route_events.publish_out_of_turn(self, env)
 
@@ -1756,7 +1796,27 @@ class SidekickAdapter(BasePlatformAdapter):
         wire: the message_id we return here is what the proxy keys the
         UI bubble on.
         """
-        message_id = self._next_message_id()
+        # Hermes cron delivery naturally arrives here through the live
+        # platform adapter as a regular send() with a canonical wrapper.
+        # There is no active /v1/responses queue for that background
+        # delivery, so classify it as the product-facing cron notification
+        # category instead of a normal agent reply. During an active user
+        # turn, preserve the reply_delta/reply_final contract even if the
+        # model happens to print the wrapper text.
+        if chat_id not in self._turn_queues and _CRON_RESPONSE_RE.match(content or ""):
+            if chat_id not in self._known_chat_ids:
+                self._known_chat_ids.add(chat_id)
+            env = {
+                "type": "notification",
+                "chat_id": chat_id,
+                "kind": "cron",
+                "content": content,
+                "text": content,
+            }
+            ok = await self._safe_send_envelope(env)
+            return SendResult(success=ok, message_id=env.get("sidekick_id") or "")
+
+        message_id = self._next_message_id(chat_id)
         # Surface a session_changed envelope the first time we ever see this
         # chat_id outbound. Today the gateway resolves session_id internally
         # so we don't have a stable session_id to surface; emit the chat_id

@@ -105,7 +105,7 @@ export type SidekickEnvelope =
   | { type: 'tool_result'; chat_id: string; call_id: string; tool_name: string; result: unknown; duration_ms?: number }
   | { type: 'typing'; chat_id: string }
   | { type: 'image'; chat_id: string; url: string; caption?: string }
-  | { type: 'notification'; chat_id: string; kind: string; content: string }
+  | { type: 'notification'; chat_id: string; kind: string; content: string; sidekick_id?: string }
   | { type: 'session_changed'; chat_id: string; session_id: string; title: string }
   | { type: 'user_message'; chat_id: string; message_id: string; text: string }
   | { type: 'error'; chat_id: string; message: string };

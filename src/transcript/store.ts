@@ -182,6 +182,22 @@ export function clearInflight(chatId: string): void {
   notify(chatId);
 }
 
+/** Drain inflight envelopes through one completed reply_final. This is
+ *  stricter than clearInflight(): if the user starts another turn
+ *  before the post-final durable refresh lands, envelopes after this
+ *  reply_final survive. */
+export function clearInflightThroughReplyFinal(chatId: string, messageId: string): void {
+  if (!messageId) return;
+  const s = getState(chatId);
+  if (!s.inflight.length) return;
+  const idx = s.inflight.findIndex((e) =>
+    e.type === 'reply_final' && (e as { message_id?: string }).message_id === messageId,
+  );
+  if (idx < 0) return;
+  s.inflight = s.inflight.slice(idx + 1);
+  notify(chatId);
+}
+
 /** Add an optimistic user send. Dedup'd by messageId. */
 export function addPendingSend(chatId: string, send: PendingSend): void {
   const s = getState(chatId);

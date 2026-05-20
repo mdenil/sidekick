@@ -313,6 +313,10 @@ export interface SearchOpts {
  *   that session server-side (e.g. hermes chains via previous_response_id).
  *   May return only the newest page; `firstId` + `hasMore` describe the
  *   cursor for loadEarlier (omitted = full transcript returned).
+ * @property {(id: string) => Promise<{ messages: SessionMessage[], firstId?: number|null, hasMore?: boolean, inflight?: any[] }>} [fetchSessionMessages]
+ *   Fetch a session transcript without making that session active. Used for
+ *   post-final durable refresh so completed inflight envelopes can drain
+ *   without stealing focus if the user switches chats mid-request.
  * @property {(id: string, beforeId: number) => Promise<{ messages: SessionMessage[], firstId?: number|null, hasMore?: boolean }>} [loadEarlier]
  *   Fetch the next older page of a session's transcript. Called by the
  *   chat pane when the user scrolls near the top and `hasMore` was true.

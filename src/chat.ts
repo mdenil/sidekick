@@ -368,6 +368,22 @@ function persist(): void {
   saveSnapshot(html, viewedSessionIdRef).catch((e) => diag(`chat.persist failed: ${e?.message || 'idb error'}`));
 }
 
+let scheduledPersistTimer: number | null = null;
+
+/** Persist the current reconciled transcript after a short quiet period.
+ *  The transcript pipeline updates existing DOM nodes for durable replay
+ *  and streaming deltas; without this hook, the boot-time DOM snapshot can
+ *  remain older than the canonical store and briefly reappear on refresh. */
+export function scheduleSnapshotPersist(delayMs = 250): void {
+  if (scheduledPersistTimer != null) {
+    window.clearTimeout(scheduledPersistTimer);
+  }
+  scheduledPersistTimer = window.setTimeout(() => {
+    scheduledPersistTimer = null;
+    persist();
+  }, delayMs);
+}
+
 /** Public flush helper — callers that batch many addLine calls (e.g.
  *  `replaySessionMessages` rendering a 200-message chat) skip the
  *  per-line autoScroll + persist via `batch: true`, then call this

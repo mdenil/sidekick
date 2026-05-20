@@ -64,12 +64,6 @@ _TYPE_ICONS: Dict[str, str] = {
 }
 _KIND_ICONS: Dict[str, str] = {
     "cron": "⏰",        # scheduled task output
-    "reminder": "📌",    # one-shot reminder fire
-    "approval": "🛑",    # human-in-the-loop request
-    "alert": "⚠️",       # plugin-side alert (e.g. doctor)
-    "achievement": "🎉", # background goal completion
-    "background": "🌀",  # /background result landing
-    "tool": "🔧",        # tool-event-as-push (rare; for ops tools that opt in)
 }
 
 
@@ -275,6 +269,7 @@ def _build_payload(env: Dict, *, body_override: Optional[str] = None) -> Dict:
 # unset = enabled.
 
 _PREF_PUSH_KIND_PREFIX = "push_kind_"
+_SUPPORTED_PUSH_KINDS = {"agent_reply", "cron"}
 
 
 def _is_kind_enabled(db, env: Dict) -> bool:
@@ -288,9 +283,9 @@ def _is_kind_enabled(db, env: Dict) -> bool:
         kind_name = "agent_reply"
     elif env_type == "notification":
         env_kind = env.get("kind") if isinstance(env.get("kind"), str) else ""
-        kind_name = env_kind or "notification"
+        kind_name = env_kind if env_kind in _SUPPORTED_PUSH_KINDS else None
     if not kind_name:
-        return True  # unknown type — let it through; another gate will catch it
+        return True  # not a user-facing category; another gate will catch it
     pref_key = f"{_PREF_PUSH_KIND_PREFIX}{kind_name}"
     val = get_pref(db, pref_key)
     if val is None:

@@ -73,6 +73,7 @@ export async function installMockBackend(page) {
    *  fixture without seeding 200+ messages. null = honor whatever the
    *  PWA sends. */
   let historyFirstPageLimit = null;
+  const messageDelays = new Map();  // chat_id -> artificial /messages delay in ms
   /** Active SSE responses (real http.ServerResponse objects). */
   const streamSubs = new Set();
   let envelopeId = 0;
@@ -209,6 +210,8 @@ export async function installMockBackend(page) {
     const m = url.pathname.match(/\/sessions\/([^/]+)\/messages/);
     const chatId = m ? decodeURIComponent(m[1]) : '';
     const chat = chats.get(chatId);
+    const delayMs = messageDelays.get(chatId) || 0;
+    if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
     // Honor ?limit + ?before for pagination — matches the real proxy's
     // contract (history.ts). Ids are integer-shape (chat-local i+1000
     // unless the test sets m.message_id) so the `before` cursor — which
@@ -696,10 +699,10 @@ export async function installMockBackend(page) {
      *  row lands). The PWA reads this state via the
      *  /api/sidekick/notifications/unread route mocked above. */
     pushEnvelope(env) {
-      broadcast(env);
       if (env && (env.type === 'notification' || env.type === 'reply_final')) {
         bumpUnread(env.chat_id);
       }
+      broadcast(env);
       // Mirror what the real plugin does on a DELETE: remove from
       // server-side state so subsequent /sessions list fetches don't
       // bring the row back. Tests that simulate a "remote delete" can
@@ -784,6 +787,11 @@ export async function installMockBackend(page) {
      *  to clear. */
     setHistoryFirstPageLimit(n) {
       historyFirstPageLimit = typeof n === 'number' && n > 0 ? n : null;
+    },
+    setMessageDelay(chatId, ms) {
+      if (!chatId) return;
+      if (typeof ms === 'number' && ms > 0) messageDelays.set(chatId, ms);
+      else messageDelays.delete(chatId);
     },
     /** Configure the /v1/settings/schema response. Pass null to
      *  declare the agent doesn't implement the extension (route

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import secrets
 import sqlite3
 import sys as _sys
@@ -310,12 +311,25 @@ async def handle_get_items(adapter, request: "web.Request") -> "web.Response":
     if inserted:
         _trace("reconcile", f"inserted={inserted}")
 
-    _trace("query-start", f"limit={limit} before={before_id}")
-    result = await asyncio.to_thread(
-        _sstate.list_messages_for_chat,
-        adapter._sidekick_db, chat_id,
-        limit=limit, before_rowid=before_id,
-    )
+    # B2 staged behind env flag: state.db is the canonical body store;
+    # sidekick.db.msg_links surfaces sidekick_id + kind as annotations.
+    # Default (flag unset / false): legacy v1 read path that mirrors
+    # bodies into sidekick.db and can dupe on reconcile content-match
+    # failure. Flip SIDEKICK_ITEMS_READ_FROM_STATE_DB=true to opt in.
+    _b2_enabled = os.environ.get("SIDEKICK_ITEMS_READ_FROM_STATE_DB", "").lower() in ("1", "true", "yes")
+    _trace("query-start", f"limit={limit} before={before_id} b2={_b2_enabled}")
+    if _b2_enabled:
+        result = await asyncio.to_thread(
+            _sstate.list_messages_for_chat_with_state_db_source,
+            adapter._sidekick_db, adapter._state_db_path, chat_id, source,
+            limit=limit, before_id=before_id,
+        )
+    else:
+        result = await asyncio.to_thread(
+            _sstate.list_messages_for_chat,
+            adapter._sidekick_db, chat_id,
+            limit=limit, before_rowid=before_id,
+        )
     items = result["items"]
     first_id = result["first_id"]
     has_more = result["has_more"]

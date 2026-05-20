@@ -381,6 +381,172 @@ def list_messages_for_chat(
     return {"items": items, "first_id": first_id, "has_more": has_more}
 
 
+def list_messages_for_chat_with_state_db_source(
+    sidekick_db,
+    state_db_path,
+    chat_id: str,
+    source: str,
+    *,
+    limit: int = 200,
+    before_id: Optional[int] = None,
+) -> Dict[str, Any]:
+    """B2 read path: state.db is the canonical message body store;
+    sidekick.db.msg_links surfaces sidekick_id + kind as annotations.
+
+    Replaces the dual-body model that v1 (``list_messages_for_chat``)
+    implements. With v1, sidekick.db.msg_links stored a full copy of
+    every message body, and reconcile failures could leave the same
+    logical message stored twice — once via envelope write-through,
+    once via state.db backfill — surfaced to the PWA as duplicate
+    bubbles (Jonathan field bug 2026-05-19).
+
+    With v2, the items endpoint reads state.db.messages (the canonical
+    server-side store) and joins sidekick.db.msg_links *as a side
+    table* keyed by ``agent_row_id``. Sidekick-id linkage + push/pin
+    metadata still surfaces; message bodies are never duplicated.
+
+    Returns ``{items, first_id, has_more}`` with the same wire shape
+    v1 produces. Pagination cursor is ``state.db.messages.id`` (an
+    integer; same opaque-to-PWA contract).
+
+    Returns ``items=[]`` when state.db is unreachable — the caller
+    treats that the same way it treats "chat unknown" and falls back
+    on its 404 logic. (The legacy v1 returned an empty list in the
+    same shape, so callers tolerate this.)
+    """
+    import contextlib
+    import sqlite3
+
+    if state_db_path is None or not state_db_path.exists():
+        return {"items": [], "first_id": None, "has_more": False}
+
+    # Same recursive CTE as the legacy ``_items_by_user_id``: roll up
+    # any messages that landed in compaction-rotated child sessions
+    # (user_id=NULL but parent's system_prompt matches) under the
+    # requested chat_id. Without this, compacted-out turns are
+    # invisible (Jonathan field bug 2026-05-12).
+    sql = """
+        WITH RECURSIVE session_root(id, root_system_prompt) AS (
+            SELECT id, system_prompt FROM sessions
+             WHERE user_id = ? AND source = ?
+            UNION ALL
+            SELECT s.id, sr.root_system_prompt
+              FROM sessions s
+              JOIN session_root sr ON s.parent_session_id = sr.id
+             WHERE s.user_id IS NULL
+               AND LENGTH(COALESCE(sr.root_system_prompt, '')) >= 200
+               AND SUBSTR(COALESCE(s.system_prompt, ''), 1, 200)
+                   = SUBSTR(sr.root_system_prompt, 1, 200)
+        )
+        SELECT m.id, m.session_id, m.role, m.content, m.tool_name,
+               m.tool_call_id, m.tool_calls, m.timestamp
+        FROM messages m
+        JOIN session_root sr ON m.session_id = sr.id
+    """
+    params: list = [chat_id, source]
+    if before_id is not None:
+        sql += " WHERE m.id < ?"
+        params.append(before_id)
+    sql += " ORDER BY m.timestamp ASC, m.id ASC"
+
+    uri = f"file:{state_db_path}?mode=ro"
+    try:
+        with contextlib.closing(
+            sqlite3.connect(uri, uri=True, timeout=2.0)
+        ) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = list(conn.execute(sql, params).fetchall())
+    except Exception:
+        return {"items": [], "first_id": None, "has_more": False}
+
+    # Drop compaction-injected seed rows (same logic as v1, see
+    # ``_items_by_user_id`` in sidekick_route_items.py for the full
+    # explanation of the [CONTEXT COMPACTION] marker + per-session
+    # head-block elision).
+    compaction_head_end_per_session: Dict[str, int] = {}
+    for r in rows:
+        if (r["content"] or "").startswith("[CONTEXT COMPACTION"):
+            cur = compaction_head_end_per_session.get(r["session_id"], 0)
+            if r["id"] > cur:
+                compaction_head_end_per_session[r["session_id"]] = r["id"]
+    surviving = [
+        r for r in rows
+        if not (
+            (drop_through := compaction_head_end_per_session.get(r["session_id"])) is not None
+            and r["id"] <= drop_through
+        )
+    ]
+
+    # Fetch sidekick.db.msg_links rows for these state.db ids in one
+    # query, then merge in Python. This is the "JOIN" that gives the
+    # PWA its sidekick_id / kind annotations without the dual-body
+    # consistency problem v1 had.
+    state_ids = [str(r["id"]) for r in surviving]
+    link_by_state_id: Dict[str, Dict[str, Any]] = {}
+    if state_ids:
+        placeholders = ",".join("?" * len(state_ids))
+        try:
+            link_rows = sidekick_db.fetchall(
+                f"SELECT id AS sidekick_id, agent_row_id, kind "
+                f"FROM msg_links "
+                f"WHERE chat_id = ? AND agent_row_id IN ({placeholders})",
+                (chat_id, *state_ids),
+            )
+            for lr in link_rows:
+                agent_row_id = lr["agent_row_id"]
+                if agent_row_id:
+                    link_by_state_id[str(agent_row_id)] = dict(lr)
+        except Exception:
+            # sidekick.db unavailable — fall through with empty
+            # link map. State.db rows still surface; they just won't
+            # carry sidekick_id annotations.
+            pass
+
+    # Merge into the wire shape.
+    items: list = []
+    for r in surviving:
+        item: Dict[str, Any] = {
+            "id": int(r["id"]),
+            "object": "message",
+            "role": r["role"],
+            "content": r["content"] or "",
+            "created_at": int(r["timestamp"]) if r["timestamp"] else 0,
+        }
+        link = link_by_state_id.get(str(r["id"]))
+        if link:
+            item["sidekick_id"] = link["sidekick_id"]
+            if link["kind"]:
+                item["kind"] = link["kind"]
+        if r["tool_name"]:
+            item["tool_name"] = r["tool_name"]
+        if r["tool_call_id"]:
+            item["tool_call_id"] = r["tool_call_id"]
+        if r["tool_calls"]:
+            item["tool_calls"] = r["tool_calls"]
+        items.append(item)
+
+    # Pagination semantics:
+    #  * before_id=None → most-recent `limit` items, has_more=True when we
+    #    truncated older history off the head.
+    #  * before_id set → user is paging backward; return the limit items
+    #    nearest to (but older than) the cursor. v1/legacy mistakenly
+    #    returned the OLDEST limit items instead (items[:limit]) — that
+    #    bug surfaced as "load-earlier on a long chat keeps showing the
+    #    same earliest page forever" because the cursor's neighborhood
+    #    was never reached. v2 fixes by slicing tail-side in both cases.
+    if before_id is None and len(items) > limit:
+        items = items[-limit:]
+        has_more = True
+    elif before_id is not None and len(items) > limit:
+        items = items[-limit:]
+        has_more = True
+    else:
+        has_more = False
+    first_id = items[0]["id"] if items else None
+
+    return {"items": items, "first_id": first_id, "has_more": has_more}
+
+
 def reconcile_from_state_db(
     db, state_db_path, chat_id: str, source: str = "sidekick",
 ) -> int:
@@ -755,8 +921,9 @@ def record_envelope(db, env: Dict[str, Any]) -> Optional[str]:
         # message_id on the wire; fall back to a synthesized one tied
         # to the timestamp + chat (good enough for dedup since the
         # plugin never re-sends the same notification).
-        row_id = env.get("message_id") or env.get("notif_id") \
+        row_id = env.get("sidekick_id") or env.get("message_id") or env.get("notif_id") \
             or f"notif_{int(now * 1000)}_{chat_id[:8]}"
+        env["sidekick_id"] = row_id
         upsert_msg_link(
             db, id=row_id, chat_id=chat_id, role="assistant",
             content=env.get("content") or env.get("text") or "",

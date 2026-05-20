@@ -154,6 +154,7 @@
   </div>
 
   <div class="pin-drawer-content">
+    <div id="pin-drawer-status" class="pin-drawer-status" role="status" aria-live="polite" hidden></div>
     <ul id="pin-drawer-list" class="pin-drawer-list"></ul>
     <div id="pin-drawer-empty" class="pin-drawer-empty" hidden>
       No pinned messages.<br><span class="pin-drawer-hint">Tap the pin icon on any message to add it here.</span>
@@ -334,13 +335,9 @@
       <input type="checkbox" id="set-push" disabled>
       <span class="hint" id="set-push-hint">checking support…</span>
     </div>
-    <!-- Per-kind toggles. Each push-eligible envelope type / notification
-         kind has its own preference (push_kind_<name>). The plugin-side
-         dispatcher (backends/hermes/plugin/sidekick_dispatcher.py:_is_kind_enabled)
-         consults the matching pref before dispatching; default unset =
-         enabled. UX is a collapsed disclosure to keep mobile vertical
-         budget tight — the trigger label summarises state ("All on" /
-         "N muted") so most users never expand. -->
+    <!-- Per-kind toggles. Expose only categories Hermes naturally emits
+         into Sidekick today: regular agent replies and cron output. The
+         plugin-side dispatcher consults push_kind_<name> before dispatch. -->
     <div class="row">
       <label for="set-push-categories-toggle">Categories</label>
       <button type="button" id="set-push-categories-toggle" class="settings-btn" aria-expanded="false" aria-controls="set-push-categories-grid">
@@ -352,13 +349,6 @@
     <div class="push-categories-grid" id="set-push-categories-grid" hidden>
       <label class="push-cat"><input type="checkbox" data-push-kind="agent_reply"> <span class="cat-emoji" aria-hidden="true">💬</span> Agent replies</label>
       <label class="push-cat"><input type="checkbox" data-push-kind="cron"> <span class="cat-emoji" aria-hidden="true">⏰</span> Cron output</label>
-      <label class="push-cat"><input type="checkbox" data-push-kind="reminder"> <span class="cat-emoji" aria-hidden="true">📌</span> Reminders</label>
-      <label class="push-cat"><input type="checkbox" data-push-kind="approval"> <span class="cat-emoji" aria-hidden="true">🛑</span> Approvals</label>
-      <label class="push-cat"><input type="checkbox" data-push-kind="alert"> <span class="cat-emoji" aria-hidden="true">⚠️</span> Alerts</label>
-      <label class="push-cat"><input type="checkbox" data-push-kind="achievement"> <span class="cat-emoji" aria-hidden="true">🎉</span> Achievements</label>
-      <label class="push-cat"><input type="checkbox" data-push-kind="background"> <span class="cat-emoji" aria-hidden="true">🌀</span> Background</label>
-      <label class="push-cat"><input type="checkbox" data-push-kind="tool"> <span class="cat-emoji" aria-hidden="true">🔧</span> Tool events</label>
-      <label class="push-cat"><input type="checkbox" data-push-kind="notification"> <span class="cat-emoji" aria-hidden="true">🔔</span> Other</label>
     </div>
     <div class="row">
       <label for="set-audio-feedback">Chime volume</label>
