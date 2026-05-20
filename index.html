@@ -336,7 +336,7 @@
       <span class="hint" id="set-push-hint">checking support…</span>
     </div>
     <!-- Per-kind toggles. Expose only categories Hermes naturally emits
-         into Sidekick today: regular agent replies and cron output. The
+         into Sidekick today: regular agent replies, cron output, and approval prompts. The
          plugin-side dispatcher consults push_kind_<name> before dispatch. -->
     <div class="row">
       <label for="set-push-categories-toggle">Categories</label>
@@ -349,6 +349,7 @@
     <div class="push-categories-grid" id="set-push-categories-grid" hidden>
       <label class="push-cat"><input type="checkbox" data-push-kind="agent_reply"> <span class="cat-emoji" aria-hidden="true">💬</span> Agent replies</label>
       <label class="push-cat"><input type="checkbox" data-push-kind="cron"> <span class="cat-emoji" aria-hidden="true">⏰</span> Cron output</label>
+      <label class="push-cat"><input type="checkbox" data-push-kind="approval"> <span class="cat-emoji" aria-hidden="true">⚠️</span> Approvals</label>
     </div>
     <div class="row">
       <label for="set-audio-feedback">Chime volume</label>

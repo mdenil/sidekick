@@ -25,17 +25,14 @@ export interface QuietHours {
   end: string;
 }
 
-/** Push-eligible envelope categories the user can toggle individually.
- *  v1 (2026-05-12): two top-level kinds. `agent_reply` covers
- *  `reply_final` envelopes (the agent finishing a turn). `notification`
- *  covers `notification` envelopes (cron output, /background results,
- *  approval prompts, etc.) — sub-kind discrimination (cron vs
- *  approval) is a future refinement once we see real per-kind volume. */
+/** Push-eligible envelope categories the user can toggle individually. */
 export interface PushKinds {
   /** Agent finished a reply turn (reply_final envelope). */
   agent_reply: boolean;
-  /** Out-of-band notification (cron, /background, approval, etc.). */
-  notification: boolean;
+  /** Scheduled task output. */
+  cron: boolean;
+  /** Blocking command approval prompt. */
+  approval: boolean;
 }
 
 export interface Prefs {
@@ -51,7 +48,8 @@ const DEFAULT_PREFS: Prefs = {
   },
   kinds: {
     agent_reply: true,
-    notification: true,
+    cron: true,
+    approval: true,
   },
 };
 
@@ -90,7 +88,13 @@ function mergeWithDefaults(parsed: any): Prefs {
     }
     if (parsed.kinds && typeof parsed.kinds === 'object') {
       if (typeof parsed.kinds.agent_reply === 'boolean') out.kinds.agent_reply = parsed.kinds.agent_reply;
-      if (typeof parsed.kinds.notification === 'boolean') out.kinds.notification = parsed.kinds.notification;
+      if (typeof parsed.kinds.cron === 'boolean') out.kinds.cron = parsed.kinds.cron;
+      if (typeof parsed.kinds.approval === 'boolean') out.kinds.approval = parsed.kinds.approval;
+      // Legacy fallback proxy prefs stored one broad notification toggle.
+      if (typeof parsed.kinds.notification === 'boolean') {
+        out.kinds.cron = parsed.kinds.notification;
+        out.kinds.approval = parsed.kinds.notification;
+      }
     }
   }
   return out;
@@ -127,7 +131,8 @@ export async function updatePrefs(update: Partial<Prefs>): Promise<Prefs> {
   }
   if (update.kinds) {
     if (typeof update.kinds.agent_reply === 'boolean') cache.kinds.agent_reply = update.kinds.agent_reply;
-    if (typeof update.kinds.notification === 'boolean') cache.kinds.notification = update.kinds.notification;
+    if (typeof update.kinds.cron === 'boolean') cache.kinds.cron = update.kinds.cron;
+    if (typeof update.kinds.approval === 'boolean') cache.kinds.approval = update.kinds.approval;
   }
   await persist();
   return getPrefs();

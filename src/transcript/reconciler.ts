@@ -127,8 +127,21 @@ function createAssistant(spec: AssistantBubbleSpec): HTMLElement | null {
   return el;
 }
 
+function notificationEmoji(kind: string): string {
+  if (kind === 'cron') return '⏰';
+  if (kind === 'approval') return '⚠️';
+  return '🔔';
+}
+
+function applyNotificationKindClass(el: HTMLElement, kind: string): void {
+  for (const cls of Array.from(el.classList)) {
+    if (cls.startsWith('notification-')) el.classList.remove(cls);
+  }
+  if (kind) el.classList.add(`notification-${kind}`);
+}
+
 function createNotification(spec: NotificationBubbleSpec): HTMLElement | null {
-  const emoji = spec.notificationKind === 'cron' ? '⏰' : '🔔';
+  const emoji = notificationEmoji(spec.notificationKind);
   // Match the legacy handleNotification rendering verbatim: speaker
   // is the raw `kind` string (lowercase as the agent emits it) when
   // present, else "Notification". Smokes pattern-match on lowercase
@@ -136,11 +149,13 @@ function createNotification(spec: NotificationBubbleSpec): HTMLElement | null {
   const label = spec.notificationKind && spec.notificationKind !== 'notification'
     ? spec.notificationKind
     : 'Notification';
-  return chat.addLine(`${emoji} ${label}`, spec.text, 'system notification', {
+  const el = chat.addLine(`${emoji} ${label}`, spec.text, 'system notification', {
     markdown: true,
     timestamp: spec.timestamp,
     messageId: spec.key,
   }) || null;
+  if (el) applyNotificationKindClass(el, spec.notificationKind || 'notification');
+  return el;
 }
 
 function createActivityRow(spec: ActivityRowSpec): HTMLElement {
@@ -249,6 +264,12 @@ function updateAssistant(el: HTMLElement, spec: AssistantBubbleSpec): void {
 }
 
 function updateNotification(el: HTMLElement, spec: NotificationBubbleSpec): void {
+  applyNotificationKindClass(el, spec.notificationKind || 'notification');
+  const speaker = el.querySelector('.speaker') as HTMLElement | null;
+  const label = spec.notificationKind && spec.notificationKind !== 'notification'
+    ? spec.notificationKind
+    : 'Notification';
+  if (speaker) speaker.textContent = `${notificationEmoji(spec.notificationKind)} ${label}`;
   const span = el.querySelector('.text') as HTMLElement | null;
   if (span) {
     const want = escapeHtml(spec.text || '').replace(/\n/g, '<br>');

@@ -64,6 +64,7 @@ _TYPE_ICONS: Dict[str, str] = {
 }
 _KIND_ICONS: Dict[str, str] = {
     "cron": "⏰",        # scheduled task output
+    "approval": "⚠️",    # command approval prompt
 }
 
 
@@ -95,6 +96,9 @@ class EngagementState:
 
     def mark_visible(self, chat_id: str) -> None:
         self._last_seen[chat_id] = int(time.time() * 1000)
+
+    def mark_hidden(self, chat_id: str) -> None:
+        self._last_seen.pop(chat_id, None)
 
     def is_engaged(self, chat_id: str, *, now_ms: Optional[int] = None) -> bool:
         ts = self._last_seen.get(chat_id)
@@ -167,6 +171,48 @@ _META_LINE_RE = re.compile(
     re.IGNORECASE,
 )
 _SEP_OR_BLANK_RE = re.compile(r"^\s*(?:-{3,}|=+|\*+)?\s*$")
+_APPROVAL_HEADER_RE = re.compile(r"Dangerous command requires approval", re.IGNORECASE)
+_APPROVAL_REASON_RE = re.compile(r"^Reason:\s*(.+)$", re.IGNORECASE | re.MULTILINE)
+_APPROVAL_REPLY_RE = re.compile(r"^Reply\s+/approve", re.IGNORECASE | re.MULTILINE)
+
+
+def is_approval_prompt(text: str) -> bool:
+    """True when Hermes is asking the user to approve a gated command."""
+    return bool(isinstance(text, str) and _APPROVAL_HEADER_RE.search(text or ""))
+
+
+def _approval_preview(raw: str) -> str:
+    """Extract the useful command/reason lead for an approval push/banner."""
+    text = _strip_leading_metadata(raw or "")
+    reason_match = _APPROVAL_REASON_RE.search(text)
+    reason = reason_match.group(1).strip() if reason_match else ""
+
+    lines = text.split("\n")
+    command_lines = []
+    in_command = False
+    for line in lines:
+        stripped = line.strip()
+        if _APPROVAL_HEADER_RE.search(stripped):
+            in_command = True
+            continue
+        if not in_command:
+            continue
+        if not stripped:
+            if command_lines:
+                command_lines.append("")
+            continue
+        if stripped.lower().startswith("reason:") or _APPROVAL_REPLY_RE.match(stripped):
+            break
+        command_lines.append(line.rstrip())
+
+    command = "\n".join(command_lines).strip()
+    if command:
+        command = re.sub(r"\n{3,}", "\n\n", command)
+    if reason and command:
+        return f"{reason}: {command}"
+    if reason:
+        return reason
+    return command or text
 
 
 def _parse_cron_content(raw: str) -> Dict[str, str]:
@@ -230,7 +276,10 @@ def _build_payload(env: Dict, *, body_override: Optional[str] = None) -> Dict:
     if kind == "cron" or _CRON_HEADER_RE.match(raw_body):
         cron_parsed = _parse_cron_content(raw_body)
 
-    if cron_parsed and cron_parsed["body"]:
+    if kind == "approval":
+        body = _approval_preview(raw_body)
+        title_label = "Approval required"
+    elif cron_parsed and cron_parsed["body"]:
         body = cron_parsed["body"]
         # Title carries the task name (more useful than "Sidekick" on
         # a watch when there are many cron jobs).
@@ -269,7 +318,7 @@ def _build_payload(env: Dict, *, body_override: Optional[str] = None) -> Dict:
 # unset = enabled.
 
 _PREF_PUSH_KIND_PREFIX = "push_kind_"
-_SUPPORTED_PUSH_KINDS = {"agent_reply", "cron"}
+_SUPPORTED_PUSH_KINDS = {"agent_reply", "cron", "approval"}
 
 
 def _is_kind_enabled(db, env: Dict) -> bool:

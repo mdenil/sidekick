@@ -115,15 +115,25 @@ test('case 2: chat backgrounded (visibility=hidden) → push fires', async () =>
   try {
     await g.reportVisibility('visible', 'chat-A');
     // User backgrounds the PWA.
-    await g.reportVisibility('hidden');
-    // Backdate the prior visible-report so the 2s engagement window expires.
-    // (`recordVisibility(hidden)` deliberately doesn't clear the timestamp
-    // — it lets the natural decay handle it. So we backdate manually.)
-    await backdateEngagement('chat-A', 3000);
-
+    await g.reportVisibility('hidden', 'chat-A');
     await g.pushEnv({ type: 'reply_final', chat_id: 'chat-A', should_push: true, text: 'reply' });
     assert.equal(g.sent.length, 1,
       'backgrounded for 3s → engagement window expired → push must fire');
+  } finally {
+    await g.stop();
+  }
+});
+
+
+
+test('hidden visibility clears engagement immediately', async () => {
+  const g = await startVisRig({ subscriptionSuffix: 'hidden-clear' });
+  try {
+    await g.reportVisibility('visible', 'chat-A');
+    await g.reportVisibility('hidden', 'chat-A');
+    await g.pushEnv({ type: 'reply_final', chat_id: 'chat-A', should_push: true, text: 'reply' });
+    assert.equal(g.sent.length, 1,
+      'hidden/blurred should clear engagement immediately, without a 2s grace period');
   } finally {
     await g.stop();
   }
@@ -182,8 +192,7 @@ test('case 5: two reply_finals for same chat in <2s → one push (Apple-side coa
   try {
     // User backgrounded, both envelopes off-screen.
     await g.reportVisibility('visible', 'chat-A');
-    await g.reportVisibility('hidden');
-    await backdateEngagement('chat-A', 3000);
+    await g.reportVisibility('hidden', 'chat-A');
 
     await g.pushEnv({ type: 'reply_final', chat_id: 'chat-A', should_push: true, text: 'reply 1' });
     await g.pushEnv({ type: 'reply_final', chat_id: 'chat-A', should_push: true, text: 'reply 2' });
@@ -213,7 +222,7 @@ test('case 6: muted chat, off-screen, eligible envelope → no push', async () =
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ chat_id: 'chat-quiet', muted: true }),
     });
-    await g.reportVisibility('hidden');
+    await g.reportVisibility('hidden', 'chat-A');
 
     await g.pushEnv({ type: 'reply_final', chat_id: 'chat-quiet', should_push: true });
     assert.equal(g.sent.length, 0, 'mute beats visibility — silenced regardless of engagement');
@@ -256,7 +265,7 @@ test('case 11: visibility=hidden → 30s wait → reply_final → push', async (
   const g = await startVisRig({ subscriptionSuffix: 'c11' });
   try {
     await g.reportVisibility('visible', 'chat-A');
-    await g.reportVisibility('hidden');
+    await g.reportVisibility('hidden', 'chat-A');
     await backdateEngagement('chat-A', 30_000);
 
     await g.pushEnv({ type: 'reply_final', chat_id: 'chat-A', should_push: true, text: 'reply' });
@@ -266,19 +275,17 @@ test('case 11: visibility=hidden → 30s wait → reply_final → push', async (
   }
 });
 
-// ── Case 12: hidden 200ms (transient flick) → reply → propose: no push if within window ─
+// ── Case 12: hidden/blurred clears immediately ────────────────────
 
-test('case 12: visibility=hidden for 200ms (transient flick) → reply during flick → no push', async () => {
+test('case 12: visibility=hidden for 200ms → reply during blur → push', async () => {
   const g = await startVisRig({ subscriptionSuffix: 'c12' });
   try {
     await g.reportVisibility('visible', 'chat-A');
-    await g.reportVisibility('hidden');
-    // Backdate only 200ms — still inside the 2s engagement window.
-    await backdateEngagement('chat-A', 200);
+    await g.reportVisibility('hidden', 'chat-A');
 
     await g.pushEnv({ type: 'reply_final', chat_id: 'chat-A', should_push: true, text: 'reply' });
-    assert.equal(g.sent.length, 0,
-      'tab flick of <2s should not trigger push — user was just briefly elsewhere');
+    assert.equal(g.sent.length, 1,
+      'hidden/blurred is not engaged, even inside the old 2s grace period');
   } finally {
     await g.stop();
   }

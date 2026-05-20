@@ -296,7 +296,8 @@ test('kinds: defaults are both true on a fresh prefs file', async () => {
     const r = await fetch(`${g.rig.proxyUrl}/api/sidekick/notifications/preferences`);
     const body: any = await r.json();
     assert.equal(body.kinds.agent_reply, true);
-    assert.equal(body.kinds.notification, true);
+    assert.equal(body.kinds.cron, true);
+    assert.equal(body.kinds.approval, true);
   } finally {
     await g.stop();
   }
@@ -333,13 +334,13 @@ test('kinds: toggling agent_reply=false suppresses reply_final push', async () =
   }
 });
 
-test('kinds: toggling notification=false suppresses notification push', async () => {
+test('kinds: toggling cron=false suppresses only cron notification push', async () => {
   const g = await startPrefsRig();
   try {
     await fetch(`${g.rig.proxyUrl}/api/sidekick/notifications/preferences`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ kinds: { notification: false } }),
+      body: JSON.stringify({ kinds: { cron: false } }),
     });
     await g.pushEnv({
       type: 'notification',
@@ -350,14 +351,15 @@ test('kinds: toggling notification=false suppresses notification push', async ()
     });
     assert.equal(g.sent.length, 0);
 
-    // Reply envelopes still push.
     await g.pushEnv({
-      type: 'reply_final',
+      type: 'notification',
       chat_id: 'chat-kind-2',
       should_push: true,
-      text: 'agent reply still pushes',
+      kind: 'approval',
+      urgent: true,
+      content: 'approval still pushes',
     });
-    assert.equal(g.sent.length, 1, 'agent_reply kind unaffected by notification toggle');
+    assert.equal(g.sent.length, 1, 'approval kind unaffected by cron toggle');
   } finally {
     await g.stop();
   }
@@ -369,10 +371,11 @@ test('kinds: both off → no envelope kind pushes (master kill switch)', async (
     await fetch(`${g.rig.proxyUrl}/api/sidekick/notifications/preferences`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ kinds: { agent_reply: false, notification: false } }),
+      body: JSON.stringify({ kinds: { agent_reply: false, cron: false, approval: false } }),
     });
     await g.pushEnv({ type: 'reply_final', chat_id: 'c1', should_push: true });
     await g.pushEnv({ type: 'notification', chat_id: 'c1', should_push: true, kind: 'cron' });
+    await g.pushEnv({ type: 'notification', chat_id: 'c1', should_push: true, kind: 'approval', urgent: true });
     assert.equal(g.sent.length, 0, 'both kinds off = no push of any kind');
   } finally {
     await g.stop();
@@ -391,8 +394,10 @@ test('kinds: partial update keeps the other kind untouched', async () => {
     const r = await fetch(`${g.rig.proxyUrl}/api/sidekick/notifications/preferences`);
     const body: any = await r.json();
     assert.equal(body.kinds.agent_reply, false);
-    assert.equal(body.kinds.notification, true,
-      'partial update of agent_reply must not flip notification');
+    assert.equal(body.kinds.cron, true,
+      'partial update of agent_reply must not flip cron');
+    assert.equal(body.kinds.approval, true,
+      'partial update of agent_reply must not flip approval');
   } finally {
     await g.stop();
   }

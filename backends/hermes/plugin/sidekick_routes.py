@@ -135,6 +135,8 @@ async def handle_visibility(ctx, request: web.Request) -> web.Response:
         return _json({"error": "invalid_request", "message": "chat_id required"}, status=400)
     if visible:
         ctx.dispatcher.engagement.mark_visible(chat_id)
+    else:
+        ctx.dispatcher.engagement.mark_hidden(chat_id)
     return _json({"ok": True, "chat_id": chat_id, "visible": visible})
 
 

@@ -1,10 +1,11 @@
-// Client-side visibility reporter. Posts visibility-state changes
+// Client-side visibility reporter. Posts visibility/focus-state changes
 // to the proxy so the dispatch gate knows whether the user is actively
 // engaged with a chat (within a 2s engagement window).
 //
 // Three fire conditions:
 //
-//   1. document.visibilitychange — PWA foregrounds / backgrounds.
+//   1. document.visibilitychange + window focus/blur — PWA foregrounds /
+//      backgrounds, and macOS/browser focus changes when another app covers it.
 //      The current `sessionDrawer.getViewed()` is the chat the user
 //      is on; we attach it so the proxy can scope the engagement
 //      signal per-chat.
@@ -74,9 +75,9 @@ export function initVisibilityReporting(getViewed: () => string | null): void {
   getViewedRef = getViewed;
 
   const compute = (): { state: VisibilityState; chatId: string } => {
-    const state: VisibilityState =
-      typeof document !== 'undefined' && document.visibilityState === 'hidden'
-        ? 'hidden' : 'visible';
+    const visible = typeof document === 'undefined'
+      || (document.visibilityState !== 'hidden' && document.hasFocus());
+    const state: VisibilityState = visible ? 'visible' : 'hidden';
     const chatId = getViewed() || '';
     return { state, chatId };
   };
@@ -87,10 +88,15 @@ export function initVisibilityReporting(getViewed: () => string | null): void {
   maybeReport(first.state, first.chatId);
 
   // document.visibilitychange covers OS-level PWA background/foreground.
-  document.addEventListener('visibilitychange', () => {
+  // window focus/blur covers the desktop case where the browser remains
+  // visible to the page but another app is in front of it.
+  const reportCurrent = () => {
     const { state, chatId } = compute();
     maybeReport(state, chatId);
-  });
+  };
+  document.addEventListener('visibilitychange', reportCurrent);
+  window.addEventListener('focus', reportCurrent);
+  window.addEventListener('blur', reportCurrent);
 
   // Heartbeat — keeps the proxy's engagement timestamp fresh while the
   // user sits on a chat. Without this, the timestamp ages past the 2s
@@ -102,7 +108,7 @@ export function initVisibilityReporting(getViewed: () => string | null): void {
   // viewed.
   heartbeatTimer = setInterval(() => {
     if (typeof document === 'undefined') return;
-    if (document.visibilityState !== 'visible') return;
+    if (document.visibilityState !== 'visible' || !document.hasFocus()) return;
     const chatId = getViewedRef?.() || '';
     if (!chatId) return;
     void postVisibility('visible', chatId);
@@ -116,8 +122,11 @@ export function initVisibilityReporting(getViewed: () => string | null): void {
 export function reportChatSwitch(chatId: string | null): void {
   if (!initialized) return;
   const id = chatId || '';
-  // Only fire when actually changing chat — backbone re-renders
+  const state: VisibilityState = typeof document === 'undefined'
+    || (document.visibilityState !== 'hidden' && document.hasFocus())
+      ? 'visible' : 'hidden';
+  // Only fire when actually changing chat/state — backbone re-renders
   // (resume() called twice for the same chat) shouldn't burn an HTTP.
-  if (id === lastReportedChat && lastReportedState === 'visible') return;
-  maybeReport('visible', id);
+  if (id === lastReportedChat && lastReportedState === state) return;
+  maybeReport(state, id);
 }

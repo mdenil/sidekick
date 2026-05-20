@@ -26,6 +26,7 @@ interface ForwardResult {
 const PUSH_KINDS = [
   'agent_reply',
   'cron',
+  'approval',
 ];
 
 const DEFAULT_BODY_CAP_BYTES = 8 * 1024;

@@ -35,18 +35,16 @@ const ENGAGED_WINDOW_MS = 2000;
 const lastVisibleAt = new Map<string, number>();
 
 /** Record a visibility transition. `chatId` is the chat the user is
- *  ACTUALLY viewing at the moment of the report. On `state='hidden'`
- *  the chat_id is optional and ignored — we just stop refreshing the
- *  timestamp; the natural 2s decay handles the rest. */
+ *  ACTUALLY viewing at the moment of the report. Hidden includes browser
+ *  blur on desktop, so clear immediately rather than waiting out the 2s
+ *  engagement window and risking a missed blocking approval push. */
 export function recordVisibility(state: 'visible' | 'hidden', chatId: string): void {
-  if (state === 'visible' && chatId) {
+  if (!chatId) return;
+  if (state === 'visible') {
     lastVisibleAt.set(chatId, Date.now());
+  } else {
+    lastVisibleAt.delete(chatId);
   }
-  // For 'hidden' we deliberately don't actively clear — the existing
-  // entry will simply age past ENGAGED_WINDOW_MS within 2s. Active
-  // clearing would race a near-simultaneous PUT on the same chat
-  // (e.g., rapid chat-switch in the PWA fires hidden+visible nearly
-  // back-to-back).
 }
 
 /** True if a PWA reported visibility=visible for `chatId` within

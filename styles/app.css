@@ -2714,6 +2714,11 @@
     font-style: normal;
   }
   .line.system.notification .text { font-style: normal; color: var(--fg); }
+  .line.system.notification.notification-approval {
+    border-left-color: #d97706;
+    background: color-mix(in srgb, #d97706 10%, var(--surface));
+  }
+  .line.system.notification.notification-approval .speaker { color: #b45309; }
 
   /* ── In-app notification banner ──
    * Surfaced when a notification envelope arrives for a chat OTHER
@@ -2770,6 +2775,26 @@
     padding: 2px 6px; border-radius: 4px;
     transition: color 0.12s, background 0.12s;
   }
+  .in-app-banner.iab-approval {
+    border-left-color: #d97706;
+    background: color-mix(in srgb, #fff7ed 88%, var(--surface));
+  }
+  .in-app-banner.iab-approval .iab-title { color: #b45309; }
+  .in-app-banner.iab-approval .iab-preview { white-space: normal; max-height: 42px; overflow: hidden; }
+  .in-app-banner .iab-actions {
+    display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px;
+  }
+  .in-app-banner .iab-actions button {
+    border: 1px solid color-mix(in srgb, #d97706 44%, var(--border));
+    background: color-mix(in srgb, #fff7ed 80%, var(--surface));
+    color: #7c2d12;
+    border-radius: 6px;
+    padding: 4px 8px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .in-app-banner .iab-actions button:hover { background: #ffedd5; }
   .in-app-banner .iab-dismiss:hover { color: var(--fg); background: var(--surface-2); }
 
   /* ── Composer (unified text + actions box) ── */

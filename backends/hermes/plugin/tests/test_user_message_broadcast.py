@@ -406,3 +406,38 @@ def test_send_preserves_active_turn_contract_for_cron_shaped_text(plugin):
     assert result.message_id.startswith("msg_")
     assert [e["type"] for e in sent] == ["reply_delta", "reply_final"]
     assert sent[0]["text"] == content
+
+
+
+def test_send_classifies_approval_prompt_as_urgent_notification(plugin):
+    adapter = _make_adapter(plugin)
+    adapter._turn_buffer = None
+    adapter._turn_queues["approval-chat"] = object()
+    sent: list[dict] = []
+
+    async def capture_envelope(env):
+        if env.get("type") == "notification":
+            env["sidekick_id"] = "notif_test_approval"
+        sent.append(dict(env))
+        return True
+
+    adapter._safe_send_envelope = capture_envelope
+    content = (
+        "⚠️ Dangerous command requires approval:\n\n"
+        "printf safe-approval-smoke\n\n"
+        "Reason: command approval test\n"
+        "Reply /approve to execute, /approve session to approve this pattern for the session, or /deny to cancel."
+    )
+
+    result = asyncio.run(adapter.send("approval-chat", content))
+
+    assert result.message_id == "notif_test_approval"
+    assert sent == [{
+        "type": "notification",
+        "chat_id": "approval-chat",
+        "kind": "approval",
+        "content": content,
+        "text": content,
+        "urgent": True,
+        "sidekick_id": "notif_test_approval",
+    }]

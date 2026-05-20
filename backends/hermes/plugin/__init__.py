@@ -1796,6 +1796,26 @@ class SidekickAdapter(BasePlatformAdapter):
         wire: the message_id we return here is what the proxy keys the
         UI bubble on.
         """
+        from .sidekick_dispatcher import is_approval_prompt
+
+        # Hermes approval prompts are blocking workflow events. They
+        # arrive as normal adapter text, so classify them into a
+        # Sidekick-owned urgent notification before the regular reply
+        # path persists/renders them as assistant prose.
+        if is_approval_prompt(content or ""):
+            if chat_id not in self._known_chat_ids:
+                self._known_chat_ids.add(chat_id)
+            env = {
+                "type": "notification",
+                "chat_id": chat_id,
+                "kind": "approval",
+                "content": content,
+                "text": content,
+                "urgent": True,
+            }
+            ok = await self._safe_send_envelope(env)
+            return SendResult(success=ok, message_id=env.get("sidekick_id") or "")
+
         # Hermes cron delivery naturally arrives here through the live
         # platform adapter as a regular send() with a canonical wrapper.
         # There is no active /v1/responses queue for that background

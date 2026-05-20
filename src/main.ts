@@ -670,8 +670,42 @@ async function boot() {
   // for a chat OTHER than the currently-viewed one, show a top-of-
   // viewport toast. Tap → same drill path as the pin drawer (resume +
   // replay + scroll to data-message-id = sidekick_id).
+  const approvalCommandForAction = (action: inAppBanner.ApprovalAction): string => {
+    if (action === 'approve_session') return '/approve session';
+    if (action === 'deny') return '/deny';
+    return '/approve';
+  };
+  const sendApprovalAction = async (
+    chatId: string,
+    action: inAppBanner.ApprovalAction,
+    msgId: string | null,
+  ): Promise<void> => {
+    const cmd = approvalCommandForAction(action);
+    await drillToChatMessage(chatId, msgId);
+    const userMessageId = `umsg_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+    transcriptStore.addPendingSend(chatId, {
+      messageId: userMessageId,
+      text: cmd,
+      source: 'text',
+      sentAt: Date.now(),
+    });
+    const failBubble = (msg: string) => {
+      diag(`approval action failed: ${msg}`);
+      status.setStatus(`Approval action failed: ${msg}`, 'err');
+      transcriptStore.markPendingSendFailed(chatId, userMessageId);
+    };
+    try {
+      const p = backend.sendMessage(cmd, { userMessageId });
+      if (p && typeof (p as any).catch === 'function') {
+        (p as Promise<unknown>).catch((e) => failBubble((e as Error)?.message || String(e)));
+      }
+    } catch (e: any) {
+      failBubble(e?.message || String(e));
+    }
+  };
   inAppBanner.init({
     onOpen: (chatId, msgId) => { void drillToChatMessage(chatId, msgId); },
+    onAction: (chatId, action, msgId) => { void sendApprovalAction(chatId, action, msgId); },
   });
   // Sidebar-top search button → opens the cmd+K palette. Lives next to
   // the hamburger as the rightmost icon in .sidebar-top-row (Gemini-style

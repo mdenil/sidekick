@@ -75,10 +75,11 @@ export default async function run({ page, log }) {
     `master push toggle label (for="set-push") not found`);
   log(`master toggle label: "${masterAnchor.text}" ✓`);
 
-  const kindNotifAnchor = labelData.labels.find((l) => l.forId === 'set-kind-notification');
-  assert(kindNotifAnchor,
-    `per-kind notification toggle label (for="set-kind-notification") not found`);
-  assert(kindNotifAnchor.text !== masterAnchor.text,
-    `BUG: kind-notification label "${kindNotifAnchor.text}" matches master "${masterAnchor.text}"`);
-  log(`kind-notification label: "${kindNotifAnchor.text}" — distinct from master ✓`);
+  for (const expected of ['Agent replies', 'Cron output', 'Approvals']) {
+    const found = labelData.labels.find((l) => l.text.includes(expected));
+    assert(found, `per-kind label ${JSON.stringify(expected)} not found`);
+    assert(found.text !== masterAnchor.text,
+      `BUG: per-kind label "${found.text}" matches master "${masterAnchor.text}"`);
+  }
+  log('per-kind labels present and distinct from master ✓');
 }
