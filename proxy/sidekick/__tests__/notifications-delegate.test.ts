@@ -4,6 +4,7 @@ import * as assert from 'node:assert/strict';
 import {
   expandPreferenceUpdates,
   normalizePluginPrefs,
+  PIN_BODY_CAP_BYTES,
 } from '../notifications/delegate.ts';
 
 test('plugin prefs delegate: expands nested kind updates to plugin push_kind keys', () => {
@@ -53,4 +54,8 @@ test('plugin prefs delegate: normalizes flat plugin push_kind keys to PWA kinds 
       },
     },
   );
+});
+
+test('pin delegate body cap covers the client 16K preview plus JSON overhead', () => {
+  assert.ok(PIN_BODY_CAP_BYTES >= 32 * 1024);
 });

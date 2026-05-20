@@ -109,7 +109,7 @@ export async function pinMessage(item: Omit<PinnedItem, 'pinnedAt'>): Promise<vo
   pinsByKey.set(key(item.chatId, item.msgId), full);
   notifyChange();
   try {
-    await fetch('/api/sidekick/pins', {
+    const r = await fetch('/api/sidekick/pins', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -120,6 +120,11 @@ export async function pinMessage(item: Omit<PinnedItem, 'pinnedAt'>): Promise<vo
         timestamp: item.timestamp,
       }),
     });
+    if (!r.ok) {
+      let detail = '';
+      try { detail = await r.text(); } catch { /* ignore */ }
+      log(`[pins] POST failed: HTTP ${r.status}${detail ? ` ${detail.slice(0, 500)}` : ''}`);
+    }
   } catch (e: any) {
     log(`[pins] POST failed: ${e?.message ?? e}`);
   }
@@ -132,10 +137,15 @@ export async function unpinMessage(chatId: string, msgId: string): Promise<void>
   if (!pinsByKey.delete(key(chatId, msgId))) return;
   notifyChange();
   try {
-    await fetch(
+    const r = await fetch(
       `/api/sidekick/pins/${encodeURIComponent(chatId)}/${encodeURIComponent(msgId)}`,
       { method: 'DELETE' },
     );
+    if (!r.ok) {
+      let detail = '';
+      try { detail = await r.text(); } catch { /* ignore */ }
+      log(`[pins] DELETE failed: HTTP ${r.status}${detail ? ` ${detail.slice(0, 500)}` : ''}`);
+    }
   } catch (e: any) {
     log(`[pins] DELETE failed: ${e?.message ?? e}`);
   }

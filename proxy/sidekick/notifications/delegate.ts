@@ -35,6 +35,9 @@ const PUSH_KINDS = [
   'notification',
 ];
 
+const DEFAULT_BODY_CAP_BYTES = 8 * 1024;
+export const PIN_BODY_CAP_BYTES = 64 * 1024;
+
 function parseBoolPref(value: any): boolean | undefined {
   if (typeof value === 'boolean') return value;
   if (typeof value === 'string') {
@@ -76,18 +79,18 @@ export function expandPreferenceUpdates(body: Record<string, any>): Array<{ key:
 
 async function forwardRaw(
   path: string,
-  method: 'GET' | 'POST',
+  method: 'GET' | 'POST' | 'DELETE',
   body: any | null,
 ): Promise<ForwardResult> {
   const headers: Record<string, string> = {
     accept: 'application/json',
   };
-  if (body) headers['content-type'] = 'application/json';
+  if (body !== null && body !== undefined) headers['content-type'] = 'application/json';
   if (UPSTREAM_TOKEN) headers['authorization'] = `Bearer ${UPSTREAM_TOKEN}`;
   const r = await fetch(`${UPSTREAM_BASE}${path}`, {
     method,
     headers,
-    body: body ? JSON.stringify(body) : undefined,
+    body: body !== null && body !== undefined ? JSON.stringify(body) : undefined,
   });
   let parsed: any = null;
   try { parsed = await r.json(); }
@@ -104,14 +107,25 @@ function sendUpstreamUnavailable(res: http.ServerResponse, e: any): void {
   sendJson(res, 502, { error: 'upstream_unavailable', detail: e?.message ?? String(e) });
 }
 
-async function readBody(req: http.IncomingMessage, cap = 8 * 1024): Promise<any | null> {
+async function readBody(req: http.IncomingMessage, cap = DEFAULT_BODY_CAP_BYTES): Promise<any | null> {
   return new Promise((resolve, reject) => {
-    let raw = '';
+    const chunks: Buffer[] = [];
+    let bytes = 0;
+    let tooLarge = false;
     req.on('data', (c) => {
-      raw += c;
-      if (raw.length > cap) { req.destroy(); reject(new Error('body too large')); }
+      if (tooLarge) return;
+      const buf = Buffer.isBuffer(c) ? c : Buffer.from(String(c));
+      bytes += buf.byteLength;
+      if (bytes > cap) {
+        tooLarge = true;
+        chunks.length = 0;
+        return;
+      }
+      chunks.push(buf);
     });
     req.on('end', () => {
+      if (tooLarge) return reject(new Error(`body too large (${bytes} > ${cap} bytes)`));
+      const raw = Buffer.concat(chunks).toString('utf8');
       if (!raw.trim()) return resolve(null);
       try { resolve(JSON.parse(raw)); }
       catch (e) { reject(e as Error); }
@@ -251,7 +265,7 @@ export async function delegatePinsList(req: http.IncomingMessage, res: http.Serv
 
 export async function delegatePinUpsert(req: http.IncomingMessage, res: http.ServerResponse) {
   let body: any;
-  try { body = await readBody(req); }
+  try { body = await readBody(req, PIN_BODY_CAP_BYTES); }
   catch (e: any) { return sendJson(res, 400, { error: 'bad_body', detail: e?.message }); }
   try {
     const r = await forwardRaw('/v1/pins', 'POST', body);
@@ -265,17 +279,7 @@ export async function delegatePinDelete(
 ) {
   try {
     const path = `/v1/pins/${encodeURIComponent(chatId)}/${encodeURIComponent(msgId)}`;
-    const r = await forwardRaw(path, 'POST' /* method override below */, null);
-    void r;
-    // forwardRaw doesn't support DELETE today; use fetch directly so we
-    // don't have to thread method through. Keep parity with the GET/POST
-    // helpers but with DELETE method.
-    const r2 = await fetch(`${UPSTREAM_BASE}${path}`, {
-      method: 'DELETE',
-      headers: UPSTREAM_TOKEN ? { authorization: `Bearer ${UPSTREAM_TOKEN}` } : {},
-    });
-    let body: any = null;
-    try { body = await r2.json(); } catch { body = null; }
-    sendJson(res, r2.status, body ?? {});
+    const r = await forwardRaw(path, 'DELETE', null);
+    sendJson(res, r.status, r.body ?? {});
   } catch (e: any) { sendUpstreamUnavailable(res, e); }
 }
