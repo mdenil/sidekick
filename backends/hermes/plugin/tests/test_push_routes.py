@@ -4,6 +4,18 @@ from types import SimpleNamespace
 
 from backends.hermes.plugin.sidekick_routes import handle_test
 
+PUSH_KINDS = [
+    "agent_reply",
+    "cron",
+    "reminder",
+    "approval",
+    "alert",
+    "achievement",
+    "background",
+    "tool",
+    "notification",
+]
+
 
 class FakeRequest:
     def __init__(self, body):
@@ -62,3 +74,26 @@ def test_push_test_endpoint_agent_reply_kind_uses_reply_final():
     assert dispatcher.envelopes[0]["type"] == "reply_final"
     assert "kind" not in dispatcher.envelopes[0]
     assert dispatcher.envelopes[0]["content"] == "Agent finished"
+
+
+def test_push_test_endpoint_supports_every_settings_category():
+    for kind in PUSH_KINDS:
+        dispatcher = FakeDispatcher()
+        ctx = SimpleNamespace(dispatcher=dispatcher)
+
+        resp = asyncio.run(handle_test(ctx, FakeRequest({
+            "chat_id": f"chat-{kind}",
+            "kind": kind,
+            "body": f"Body for {kind}",
+        })))
+
+        assert resp.status == 200
+        env = dispatcher.envelopes[0]
+        if kind == "agent_reply":
+            assert env["type"] == "reply_final"
+            assert "kind" not in env
+        else:
+            assert env["type"] == "notification"
+            assert env["kind"] == kind
+        assert env["chat_id"] == f"chat-{kind}"
+        assert env["content"] == f"Body for {kind}"
