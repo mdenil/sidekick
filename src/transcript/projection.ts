@@ -37,6 +37,7 @@ export function project(state: ChatState): BubbleSpec[] {
   const specs: BubbleSpec[] = [];
   const userKeys = new Set<string>();
   const assistantKeys = new Set<string>();
+  const notificationKeys = new Set<string>();
   const activityByKey = new Map<string, ActivityRowSpec>();
   // Content multiset for inflight dedup. Tracks durable assistant
   // rows by content so an inflight envelope whose text matches a
@@ -98,6 +99,8 @@ export function project(state: ChatState): BubbleSpec[] {
       // (handleNotification → store envelope) rendering exactly.
       if (isNotificationLikeItem(item)) {
         const key = `notif:${item.sidekick_id || item.id}`;
+        if (notificationKeys.has(key)) continue;
+        notificationKeys.add(key);
         specs.push({
           kind: 'notification',
           key,
@@ -150,6 +153,8 @@ export function project(state: ChatState): BubbleSpec[] {
       }
     } else if (item.role === 'notification') {
       const key = `notif:${item.sidekick_id || item.id}`;
+      if (notificationKeys.has(key)) continue;
+      notificationKeys.add(key);
       specs.push({
         kind: 'notification',
         key,
@@ -271,7 +276,9 @@ export function project(state: ChatState): BubbleSpec[] {
         break;
       }
       case 'notification': {
-        const key = `notif:inflight:${inflightTs}`;
+        const key = `notif:${env.sidekick_id || `inflight:${inflightTs}`}`;
+        if (notificationKeys.has(key)) break;
+        notificationKeys.add(key);
         specs.push({
           kind: 'notification',
           key,
@@ -514,4 +521,3 @@ function compareDurableForDedup(a: ConversationItem, b: ConversationItem): numbe
   // need, not numeric correctness).
   return String(a.id) > String(b.id) ? 1 : -1;
 }
-

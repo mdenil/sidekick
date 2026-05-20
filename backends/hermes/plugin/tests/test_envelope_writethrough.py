@@ -156,15 +156,37 @@ def test_notification_writes_row_with_kind(db):
     assert r["kind"] == "cron"
 
 
+def test_notification_prefers_and_preserves_sidekick_id(db):
+    env = {
+        "type": "notification",
+        "chat_id": CHAT_ID,
+        "sidekick_id": "notif_state_1",
+        "message_id": "notif_other_1",
+        "kind": "background",
+        "content": "Background done",
+    }
+
+    rid = state.record_envelope(db, env)
+
+    assert rid == "notif_state_1"
+    assert env["sidekick_id"] == "notif_state_1"
+    rows = _rows(db)
+    assert len(rows) == 1
+    assert rows[0]["id"] == "notif_state_1"
+    assert rows[0]["kind"] == "background"
+
+
 def test_notification_without_message_id_mints_synthesized_id(db):
-    rid = state.record_envelope(db, {
+    env = {
         "type": "notification",
         "chat_id": CHAT_ID,
         "kind": "reminder",
         "content": "ping",
-    })
+    }
+    rid = state.record_envelope(db, env)
     assert rid is not None
     assert rid.startswith("notif_")
+    assert env["sidekick_id"] == rid
     rows = _rows(db)
     assert len(rows) == 1
     assert rows[0]["id"] == rid

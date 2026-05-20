@@ -322,6 +322,21 @@ describe('project: dedup keys', () => {
     assert.equal(assistantBubbles.length, 2);
     assert.deepEqual(assistantBubbles.map(b => b.key).sort(), ['101', 'msg_new']);
   });
+
+  it('notification with matching sidekick_id renders once when durable and inflight both contain it', () => {
+    const s = state({
+      durable: [
+        { id: 101, sidekick_id: 'notif_1', role: 'assistant', kind: 'cron', content: 'Cron done', timestamp: T0 },
+      ],
+      inflight: [
+        { type: 'notification', chat_id: 'c', kind: 'cron', content: 'Cron done', sidekick_id: 'notif_1' },
+      ],
+    });
+    const out = project(s);
+    const notifications = out.filter(o => o.kind === 'notification');
+    assert.equal(notifications.length, 1);
+    assert.equal(notifications[0].key, 'notif:notif_1');
+  });
 });
 
 describe('project: ordering across turns', () => {

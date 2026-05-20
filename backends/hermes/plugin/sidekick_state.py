@@ -921,8 +921,9 @@ def record_envelope(db, env: Dict[str, Any]) -> Optional[str]:
         # message_id on the wire; fall back to a synthesized one tied
         # to the timestamp + chat (good enough for dedup since the
         # plugin never re-sends the same notification).
-        row_id = env.get("message_id") or env.get("notif_id") \
+        row_id = env.get("sidekick_id") or env.get("message_id") or env.get("notif_id") \
             or f"notif_{int(now * 1000)}_{chat_id[:8]}"
+        env["sidekick_id"] = row_id
         upsert_msg_link(
             db, id=row_id, chat_id=chat_id, role="assistant",
             content=env.get("content") or env.get("text") or "",

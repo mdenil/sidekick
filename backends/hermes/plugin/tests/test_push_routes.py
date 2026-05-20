@@ -34,6 +34,15 @@ class FakeDispatcher:
         return {"delivered": 1, "pruned": 0}
 
 
+class FakeSender:
+    def __init__(self):
+        self.envelopes = []
+
+    async def send_envelope(self, env):
+        self.envelopes.append(env)
+        return True
+
+
 def _body(resp):
     return json.loads(resp.text)
 
@@ -74,6 +83,31 @@ def test_push_test_endpoint_agent_reply_kind_uses_reply_final():
     assert dispatcher.envelopes[0]["type"] == "reply_final"
     assert "kind" not in dispatcher.envelopes[0]
     assert dispatcher.envelopes[0]["content"] == "Agent finished"
+
+
+def test_push_test_endpoint_uses_normal_envelope_fanout_when_available():
+    dispatcher = FakeDispatcher()
+    sender = FakeSender()
+    ctx = SimpleNamespace(dispatcher=dispatcher, send_envelope=sender.send_envelope)
+
+    resp = asyncio.run(handle_test(ctx, FakeRequest({
+        "chat_id": "chat-3",
+        "kind": "approval",
+        "body": "Approval needed",
+        "should_push": False,
+    })))
+
+    assert resp.status == 200
+    assert dispatcher.envelopes == []
+    assert sender.envelopes == [{
+        "type": "notification",
+        "chat_id": "chat-3",
+        "content": "Approval needed",
+        "text": "Approval needed",
+        "should_push": False,
+        "kind": "approval",
+    }]
+    assert _body(resp)["published"] is True
 
 
 def test_push_test_endpoint_supports_every_settings_category():

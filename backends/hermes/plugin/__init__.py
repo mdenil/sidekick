@@ -515,6 +515,7 @@ class SidekickAdapter(BasePlatformAdapter):
             dispatcher=self._push_dispatcher,
             state_db_path=self._state_db_path,
             emit_envelope=lambda env: _route_events.publish_out_of_turn(self, env),
+            send_envelope=self._safe_send_envelope,
             vapid_subject=vapid_subject,
         )
         _sroutes.register_routes(self._app, ctx)
@@ -1564,6 +1565,14 @@ class SidekickAdapter(BasePlatformAdapter):
             except Exception as exc:
                 logger.warning("[sidekick] turn buffer observe failed: %s", exc)
 
+        # Notification persistence: cron output, /background results,
+        # scheduled reminders, approval prompts all flow as
+        # `type=notification` envelopes today. Persist first so the
+        # minted sidekick_id is the single identity used by state.db,
+        # sidekick.db write-through, and the live SSE envelope.
+        if env_type == "notification":
+            self._persist_notification(env)
+
         # Phase 1: sidekick.db write-through. Every persisted envelope
         # type (user_message / reply_delta / reply_final / tool_call /
         # tool_result / notification) upserts a row into the sidekick.db
@@ -1613,9 +1622,7 @@ class SidekickAdapter(BasePlatformAdapter):
                         chat_id, env_type,
                     )
 
-        # Notification persistence: cron output, /background results,
-        # scheduled reminders, approval prompts all flow as
-        # `type=notification` envelopes today. Out-of-band envelopes
+        # Out-of-band envelopes
         # only existed in the proxy's SSE replay ring (minutes of
         # retention) and Web Push delivery (one-shot banner) — never
         # persisted to state.db.messages because that table feeds the
@@ -1630,9 +1637,6 @@ class SidekickAdapter(BasePlatformAdapter):
         # into /v1/conversations/{id}/items so a refresh-and-scroll
         # finds the notification in the transcript with the same
         # data-message-id machinery cmdk + pin-drawer already use.
-        if env_type == "notification":
-            self._persist_notification(env)
-
         from . import sidekick_route_events as _route_events
         published = _route_events.publish_out_of_turn(self, env)
 

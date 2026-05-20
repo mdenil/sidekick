@@ -76,11 +76,10 @@ export function handleNotification({ chatId, kind, content, sidekickId }: any): 
       chat_id: chatId,
       kind: kind || 'notification',
       content: displayText,
+      sidekick_id: typeof sidekickId === 'string' ? sidekickId : undefined,
     });
     void badge.clearUnread(chatId);
   }
-  void sidekickId;  // currently no per-message dedup at store level;
-                   // future: include in envelope when projection needs it
 }
 
 /** Cross-device user-message broadcast handler. The upstream emits a

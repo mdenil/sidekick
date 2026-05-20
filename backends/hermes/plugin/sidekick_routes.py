@@ -13,6 +13,7 @@ fields:
   - dispatcher        : PushDispatcher (engagement.mark_visible used)
   - state_db_path     : Path to hermes state.db (for unread compute)
   - emit_envelope     : callable(env: Dict) → publishes to /v1/events
+  - send_envelope     : optional async callable(env: Dict) → normal adapter fan-out
   - vapid_subject     : str (passed through for vapid-public-key)
 """
 
@@ -164,6 +165,10 @@ async def handle_test(ctx, request: web.Request) -> web.Response:
         env["title"] = body.get("title")
     if isinstance(body.get("urgent"), bool):
         env["urgent"] = body.get("urgent")
+    sender = getattr(ctx, "send_envelope", None)
+    if callable(sender):
+        published = await sender(env)
+        return _json({"ok": True, "envelope": env, "published": bool(published)})
     result = ctx.dispatcher.dispatch_envelope(env)
     return _json({"ok": True, "envelope": env, **result})
 
