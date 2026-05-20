@@ -89,7 +89,10 @@ def compute_unread(
 
             # Recursive CTE: same as _items_by_user_id so compaction
             # children are folded under the root user_id. Count only
-            # assistant rows (push-eligible class).
+            # user-facing assistant replies/notifications. Hermes stores
+            # tool-call starts as role='assistant' rows with tool_calls
+            # JSON; those are activity, not unread replies for the
+            # sidebar/app badge count.
             count_sql = """
                 WITH RECURSIVE session_root(id, root_system_prompt) AS (
                   SELECT id, system_prompt FROM sessions
@@ -106,6 +109,7 @@ def compute_unread(
                 SELECT COUNT(*) FROM messages m
                  JOIN session_root sr ON m.session_id = sr.id
                  WHERE m.role = 'assistant'
+                   AND (m.tool_calls IS NULL OR m.tool_calls = '' OR m.tool_calls = '[]')
                    AND m.timestamp > ?
             """
             threshold = last_read_at if last_read_at is not None else 0
