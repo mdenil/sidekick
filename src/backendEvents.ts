@@ -40,7 +40,7 @@ export function handleNotification({ chatId, kind, content, sidekickId }: any): 
   // notification (OS-level) is dispatched separately by the proxy
   // (proxy/sidekick/notifications/dispatch.ts); this is the in-app
   // counterpart for badge state.
-  if (chatId && chatId !== sessionDrawer.getViewed()) {
+  if (chatId && chatId !== sessionDrawer.getFocused()) {
     badge.incrementUnread(chatId);
     // In-app banner — surface the notification at the top of the
     // viewport so the user actually notices it (the badge alone is
