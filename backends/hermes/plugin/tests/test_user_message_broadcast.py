@@ -67,7 +67,10 @@ def _install_hermes_stubs() -> None:
             TEXT = "text"
 
         class _SendResult:
-            pass
+            def __init__(self, success=False, message_id=None, error=None):
+                self.success = success
+                self.message_id = message_id
+                self.error = error
 
         base.BasePlatformAdapter = _BasePlatformAdapter
         base.MessageEvent = _MessageEvent
@@ -111,6 +114,9 @@ def _make_adapter(plugin):
     adapter = plugin.SidekickAdapter.__new__(plugin.SidekickAdapter)
     # Minimum state _handle_responses touches before our patches kick in.
     adapter._turn_queues = {}
+    adapter._response_message_ids = {}
+    adapter._message_seq = 0
+    adapter._known_chat_ids = set()
     return adapter
 
 
@@ -288,3 +294,59 @@ def test_user_message_envelope_uses_voice_prefixed_text(plugin):
     assert user_envs[0]["text"].startswith("[voice]"), (
         f"expected [voice] prefix in broadcast text, got {user_envs[0]['text']!r}"
     )
+
+
+def test_response_route_reuses_same_assistant_message_id_for_sidekick_envelopes(plugin):
+    """The OpenAI Responses item id and Sidekick envelope id must match.
+
+    Regression for the 2026-05-20 duplicate-bubble class: the route
+    minted ``msg_*`` for SSE frames, but ``SidekickAdapter.send()``
+    independently minted ``sk-<unix>-<seq>`` for the Sidekick envelope
+    and sidekick.db write-through row. B2 then replayed durable rows
+    with the ``sk-*`` sidekick_id while the live/inflight bubble was
+    keyed by ``msg_*``.
+    """
+    route_resp = plugin.sidekick_route_responses
+    adapter = _make_adapter(plugin)
+    adapter._check_http_auth = lambda req: True
+    adapter._coerce_input = lambda input_field: input_field if isinstance(input_field, str) else None
+    adapter._turn_buffer = None
+    sent: list[dict] = []
+
+    async def capture_envelope(env):
+        sent.append(dict(env))
+        return True
+
+    adapter._safe_send_envelope = capture_envelope
+
+    async def fake_streaming(adapter_arg, request, chat_id, text, queue,
+                             response_id, message_id, created_at, **kwargs):
+        assert adapter_arg._next_message_id(chat_id) == message_id
+        result = await adapter_arg.send(chat_id, "assistant text")
+        assert result.message_id == message_id
+        return mock.MagicMock(name="StreamResponse")
+
+    saved_streaming = route_resp._handle_streaming
+    saved_blocking = route_resp._handle_blocking
+    route_resp._handle_streaming = fake_streaming
+    route_resp._handle_blocking = mock.AsyncMock()
+    try:
+        req = _FakeRequest({
+            "conversation": "assistant-id-chat",
+            "input": "hello",
+            "stream": True,
+        })
+        asyncio.run(route_resp.handle_responses(adapter, req))
+    finally:
+        route_resp._handle_streaming = saved_streaming
+        route_resp._handle_blocking = saved_blocking
+
+    assistant_ids = [
+        e["message_id"] for e in sent
+        if e.get("type") in ("reply_delta", "reply_final")
+    ]
+    assert len(assistant_ids) == 2
+    assert assistant_ids[0] == assistant_ids[1]
+    assert assistant_ids[0].startswith("msg_")
+    assert not assistant_ids[0].startswith("sk-")
+    assert adapter._response_message_ids == {}

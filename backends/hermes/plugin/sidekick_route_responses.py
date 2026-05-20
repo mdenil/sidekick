@@ -417,16 +417,20 @@ async def handle_responses(adapter, request: "web.Request") -> "web.StreamRespon
     # pre_high_water + _capture_msg_high_water_mark removed 2026-05-19
     # with the Phase 3-4 migration — content-fingerprint linking +
     # state.db reconciliation make the watermark heuristic obsolete.
-    if not stream:
-        return await _handle_blocking(
+    adapter._reserve_response_message_id(chat_id, message_id)
+    try:
+        if not stream:
+            return await _handle_blocking(
+                adapter,
+                chat_id, text, queue, response_id, message_id, created_at,
+                attachments=attachments,
+                user_message_id=user_message_id,
+            )
+        return await _handle_streaming(
             adapter,
-            chat_id, text, queue, response_id, message_id, created_at,
+            request, chat_id, text, queue, response_id, message_id, created_at,
             attachments=attachments,
             user_message_id=user_message_id,
         )
-    return await _handle_streaming(
-        adapter,
-        request, chat_id, text, queue, response_id, message_id, created_at,
-        attachments=attachments,
-        user_message_id=user_message_id,
-    )
+    finally:
+        adapter._release_response_message_id(chat_id, message_id)

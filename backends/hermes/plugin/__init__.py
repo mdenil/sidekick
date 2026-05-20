@@ -382,8 +382,12 @@ class SidekickAdapter(BasePlatformAdapter):
 
         # Adapter-assigned message ids (returned via SendResult.message_id) so
         # subsequent edit_message calls reference the right outbound bubble on
-        # the proxy/PWA side.
+        # the proxy/PWA side. When a /v1/responses request is active, the
+        # route reserves its OpenAI Responses item id here first; send() must
+        # reuse that id so the Sidekick envelope/write-through path and the
+        # Responses SSE path describe the same assistant bubble.
         self._message_seq = 0
+        self._response_message_ids: Dict[str, str] = {}
 
         # session_changed polling state. Map of chat_id → (session_id, title)
         # last seen in state.db. We only emit envelopes for transitions —
@@ -1427,9 +1431,33 @@ class SidekickAdapter(BasePlatformAdapter):
     # Outbound
     # ------------------------------------------------------------------
 
-    def _next_message_id(self) -> str:
+    def _reserve_response_message_id(self, chat_id: str, message_id: str) -> None:
+        """Bind the current /v1/responses assistant item id to ``chat_id``.
+
+        The route handler mints the OpenAI Responses ``msg_*`` id before
+        dispatch. Hermes core then calls ``send()`` from inside the adapter.
+        Without this reservation, ``send()`` minted a separate ``sk-*`` id for
+        the Sidekick envelope/write-through row while the SSE response exposed
+        ``msg_*`` to the proxy/PWA. B2 then joined durable rows back with the
+        ``sk-*`` id, so inflight and durable bubbles no longer shared identity.
+        """
+        if chat_id and message_id:
+            self._response_message_ids[chat_id] = message_id
+
+    def _release_response_message_id(self, chat_id: str, message_id: str) -> None:
+        """Drop a reservation if it still points at this request's id."""
+        if not chat_id:
+            return
+        if self._response_message_ids.get(chat_id) == message_id:
+            self._response_message_ids.pop(chat_id, None)
+
+    def _next_message_id(self, chat_id: Optional[str] = None) -> str:
+        if chat_id:
+            reserved = self._response_message_ids.get(chat_id)
+            if reserved:
+                return reserved
         self._message_seq += 1
-        return f"sk-{int(time.time())}-{self._message_seq}"
+        return f"msg_{secrets.token_hex(10)}"
 
     @staticmethod
     def _push_owned_by_plugin() -> bool:
@@ -1756,7 +1784,7 @@ class SidekickAdapter(BasePlatformAdapter):
         wire: the message_id we return here is what the proxy keys the
         UI bubble on.
         """
-        message_id = self._next_message_id()
+        message_id = self._next_message_id(chat_id)
         # Surface a session_changed envelope the first time we ever see this
         # chat_id outbound. Today the gateway resolves session_id internally
         # so we don't have a stable session_id to surface; emit the chat_id
