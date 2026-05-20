@@ -118,13 +118,20 @@ export default async function run({ page, log }) {
   const agentChat = await agentP;
   created.push(agentChat);
   await send(page,
-    `Notification smoke. Before your final reply, use a terminal/tool call to wait about 8 seconds. ` +
+    `Notification smoke. Before your final reply, you MUST use a terminal/tool call to run: sleep 15. ` +
+    `Do not send the final reply until that command completes. ` +
     `Then reply with exactly this single token and no other text: ${AGENT_MARKER}`,
   );
   await clickRow(page, anchor);
   log(`sent agent_reply prompt in ${agentChat}, switched to anchor`);
   const agentUnread = await waitForUnread(page, agentChat, 90_000);
   log(`agent_reply unread chip for ${agentChat}: ${agentUnread}`);
+  const logsAfterAgent = await recentHermesLogs(since);
+  const agentBare = agentChat.replace(/^sidekick:/, "");
+  const agentDispatch = logsAfterAgent.includes(`dispatch type=reply_final chat=${agentBare}`);
+  const agentEngagedSkip = logsAfterAgent.includes(`skip type=reply_final chat=${agentBare} reason=user_engaged`);
+  log(`agent_reply journal: dispatch=${agentDispatch} user_engaged_skip=${agentEngagedSkip}`);
+  assert(agentDispatch, `expected reply_final push dispatch for off-screen agent chat ${agentBare}; user_engaged_skip=${agentEngagedSkip}`);
 
   await clickRow(page, agentChat);
   await waitForAgentBubble(page, AGENT_MARKER, 20_000);
