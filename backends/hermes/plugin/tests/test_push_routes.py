@@ -83,6 +83,7 @@ def test_push_test_endpoint_agent_reply_kind_uses_reply_final():
     assert dispatcher.envelopes[0]["type"] == "reply_final"
     assert "kind" not in dispatcher.envelopes[0]
     assert dispatcher.envelopes[0]["content"] == "Agent finished"
+    assert dispatcher.envelopes[0]["message_id"].startswith("msg_test_")
 
 
 def test_push_test_endpoint_uses_normal_envelope_fanout_when_available():
@@ -126,6 +127,7 @@ def test_push_test_endpoint_supports_every_settings_category():
         if kind == "agent_reply":
             assert env["type"] == "reply_final"
             assert "kind" not in env
+            assert env["message_id"].startswith("msg_test_")
         else:
             assert env["type"] == "notification"
             assert env["kind"] == kind

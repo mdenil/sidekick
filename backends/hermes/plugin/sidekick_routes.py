@@ -20,6 +20,7 @@ fields:
 from __future__ import annotations
 
 import json
+import time
 from typing import Any, Dict
 
 from aiohttp import web
@@ -159,6 +160,9 @@ async def handle_test(ctx, request: web.Request) -> web.Response:
     }
     if kind and env_type == "notification":
         env["kind"] = kind
+    if env_type == "reply_final":
+        msg_id = body.get("message_id") or body.get("messageId")
+        env["message_id"] = msg_id if isinstance(msg_id, str) and msg_id else f"msg_test_{int(time.time() * 1000)}"
     if isinstance(body.get("speaker"), str):
         env["speaker"] = body.get("speaker")
     if isinstance(body.get("title"), str):
