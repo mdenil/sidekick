@@ -41,6 +41,14 @@ let hydrated = false;
 
 const key = (chatId: string, msgId: string) => `${chatId}|${msgId}`;
 
+function notifyPinError(message: string): void {
+  try {
+    if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+      window.dispatchEvent(new CustomEvent('sidekick:pin-error', { detail: { message } }));
+    }
+  } catch { /* non-DOM hosts (test runner) */ }
+}
+
 /** Fetch the canonical pin set from the server and update the cache.
  *  Diff-aware: only fires `notifyChange()` (which triggers the
  *  pin-drawer repaint + per-bubble `.pinned` reflow) when the cache
@@ -124,9 +132,13 @@ export async function pinMessage(item: Omit<PinnedItem, 'pinnedAt'>): Promise<vo
       let detail = '';
       try { detail = await r.text(); } catch { /* ignore */ }
       log(`[pins] POST failed: HTTP ${r.status}${detail ? ` ${detail.slice(0, 500)}` : ''}`);
+      notifyPinError(r.status === 400 && /body too large/i.test(detail)
+        ? 'This message is too large to pin.'
+        : 'Could not pin this message.');
     }
   } catch (e: any) {
     log(`[pins] POST failed: ${e?.message ?? e}`);
+    notifyPinError('Could not pin this message.');
   }
   void refreshFromServer();
 }
@@ -145,9 +157,11 @@ export async function unpinMessage(chatId: string, msgId: string): Promise<void>
       let detail = '';
       try { detail = await r.text(); } catch { /* ignore */ }
       log(`[pins] DELETE failed: HTTP ${r.status}${detail ? ` ${detail.slice(0, 500)}` : ''}`);
+      notifyPinError('Could not unpin this message.');
     }
   } catch (e: any) {
     log(`[pins] DELETE failed: ${e?.message ?? e}`);
+    notifyPinError('Could not unpin this message.');
   }
   void refreshFromServer();
 }

@@ -19,6 +19,8 @@ let listEl: HTMLElement | null = null;
 let emptyEl: HTMLElement | null = null;
 let countBanners: HTMLElement[] = [];       // both #pin-drawer-count + #pin-drawer-count-rail
 let clearBtn: HTMLElement | null = null;
+let statusEl: HTMLElement | null = null;
+let statusTimer: number | null = null;
 let chromeHandle: DrawerHandle | null = null;
 let onPinClickCb: ((chatId: string, msgId: string) => void) | null = null;
 
@@ -261,6 +263,22 @@ function refreshCountBanner(): void {
   }
 }
 
+function showPinStatus(message: string): void {
+  if (!statusEl) return;
+  statusEl.textContent = message;
+  statusEl.hidden = false;
+  statusEl.classList.add('visible');
+  openDrawer();
+  if (statusTimer != null) window.clearTimeout(statusTimer);
+  statusTimer = window.setTimeout(() => {
+    statusTimer = null;
+    if (!statusEl) return;
+    statusEl.classList.remove('visible');
+    statusEl.hidden = true;
+    statusEl.textContent = '';
+  }, 5000);
+}
+
 /** Wire up the drawer DOM elements + listeners. Idempotent — re-calling
  *  is a no-op if init already ran. Pass `onPinClick` to receive
  *  drill-to-chat events from item clicks. */
@@ -271,6 +289,7 @@ export function initPinDrawer(opts: {
   drawerEl = document.getElementById('pin-drawer');
   listEl = document.getElementById('pin-drawer-list');
   emptyEl = document.getElementById('pin-drawer-empty');
+  statusEl = document.getElementById('pin-drawer-status');
   countBanners = [
     document.getElementById('pin-drawer-count'),
     document.getElementById('pin-drawer-count-rail'),
@@ -319,6 +338,10 @@ export function initPinDrawer(opts: {
   window.addEventListener('sidekick:pins-changed', () => {
     refreshCountBanner();
     if (isOpen()) render();
+  });
+  window.addEventListener('sidekick:pin-error', (ev) => {
+    const detail = (ev as CustomEvent<{ message?: string }>).detail;
+    showPinStatus(detail?.message || 'Could not update pinned messages.');
   });
 
   refreshCountBanner();
