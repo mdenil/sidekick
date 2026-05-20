@@ -35,6 +35,15 @@ import type {
 
 export function project(state: ChatState): BubbleSpec[] {
   const specs: BubbleSpec[] = [];
+  const durableOrder = new WeakMap<BubbleSpec, number>();
+  let nextDurableOrder = 0;
+  const pushDurableSpec = (spec: BubbleSpec): void => {
+    durableOrder.set(spec, nextDurableOrder++);
+    specs.push(spec);
+  };
+  const markDurableSpec = (spec: BubbleSpec): void => {
+    if (!durableOrder.has(spec)) durableOrder.set(spec, nextDurableOrder++);
+  };
   const userKeys = new Set<string>();
   const assistantKeys = new Set<string>();
   const notificationKeys = new Set<string>();
@@ -86,7 +95,7 @@ export function project(state: ChatState): BubbleSpec[] {
       const key = userKey(item);
       if (!userKeys.has(key)) {
         userKeys.add(key);
-        specs.push({ kind: 'user', key, text: item.content || '', timestamp: ts });
+        pushDurableSpec({ kind: 'user', key, text: item.content || '', timestamp: ts });
       }
       currentTurnKey = `turn:${key}`;
       currentTurnTs = ts;
@@ -101,7 +110,7 @@ export function project(state: ChatState): BubbleSpec[] {
         const key = `notif:${item.sidekick_id || item.id}`;
         if (notificationKeys.has(key)) continue;
         notificationKeys.add(key);
-        specs.push({
+        pushDurableSpec({
           kind: 'notification',
           key,
           text: stripCronBoilerplate(item.content || '', item.kind),
@@ -116,6 +125,7 @@ export function project(state: ChatState): BubbleSpec[] {
       const calls = parseToolCalls(item.tool_calls);
       if (calls.length) {
         const row = ensureActivityRow(activityByKey, specs, currentTurnKey, currentTurnTs || ts, /*complete*/ true);
+        markDurableSpec(row);
         for (const c of calls) {
           if (!row.tools.find(t => t.callId === c.callId)) row.tools.push(c);
         }
@@ -130,7 +140,7 @@ export function project(state: ChatState): BubbleSpec[] {
       }
       if (item.content && !assistantKeys.has(akey)) {
         assistantKeys.add(akey);
-        specs.push({ kind: 'assistant', key: akey, text: item.content, timestamp: ts });
+        pushDurableSpec({ kind: 'assistant', key: akey, text: item.content, timestamp: ts });
         // Track content for the inflight dedup pass below — covers
         // both the no-link case (sidekick_id missing) and the
         // mismatched-link case (sidekick_id present but doesn't
@@ -144,6 +154,7 @@ export function project(state: ChatState): BubbleSpec[] {
       const callId = item.tool_call_id;
       if (!callId || !currentTurnKey) continue;
       const row = ensureActivityRow(activityByKey, specs, currentTurnKey, currentTurnTs || ts, /*complete*/ true);
+      markDurableSpec(row);
       const existing = row.tools.find(t => t.callId === callId);
       if (existing) {
         existing.result = item.content;
@@ -155,7 +166,7 @@ export function project(state: ChatState): BubbleSpec[] {
       const key = `notif:${item.sidekick_id || item.id}`;
       if (notificationKeys.has(key)) continue;
       notificationKeys.add(key);
-      specs.push({
+      pushDurableSpec({
         kind: 'notification',
         key,
         text: item.content || '',
@@ -349,6 +360,11 @@ export function project(state: ChatState): BubbleSpec[] {
   // agent reply, which is the order the user expects.
   specs.sort((a, b) => {
     if (a.timestamp !== b.timestamp) return a.timestamp - b.timestamp;
+    const aDurableOrder = durableOrder.get(a);
+    const bDurableOrder = durableOrder.get(b);
+    if (aDurableOrder != null && bDurableOrder != null) {
+      return aDurableOrder - bDurableOrder;
+    }
     return kindOrder(a) - kindOrder(b);
   });
   return specs;

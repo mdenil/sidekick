@@ -42,7 +42,7 @@ const SNAPSHOT_KEY = 'current';
 //                (approval prompts, etc.) persist to state.db and arrive
 //                through history fetch instead of the deprecated
 //                IDB-only addSystemLine path.
-const SCHEMA_VERSION = '2026-05-20-reconciler-persist';
+const SCHEMA_VERSION = '2026-05-20-durable-order';
 const SCHEMA_VERSION_KEY = 'sidekick.idb-schema-version';
 
 /** Snapshot record persisted to IDB. `html` is the serialized

@@ -361,4 +361,27 @@ describe('project: ordering across turns', () => {
       'assistant:msg_2',
     ]);
   });
+
+  it('preserves durable server order when adjacent turns share the same timestamp', () => {
+    const sameSecond = 1_779_298_560;
+    const s = state({
+      durable: [
+        u('umsg_1', 'Going via a skill is a good idea', sameSecond - 60),
+        tool('5', 'c1', 'skill_view', '{"name":"r2-raise-brain"}', sameSecond - 59),
+        a('msg_done', 'Done. Split is live.', sameSecond),
+        u('umsg_2', '> I preserved the old monolithic skill here', sameSecond),
+        tool('6', 'c2', 'skill_view', '{"name":"hermes-agent"}', sameSecond),
+        a('msg_good', 'Good push. You were right.', sameSecond),
+      ],
+    });
+    const out = project(s);
+    assert.deepEqual(out.map(s => `${s.kind}:${s.key}`), [
+      'user:umsg_1',
+      'activityRow:turn:umsg_1',
+      'assistant:msg_done',
+      'user:umsg_2',
+      'activityRow:turn:umsg_2',
+      'assistant:msg_good',
+    ]);
+  });
 });
