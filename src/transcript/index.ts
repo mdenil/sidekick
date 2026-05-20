@@ -13,6 +13,7 @@
 import { project } from './projection.ts';
 import { reconcile } from './reconciler.ts';
 import { getState, subscribe } from './store.ts';
+import { scheduleSnapshotPersist } from '../chat.ts';
 
 let getTranscriptEl: () => HTMLElement | null = () => document.getElementById('transcript');
 let getViewedChatId: () => string | null = () => null;
@@ -52,6 +53,7 @@ function rerenderInto(chatId: string): void {
   const el = getTranscriptEl();
   if (!el) return;
   reconcile(el, project(getState(chatId)));
+  scheduleSnapshotPersist();
 }
 
 // Re-export the public surface from neighboring modules so call sites
