@@ -198,6 +198,7 @@ function updateUser(el: HTMLElement, spec: UserBubbleSpec): void {
     const want = escapeHtml(spec.text || '').replace(/\n/g, '<br>');
     if (span.innerHTML !== want) span.innerHTML = want;
   }
+  updateTimestamp(el, spec.timestamp);
 }
 
 function ensureRetryRow(el: HTMLElement, spec: UserBubbleSpec): void {
@@ -244,6 +245,7 @@ function updateAssistant(el: HTMLElement, spec: AssistantBubbleSpec): void {
     el.classList.remove('streaming');
     el.querySelector('.thinking-dots')?.remove();
   }
+  updateTimestamp(el, spec.timestamp);
 }
 
 function updateNotification(el: HTMLElement, spec: NotificationBubbleSpec): void {
@@ -252,11 +254,22 @@ function updateNotification(el: HTMLElement, spec: NotificationBubbleSpec): void
     const want = escapeHtml(spec.text || '').replace(/\n/g, '<br>');
     if (span.innerHTML !== want) span.innerHTML = want;
   }
+  updateTimestamp(el, spec.timestamp);
 }
 
 function updateActivityRow(el: HTMLElement, spec: ActivityRowSpec): void {
   el.dataset.state = spec.complete ? 'complete' : 'in-progress';
   renderActivityRowBody(el, spec);
+}
+
+function updateTimestamp(el: HTMLElement, timestamp: number): void {
+  const tsEl = el.querySelector('.line-ts') as HTMLElement | null;
+  if (!tsEl) return;
+  const d = new Date(timestamp);
+  const text = `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
+  if (tsEl.textContent !== text) tsEl.textContent = text;
+  const title = d.toLocaleString();
+  if (tsEl.title !== title) tsEl.title = title;
 }
 
 // ── activity row helpers ───────────────────────────────────────────────

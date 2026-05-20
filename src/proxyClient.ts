@@ -111,6 +111,32 @@ function apiBase(): string {
   return `${location.origin}/api/sidekick`;
 }
 
+async function fetchSessionMessages(id: string, logPrefix = 'proxy-client.fetchSessionMessages') {
+  try {
+    const r = await fetch(
+      `${apiBase()}/sessions/${encodeURIComponent(id)}/messages`,
+    );
+    if (!r.ok) {
+      diag(`${logPrefix}: HTTP ${r.status} for ${id}`);
+      log(`${logPrefix}: chat_id=${id}, history fetch failed`);
+      return { messages: [], firstId: null, hasMore: false, inflight: [] };
+    }
+    const d = await r.json();
+    const inflightEnvelopes = Array.isArray(d.inflight) ? d.inflight : [];
+    const result = {
+      messages: d.messages || [],
+      firstId: d.firstId ?? null,
+      hasMore: !!d.hasMore,
+      inflight: inflightEnvelopes,
+    };
+    log(`${logPrefix}: chat_id=${id}, ${result.messages.length} messages, ${inflightEnvelopes.length} inflight, hasMore=${result.hasMore}`);
+    return result;
+  } catch (e: any) {
+    diag(`${logPrefix}: ${e.message}`);
+    return { messages: [], firstId: null, hasMore: false, inflight: [] };
+  }
+}
+
 interface SessionsResponse {
   sessions: Array<{
     chat_id: string;
@@ -1025,38 +1051,17 @@ export const proxyClientAdapter = {
     // unknown chat_id) we return an empty transcript and let the user
     // continue the chat — better than a hard error toast for what is
     // strictly enrichment.
-    try {
-      const r = await fetch(
-        `${apiBase()}/sessions/${encodeURIComponent(id)}/messages`,
-      );
-      if (!r.ok) {
-        diag(`proxy-client.resumeSession: HTTP ${r.status} for ${id}`);
-        log(`proxy-client: resumed (chat_id=${id}, history fetch failed)`);
-        return { messages: [], firstId: null, hasMore: false };
-      }
-      const d = await r.json();
-      // Inflight envelopes — proxy's in-memory cache of envelopes
-      // from an in-flight turn (user message + tool calls + reply
-      // deltas that hermes-core hasn't yet persisted to state.db,
-      // because it persists post-turn). Surfaced through the
-      // returned result so the SHELL can replay them AFTER
-      // replaySessionMessages has cleared+rendered state.db
-      // messages — otherwise the clear path wipes the just-
-      // replayed bubbles. See proxy/sidekick/inflight.ts for the
-      // server-side lifecycle.
-      const inflightEnvelopes = Array.isArray(d.inflight) ? d.inflight : [];
-      const result = {
-        messages: d.messages || [],
-        firstId: d.firstId ?? null,
-        hasMore: !!d.hasMore,
-        inflight: inflightEnvelopes,
-      };
-      log(`proxy-client: resumed (chat_id=${id}, ${result.messages.length} messages, ${inflightEnvelopes.length} inflight, hasMore=${result.hasMore})`);
-      return result;
-    } catch (e: any) {
-      diag(`proxy-client.resumeSession: ${e.message}`);
-      return { messages: [], firstId: null, hasMore: false, inflight: [] };
-    }
+    return fetchSessionMessages(id, 'proxy-client.resumeSession');
+  },
+
+  /** Fetch a session transcript without changing activeChatId or IDB
+   *  active state. Used by active-chat post-final refresh: after
+   *  reply_final, the shell wants a fresh durable snapshot so the
+   *  transcript store can drain completed inflight envelopes, but it
+   *  must not steal focus if the user switches chats while the request
+   *  is in flight. */
+  async fetchSessionMessages(id: string) {
+    return fetchSessionMessages(id);
   },
 
   /** Replay inflight envelopes through the live-SSE router. Called

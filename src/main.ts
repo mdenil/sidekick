@@ -4120,6 +4120,45 @@ function handleReplyDelta({ replyId, cumulativeText, conversation, messageId, is
   void replyId;  // retained in signature for adapter contract; unused now
 }
 
+const postFinalRefreshTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const postFinalRefreshSeq = new Map<string, number>();
+
+function schedulePostFinalDurableRefresh(chatId: string, messageId?: string | null): void {
+  if (!chatId || !backend.capabilities().sessionBrowsing) return;
+  if (sessionDrawer.getViewed() !== chatId) return;
+  const prev = postFinalRefreshTimers.get(chatId);
+  if (prev) clearTimeout(prev);
+  const seq = (postFinalRefreshSeq.get(chatId) ?? 0) + 1;
+  postFinalRefreshSeq.set(chatId, seq);
+  const timer = setTimeout(() => {
+    postFinalRefreshTimers.delete(chatId);
+    void (async () => {
+      if (postFinalRefreshSeq.get(chatId) !== seq) return;
+      if (sessionDrawer.getViewed() !== chatId) return;
+      try {
+        const result: any = await backend.fetchSessionMessages(chatId);
+        if (postFinalRefreshSeq.get(chatId) !== seq) return;
+        if (sessionDrawer.getViewed() !== chatId) return;
+        replaySessionMessages(
+          chatId,
+          result.messages || [],
+          { firstId: result.firstId ?? null, hasMore: !!result.hasMore },
+          undefined,
+          result.inflight,
+        );
+        log(
+          `post-final durable refresh chat=${chatId} msg=${messageId ?? '∅'} ` +
+          `messages=${(result.messages || []).length} ` +
+          `inflight=${Array.isArray(result.inflight) ? result.inflight.length : 0}`,
+        );
+      } catch (e: any) {
+        diag(`post-final durable refresh failed chat=${chatId}: ${e?.message || String(e)}`);
+      }
+    })();
+  }, 900);
+  postFinalRefreshTimers.set(chatId, timer);
+}
+
 /** Complete reply. `content` (if present) is the raw block array used to
  *  pull out image attachments. */
 function handleReplyFinal({ replyId, text, content = [], conversation, messageId, isReplay = false }: any) {
@@ -4153,6 +4192,10 @@ function handleReplyFinal({ replyId, text, content = [], conversation, messageId
 
   if (!isReplay && viewed && conversation) {
     void badge.clearUnread(conversation);
+  }
+
+  if (!isReplay && viewed && conversation === viewed) {
+    schedulePostFinalDurableRefresh(conversation, messageId);
   }
 
   webrtcSuppress.onAssistantFinal();

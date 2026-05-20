@@ -121,6 +121,12 @@ export async function resumeSession(id) {
   return a.resumeSession(id);
 }
 
+export async function fetchSessionMessages(id) {
+  const a = await loadAdapter();
+  if (!a.fetchSessionMessages) return { messages: [], firstId: null, hasMore: false, inflight: [] };
+  return a.fetchSessionMessages(id);
+}
+
 export async function loadEarlier(id, beforeId) {
   const a = await loadAdapter();
   if (!a.loadEarlier) return { messages: [], firstId: null, hasMore: false };
