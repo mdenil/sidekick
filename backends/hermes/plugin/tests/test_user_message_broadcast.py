@@ -350,3 +350,59 @@ def test_response_route_reuses_same_assistant_message_id_for_sidekick_envelopes(
     assert assistant_ids[0].startswith("msg_")
     assert not assistant_ids[0].startswith("sk-")
     assert adapter._response_message_ids == {}
+
+def test_send_classifies_background_cron_delivery_as_notification(plugin):
+    adapter = _make_adapter(plugin)
+    adapter._turn_buffer = None
+    sent: list[dict] = []
+
+    async def capture_envelope(env):
+        if env.get("type") == "notification":
+            env["sidekick_id"] = "notif_test_cron"
+        sent.append(dict(env))
+        return True
+
+    adapter._safe_send_envelope = capture_envelope
+    content = (
+        "Cronjob Response: morning brief\n"
+        "(job_id: job-123)\n"
+        "-------------\n\n"
+        "Cron body"
+    )
+
+    result = asyncio.run(adapter.send("cron-chat", content))
+
+    assert result.message_id == "notif_test_cron"
+    assert sent == [{
+        "type": "notification",
+        "chat_id": "cron-chat",
+        "kind": "cron",
+        "content": content,
+        "text": content,
+        "sidekick_id": "notif_test_cron",
+    }]
+
+
+def test_send_preserves_active_turn_contract_for_cron_shaped_text(plugin):
+    adapter = _make_adapter(plugin)
+    adapter._turn_buffer = None
+    adapter._turn_queues["active-chat"] = object()
+    sent: list[dict] = []
+
+    async def capture_envelope(env):
+        sent.append(dict(env))
+        return True
+
+    adapter._safe_send_envelope = capture_envelope
+    content = (
+        "Cronjob Response: sample\n"
+        "(job_id: job-456)\n"
+        "-------------\n\n"
+        "Example text"
+    )
+
+    result = asyncio.run(adapter.send("active-chat", content))
+
+    assert result.message_id.startswith("msg_")
+    assert [e["type"] for e in sent] == ["reply_delta", "reply_final"]
+    assert sent[0]["text"] == content

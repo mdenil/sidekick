@@ -7,13 +7,6 @@ from backends.hermes.plugin.sidekick_routes import handle_test
 PUSH_KINDS = [
     "agent_reply",
     "cron",
-    "reminder",
-    "approval",
-    "alert",
-    "achievement",
-    "background",
-    "tool",
-    "notification",
 ]
 
 
@@ -93,8 +86,8 @@ def test_push_test_endpoint_uses_normal_envelope_fanout_when_available():
 
     resp = asyncio.run(handle_test(ctx, FakeRequest({
         "chat_id": "chat-3",
-        "kind": "approval",
-        "body": "Approval needed",
+        "kind": "cron",
+        "body": "Cron fired",
         "should_push": False,
     })))
 
@@ -103,10 +96,10 @@ def test_push_test_endpoint_uses_normal_envelope_fanout_when_available():
     assert sender.envelopes == [{
         "type": "notification",
         "chat_id": "chat-3",
-        "content": "Approval needed",
-        "text": "Approval needed",
+        "content": "Cron fired",
+        "text": "Cron fired",
         "should_push": False,
-        "kind": "approval",
+        "kind": "cron",
     }]
     assert _body(resp)["published"] is True
 

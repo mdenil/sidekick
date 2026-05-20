@@ -107,6 +107,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import secrets
 import socket as _socket
 import sqlite3
@@ -135,6 +136,13 @@ logger = logging.getLogger(__name__)
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8645
 PROTOCOL_VERSION = 1
+
+_CRON_RESPONSE_RE = re.compile(
+    r"^Cronjob Response:\s*.+?\s*\n"
+    r"\(job_id:\s*[^)]+\)\s*\n"
+    r"-+\s*\n+",
+    re.DOTALL,
+)
 
 # ── PDF rasterization knobs ───────────────────────────────────────────
 # When the PWA uploads a PDF via /api/sidekick/messages, we shell out to
@@ -1788,6 +1796,26 @@ class SidekickAdapter(BasePlatformAdapter):
         wire: the message_id we return here is what the proxy keys the
         UI bubble on.
         """
+        # Hermes cron delivery naturally arrives here through the live
+        # platform adapter as a regular send() with a canonical wrapper.
+        # There is no active /v1/responses queue for that background
+        # delivery, so classify it as the product-facing cron notification
+        # category instead of a normal agent reply. During an active user
+        # turn, preserve the reply_delta/reply_final contract even if the
+        # model happens to print the wrapper text.
+        if chat_id not in self._turn_queues and _CRON_RESPONSE_RE.match(content or ""):
+            if chat_id not in self._known_chat_ids:
+                self._known_chat_ids.add(chat_id)
+            env = {
+                "type": "notification",
+                "chat_id": chat_id,
+                "kind": "cron",
+                "content": content,
+                "text": content,
+            }
+            ok = await self._safe_send_envelope(env)
+            return SendResult(success=ok, message_id=env.get("sidekick_id") or "")
+
         message_id = self._next_message_id(chat_id)
         # Surface a session_changed envelope the first time we ever see this
         # chat_id outbound. Today the gateway resolves session_id internally

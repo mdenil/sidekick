@@ -12,13 +12,11 @@ test('plugin prefs delegate: expands nested kind updates to plugin push_kind key
     expandPreferenceUpdates({
       kinds: {
         cron: false,
-        reminder: true,
         agent_reply: false,
       },
     }),
     [
       { key: 'push_kind_cron', value: false },
-      { key: 'push_kind_reminder', value: true },
       { key: 'push_kind_agent_reply', value: false },
     ],
   );
@@ -50,7 +48,6 @@ test('plugin prefs delegate: normalizes flat plugin push_kind keys to PWA kinds 
       kinds: {
         agent_reply: false,
         cron: false,
-        reminder: true,
       },
     },
   );

@@ -1,6 +1,6 @@
 // Notification category contract smoke.
 //
-// The settings pane exposes several notification categories. This
+// The settings pane exposes the supported notification categories. This
 // smoke proves each category can be reproduced as a real PWA event
 // shape and renders in the transcript surface instead of remaining a
 // settings-only label.
@@ -8,7 +8,7 @@
 import { waitForReady, openSidebar, clickRow, assert, dumpLines } from './lib.mjs';
 
 export const NAME = 'notification-categories-rendering';
-export const DESCRIPTION = 'all notification categories have a reproducible PWA event shape';
+export const DESCRIPTION = 'supported notification categories have a reproducible PWA event shape';
 export const STATUS = 'implemented';
 export const BACKEND = 'mocked';
 
@@ -16,13 +16,6 @@ const CHAT_ID = 'mock-chat-notification-categories';
 
 const NOTIFICATION_KINDS = [
   'cron',
-  'reminder',
-  'approval',
-  'alert',
-  'achievement',
-  'background',
-  'tool',
-  'notification',
 ];
 
 const ALL_KINDS = ['agent_reply', ...NOTIFICATION_KINDS];

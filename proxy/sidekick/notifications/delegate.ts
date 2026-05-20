@@ -26,13 +26,6 @@ interface ForwardResult {
 const PUSH_KINDS = [
   'agent_reply',
   'cron',
-  'reminder',
-  'approval',
-  'alert',
-  'achievement',
-  'background',
-  'tool',
-  'notification',
 ];
 
 const DEFAULT_BODY_CAP_BYTES = 8 * 1024;
@@ -52,9 +45,7 @@ export function normalizePluginPrefs(raw: any): any {
   const prefs = raw?.prefs ?? raw ?? {};
   if (!prefs || typeof prefs !== 'object') return {};
   const out: any = { ...prefs };
-  const kinds = prefs.kinds && typeof prefs.kinds === 'object' && !Array.isArray(prefs.kinds)
-    ? { ...prefs.kinds }
-    : {};
+  const kinds: Record<string, boolean> = {};
   for (const kind of PUSH_KINDS) {
     const parsed = parseBoolPref(prefs[`push_kind_${kind}`]);
     if (parsed !== undefined) kinds[kind] = parsed;
