@@ -4123,13 +4123,44 @@ function handleReplyDelta({ replyId, cumulativeText, conversation, messageId, is
 const postFinalRefreshTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const postFinalRefreshSeq = new Map<string, number>();
 
-function schedulePostFinalDurableRefresh(chatId: string, messageId?: string | null): void {
+function durableIdentity(row: any): string {
+  return `${row?.sidekick_id || ''}:${String(row?.id ?? '')}`;
+}
+
+function durableHasReply(
+  rows: any[],
+  beforeIds: Set<string>,
+  messageId?: string | null,
+  finalText?: string | null,
+): boolean {
+  for (const row of rows) {
+    if (row?.role !== 'assistant') continue;
+    if (messageId && row.sidekick_id === messageId) return true;
+    if (
+      finalText &&
+      row.content === finalText &&
+      !beforeIds.has(durableIdentity(row))
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function schedulePostFinalDurableRefresh(
+  chatId: string,
+  messageId?: string | null,
+  finalText?: string | null,
+): void {
   if (!chatId || !backend.capabilities().sessionBrowsing) return;
   if (sessionDrawer.getViewed() !== chatId) return;
   const prev = postFinalRefreshTimers.get(chatId);
   if (prev) clearTimeout(prev);
   const seq = (postFinalRefreshSeq.get(chatId) ?? 0) + 1;
   postFinalRefreshSeq.set(chatId, seq);
+  const beforeDurableIds = new Set(
+    transcriptStore.getState(chatId).durable.map((row) => durableIdentity(row)),
+  );
   const timer = setTimeout(() => {
     postFinalRefreshTimers.delete(chatId);
     void (async () => {
@@ -4146,6 +4177,12 @@ function schedulePostFinalDurableRefresh(chatId: string, messageId?: string | nu
           undefined,
           result.inflight,
         );
+        if (
+          messageId &&
+          durableHasReply(result.messages || [], beforeDurableIds, messageId, finalText || null)
+        ) {
+          transcriptStore.clearInflightThroughReplyFinal(chatId, messageId);
+        }
         log(
           `post-final durable refresh chat=${chatId} msg=${messageId ?? '∅'} ` +
           `messages=${(result.messages || []).length} ` +
@@ -4194,10 +4231,6 @@ function handleReplyFinal({ replyId, text, content = [], conversation, messageId
     void badge.clearUnread(conversation);
   }
 
-  if (!isReplay && viewed && conversation === viewed) {
-    schedulePostFinalDurableRefresh(conversation, messageId);
-  }
-
   webrtcSuppress.onAssistantFinal();
 
   const imageBlocks = extractImageBlocks(content);
@@ -4212,6 +4245,10 @@ function handleReplyFinal({ replyId, text, content = [], conversation, messageId
         finalText = env.text;
       }
     }
+  }
+
+  if (!isReplay && viewed && conversation === viewed) {
+    schedulePostFinalDurableRefresh(conversation, messageId, finalText || null);
   }
 
   if (NO_REPLY_RE.test(finalText)) {

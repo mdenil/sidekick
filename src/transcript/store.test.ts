@@ -34,7 +34,7 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { getState, setDurable, appendInflight } from './store.ts';
+import { getState, setDurable, appendInflight, clearInflightThroughReplyFinal } from './store.ts';
 import type { ConversationItem, SidekickEnvelope } from './types.ts';
 
 const CHAT = 'orphan-test';
@@ -176,5 +176,34 @@ describe('store: setDurable conditionally drains completed-turn inflight envelop
     const s = getState(CHAT);
     assert.equal(s.inflight.length, 3,
       `expected inflight preserved when durable lacks sidekick_id (safer than nuking content); got ${s.inflight.length}`);
+  });
+});
+
+describe('store: targeted post-final inflight drain', () => {
+  it('clears through the named reply_final and preserves a trailing in-progress turn', () => {
+    reset();
+    appendInflight(CHAT, userMsg('umsg_A', 'q1'));
+    appendInflight(CHAT, replyDelta('msg_A', 'a1'));
+    appendInflight(CHAT, replyFinal('msg_A', 'a1'));
+    appendInflight(CHAT, userMsg('umsg_B', 'q2'));
+    appendInflight(CHAT, replyDelta('msg_B', 'a2 streaming'));
+
+    clearInflightThroughReplyFinal(CHAT, 'msg_A');
+
+    const s = getState(CHAT);
+    assert.equal(s.inflight.length, 2);
+    assert.equal((s.inflight[0] as any).message_id, 'umsg_B');
+    assert.equal((s.inflight[1] as any).message_id, 'msg_B');
+  });
+
+  it('does nothing when the named reply_final is not present', () => {
+    reset();
+    appendInflight(CHAT, userMsg('umsg_A', 'q1'));
+    appendInflight(CHAT, replyDelta('msg_A', 'a1'));
+
+    clearInflightThroughReplyFinal(CHAT, 'msg_missing');
+
+    const s = getState(CHAT);
+    assert.equal(s.inflight.length, 2);
   });
 });
