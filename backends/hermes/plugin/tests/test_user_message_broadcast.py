@@ -441,3 +441,70 @@ def test_send_classifies_approval_prompt_as_urgent_notification(plugin):
         "urgent": True,
         "sidekick_id": "notif_test_approval",
     }]
+
+
+def _make_envelope_routing_adapter(plugin):
+    adapter = _make_adapter(plugin)
+    adapter._turn_buffer = None
+    adapter._sidekick_db = None
+    adapter._push_dispatcher = None
+    adapter._event_subscribers = set()
+    adapter._event_replay_ring = []
+    adapter._event_id_counter = 0
+    return adapter
+
+
+@pytest.mark.parametrize("env_type", ["tool_call", "tool_result"])
+def test_active_turn_tool_events_also_publish_to_persistent_event_stream(plugin, env_type):
+    """Live tool progress must reach the transcript-centric /v1/events stream.
+
+    The active /v1/responses turn queue is still fed for compatibility, but
+    tool rows are observational UI state that every open PWA should see while
+    the tool is running. Otherwise the transcript only catches up from history
+    after reply_final.
+    """
+    adapter = _make_envelope_routing_adapter(plugin)
+    turn_q = asyncio.Queue()
+    event_q = asyncio.Queue()
+    adapter._turn_queues["live-chat"] = turn_q
+    adapter._event_subscribers.add(event_q)
+
+    env = {
+        "type": env_type,
+        "chat_id": "live-chat",
+        "call_id": "call_live",
+        "tool_name": "terminal",
+    }
+    if env_type == "tool_call":
+        env["args"] = {"cmd": "sleep 5; printf ok"}
+    else:
+        env["result"] = "ok"
+
+    assert asyncio.run(adapter._safe_send_envelope(env)) is True
+
+    assert turn_q.get_nowait()["type"] == env_type
+    eid, published = event_q.get_nowait()
+    assert eid == 1
+    assert published["type"] == env_type
+    assert published["chat_id"] == "sidekick:live-chat"
+    assert adapter._event_replay_ring == [(1, published)]
+
+
+def test_active_turn_reply_delta_stays_on_response_queue_only(plugin):
+    """Do not duplicate high-volume token deltas onto /v1/events."""
+    adapter = _make_envelope_routing_adapter(plugin)
+    turn_q = asyncio.Queue()
+    event_q = asyncio.Queue()
+    adapter._turn_queues["live-chat"] = turn_q
+    adapter._event_subscribers.add(event_q)
+
+    assert asyncio.run(adapter._safe_send_envelope({
+        "type": "reply_delta",
+        "chat_id": "live-chat",
+        "text": "partial",
+        "message_id": "msg_live",
+    })) is True
+
+    assert turn_q.get_nowait()["type"] == "reply_delta"
+    assert event_q.empty()
+    assert adapter._event_replay_ring == []

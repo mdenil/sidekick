@@ -1618,9 +1618,23 @@ class SidekickAdapter(BasePlatformAdapter):
             except Exception as exc:
                 logger.warning("[sidekick.push] dispatch failed: %s", exc)
 
+        from . import sidekick_route_events as _route_events
+
         if env_type in in_turn_types and chat_id:
             queue = self._turn_queues.get(chat_id)
             if queue is not None:
+                # Tool events are observational UI state. Keep feeding the
+                # active /v1/responses queue for Responses-compatible clients,
+                # but also publish them on the persistent Sidekick event stream
+                # so every open PWA sees tool progress incrementally. Without
+                # this, the originating request stream saw function-call items
+                # but the transcript-centric event channel only caught up from
+                # /messages after the turn ended.
+                if env_type in ("tool_call", "tool_result"):
+                    try:
+                        _route_events.publish_out_of_turn(self, env)
+                    except Exception as exc:
+                        logger.warning("[sidekick] tool event publish failed: %s", exc)
                 try:
                     queue.put_nowait(env)
                     return True
@@ -1645,7 +1659,6 @@ class SidekickAdapter(BasePlatformAdapter):
         # into /v1/conversations/{id}/items so a refresh-and-scroll
         # finds the notification in the transcript with the same
         # data-message-id machinery cmdk + pin-drawer already use.
-        from . import sidekick_route_events as _route_events
         published = _route_events.publish_out_of_turn(self, env)
 
         # Cross-device unread sync: when a push-eligible envelope lands
