@@ -139,14 +139,33 @@ async def handle_visibility(ctx, request: web.Request) -> web.Response:
 async def handle_test(ctx, request: web.Request) -> web.Response:
     body = await _read_json(request)
     chat_id = body.get("chat_id") or body.get("chatId") or "sidekick-test"
-    text = body.get("text") or "Test notification from hermes plugin"
-    result = ctx.dispatcher.dispatch_envelope({
-        "type": "notification",
+    kind = body.get("kind") if isinstance(body.get("kind"), str) else ""
+    env_type = body.get("type") if isinstance(body.get("type"), str) else ""
+    if not env_type:
+        env_type = "reply_final" if kind == "agent_reply" else "notification"
+    text = (
+        body.get("text")
+        or body.get("body")
+        or body.get("content")
+        or f"Test {kind or env_type} notification from hermes plugin"
+    )
+    env = {
+        "type": env_type,
         "chat_id": chat_id,
         "content": text,
-        "should_push": True,
-    })
-    return _json({"ok": True, **result})
+        "text": text,
+        "should_push": body.get("should_push") if isinstance(body.get("should_push"), bool) else True,
+    }
+    if kind and env_type == "notification":
+        env["kind"] = kind
+    if isinstance(body.get("speaker"), str):
+        env["speaker"] = body.get("speaker")
+    if isinstance(body.get("title"), str):
+        env["title"] = body.get("title")
+    if isinstance(body.get("urgent"), bool):
+        env["urgent"] = body.get("urgent")
+    result = ctx.dispatcher.dispatch_envelope(env)
+    return _json({"ok": True, "envelope": env, **result})
 
 
 # ── Unread routes ────────────────────────────────────────────────────

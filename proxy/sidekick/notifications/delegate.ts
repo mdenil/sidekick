@@ -23,6 +23,57 @@ interface ForwardResult {
   body: any;
 }
 
+const PUSH_KINDS = [
+  'agent_reply',
+  'cron',
+  'reminder',
+  'approval',
+  'alert',
+  'achievement',
+  'background',
+  'tool',
+  'notification',
+];
+
+function parseBoolPref(value: any): boolean | undefined {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') {
+    const v = value.toLowerCase();
+    if (['true', '1', 'on', 'yes'].includes(v)) return true;
+    if (['false', '0', 'off', 'no'].includes(v)) return false;
+  }
+  return undefined;
+}
+
+export function normalizePluginPrefs(raw: any): any {
+  const prefs = raw?.prefs ?? raw ?? {};
+  if (!prefs || typeof prefs !== 'object') return {};
+  const out: any = { ...prefs };
+  const kinds = prefs.kinds && typeof prefs.kinds === 'object' && !Array.isArray(prefs.kinds)
+    ? { ...prefs.kinds }
+    : {};
+  for (const kind of PUSH_KINDS) {
+    const parsed = parseBoolPref(prefs[`push_kind_${kind}`]);
+    if (parsed !== undefined) kinds[kind] = parsed;
+  }
+  out.kinds = kinds;
+  return out;
+}
+
+export function expandPreferenceUpdates(body: Record<string, any>): Array<{ key: string; value: any }> {
+  const updates: Array<{ key: string; value: any }> = [];
+  for (const [key, value] of Object.entries(body)) {
+    if (key === 'kinds' && value && typeof value === 'object' && !Array.isArray(value)) {
+      for (const [kind, enabled] of Object.entries(value)) {
+        updates.push({ key: `push_kind_${kind}`, value: enabled });
+      }
+    } else {
+      updates.push({ key, value });
+    }
+  }
+  return updates;
+}
+
 async function forwardRaw(
   path: string,
   method: 'GET' | 'POST',
@@ -47,6 +98,10 @@ async function forwardRaw(
 function sendJson(res: http.ServerResponse, status: number, body: any): void {
   res.writeHead(status, { 'content-type': 'application/json' });
   res.end(JSON.stringify(body));
+}
+
+function sendUpstreamUnavailable(res: http.ServerResponse, e: any): void {
+  sendJson(res, 502, { error: 'upstream_unavailable', detail: e?.message ?? String(e) });
 }
 
 async function readBody(req: http.IncomingMessage, cap = 8 * 1024): Promise<any | null> {
@@ -106,30 +161,36 @@ export async function delegateSetMute(req: http.IncomingMessage, res: http.Serve
 }
 
 export async function delegateGetPrefs(req: http.IncomingMessage, res: http.ServerResponse) {
-  const r = await forwardRaw('/v1/push/prefs', 'GET', null);
-  // Plugin returns `{prefs: {...}}`; the legacy PWA expects a flat
-  // object. Unwrap.
-  sendJson(res, r.status, r.body?.prefs ?? r.body ?? {});
+  try {
+    const r = await forwardRaw('/v1/push/prefs', 'GET', null);
+    // Plugin stores flat keys (`push_kind_cron=false`); the PWA expects
+    // nested `kinds.cron=false`. Normalize while preserving raw keys for
+    // diagnostics/back-compat.
+    sendJson(res, r.status, normalizePluginPrefs(r.body));
+  } catch (e: any) { sendUpstreamUnavailable(res, e); }
 }
 
 export async function delegateSetPrefs(req: http.IncomingMessage, res: http.ServerResponse) {
+  let body: any;
+  try { body = await readBody(req); }
+  catch (e: any) { return sendJson(res, 400, { error: 'bad_body', detail: e?.message }); }
+  if (!body || typeof body !== 'object') {
+    return sendJson(res, 400, { error: 'invalid_body' });
+  }
   try {
-    const body = await readBody(req);
-    // Legacy PWA sends a flat object; plugin expects {key, value}. The
-    // simplest forwarding is one POST per key; do it sequentially so
-    // any per-key error surfaces.
-    if (!body || typeof body !== 'object') {
-      return sendJson(res, 400, { error: 'invalid_body' });
-    }
+    // PWA sends partial objects (`{quiet_hours: ...}` or
+    // `{kinds: {cron: false}}`); plugin expects one `{key, value}` per
+    // row. Flatten category toggles to the keys the plugin dispatcher
+    // actually checks (`push_kind_<name>`).
     let last: ForwardResult | null = null;
-    for (const [key, value] of Object.entries(body)) {
+    for (const { key, value } of expandPreferenceUpdates(body)) {
       last = await forwardRaw('/v1/push/prefs', 'POST', { key, value });
       if (last.status >= 400) return sendJson(res, last.status, last.body ?? {});
     }
     // Return the final state.
     const get = await forwardRaw('/v1/push/prefs', 'GET', null);
-    sendJson(res, 200, get.body?.prefs ?? {});
-  } catch (e: any) { sendJson(res, 400, { error: 'bad_body', detail: e?.message }); }
+    sendJson(res, 200, normalizePluginPrefs(get.body));
+  } catch (e: any) { sendUpstreamUnavailable(res, e); }
 }
 
 export async function delegateVisibility(req: http.IncomingMessage, res: http.ServerResponse) {
@@ -151,58 +212,70 @@ export async function delegateTest(req: http.IncomingMessage, res: http.ServerRe
 // ── Unread state (SSOT for sidebar/app badge/push) ────────────────────
 
 export async function delegateUnread(_req: http.IncomingMessage, res: http.ServerResponse) {
-  const r = await forwardRaw('/v1/unread', 'GET', null);
-  sendJson(res, r.status, r.body ?? {});
+  try {
+    const r = await forwardRaw('/v1/unread', 'GET', null);
+    sendJson(res, r.status, r.body ?? {});
+  } catch (e: any) { sendUpstreamUnavailable(res, e); }
 }
 
 export async function delegateUnreadSeen(req: http.IncomingMessage, res: http.ServerResponse) {
+  let body: any;
+  try { body = await readBody(req); }
+  catch (e: any) { return sendJson(res, 400, { error: 'bad_body', detail: e?.message }); }
   try {
-    const body = await readBody(req);
     const r = await forwardRaw('/v1/unread/seen', 'POST', body);
     sendJson(res, r.status, r.body ?? {});
-  } catch (e: any) { sendJson(res, 400, { error: 'bad_body', detail: e?.message }); }
+  } catch (e: any) { sendUpstreamUnavailable(res, e); }
 }
 
 export async function delegateUnreadMark(req: http.IncomingMessage, res: http.ServerResponse) {
+  let body: any;
+  try { body = await readBody(req); }
+  catch (e: any) { return sendJson(res, 400, { error: 'bad_body', detail: e?.message }); }
   try {
-    const body = await readBody(req);
     const r = await forwardRaw('/v1/unread/mark', 'POST', body);
     sendJson(res, r.status, r.body ?? {});
-  } catch (e: any) { sendJson(res, 400, { error: 'bad_body', detail: e?.message }); }
+  } catch (e: any) { sendUpstreamUnavailable(res, e); }
 }
 
 // ── Pin sync (server-of-truth for cross-device pins) ──────────────────
 
 export async function delegatePinsList(req: http.IncomingMessage, res: http.ServerResponse) {
-  const url = req.url || '/api/sidekick/pins';
-  const query = url.includes('?') ? '?' + url.split('?')[1] : '';
-  const r = await forwardRaw(`/v1/pins${query}`, 'GET', null);
-  sendJson(res, r.status, r.body ?? {});
+  try {
+    const url = req.url || '/api/sidekick/pins';
+    const query = url.includes('?') ? '?' + url.split('?')[1] : '';
+    const r = await forwardRaw(`/v1/pins${query}`, 'GET', null);
+    sendJson(res, r.status, r.body ?? {});
+  } catch (e: any) { sendUpstreamUnavailable(res, e); }
 }
 
 export async function delegatePinUpsert(req: http.IncomingMessage, res: http.ServerResponse) {
+  let body: any;
+  try { body = await readBody(req); }
+  catch (e: any) { return sendJson(res, 400, { error: 'bad_body', detail: e?.message }); }
   try {
-    const body = await readBody(req);
     const r = await forwardRaw('/v1/pins', 'POST', body);
     sendJson(res, r.status, r.body ?? {});
-  } catch (e: any) { sendJson(res, 400, { error: 'bad_body', detail: e?.message }); }
+  } catch (e: any) { sendUpstreamUnavailable(res, e); }
 }
 
 export async function delegatePinDelete(
   _req: http.IncomingMessage, res: http.ServerResponse,
   chatId: string, msgId: string,
 ) {
-  const path = `/v1/pins/${encodeURIComponent(chatId)}/${encodeURIComponent(msgId)}`;
-  const r = await forwardRaw(path, 'POST' /* method override below */, null);
-  void r;
-  // forwardRaw doesn't support DELETE today; use fetch directly so we
-  // don't have to thread method through. Keep parity with the GET/POST
-  // helpers but with DELETE method.
-  const r2 = await fetch(`${UPSTREAM_BASE}${path}`, {
-    method: 'DELETE',
-    headers: UPSTREAM_TOKEN ? { authorization: `Bearer ${UPSTREAM_TOKEN}` } : {},
-  });
-  let body: any = null;
-  try { body = await r2.json(); } catch { body = null; }
-  sendJson(res, r2.status, body ?? {});
+  try {
+    const path = `/v1/pins/${encodeURIComponent(chatId)}/${encodeURIComponent(msgId)}`;
+    const r = await forwardRaw(path, 'POST' /* method override below */, null);
+    void r;
+    // forwardRaw doesn't support DELETE today; use fetch directly so we
+    // don't have to thread method through. Keep parity with the GET/POST
+    // helpers but with DELETE method.
+    const r2 = await fetch(`${UPSTREAM_BASE}${path}`, {
+      method: 'DELETE',
+      headers: UPSTREAM_TOKEN ? { authorization: `Bearer ${UPSTREAM_TOKEN}` } : {},
+    });
+    let body: any = null;
+    try { body = await r2.json(); } catch { body = null; }
+    sendJson(res, r2.status, body ?? {});
+  } catch (e: any) { sendUpstreamUnavailable(res, e); }
 }
