@@ -338,7 +338,7 @@ function renderToolEntry(t: ActivityTool): HTMLElement {
   details.className = 'tool-row-details';
   const summary = document.createElement('summary');
   summary.className = 'tool-row-summary';
-  summary.innerHTML = `${ICON_TOOL}<span class="tool-name">${escapeHtml(t.name)}</span><span class="tool-row-meta"></span>`;
+  summary.innerHTML = `${ICON_TOOL}${toolTitleHtml(t)}<span class="tool-row-meta"></span>`;
   details.appendChild(summary);
   const argsBlock = document.createElement('div');
   argsBlock.className = 'tool-args-block';
@@ -356,8 +356,9 @@ function renderToolEntry(t: ActivityTool): HTMLElement {
 function updateToolEntry(wrap: HTMLElement, t: ActivityTool): void {
   // Tool name (rarely changes, but tool_result can rename '(unknown)'
   // to a real name when call envelope was missed).
-  const nameEl = wrap.querySelector('.tool-name') as HTMLElement | null;
-  if (nameEl && nameEl.textContent !== t.name) nameEl.textContent = t.name;
+  const titleEl = wrap.querySelector('.tool-title') as HTMLElement | null;
+  const nextTitle = toolTitleHtml(t);
+  if (titleEl && titleEl.outerHTML !== nextTitle) titleEl.outerHTML = nextTitle;
   // Result block appears once t.result is populated.
   if (t.result !== undefined) writeToolResult(wrap, t);
 }
@@ -391,6 +392,66 @@ function formatArgs(args: unknown): string {
   if (args == null) return '';
   if (typeof args === 'string') return args;
   try { return JSON.stringify(args, null, 2); } catch { return String(args); }
+}
+
+function toolTitleHtml(t: ActivityTool): string {
+  const detail = toolSummaryDetail(t);
+  const detailHtml = detail
+    ? `<span class="tool-detail" title="${escapeHtml(detail)}">: ${escapeHtml(detail)}</span>`
+    : '';
+  return `<span class="tool-title"><span class="tool-name">${escapeHtml(t.name)}</span>${detailHtml}</span>`;
+}
+
+function toolSummaryDetail(t: ActivityTool): string {
+  const args = normalizeToolArgs(t.args);
+  if (!args) return '';
+
+  if (t.name === 'skill_view' || t.name === 'skill_edit' || t.name === 'skill_create') {
+    return firstString(args, ['name', 'skill', 'skill_name', 'path']);
+  }
+
+  return firstString(args, [
+    'name',
+    'path',
+    'file',
+    'command',
+    'query',
+    'q',
+    'url',
+    'title',
+  ]);
+}
+
+function normalizeToolArgs(args: unknown): Record<string, unknown> | null {
+  if (args && typeof args === 'object' && !Array.isArray(args)) {
+    return args as Record<string, unknown>;
+  }
+  if (typeof args !== 'string') return null;
+  const trimmed = args.trim();
+  if (!trimmed || trimmed[0] !== '{') return null;
+  try {
+    const parsed = JSON.parse(trimmed);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function firstString(obj: Record<string, unknown>, keys: string[]): string {
+  for (const key of keys) {
+    const value = obj[key];
+    if (typeof value === 'string' && value.trim()) {
+      return compactToolDetail(value.trim());
+    }
+  }
+  return '';
+}
+
+function compactToolDetail(value: string): string {
+  const oneLine = value.replace(/\s+/g, ' ');
+  return oneLine.length > 80 ? `${oneLine.slice(0, 77)}…` : oneLine;
 }
 
 function prettifyMaybeJson(raw: string): string {
