@@ -44,6 +44,7 @@
 
 import { log, diag } from './util/log.ts';
 import * as conversations from './conversations.ts';
+import * as sessionCache from './sessionCache.ts';
 import { markRecentlyDeleted, isRecentlyDeleted } from './sessionOps.ts';
 
 let subs: any = null;
@@ -119,7 +120,7 @@ async function fetchSessionMessages(id: string, logPrefix = 'proxy-client.fetchS
     if (!r.ok) {
       diag(`${logPrefix}: HTTP ${r.status} for ${id}`);
       log(`${logPrefix}: chat_id=${id}, history fetch failed`);
-      return { messages: [], firstId: null, hasMore: false, inflight: [] };
+      return { messages: [], firstId: null, hasMore: false, inflight: [], error: `HTTP ${r.status}` };
     }
     const d = await r.json();
     const inflightEnvelopes = Array.isArray(d.inflight) ? d.inflight : [];
@@ -133,8 +134,13 @@ async function fetchSessionMessages(id: string, logPrefix = 'proxy-client.fetchS
     return result;
   } catch (e: any) {
     diag(`${logPrefix}: ${e.message}`);
-    return { messages: [], firstId: null, hasMore: false, inflight: [] };
+    return { messages: [], firstId: null, hasMore: false, inflight: [], error: e?.message || 'network error' };
   }
+}
+
+function firstUserSnippet(messages: any[]): string {
+  const row = messages.find((m) => m?.role === 'user' && typeof m.content === 'string' && m.content.trim());
+  return row ? String(row.content).slice(0, 80) : '';
 }
 
 interface SessionsResponse {
@@ -857,17 +863,29 @@ export const proxyClientAdapter = {
 
     if (!serverReachable) {
       // Offline / proxy down — render whatever we have locally so the
-      // drawer doesn't go blank. No first_user_message snippet
-      // available locally (PWA doesn't cache transcripts in the
-      // conversations IDB), so just fall back to "New chat" via the
-      // title field; the drawer renders that directly.
-      return local.map(conv => ({
-        id: conv.chat_id,
-        source: 'sidekick',
-        title: conv.title || 'New chat',
-        snippet: '',
-        lastMessageAt: Math.floor(conv.last_message_at / 1000),
-        messageCount: 0,
+      // drawer doesn't go blank. Prefer the last server-backed list row
+      // when present, then enrich from cached transcripts. The
+      // conversations store is intentionally thin and often only knows
+      // "New chat" / 0 msgs after a hard refresh.
+      const cachedList = await sessionCache.getListCache();
+      const cachedById = new Map((cachedList?.sessions || []).map((row: any) => [row.id, row]));
+      return Promise.all(local.map(async (conv) => {
+        const prev: any = cachedById.get(conv.chat_id) || {};
+        const cached = await sessionCache.getMessagesCache(conv.chat_id);
+        const messages = cached?.messages || [];
+        const snippet = firstUserSnippet(messages) || prev.snippet || '';
+        const localTitle = conv.title === 'New chat' ? '' : (conv.title || '');
+        const messageCount = messages.length || prev.messageCount || 0;
+        return {
+          id: conv.chat_id,
+          source: prev.source || (conv.chat_id.includes(':') ? conv.chat_id.split(':')[0] : 'sidekick'),
+          title: localTitle || prev.title || snippet || 'New chat',
+          snippet,
+          lastMessageAt: Math.floor(conv.last_message_at / 1000) || prev.lastMessageAt || 0,
+          messageCount,
+          turnCount: messages.filter((m: any) => m?.role === 'user').length || prev.turnCount || undefined,
+          toolCount: messages.filter((m: any) => m?.role === 'tool').length || prev.toolCount || undefined,
+        };
       }));
     }
 

@@ -74,6 +74,8 @@ export async function installMockBackend(page) {
    *  PWA sends. */
   let historyFirstPageLimit = null;
   const messageDelays = new Map();  // chat_id -> artificial /messages delay in ms
+  let sessionsFailStatus = 0;
+  const messageFailStatus = new Map();
   /** Active SSE responses (real http.ServerResponse objects). */
   const streamSubs = new Set();
   let envelopeId = 0;
@@ -155,6 +157,14 @@ export async function installMockBackend(page) {
       return route.fallback();
     }
     if (route.request().method() !== 'GET') return route.fallback();
+    if (sessionsFailStatus > 0) {
+      await route.fulfill({
+        status: sessionsFailStatus,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: 'mock sessions failure' }),
+      });
+      return;
+    }
     const sessions = Array.from(chats.values()).map(c => {
       // Mirror the proxy's first_user_message derivation: pick the
       // first role='user' message and truncate to 80 chars. Lets the
@@ -211,6 +221,15 @@ export async function installMockBackend(page) {
     const m = url.pathname.match(/\/sessions\/([^/]+)\/messages/);
     const chatId = m ? decodeURIComponent(m[1]) : '';
     const chat = chats.get(chatId);
+    const failStatus = messageFailStatus.get(chatId) || 0;
+    if (failStatus > 0) {
+      await route.fulfill({
+        status: failStatus,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: 'mock messages failure' }),
+      });
+      return;
+    }
     const delayMs = messageDelays.get(chatId) || 0;
     if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
     // Honor ?limit + ?before for pagination — matches the real proxy's
@@ -858,6 +877,14 @@ export async function installMockBackend(page) {
       if (!chatId) return;
       if (typeof ms === 'number' && ms > 0) messageDelays.set(chatId, ms);
       else messageDelays.delete(chatId);
+    },
+    setSessionsFailure(status = 503) {
+      sessionsFailStatus = status > 0 ? status : 0;
+    },
+    setMessageFailure(chatId, status = 503) {
+      if (!chatId) return;
+      if (status > 0) messageFailStatus.set(chatId, status);
+      else messageFailStatus.delete(chatId);
     },
     /** Configure the /v1/settings/schema response. Pass null to
      *  declare the agent doesn't implement the extension (route
