@@ -41,6 +41,14 @@ let hydrated = false;
 
 const key = (chatId: string, msgId: string) => `${chatId}|${msgId}`;
 
+function normalizeEpochMs(value: unknown, fallback = Date.now()): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return fallback;
+  // Backend pin tables store timestamps as Unix seconds; older PWA-local
+  // and optimistic paths use JavaScript milliseconds. Normalize at the
+  // store boundary so renderers can consistently format milliseconds.
+  return value < 10_000_000_000 ? value * 1000 : value;
+}
+
 function notifyPinError(message: string): void {
   try {
     if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
@@ -67,8 +75,8 @@ async function refreshFromServer(): Promise<void> {
         msgId: p.msgId,
         role: typeof p.role === 'string' ? p.role : 'user',
         text: typeof p.text === 'string' ? p.text : '',
-        timestamp: typeof p.timestamp === 'number' ? p.timestamp : Date.now(),
-        pinnedAt: typeof p.pinnedAt === 'number' ? p.pinnedAt : Date.now(),
+        timestamp: normalizeEpochMs(p.timestamp),
+        pinnedAt: normalizeEpochMs(p.pinnedAt),
       });
     }
     if (!mapsEqual(pinsByKey, next)) {
