@@ -1,6 +1,6 @@
 import { log } from '../util/log.ts';
 
-export type ActivityKind = 'approval' | 'cron' | 'notification';
+export type ActivityKind = 'approval' | 'cron' | 'agent_reply' | 'notification';
 export type ActivityResolution = 'approved' | 'approved_session' | 'denied' | 'dismissed';
 
 export interface ActivityItem {
@@ -68,7 +68,7 @@ export function hydrate(): void {
 }
 
 function normalizeKind(kind: unknown): ActivityKind {
-  if (kind === 'approval' || kind === 'cron') return kind;
+  if (kind === 'approval' || kind === 'cron' || kind === 'agent_reply') return kind;
   return 'notification';
 }
 
@@ -80,6 +80,7 @@ function normalizeResolution(x: unknown): ActivityResolution | undefined {
 function titleFor(kind: ActivityKind, chatLabel?: string): string {
   if (kind === 'approval') return chatLabel ? `Approval required · ${chatLabel}` : 'Approval required';
   if (kind === 'cron') return chatLabel ? `Cron · ${chatLabel}` : 'Cron';
+  if (kind === 'agent_reply') return chatLabel ? `Reply · ${chatLabel}` : 'Agent reply';
   return chatLabel || 'Notification';
 }
 
@@ -93,7 +94,7 @@ export function upsertNotification(args: {
 }): ActivityItem | null {
   hydrate();
   const kind = normalizeKind(args.kind);
-  if (kind !== 'approval' && kind !== 'cron') return null;
+  if (kind !== 'approval' && kind !== 'cron' && kind !== 'agent_reply') return null;
   const id = args.sidekickId || `${kind}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const prev = itemsById.get(id);
   const item: ActivityItem = {
@@ -161,7 +162,10 @@ export function resolveActivity(id: string, resolution: ActivityResolution): voi
 }
 
 export function dismissActivity(id: string): void {
-  resolveActivity(id, 'dismissed');
+  hydrate();
+  if (!itemsById.delete(id)) return;
+  persist();
+  notifyChange();
 }
 
 export function clearResolved(): void {

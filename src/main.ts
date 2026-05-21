@@ -46,6 +46,7 @@ import * as hotkeysHelp from './hotkeysHelp.ts';
 import { initPinDrawer } from './pins/drawer.ts';
 import { initTranscriptHighlight } from './transcriptHighlight.ts';
 import * as inAppBanner from './notifications/inAppBanner.ts';
+import * as activityStore from './notifications/activityStore.ts';
 import { attachSliderTouchAll } from './sliderTouch.ts';
 import { createDrawer } from './Drawer.ts';
 import * as clickFreezeDiag from './clickFreezeDiag.ts';
@@ -4257,9 +4258,32 @@ function handleReplyFinal({ replyId, text, content = [], conversation, messageId
     }
   }
 
-  const viewed = sessionDrawer.getViewed();
+  // Fall back to the accumulated reply_delta text when the adapter
+  // sends an empty reply_final. Hermes does this on some real runs:
+  // the transcript can still render from delta state, and Activity
+  // should show the same useful text instead of an empty notification.
+  let finalText = text || '';
+  if (!finalText && conversation && messageId) {
+    const envs = transcriptStore.getState(conversation).inflight;
+    for (const env of envs) {
+      if (env.type === 'reply_delta' && env.message_id === messageId) {
+        finalText = env.text;
+      }
+    }
+  }
+
+  const viewed = sessionDrawer.getFocused();
   if (viewed && conversation && conversation !== viewed) {
-    if (!isReplay) badge.incrementUnread(conversation);
+    if (!isReplay) {
+      activityStore.upsertNotification({
+        chatId: conversation,
+        kind: 'agent_reply',
+        content: finalText || '',
+        sidekickId: typeof messageId === 'string' ? messageId : null,
+        chatLabel: sessionDrawer.getTitleForChat?.(conversation) || null,
+      });
+      badge.incrementUnread(conversation);
+    }
     return;
   }
 
@@ -4271,17 +4295,6 @@ function handleReplyFinal({ replyId, text, content = [], conversation, messageId
 
   const imageBlocks = extractImageBlocks(content);
 
-  // Fall back to the accumulated reply_delta text when the adapter
-  // sends an empty reply_final (telegram-shape adapters do this).
-  let finalText = text || '';
-  if (!finalText && conversation && messageId) {
-    const envs = transcriptStore.getState(conversation).inflight;
-    for (const env of envs) {
-      if (env.type === 'reply_delta' && env.message_id === messageId) {
-        finalText = env.text;
-      }
-    }
-  }
 
   if (!isReplay && viewed && conversation === viewed) {
     schedulePostFinalDurableRefresh(conversation, messageId, finalText || null);
