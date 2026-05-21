@@ -416,19 +416,36 @@ function formatArgs(args: unknown): string {
 }
 
 function toolTitleHtml(t: ActivityTool): string {
-  const detail = toolSummaryDetail(t);
-  const detailHtml = detail
-    ? `<span class="tool-detail" title="${escapeHtml(detail)}">: ${escapeHtml(detail)}</span>`
+  const title = toolDisplayTitle(t);
+  const detailHtml = title.detail
+    ? `<span class="tool-detail" title="${escapeHtml(title.detail)}">: ${escapeHtml(title.detail)}</span>`
     : '';
-  return `<span class="tool-title"><span class="tool-name">${escapeHtml(t.name)}</span>${detailHtml}</span>`;
+  return `<span class="tool-title"><span class="tool-name">${escapeHtml(title.name)}</span>${detailHtml}</span>`;
 }
 
-function toolSummaryDetail(t: ActivityTool): string {
+function toolDisplayTitle(t: ActivityTool): { name: string; detail: string } {
   const args = normalizeToolArgs(t.args);
-  if (!args) return '';
+  const result = normalizeToolResult(t.result);
+  const rawName = typeof t.name === 'string' ? t.name.trim() : '';
+  const name = rawName && rawName !== 'undefined' && rawName !== '(unknown)'
+    ? rawName
+    : firstStringRaw(result, ['name', 'tool_name', 'skill', 'skill_name']) || '(unknown)';
+  return { name, detail: toolSummaryDetail(name, args, result) };
+}
 
-  if (t.name === 'skill_view' || t.name === 'skill_edit' || t.name === 'skill_create') {
-    return firstString(args, ['name', 'skill', 'skill_name', 'path']);
+function toolSummaryDetail(
+  name: string,
+  args: Record<string, unknown> | null,
+  result: Record<string, unknown> | null,
+): string {
+  if (name === 'skill_view' || name === 'skill_edit' || name === 'skill_create') {
+    return firstString(args, ['name', 'skill', 'skill_name', 'path'])
+      || firstString(result, ['name', 'skill', 'skill_name', 'path']);
+  }
+
+  if (name === 'gog') {
+    return firstString(args, ['description', 'title'])
+      || firstString(result, ['description', 'title']);
   }
 
   return firstString(args, [
@@ -440,6 +457,16 @@ function toolSummaryDetail(t: ActivityTool): string {
     'q',
     'url',
     'title',
+  ]) || firstString(result, [
+    'description',
+    'title',
+    'name',
+    'path',
+    'file',
+    'command',
+    'query',
+    'q',
+    'url',
   ]);
 }
 
@@ -460,11 +487,34 @@ function normalizeToolArgs(args: unknown): Record<string, unknown> | null {
   }
 }
 
-function firstString(obj: Record<string, unknown>, keys: string[]): string {
+function normalizeToolResult(result: unknown): Record<string, unknown> | null {
+  if (result == null) return null;
+  if (result && typeof result === 'object' && !Array.isArray(result)) {
+    return result as Record<string, unknown>;
+  }
+  if (typeof result !== 'string') return null;
+  const trimmed = result.trim();
+  if (!trimmed || trimmed[0] !== '{') return null;
+  try {
+    const parsed = JSON.parse(trimmed);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function firstString(obj: Record<string, unknown> | null, keys: string[]): string {
+  return compactToolDetail(firstStringRaw(obj, keys));
+}
+
+function firstStringRaw(obj: Record<string, unknown> | null, keys: string[]): string {
+  if (!obj) return '';
   for (const key of keys) {
     const value = obj[key];
     if (typeof value === 'string' && value.trim()) {
-      return compactToolDetail(value.trim());
+      return value.trim();
     }
   }
   return '';
