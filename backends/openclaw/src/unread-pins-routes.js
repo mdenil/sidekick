@@ -22,7 +22,7 @@ import {
 } from './pins-storage.js';
 import {
   listActivityItems, upsertActivityItem, resolveActivityItem,
-  deleteActivityItem, clearDismissibleActivityItems,
+  deleteActivityItem, clearDismissibleActivityItems, markActivitySeen,
 } from './activity-storage.js';
 
 function sendJson(res, status, body) {
@@ -204,6 +204,21 @@ export function registerUnreadPinsRoutes(api, { db, eventBus, agentId, profile }
       if (!body?.id || !body?.resolution) { sendJson(res, 400, { error: 'invalid_request' }); return true; }
       const result = resolveActivityItem(db, { id: body.id, resolution: body.resolution });
       if (result.updated) pushActivityChanged({ cause: 'resolve', itemId: body.id });
+      sendJson(res, 200, { ok: true, ...result });
+      return true;
+    },
+  });
+
+  api.registerHttpRoute({
+    path: '/v1/activity/seen',
+    auth: 'plugin', match: 'exact',
+    handler: async (req, res) => {
+      if (req.method !== 'POST') { sendJson(res, 405, { error: 'method_not_allowed' }); return true; }
+      const body = await readJson(req);
+      const chatId = typeof body?.chat_id === 'string' ? body.chat_id : (typeof body?.chatId === 'string' ? body.chatId : null);
+      if (body?.all !== true && !chatId) { sendJson(res, 400, { error: 'invalid_request' }); return true; }
+      const result = markActivitySeen(db, { chatId, all: body?.all === true });
+      if (result.updated) pushActivityChanged({ chatId: chatId ?? '*', cause: 'seen' });
       sendJson(res, 200, { ok: true, ...result });
       return true;
     },

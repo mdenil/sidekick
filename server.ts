@@ -1094,6 +1094,9 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'POST' && req.url === '/api/sidekick/activity/resolve') {
         return delegate.delegateActivityResolve(req, res);
       }
+      if (req.method === 'POST' && req.url === '/api/sidekick/activity/seen') {
+        return delegate.delegateActivitySeen(req, res);
+      }
       if (req.method === 'POST' && req.url === '/api/sidekick/activity/clear') {
         return delegate.delegateActivityClear(req, res);
       }

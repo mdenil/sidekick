@@ -83,6 +83,17 @@ export default async function run({ page, log, mock }) {
   await waitForActivityBadge(page, 2);
   log('cron notification created Activity badge ✓');
 
+  await clickRow(page, REPLY_CHAT);
+  await page.waitForFunction(
+    () => /Weather Tool Check seed/.test(document.getElementById('transcript')?.textContent || ''),
+    null,
+    { timeout: 4_000, polling: 50 },
+  );
+  await waitForActivityBadge(page, 1);
+  const readState = mock.activityItems().find((item) => item.id === 'msg_activity_agent_reply_1');
+  assert(readState?.read === true, 'opening reply chat did not mark its Activity item read on the server');
+  log('opening a chat clears matching Activity unread across the server store ✓');
+
   await page.click('#btn-activity-drawer-rail');
   await page.waitForSelector('#activity-drawer-panel:not([hidden]) .activity-drawer-item', { timeout: 3_000 });
   const text = await activityText(page);

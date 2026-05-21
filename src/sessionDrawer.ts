@@ -29,6 +29,7 @@ import * as badge from './notifications/badge.ts';
 import { isMuted as isChatMuted, setMuted as setChatMuted } from './notifications/mutes.ts';
 import { reportChatSwitch } from './notifications/visibility.ts';
 import { unreadFor, markUnread as markChatUnread, unmarkUnread as unmarkChatUnread, isMarkedUnread } from './notifications/badge.ts';
+import * as activityStore from './notifications/activityStore.ts';
 
 let onResumeCb: ((id: string, messages: any[], pagination?: { firstId: number | null; hasMore: boolean }, inflight?: any[]) => void) | null = null;
 
@@ -441,7 +442,10 @@ export function setViewed(id: string | null) {
   viewedSessionId = id;
   // Switching INTO a chat is the canonical "user has now seen this"
   // signal — clear its unread badge.
-  if (id) badge.clearUnread(id);
+  if (id) {
+    badge.clearUnread(id);
+    activityStore.markChatRead(id);
+  }
   // Also tell the proxy: the user is now actively viewing this chat.
   // Drives the dispatch gate's 2s engagement window so push doesn't
   // fire for envelopes arriving on the chat the user is right here

@@ -696,6 +696,18 @@ export async function installMockBackend(page) {
     if (item) activityById.set(body.id, { ...item, read: true, resolved: body.resolution || 'dismissed' });
     await route.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' });
   });
+  await page.route(/.*\/api\/sidekick\/activity\/seen$/, async (route) => {
+    if (route.request().method() !== 'POST') return route.fallback();
+    let body; try { body = JSON.parse(route.request().postData() || '{}'); }
+    catch { body = {}; }
+    const chatId = body?.chat_id ?? body?.chatId ?? null;
+    for (const [id, item] of Array.from(activityById.entries())) {
+      if (body?.all === true || (chatId && item.chatId === chatId)) {
+        activityById.set(id, { ...item, read: true });
+      }
+    }
+    await route.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' });
+  });
   await page.route(/.*\/api\/sidekick\/activity\/clear$/, async (route) => {
     if (route.request().method() !== 'POST') return route.fallback();
     for (const [id, item] of Array.from(activityById.entries())) {

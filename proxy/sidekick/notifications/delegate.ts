@@ -308,6 +308,16 @@ export async function delegateActivityResolve(req: http.IncomingMessage, res: ht
   } catch (e: any) { sendUpstreamUnavailable(res, e); }
 }
 
+export async function delegateActivitySeen(req: http.IncomingMessage, res: http.ServerResponse) {
+  let body: any;
+  try { body = await readBody(req, 8 * 1024); }
+  catch (e: any) { return sendJson(res, 400, { error: 'bad_body', detail: e?.message }); }
+  try {
+    const r = await forwardRaw('/v1/activity/seen', 'POST', body);
+    sendJson(res, r.status, r.body ?? {});
+  } catch (e: any) { sendUpstreamUnavailable(res, e); }
+}
+
 export async function delegateActivityClear(_req: http.IncomingMessage, res: http.ServerResponse) {
   try {
     const r = await forwardRaw('/v1/activity/clear', 'POST', {});

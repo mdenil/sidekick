@@ -246,6 +246,37 @@ export function markRead(id: string): void {
   void postJson('/api/sidekick/activity', payloadForServer(next));
 }
 
+export function markChatRead(chatId: string): void {
+  hydrate();
+  if (!chatId) return;
+  let changed = false;
+  for (const [id, item] of Array.from(itemsById.entries())) {
+    if (item.chatId !== chatId || item.read) continue;
+    itemsById.set(id, { ...item, read: true });
+    changed = true;
+  }
+  if (changed) {
+    persist();
+    notifyChange();
+  }
+  void postJson('/api/sidekick/activity/seen', { chat_id: chatId });
+}
+
+export function markAllRead(): void {
+  hydrate();
+  let changed = false;
+  for (const [id, item] of Array.from(itemsById.entries())) {
+    if (item.read) continue;
+    itemsById.set(id, { ...item, read: true });
+    changed = true;
+  }
+  if (changed) {
+    persist();
+    notifyChange();
+  }
+  void postJson('/api/sidekick/activity/seen', { all: true });
+}
+
 export function resolveActivity(id: string, resolution: ActivityResolution): void {
   hydrate();
   const item = itemsById.get(id);

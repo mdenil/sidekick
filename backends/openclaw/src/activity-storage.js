@@ -47,6 +47,16 @@ export function resolveActivityItem(db, { id, resolution }) {
   return { updated: r.changes > 0 };
 }
 
+export function markActivitySeen(db, { chatId = null, all = false } = {}) {
+  if (all === true) {
+    const r = db.prepare('UPDATE activity_items SET read = 1 WHERE read = 0').run();
+    return { updated: r.changes };
+  }
+  if (!chatId) return { updated: 0 };
+  const r = db.prepare('UPDATE activity_items SET read = 1 WHERE chat_id = ? AND read = 0').run(chatId);
+  return { updated: r.changes };
+}
+
 export function deleteActivityItem(db, { id }) {
   const r = db.prepare('DELETE FROM activity_items WHERE id = ?').run(id);
   return { removed: r.changes > 0 };

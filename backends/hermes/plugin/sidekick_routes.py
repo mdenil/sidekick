@@ -296,6 +296,22 @@ async def handle_activity_resolve(ctx, request: web.Request) -> web.Response:
     return _json({"ok": True, **result})
 
 
+async def handle_activity_seen(ctx, request: web.Request) -> web.Response:
+    body = await _read_json(request)
+    chat_id = body.get("chat_id") or body.get("chatId")
+    all_items = body.get("all") is True
+    if not all_items and not isinstance(chat_id, str):
+        return _json({"error": "invalid_request", "message": "chat_id or all=true required"}, status=400)
+    result = state.mark_activity_seen(
+        ctx.db,
+        chat_id=chat_id if isinstance(chat_id, str) else None,
+        all_items=all_items,
+    )
+    if result["updated"]:
+        _activity_changed(ctx, chat_id if isinstance(chat_id, str) else None, "seen")
+    return _json({"ok": True, **result})
+
+
 async def handle_activity_delete(ctx, request: web.Request) -> web.Response:
     item_id = request.match_info.get("item_id")
     if not item_id:
@@ -338,5 +354,6 @@ def register_routes(app: web.Application, ctx) -> None:
     app.router.add_get("/v1/activity", lambda r: handle_activity(ctx, r))
     app.router.add_post("/v1/activity", lambda r: handle_activity(ctx, r))
     app.router.add_post("/v1/activity/resolve", lambda r: handle_activity_resolve(ctx, r))
+    app.router.add_post("/v1/activity/seen", lambda r: handle_activity_seen(ctx, r))
     app.router.add_post("/v1/activity/clear", lambda r: handle_activity_clear(ctx, r))
     app.router.add_delete("/v1/activity/{item_id}", lambda r: handle_activity_delete(ctx, r))

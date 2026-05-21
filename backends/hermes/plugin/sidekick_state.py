@@ -262,6 +262,19 @@ def resolve_activity_item(db, *, id: str, resolution: str) -> Dict[str, Any]:
     return {"updated": cur.rowcount > 0}
 
 
+def mark_activity_seen(db, *, chat_id: Optional[str] = None, all_items: bool = False) -> Dict[str, Any]:
+    if all_items:
+        cur = db.exec("UPDATE activity_items SET read = 1 WHERE read = 0")
+    elif chat_id:
+        cur = db.exec(
+            "UPDATE activity_items SET read = 1 WHERE chat_id = ? AND read = 0",
+            (chat_id,),
+        )
+    else:
+        return {"updated": 0}
+    return {"updated": cur.rowcount}
+
+
 def delete_activity_item(db, *, id: str) -> Dict[str, Any]:
     cur = db.exec("DELETE FROM activity_items WHERE id = ?", (id,))
     return {"removed": cur.rowcount > 0}
