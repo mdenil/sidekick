@@ -13,16 +13,38 @@ import { listAllPins, totalPinCount, clearAllPins, unpinMessage, type PinnedItem
 import { log } from '../util/log.ts';
 import { createDrawer, type DrawerHandle } from '../Drawer.ts';
 import { miniMarkdown } from '../util/markdown.ts';
+import {
+  clearResolved as clearResolvedActivity,
+  dismissActivity,
+  hydrate as hydrateActivity,
+  listActivity,
+  markRead,
+  resolveActivity,
+  unresolvedApprovalCount,
+  unreadActivityCount,
+  type ActivityItem,
+  type ActivityResolution,
+} from '../notifications/activityStore.ts';
 
 let drawerEl: HTMLElement | null = null;
 let listEl: HTMLElement | null = null;
+let pinPanelEl: HTMLElement | null = null;
+let activityPanelEl: HTMLElement | null = null;
+let activityListEl: HTMLElement | null = null;
+let activityEmptyEl: HTMLElement | null = null;
 let emptyEl: HTMLElement | null = null;
 let countBanners: HTMLElement[] = [];       // both #pin-drawer-count + #pin-drawer-count-rail
+let activityCountBanners: HTMLElement[] = [];
 let clearBtn: HTMLElement | null = null;
+let titleEl: HTMLElement | null = null;
+let tabButtons: HTMLElement[] = [];
 let statusEl: HTMLElement | null = null;
 let statusTimer: number | null = null;
 let chromeHandle: DrawerHandle | null = null;
 let onPinClickCb: ((chatId: string, msgId: string) => void) | null = null;
+let onActivityOpenCb: ((chatId: string, msgId: string | null) => void) | null = null;
+let onApprovalActionCb: ((chatId: string, action: 'approve' | 'approve_session' | 'deny', msgId: string | null) => void | Promise<void>) | null = null;
+let activePanel: 'pins' | 'activity' = 'pins';
 
 // Per-item expanded state — keyed by `${chatId}|${msgId}`. Survives
 // re-renders from the sidekick:pins-changed listener (which rebuilds
@@ -39,16 +61,39 @@ function isOpen(): boolean {
 function openDrawer(): void { chromeHandle?.open(); }
 function closeDrawer(): void { chromeHandle?.close(); }
 
+function selectPanel(panel: 'pins' | 'activity', opts: { open?: boolean } = {}): void {
+  activePanel = panel;
+  if (titleEl) titleEl.textContent = panel === 'activity' ? 'Activity' : 'Pinned';
+  for (const btn of tabButtons) {
+    const selected = btn.dataset.rightPanel === panel;
+    btn.classList.toggle('active', selected);
+    btn.setAttribute('aria-selected', selected ? 'true' : 'false');
+  }
+  if (pinPanelEl) pinPanelEl.hidden = panel !== 'pins';
+  if (activityPanelEl) activityPanelEl.hidden = panel !== 'activity';
+  render();
+  if (opts.open) openDrawer();
+}
+
 /** Re-render the pin list from store state. Cheap — pin counts are
  *  typically small (single-digit to dozens). Called on every
  *  sidekick:pins-changed event and on drawer open. */
 function render(): void {
+  if (activePanel === 'activity') {
+    renderActivity();
+    return;
+  }
   if (!listEl || !emptyEl) return;
   const pins = listAllPins();
   listEl.innerHTML = '';
   // Clear button visible only when there's something to clear —
   // mirrors the "Mark all read" hint pattern in Settings.
-  if (clearBtn) clearBtn.hidden = pins.length === 0;
+  if (clearBtn) {
+    clearBtn.hidden = pins.length === 0;
+    clearBtn.textContent = 'Clear';
+    clearBtn.setAttribute('aria-label', 'Clear all pinned messages');
+    clearBtn.setAttribute('title', 'Clear all pinned messages');
+  }
   if (pins.length === 0) {
     emptyEl.hidden = false;
     listEl.hidden = true;
@@ -59,6 +104,147 @@ function render(): void {
   for (const item of pins) {
     listEl.appendChild(renderItem(item));
   }
+}
+
+function renderActivity(): void {
+  if (!activityListEl || !activityEmptyEl) return;
+  const items = listActivity();
+  activityListEl.innerHTML = '';
+  if (clearBtn) {
+    clearBtn.hidden = items.length === 0;
+    clearBtn.textContent = 'Clear read';
+    clearBtn.setAttribute('aria-label', 'Clear read activity');
+    clearBtn.setAttribute('title', 'Clear read activity');
+  }
+  if (items.length === 0) {
+    activityEmptyEl.hidden = false;
+    activityListEl.hidden = true;
+    return;
+  }
+  activityEmptyEl.hidden = true;
+  activityListEl.hidden = false;
+  for (const item of items) {
+    activityListEl.appendChild(renderActivityItem(item));
+  }
+}
+
+function renderActivityItem(item: ActivityItem): HTMLElement {
+  const li = document.createElement('li');
+  li.className = 'activity-drawer-item';
+  li.classList.toggle('activity-approval', item.kind === 'approval');
+  li.classList.toggle('activity-unread', !item.read && !item.resolved);
+  li.classList.toggle('activity-resolved', !!item.resolved);
+  li.dataset.activityId = item.id;
+
+  const meta = document.createElement('div');
+  meta.className = 'activity-item-meta';
+  const title = document.createElement('span');
+  title.className = 'activity-item-title';
+  title.textContent = item.title;
+  const when = document.createElement('span');
+  when.className = 'activity-item-time';
+  when.textContent = formatRelativeTime(item.createdAt);
+  when.title = new Date(item.createdAt).toLocaleString();
+  meta.appendChild(title);
+  meta.appendChild(when);
+
+  const body = document.createElement('div');
+  body.className = 'activity-item-body';
+  body.innerHTML = miniMarkdown(activityPreview(item));
+
+  li.appendChild(meta);
+  li.appendChild(body);
+
+  if (item.kind === 'approval' && !item.resolved && item.chatId) {
+    const actions = document.createElement('div');
+    actions.className = 'activity-item-actions';
+    for (const [label, action] of [
+      ['Approve', 'approve'],
+      ['Session', 'approve_session'],
+      ['Deny', 'deny'],
+    ] as const) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.textContent = label;
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        const resolution: ActivityResolution =
+          action === 'approve' ? 'approved'
+          : action === 'approve_session' ? 'approved_session'
+          : 'denied';
+        resolveActivity(item.id, resolution);
+        void onApprovalActionCb?.(item.chatId!, action, item.messageId || null);
+      };
+      actions.appendChild(btn);
+    }
+    li.appendChild(actions);
+  } else if (item.resolved) {
+    const state = document.createElement('div');
+    state.className = 'activity-item-state';
+    state.textContent = item.resolved.replace('_', ' ');
+    li.appendChild(state);
+  }
+
+  const footer = document.createElement('div');
+  footer.className = 'activity-item-footer';
+  const chat = document.createElement('span');
+  chat.className = 'pin-item-chat';
+  chat.textContent = item.chatId ? chatLabelFor(item.chatId) : 'No chat';
+  const dismiss = document.createElement('button');
+  dismiss.className = 'pin-item-unpin-btn';
+  dismiss.type = 'button';
+  dismiss.title = 'Dismiss';
+  dismiss.setAttribute('aria-label', 'Dismiss activity');
+  dismiss.textContent = '×';
+  dismiss.onclick = (e) => {
+    e.stopPropagation();
+    dismissActivity(item.id);
+  };
+  footer.appendChild(chat);
+  footer.appendChild(dismiss);
+  li.appendChild(footer);
+
+  li.onclick = () => {
+    markRead(item.id);
+    if (item.chatId && onActivityOpenCb) onActivityOpenCb(item.chatId, item.messageId || null);
+  };
+  return li;
+}
+
+function activityPreview(item: ActivityItem): string {
+  let body = item.body || '';
+  if (item.kind === 'approval') body = approvalPreview(body);
+  else if (item.kind === 'cron') {
+    const headerRe = /^Cronjob Response:\s*(.+?)\s*\n\(job_id:\s*([^)]+)\)\s*\n-+\s*\n+([\s\S]*?)(?:\n+To stop or manage this job[^\n]*\.?\s*)?$/;
+    const m = headerRe.exec(body);
+    if (m) body = `${m[1].trim()}: ${m[3].trim()}`;
+  }
+  return body.length > 500 ? body.slice(0, 497) + '...' : body;
+}
+
+function approvalPreview(raw: string): string {
+  const text = raw || '';
+  const reason = /^Reason:\s*(.+)$/im.exec(text)?.[1]?.trim() || '';
+  const lines = text.split('\n');
+  const command: string[] = [];
+  let inCommand = false;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (/Dangerous command requires approval/i.test(trimmed)) {
+      inCommand = true;
+      continue;
+    }
+    if (!inCommand) continue;
+    if (!trimmed) {
+      if (command.length) command.push('');
+      continue;
+    }
+    if (/^Reason:/i.test(trimmed) || /^Reply\s+\/approve/i.test(trimmed)) break;
+    command.push(line.replace(/\s+$/, ''));
+  }
+  const cmd = command.join('\n').trim().replace(/\n{3,}/g, '\n\n');
+  if (reason && cmd) return `${reason}: ${cmd}`;
+  return reason || cmd || text;
 }
 
 /** Best-effort lookup of the FULL message text for a pinned item.
@@ -263,6 +449,23 @@ function refreshCountBanner(): void {
   }
 }
 
+function refreshActivityCountBanner(): void {
+  const urgent = unresolvedApprovalCount();
+  const unread = unreadActivityCount();
+  const n = urgent || unread;
+  const txt = n > 99 ? '99+' : String(n);
+  for (const banner of activityCountBanners) {
+    if (n === 0) {
+      banner.hidden = true;
+      banner.textContent = '0';
+    } else {
+      banner.hidden = false;
+      banner.textContent = txt;
+      banner.classList.toggle('urgent', urgent > 0);
+    }
+  }
+}
+
 function showPinStatus(message: string): void {
   if (!statusEl) return;
   statusEl.textContent = message;
@@ -284,23 +487,38 @@ function showPinStatus(message: string): void {
  *  drill-to-chat events from item clicks. */
 export function initPinDrawer(opts: {
   onPinClick: (chatId: string, msgId: string) => void;
+  onActivityOpen?: (chatId: string, msgId: string | null) => void;
+  onApprovalAction?: (chatId: string, action: 'approve' | 'approve_session' | 'deny', msgId: string | null) => void | Promise<void>;
 }): void {
   if (drawerEl) return;  // already wired
   drawerEl = document.getElementById('pin-drawer');
   listEl = document.getElementById('pin-drawer-list');
+  pinPanelEl = document.getElementById('pin-drawer-panel');
+  activityPanelEl = document.getElementById('activity-drawer-panel');
+  activityListEl = document.getElementById('activity-drawer-list');
+  activityEmptyEl = document.getElementById('activity-drawer-empty');
   emptyEl = document.getElementById('pin-drawer-empty');
   statusEl = document.getElementById('pin-drawer-status');
+  titleEl = document.getElementById('right-drawer-title');
+  tabButtons = Array.from(document.querySelectorAll<HTMLElement>('[data-right-panel]'));
   countBanners = [
     document.getElementById('pin-drawer-count'),
     document.getElementById('pin-drawer-count-rail'),
   ].filter((el): el is HTMLElement => el !== null);
+  activityCountBanners = [
+    document.getElementById('activity-drawer-count'),
+    document.getElementById('activity-drawer-count-rail'),
+  ].filter((el): el is HTMLElement => el !== null);
   clearBtn = document.getElementById('pin-drawer-clear');
   onPinClickCb = opts.onPinClick;
+  onActivityOpenCb = opts.onActivityOpen ?? null;
+  onApprovalActionCb = opts.onApprovalAction ?? null;
 
-  if (!drawerEl || !listEl || !emptyEl) {
+  if (!drawerEl || !listEl || !emptyEl || !activityListEl || !activityEmptyEl) {
     log('[pin-drawer] required DOM elements missing — drawer disabled');
     return;
   }
+  hydrateActivity();
 
   // Unified drawer chrome — open/close, toggles, swipe, resizer,
   // click-outside, Escape, .front swap, persistence. Same module
@@ -312,7 +530,12 @@ export function initPinDrawer(opts: {
     side: 'right',
     bodyClass: 'pin-drawer-open',
     prefKey: 'sidekick.pin-drawer.expanded',
-    toggleIds: ['btn-pin-drawer', 'btn-pin-drawer-rail'],
+    toggleIds: [
+      'btn-pin-drawer',
+      'btn-pin-drawer-rail',
+      'btn-activity-drawer',
+      'btn-activity-drawer-rail',
+    ],
     excludeSwipeWhenTargetIn: ['#sidebar'],
     resizer: {
       handleId: 'pin-drawer-resizer',
@@ -325,11 +548,24 @@ export function initPinDrawer(opts: {
     onOpen: () => render(),  // refresh list when drawer opens
   });
 
+  wirePanelToggle(['btn-activity-drawer', 'btn-activity-drawer-rail'], 'activity');
+  wirePanelToggle(['btn-pin-drawer', 'btn-pin-drawer-rail'], 'pins');
+  for (const btn of tabButtons) {
+    btn.addEventListener('click', () => {
+      const panel = btn.dataset.rightPanel === 'activity' ? 'activity' : 'pins';
+      selectPanel(panel);
+    });
+  }
+
   // Per-row controls — Clear-all only. The X close button was dropped
   // 2026-05-16 (Jonathan: pin/session-drawer symmetry — session drawer
   // closes via the rail toggle / Esc / click-outside / swipe; pin
   // drawer now uses the same affordances, no header X).
   if (clearBtn) clearBtn.addEventListener('click', () => {
+    if (activePanel === 'activity') {
+      clearResolvedActivity();
+      return;
+    }
     if (!window.confirm('Clear all pinned messages?')) return;
     void clearAllPins();
   });
@@ -339,11 +575,37 @@ export function initPinDrawer(opts: {
     refreshCountBanner();
     if (isOpen()) render();
   });
+  window.addEventListener('sidekick:activity-changed', () => {
+    refreshActivityCountBanner();
+    if (isOpen() && activePanel === 'activity') renderActivity();
+  });
   window.addEventListener('sidekick:pin-error', (ev) => {
     const detail = (ev as CustomEvent<{ message?: string }>).detail;
     showPinStatus(detail?.message || 'Could not update pinned messages.');
   });
 
   refreshCountBanner();
+  refreshActivityCountBanner();
+  selectPanel(activePanel);
   log('[pin-drawer] initialized');
+}
+
+function wirePanelToggle(ids: string[], panel: 'pins' | 'activity'): void {
+  for (const id of ids) {
+    const btn = document.getElementById(id);
+    if (!btn) continue;
+    btn.addEventListener('click', (e) => {
+      // Capture-phase override for Drawer.ts's generic toggle listener:
+      // the rail now has two module icons. Clicking the active module
+      // toggles the drawer; clicking the inactive module switches panels.
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      e.stopPropagation();
+      if (isOpen() && activePanel === panel) {
+        closeDrawer();
+        return;
+      }
+      selectPanel(panel, { open: true });
+    }, true);
+  }
 }

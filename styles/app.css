@@ -1931,7 +1931,7 @@
   }
   .pin-drawer-top-row {
     display: grid;
-    grid-template-columns: 1fr auto 1fr;
+    grid-template-columns: auto 1fr auto auto;
     align-items: center;
     gap: 8px;
   }
@@ -1941,15 +1941,37 @@
     grid-column: 1; justify-self: start;
     padding-left: 6px;
   }
+  .right-drawer-tabs {
+    grid-column: 2;
+    justify-self: center;
+    display: flex; align-items: center; gap: 2px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 2px;
+    background: var(--surface-2);
+  }
+  .right-drawer-tabs button {
+    border: 0; background: transparent; color: var(--muted);
+    font: 600 11px/1 var(--font);
+    padding: 6px 9px;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  .right-drawer-tabs button.active,
+  .right-drawer-tabs button[aria-selected="true"] {
+    background: var(--surface);
+    color: var(--fg);
+    box-shadow: 0 1px 2px rgba(0,0,0,0.08);
+  }
   .pin-drawer-clear-btn {
-    grid-column: 2; justify-self: center;
+    grid-column: 3; justify-self: center;
     background: none; border: 1px solid var(--border); color: var(--muted);
     font-size: 11px; padding: 4px 10px; border-radius: 4px;
     cursor: pointer; transition: color 0.12s, border-color 0.12s;
   }
   .pin-drawer-clear-btn:hover { color: var(--fg); border-color: var(--border-strong); }
   .pin-drawer-toggle {
-    grid-column: 3; justify-self: end;
+    justify-self: end;
     /* Positioning context for the count banner overlay
      * (#pin-drawer-count-rail). Without this, the banner's `position:
      * absolute; top/left:-2px` resolves against the next positioned
@@ -1960,10 +1982,17 @@
      * is unaffected. */
     position: relative;
   }
+  .right-drawer-rail-buttons {
+    grid-column: 4;
+    justify-self: end;
+    display: flex; align-items: center; gap: 4px;
+  }
+  .right-drawer-rail-btn { position: relative; }
   /* In collapsed rail, title + Clear hide. Mirror of sidebar's
    * `#sidebar.collapsed .sb-search-btn { display: none }` rule. */
   #pin-drawer.collapsed .pin-drawer-title,
-  #pin-drawer.collapsed .pin-drawer-clear-btn {
+  #pin-drawer.collapsed .pin-drawer-clear-btn,
+  #pin-drawer.collapsed .right-drawer-tabs {
     display: none;
   }
   /* In collapsed rail (48px wide), the toggle is the only visible
@@ -1973,9 +2002,14 @@
    * rail's right edge — visually it overflows the rail (Jonathan field
    * 2026-05-17). Span all 3 columns + center for symmetry with the
    * sidebar's collapsed-rail hamburger. */
-  #pin-drawer.collapsed .pin-drawer-toggle {
+  #pin-drawer.collapsed .right-drawer-rail-buttons {
     grid-column: 1 / -1;
     justify-self: center;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  #pin-drawer.collapsed .pin-drawer-toggle {
     /* Override sb-icon-btn's 36px min-height so the toggle fits inside
      * the now-shorter pin-drawer-top (which matches .header's height).
      * Use a tight square that still hits the 28px hover target. */
@@ -1988,6 +2022,13 @@
    * drawer's viewport-anchor edge). */
   #pin-drawer-count-rail.pin-count-banner {
     top: -2px; left: -2px; right: auto;
+  }
+  #activity-drawer-count-rail.pin-count-banner {
+    top: -2px; left: -2px; right: auto;
+  }
+  .activity-count-banner.urgent {
+    background: var(--danger);
+    color: #fff;
   }
 
   /* CONTENT — scrollable middle, mirror of .sidebar-content. Opacity
@@ -2017,6 +2058,82 @@
   .pin-drawer-list {
     list-style: none; margin: 0; padding: 6px 0;
     overflow-y: auto; flex: 1;
+  }
+  .right-drawer-panel {
+    min-height: 0;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+  }
+  .right-drawer-panel[hidden] { display: none; }
+  .activity-drawer-list {
+    list-style: none; margin: 0; padding: 6px 0;
+    overflow-y: auto; flex: 1;
+  }
+  .activity-drawer-item {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    transition: background 0.12s ease;
+  }
+  .activity-drawer-item:hover { background: var(--surface-2); }
+  .activity-drawer-item.activity-unread {
+    border-left: 3px solid var(--primary);
+    padding-left: 11px;
+  }
+  .activity-drawer-item.activity-approval.activity-unread {
+    border-left-color: var(--danger);
+    background: color-mix(in srgb, var(--danger) 5%, transparent);
+  }
+  .activity-drawer-item.activity-resolved {
+    opacity: 0.68;
+  }
+  .activity-item-meta {
+    display: flex; justify-content: space-between; gap: 8px;
+    font-size: 11px; color: var(--muted); margin-bottom: 4px;
+  }
+  .activity-item-title {
+    font-weight: 700; color: var(--fg);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .activity-item-body {
+    font-size: 13px; line-height: 1.4; color: var(--fg);
+    word-break: break-word;
+  }
+  .activity-item-body > :first-child { margin-top: 0; }
+  .activity-item-body > :last-child { margin-bottom: 0; }
+  .activity-item-body p { margin: 0 0 4px; }
+  .activity-item-body code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+    background: var(--surface-2); padding: 1px 4px; border-radius: 3px;
+  }
+  .activity-item-actions {
+    display: flex; gap: 6px; margin-top: 8px;
+  }
+  .activity-item-actions button {
+    border: 1px solid color-mix(in srgb, var(--danger) 45%, var(--border));
+    background: color-mix(in srgb, var(--danger) 8%, var(--surface));
+    color: var(--fg);
+    border-radius: 4px;
+    padding: 5px 8px;
+    font: 600 12px/1 var(--font);
+    cursor: pointer;
+  }
+  .activity-item-actions button:hover {
+    border-color: var(--danger);
+    background: color-mix(in srgb, var(--danger) 14%, var(--surface));
+  }
+  .activity-item-state {
+    margin-top: 6px;
+    font-size: 11px;
+    color: var(--muted);
+    text-transform: capitalize;
+  }
+  .activity-item-footer {
+    margin-top: 6px;
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 8px;
   }
   .pin-drawer-item {
     padding: 10px 14px; border-bottom: 1px solid var(--border);

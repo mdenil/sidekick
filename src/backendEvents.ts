@@ -25,6 +25,7 @@ import * as transcriptStore from './transcript/store.ts';
 import * as sessionDrawer from './sessionDrawer.ts';
 import * as badge from './notifications/badge.ts';
 import * as inAppBanner from './notifications/inAppBanner.ts';
+import * as activityStore from './notifications/activityStore.ts';
 
 /** Push notification handler — cron output, /background results,
  *  scheduled reminders. Backends that support out-of-band push (today:
@@ -35,6 +36,16 @@ import * as inAppBanner from './notifications/inAppBanner.ts';
  *  chats: bump the badge counter. */
 export function handleNotification({ chatId, kind, content, sidekickId, isReplay }: any): void {
   const replay = isReplay === true;
+  if (!replay) {
+    activityStore.upsertNotification({
+      chatId: chatId || null,
+      kind: kind || '',
+      content: content || '',
+      sidekickId: typeof sidekickId === 'string' ? sidekickId : null,
+      urgent: kind === 'approval',
+      chatLabel: sessionDrawer.getTitleForChat?.(chatId) || null,
+    });
+  }
   // Off-screen chat — bump the app-icon badge so the user notices
   // there's a new event waiting in another chat. clearUnread fires
   // from sessionDrawer.setViewed when they switch in. The system

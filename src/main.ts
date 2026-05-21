@@ -663,9 +663,6 @@ async function boot() {
       diag(`drill: resume ${chatId} failed: ${e?.message ?? e}`);
     }
   };
-  initPinDrawer({
-    onPinClick: (chatId, msgId) => { void drillToChatMessage(chatId, msgId); },
-  });
   // In-app notification banner — when a notification envelope arrives
   // for a chat OTHER than the currently-viewed one, show a top-of-
   // viewport toast. Tap → same drill path as the pin drawer (resume +
@@ -703,6 +700,11 @@ async function boot() {
       failBubble(e?.message || String(e));
     }
   };
+  initPinDrawer({
+    onPinClick: (chatId, msgId) => { void drillToChatMessage(chatId, msgId); },
+    onActivityOpen: (chatId, msgId) => { void drillToChatMessage(chatId, msgId); },
+    onApprovalAction: (chatId, action, msgId) => { void sendApprovalAction(chatId, action, msgId); },
+  });
   inAppBanner.init({
     onOpen: (chatId, msgId) => { void drillToChatMessage(chatId, msgId); },
     onAction: (chatId, action, msgId) => { void sendApprovalAction(chatId, action, msgId); },
