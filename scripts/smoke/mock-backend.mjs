@@ -124,7 +124,8 @@ export async function installMockBackend(page) {
     // Replay anything since the cursor.
     for (const entry of recent) {
       if (entry.id <= cursor) continue;
-      res.write(`id: ${entry.id}\nevent: ${entry.env.type}\ndata: ${JSON.stringify(entry.env)}\n\n`);
+      const replayEnv = { ...entry.env, _replay: true };
+      res.write(`id: ${entry.id}\nevent: ${entry.env.type}\ndata: ${JSON.stringify(replayEnv)}\n\n`);
     }
     streamSubs.add(res);
     const drop = () => { streamSubs.delete(res); };

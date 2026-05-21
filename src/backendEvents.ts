@@ -33,7 +33,8 @@ import * as inAppBanner from './notifications/inAppBanner.ts';
  *  notification row matching the persisted transcript shape (so
  *  reload finds the same data-message-id and dedups). For off-screen
  *  chats: bump the badge counter. */
-export function handleNotification({ chatId, kind, content, sidekickId }: any): void {
+export function handleNotification({ chatId, kind, content, sidekickId, isReplay }: any): void {
+  const replay = isReplay === true;
   // Off-screen chat — bump the app-icon badge so the user notices
   // there's a new event waiting in another chat. clearUnread fires
   // from sessionDrawer.setViewed when they switch in. The system
@@ -41,6 +42,10 @@ export function handleNotification({ chatId, kind, content, sidekickId }: any): 
   // (proxy/sidekick/notifications/dispatch.ts); this is the in-app
   // counterpart for badge state.
   if (chatId && chatId !== sessionDrawer.getFocused()) {
+    if (replay) {
+      log(`notification (off-screen replay) chat=${chatId} kind=${kind} — no badge/banner`);
+      return;
+    }
     badge.incrementUnread(chatId);
     // In-app banner — surface the notification at the top of the
     // viewport so the user actually notices it (the badge alone is

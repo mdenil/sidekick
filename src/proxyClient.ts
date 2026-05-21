@@ -547,7 +547,7 @@ function handleEnvelope(type: string, env: any, chatId: string): void {
       const sidekickId = typeof env.sidekick_id === 'string' ? env.sidekick_id : '';
       const isReplay = env?._replay === true;
       log(`proxy-client: notification kind=${kind} chat_id=${chatId} sk=${sidekickId}${isReplay ? ' (replay)' : ''}`);
-      subs?.onNotification?.({ chatId, kind, content, sidekickId });
+      subs?.onNotification?.({ chatId, kind, content, sidekickId, isReplay });
       // Bump the drawer ordering so the chat with the freshest
       // notification floats up. Skip on replay (see reply_final's
       // matching guard for cascade rationale).
