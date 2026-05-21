@@ -3785,6 +3785,11 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.tool-row-details[open] > .tool-row-summary .tool-title {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+}
 .tool-row-summary .tool-name {
   color: var(--fg);
   font-weight: 500;

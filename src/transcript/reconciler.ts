@@ -399,13 +399,10 @@ function writeToolResult(wrap: HTMLElement, t: ActivityTool): void {
   }
   const raw = typeof t.result === 'string' ? t.result : JSON.stringify(t.result);
   const pretty = prettifyMaybeJson(raw);
-  const SHOW_LIMIT = 500;
-  const isLong = pretty.length > SHOW_LIMIT;
-  const shortText = isLong ? pretty.slice(0, SHOW_LIMIT) + '…' : pretty;
   resultEl.style.display = '';
   resultEl.innerHTML = `
     <div class="tool-result-arrow" aria-hidden="true">→</div>
-    <pre class="tool-result-text" data-mode="short">${escapeHtml(shortText)}</pre>
+    <pre class="tool-result-text">${escapeHtml(pretty)}</pre>
   `.trim();
 }
 
@@ -429,8 +426,21 @@ function toolDisplayTitle(t: ActivityTool): { name: string; detail: string } {
   const rawName = typeof t.name === 'string' ? t.name.trim() : '';
   const name = rawName && rawName !== 'undefined' && rawName !== '(unknown)'
     ? rawName
-    : firstStringRaw(result, ['name', 'tool_name', 'skill', 'skill_name']) || '(unknown)';
+    : firstStringRaw(result, ['name', 'tool_name', 'skill', 'skill_name']) || inferToolName(args, result);
   return { name, detail: toolSummaryDetail(name, args, result) };
+}
+
+
+function inferToolName(
+  args: Record<string, unknown> | null,
+  result: Record<string, unknown> | null,
+): string {
+  const raw = firstStringRaw(args, ['type', 'kind']) || firstStringRaw(result, ['type', 'kind']);
+  if (raw && raw !== 'function_call_output') return raw;
+  if (Array.isArray(result?.matches)) return 'search_files';
+  if (Array.isArray(result?.results)) return 'search';
+  if (result?.success === true && typeof result?.description === 'string' && typeof result?.content === 'string') return 'skill_view';
+  return 'tool';
 }
 
 function toolSummaryDetail(

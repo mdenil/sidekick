@@ -2082,6 +2082,7 @@ class SidekickAdapter(BasePlatformAdapter):
             "type": "tool_result",
             "chat_id": chat_id,
             "call_id": tool_call_id,
+            "tool_name": tool_name,
             "result": result_str,
             "error": None,
             "duration_ms": duration_ms,
