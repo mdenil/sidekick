@@ -207,6 +207,73 @@ def delete_pin(db, *, chat_id: str, msg_id: str) -> Dict[str, Any]:
     return {"removed": cur.rowcount > 0}
 
 
+# ── Activity items ────────────────────────────────────────────────────
+
+def _activity_row_to_dict(row) -> Dict[str, Any]:
+    return {
+        "id": row["id"],
+        "chatId": row["chatId"],
+        "kind": row["kind"],
+        "title": row["title"],
+        "body": row["body"],
+        "createdAt": row["createdAt"],
+        "urgent": bool(row["urgent"]),
+        "read": bool(row["read"]),
+        "messageId": row["messageId"],
+        "resolved": row["resolved"],
+    }
+
+
+def list_activity_items(db, *, limit: int = 200) -> List[Dict[str, Any]]:
+    rows = db.fetchall(
+        "SELECT id, chat_id AS chatId, kind, title, body, created_at AS createdAt, "
+        "       urgent, read, message_id AS messageId, resolved "
+        "FROM activity_items ORDER BY "
+        "  CASE WHEN kind = 'approval' AND resolved IS NULL THEN 1 ELSE 0 END DESC, "
+        "  created_at DESC LIMIT ?",
+        (limit,),
+    )
+    return [_activity_row_to_dict(r) for r in rows]
+
+
+def upsert_activity_item(db, *, id: str, chat_id: Optional[str], kind: str, title: str,
+                         body: str, created_at: Optional[float] = None,
+                         urgent: bool = False, read: bool = False,
+                         message_id: Optional[str] = None,
+                         resolved: Optional[str] = None) -> None:
+    now = time.time()
+    db.exec(
+        "INSERT INTO activity_items (id, chat_id, kind, title, body, created_at, urgent, read, message_id, resolved) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(id) DO UPDATE SET "
+        "  chat_id = excluded.chat_id, kind = excluded.kind, title = excluded.title, "
+        "  body = excluded.body, urgent = excluded.urgent, read = excluded.read, "
+        "  message_id = excluded.message_id, resolved = excluded.resolved",
+        (id, chat_id, kind, title, body, created_at if created_at is not None else now,
+         1 if urgent else 0, 1 if read else 0, message_id, resolved),
+    )
+
+
+def resolve_activity_item(db, *, id: str, resolution: str) -> Dict[str, Any]:
+    cur = db.exec(
+        "UPDATE activity_items SET read = 1, resolved = ? WHERE id = ?",
+        (resolution, id),
+    )
+    return {"updated": cur.rowcount > 0}
+
+
+def delete_activity_item(db, *, id: str) -> Dict[str, Any]:
+    cur = db.exec("DELETE FROM activity_items WHERE id = ?", (id,))
+    return {"removed": cur.rowcount > 0}
+
+
+def clear_dismissible_activity_items(db) -> Dict[str, Any]:
+    cur = db.exec(
+        "DELETE FROM activity_items WHERE NOT (kind = 'approval' AND resolved IS NULL)"
+    )
+    return {"removed": cur.rowcount}
+
+
 # ── Unread state ──────────────────────────────────────────────────────
 
 def mark_seen(db, chat_id: str, *, now: Optional[float] = None) -> None:

@@ -263,7 +263,8 @@ function startStreamChannel(): void {
                    // to. Without these listeners, the handlers in
                    // handleEnvelope() are unreachable — caught only
                    // by cross-device-pin-sync.mjs smoke 2026-05-16.
-                   'unread_changed', 'pins_changed', 'conversation_deleted']) {
+                   'unread_changed', 'pins_changed', 'activity_changed',
+                   'conversation_deleted']) {
     streamES.addEventListener(t, onEvent as any);
   }
   streamES.onerror = (e) => {
@@ -416,13 +417,14 @@ function bindLifecycleHandlers(): void {
  *  the listener depends on local state already being updated (e.g.
  *  sessionDrawer's scheduleRefresh needs the IDB row gone before its
  *  re-render). */
-type CrossDeviceSyncType = 'unread_changed' | 'pins_changed' | 'conversation_deleted';
+type CrossDeviceSyncType = 'unread_changed' | 'pins_changed' | 'activity_changed' | 'conversation_deleted';
 const CROSS_DEVICE_SYNC: Record<CrossDeviceSyncType, {
   eventName: string;
   sideEffect?: (chatId: string) => void;
 }> = {
   unread_changed:        { eventName: 'sidekick:server-unread-changed' },
   pins_changed:          { eventName: 'sidekick:server-pins-changed' },
+  activity_changed:      { eventName: 'sidekick:server-activity-changed' },
   conversation_deleted:  {
     eventName: 'sidekick:server-conversation-deleted',
     sideEffect: (chatId) => { conversations.remove(chatId).catch(() => {}); },
@@ -506,6 +508,7 @@ function handleEnvelope(type: string, env: any, chatId: string): void {
 
     case 'unread_changed':
     case 'pins_changed':
+    case 'activity_changed':
     case 'conversation_deleted':
       dispatchCrossDeviceSync(env.type, env, chatId);
       return;

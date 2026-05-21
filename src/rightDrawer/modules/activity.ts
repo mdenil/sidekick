@@ -4,6 +4,7 @@ import {
   clearDismissible as clearDismissibleActivity,
   dismissActivity,
   listActivity,
+  refreshFromServer,
   markRead,
   resolveActivity,
   type ActivityItem,
@@ -23,6 +24,7 @@ export function createActivityModule(opts: {
   onSelect?: () => void;
 }): RightDrawerModule {
   const render = (ctx: RightDrawerModuleContext) => {
+    void refreshFromServer();
     const items = listActivity();
     opts.list.innerHTML = '';
     const clearable = items.some((item) => item.kind !== 'approval' || !!item.resolved);

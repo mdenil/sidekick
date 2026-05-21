@@ -20,6 +20,10 @@ import {
 import {
   listPins, upsertPin, deletePin,
 } from './pins-storage.js';
+import {
+  listActivityItems, upsertActivityItem, resolveActivityItem,
+  deleteActivityItem, clearDismissibleActivityItems,
+} from './activity-storage.js';
 
 function sendJson(res, status, body) {
   res.writeHead(status, { 'content-type': 'application/json' });
@@ -152,6 +156,83 @@ export function registerUnreadPinsRoutes(api, { db, eventBus, agentId, profile }
         });
       }
       sendJson(res, 200, { ok: true, removed });
+      return true;
+    },
+  });
+
+  function pushActivityChanged({ chatId = '*', cause, itemId = null }) {
+    eventBus.pushEnvelope({
+      type: 'activity_changed',
+      chat_id: chatId || '*',
+      cause,
+      item_id: itemId,
+    });
+  }
+
+  api.registerHttpRoute({
+    path: '/v1/activity',
+    auth: 'plugin', match: 'exact',
+    handler: async (req, res) => {
+      if (req.method === 'GET') {
+        const url = new URL(req.url, 'http://localhost');
+        const limit = parseInt(url.searchParams.get('limit') ?? '200', 10);
+        sendJson(res, 200, { items: listActivityItems(db, { limit }) });
+        return true;
+      }
+      if (req.method === 'POST') {
+        const body = await readJson(req);
+        if (!body?.id || !body?.kind || typeof body?.title !== 'string' || typeof body?.body !== 'string') {
+          sendJson(res, 400, { error: 'invalid_request', message: 'id+kind+title+body required' });
+          return true;
+        }
+        upsertActivityItem(db, body);
+        pushActivityChanged({ chatId: body.chat_id ?? body.chatId ?? '*', cause: 'upsert', itemId: body.id });
+        sendJson(res, 200, { ok: true });
+        return true;
+      }
+      sendJson(res, 405, { error: 'method_not_allowed' });
+      return true;
+    },
+  });
+
+  api.registerHttpRoute({
+    path: '/v1/activity/resolve',
+    auth: 'plugin', match: 'exact',
+    handler: async (req, res) => {
+      if (req.method !== 'POST') { sendJson(res, 405, { error: 'method_not_allowed' }); return true; }
+      const body = await readJson(req);
+      if (!body?.id || !body?.resolution) { sendJson(res, 400, { error: 'invalid_request' }); return true; }
+      const result = resolveActivityItem(db, { id: body.id, resolution: body.resolution });
+      if (result.updated) pushActivityChanged({ cause: 'resolve', itemId: body.id });
+      sendJson(res, 200, { ok: true, ...result });
+      return true;
+    },
+  });
+
+  api.registerHttpRoute({
+    path: '/v1/activity/clear',
+    auth: 'plugin', match: 'exact',
+    handler: async (req, res) => {
+      if (req.method !== 'POST') { sendJson(res, 405, { error: 'method_not_allowed' }); return true; }
+      const result = clearDismissibleActivityItems(db);
+      if (result.removed) pushActivityChanged({ cause: 'clear' });
+      sendJson(res, 200, { ok: true, ...result });
+      return true;
+    },
+  });
+
+  api.registerHttpRoute({
+    path: '/v1/activity/',
+    auth: 'plugin', match: 'prefix',
+    handler: async (req, res) => {
+      if (req.method !== 'DELETE') { sendJson(res, 405, { error: 'method_not_allowed' }); return true; }
+      const url = new URL(req.url, 'http://localhost');
+      const m = url.pathname.match(/^\/v1\/activity\/([^/]+)\/?$/);
+      if (!m) { sendJson(res, 404, { error: 'not_found' }); return true; }
+      const id = decodeURIComponent(m[1]);
+      const result = deleteActivityItem(db, { id });
+      if (result.removed) pushActivityChanged({ cause: 'delete', itemId: id });
+      sendJson(res, 200, { ok: true, ...result });
       return true;
     },
   });

@@ -634,6 +634,65 @@ export async function installMockBackend(page) {
     await route.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"removed":true}' });
   });
 
+  // ── Server-driven Activity state (SSOT after the right-drawer tray) ──
+  const activityById = new Map();
+  const normalizeActivity = (item) => ({
+    id: item.id,
+    chatId: item.chatId ?? item.chat_id ?? null,
+    kind: item.kind || 'notification',
+    title: item.title || 'Notification',
+    body: item.body || '',
+    createdAt: item.createdAt ?? item.created_at ?? (Date.now() / 1000),
+    urgent: item.urgent === true,
+    read: item.read === true,
+    messageId: item.messageId ?? item.message_id ?? null,
+    resolved: item.resolved ?? null,
+  });
+  await page.route(/.*\/api\/sidekick\/activity(\?.*)?$/, async (route) => {
+    const method = route.request().method();
+    if (method === 'GET') {
+      const out = Array.from(activityById.values()).sort((a, b) => {
+        const au = a.kind === 'approval' && !a.resolved ? 1 : 0;
+        const bu = b.kind === 'approval' && !b.resolved ? 1 : 0;
+        if (au !== bu) return bu - au;
+        return b.createdAt - a.createdAt;
+      });
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: out }) });
+      return;
+    }
+    if (method === 'POST') {
+      let body; try { body = JSON.parse(route.request().postData() || '{}'); }
+      catch { body = {}; }
+      if (body?.id) activityById.set(body.id, normalizeActivity(body));
+      await route.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' });
+      return;
+    }
+    return route.fallback();
+  });
+  await page.route(/.*\/api\/sidekick\/activity\/resolve$/, async (route) => {
+    if (route.request().method() !== 'POST') return route.fallback();
+    let body; try { body = JSON.parse(route.request().postData() || '{}'); }
+    catch { body = {}; }
+    const item = body?.id ? activityById.get(body.id) : null;
+    if (item) activityById.set(body.id, { ...item, read: true, resolved: body.resolution || 'dismissed' });
+    await route.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' });
+  });
+  await page.route(/.*\/api\/sidekick\/activity\/clear$/, async (route) => {
+    if (route.request().method() !== 'POST') return route.fallback();
+    for (const [id, item] of Array.from(activityById.entries())) {
+      if (item.kind === 'approval' && !item.resolved) continue;
+      activityById.delete(id);
+    }
+    await route.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' });
+  });
+  await page.route(/.*\/api\/sidekick\/activity\/[^/]+$/, async (route) => {
+    if (route.request().method() !== 'DELETE') return route.fallback();
+    const url = new URL(route.request().url());
+    const id = decodeURIComponent(url.pathname.split('/').pop() || '');
+    const removed = activityById.delete(id);
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, removed }) });
+  });
+
   return {
     /** Add a synthetic chat to the mock's in-memory state. The PWA
      *  drawer will list it; clicking it returns the canned messages.
@@ -742,6 +801,12 @@ export async function installMockBackend(page) {
       });
     },
     getPinState() { return new Map(pinsByKey); },
+    seedActivity(item) {
+      if (item?.id) activityById.set(item.id, normalizeActivity(item));
+    },
+    activityItems() {
+      return Array.from(activityById.values());
+    },
     /** Set the inflight envelope list for a chat. The next
      *  /api/sidekick/sessions/<chatId>/messages GET will include
      *  these as the `inflight` field, mirroring the real proxy's

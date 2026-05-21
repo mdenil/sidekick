@@ -237,6 +237,82 @@ async def handle_pin_delete(ctx, request: web.Request) -> web.Response:
     return _json({"ok": True, **result})
 
 
+# ── Activity routes ──────────────────────────────────────────────────
+
+def _activity_changed(ctx, chat_id: str | None, cause: str, item_id: str | None = None) -> None:
+    ctx.emit_envelope({
+        "type": "activity_changed",
+        "chat_id": chat_id or "*",
+        "cause": cause,
+        "item_id": item_id,
+    })
+
+
+async def handle_activity(ctx, request: web.Request) -> web.Response:
+    if request.method == "GET":
+        try:
+            limit = int(request.rel_url.query.get("limit", "200"))
+        except Exception:
+            limit = 200
+        limit = max(1, min(limit, 500))
+        return _json({"items": state.list_activity_items(ctx.db, limit=limit)})
+    body = await _read_json(request)
+    item_id = body.get("id")
+    kind = body.get("kind")
+    title = body.get("title")
+    item_body = body.get("body")
+    if not item_id or not kind or not isinstance(title, str) or not isinstance(item_body, str):
+        return _json({"error": "invalid_request", "message": "id+kind+title+body required"}, status=400)
+    chat_id = body.get("chat_id") or body.get("chatId")
+    created_at = body.get("created_at") or body.get("createdAt")
+    if isinstance(created_at, (int, float)) and created_at > 10_000_000_000:
+        created_at = created_at / 1000.0
+    state.upsert_activity_item(
+        ctx.db,
+        id=item_id,
+        chat_id=chat_id if isinstance(chat_id, str) else None,
+        kind=str(kind),
+        title=title,
+        body=item_body,
+        created_at=created_at if isinstance(created_at, (int, float)) else None,
+        urgent=body.get("urgent") is True,
+        read=body.get("read") is True,
+        message_id=body.get("message_id") or body.get("messageId"),
+        resolved=body.get("resolved") if isinstance(body.get("resolved"), str) else None,
+    )
+    _activity_changed(ctx, chat_id if isinstance(chat_id, str) else None, "upsert", item_id)
+    return _json({"ok": True})
+
+
+async def handle_activity_resolve(ctx, request: web.Request) -> web.Response:
+    body = await _read_json(request)
+    item_id = body.get("id")
+    resolution = body.get("resolution")
+    if not item_id or not resolution:
+        return _json({"error": "invalid_request", "message": "id+resolution required"}, status=400)
+    result = state.resolve_activity_item(ctx.db, id=item_id, resolution=str(resolution))
+    if result["updated"]:
+        _activity_changed(ctx, None, "resolve", item_id)
+    return _json({"ok": True, **result})
+
+
+async def handle_activity_delete(ctx, request: web.Request) -> web.Response:
+    item_id = request.match_info.get("item_id")
+    if not item_id:
+        return _json({"error": "invalid_request"}, status=400)
+    result = state.delete_activity_item(ctx.db, id=item_id)
+    if result["removed"]:
+        _activity_changed(ctx, None, "delete", item_id)
+    return _json({"ok": True, **result})
+
+
+async def handle_activity_clear(ctx, request: web.Request) -> web.Response:
+    result = state.clear_dismissible_activity_items(ctx.db)
+    if result["removed"]:
+        _activity_changed(ctx, None, "clear")
+    return _json({"ok": True, **result})
+
+
 # ── Registrar ────────────────────────────────────────────────────────
 
 def register_routes(app: web.Application, ctx) -> None:
@@ -258,3 +334,9 @@ def register_routes(app: web.Application, ctx) -> None:
     app.router.add_get("/v1/pins", lambda r: handle_pins(ctx, r))
     app.router.add_post("/v1/pins", lambda r: handle_pins(ctx, r))
     app.router.add_delete("/v1/pins/{chat_id}/{msg_id}", lambda r: handle_pin_delete(ctx, r))
+
+    app.router.add_get("/v1/activity", lambda r: handle_activity(ctx, r))
+    app.router.add_post("/v1/activity", lambda r: handle_activity(ctx, r))
+    app.router.add_post("/v1/activity/resolve", lambda r: handle_activity_resolve(ctx, r))
+    app.router.add_post("/v1/activity/clear", lambda r: handle_activity_clear(ctx, r))
+    app.router.add_delete("/v1/activity/{item_id}", lambda r: handle_activity_delete(ctx, r))
