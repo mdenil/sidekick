@@ -46,6 +46,7 @@ Most chat UIs treat voice as a bolt-on. Sidekick is voice-first:
 - **Barge-in** — interrupt the agent mid-sentence by speaking. Client-side Silero VAD + per-device tuning.
 - **Per-bubble TTS replay** — every agent reply has a play button. BT headset skip-fwd/back navigates between replies.
 - **Bring your own agent** — speaks the OpenAI Responses API (`/v1/responses`, `/v1/conversations/*`). Drop-in compatible with any server that does, plus richer plugins for Hermes (and openclaw, soon).
+- **Extensible right drawer** — Pins and Activity share an internal module host, so future surfaces such as notifications, artifacts, or editor canvases can plug into the same right-side rail. See [Right Drawer Modules](docs/RIGHT_DRAWER_MODULES.md).
 
 ## Frontends
 
