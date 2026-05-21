@@ -1931,7 +1931,7 @@
   }
   .pin-drawer-top-row {
     display: grid;
-    grid-template-columns: auto 1fr auto auto;
+    grid-template-columns: 1fr auto;
     align-items: center;
     gap: 8px;
   }
@@ -1941,30 +1941,8 @@
     grid-column: 1; justify-self: start;
     padding-left: 6px;
   }
-  .right-drawer-tabs {
-    grid-column: 2;
-    justify-self: center;
-    display: flex; align-items: center; gap: 2px;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 2px;
-    background: var(--surface-2);
-  }
-  .right-drawer-tabs button {
-    border: 0; background: transparent; color: var(--muted);
-    font: 600 11px/1 var(--font);
-    padding: 6px 9px;
-    border-radius: 4px;
-    cursor: pointer;
-  }
-  .right-drawer-tabs button.active,
-  .right-drawer-tabs button[aria-selected="true"] {
-    background: var(--surface);
-    color: var(--fg);
-    box-shadow: 0 1px 2px rgba(0,0,0,0.08);
-  }
   .pin-drawer-clear-btn {
-    grid-column: 3; justify-self: center;
+    grid-column: 2; justify-self: end;
     background: none; border: 1px solid var(--border); color: var(--muted);
     font-size: 11px; padding: 4px 10px; border-radius: 4px;
     cursor: pointer; transition: color 0.12s, border-color 0.12s;
@@ -1983,31 +1961,35 @@
     position: relative;
   }
   .right-drawer-rail-buttons {
-    grid-column: 4;
-    justify-self: end;
-    display: flex; align-items: center; gap: 4px;
-  }
-  .right-drawer-rail-btn { position: relative; }
-  /* In collapsed rail, title + Clear hide. Mirror of sidebar's
-   * `#sidebar.collapsed .sb-search-btn { display: none }` rule. */
-  #pin-drawer.collapsed .pin-drawer-title,
-  #pin-drawer.collapsed .pin-drawer-clear-btn,
-  #pin-drawer.collapsed .right-drawer-tabs {
-    display: none;
-  }
-  /* In collapsed rail (48px wide), the toggle is the only visible
-   * header element. The expanded-mode rule above (grid-column: 3 +
-   * justify-self: end) is correct when the title/Clear claim columns 1
-   * and 2, but with both hidden the toggle ends up flush against the
-   * rail's right edge — visually it overflows the rail (Jonathan field
-   * 2026-05-17). Span all 3 columns + center for symmetry with the
-   * sidebar's collapsed-rail hamburger. */
-  #pin-drawer.collapsed .right-drawer-rail-buttons {
-    grid-column: 1 / -1;
-    justify-self: center;
+    position: absolute;
+    top: 0; right: 0; bottom: 0;
+    width: 48px;
+    z-index: 4;
     display: flex;
     flex-direction: column;
+    align-items: center;
     gap: 8px;
+    padding-top: max(46px, env(safe-area-inset-top, 0px));
+    border-left: 1px solid var(--border);
+    background: var(--surface);
+  }
+  .right-drawer-rail-btn { position: relative; }
+  .right-drawer-rail-btn.active,
+  .right-drawer-rail-btn[aria-selected="true"] {
+    color: var(--primary);
+    background: color-mix(in srgb, var(--primary) 12%, transparent);
+  }
+  #pin-drawer:not(.collapsed) .pin-drawer-top,
+  #pin-drawer:not(.collapsed) .pin-drawer-content,
+  #pin-drawer:not(.collapsed) .pin-drawer-bottom {
+    margin-right: 48px;
+  }
+  #pin-drawer.collapsed .pin-drawer-title,
+  #pin-drawer.collapsed .pin-drawer-clear-btn {
+    display: none;
+  }
+  #pin-drawer.collapsed .pin-drawer-top {
+    border-bottom: 0;
   }
   #pin-drawer.collapsed .pin-drawer-toggle {
     /* Override sb-icon-btn's 36px min-height so the toggle fits inside
