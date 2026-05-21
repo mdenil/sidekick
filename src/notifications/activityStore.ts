@@ -181,3 +181,16 @@ export function clearResolved(): void {
   persist();
   notifyChange();
 }
+
+export function clearDismissible(): void {
+  hydrate();
+  let changed = false;
+  for (const [id, item] of Array.from(itemsById.entries())) {
+    if (item.kind === 'approval' && !item.resolved) continue;
+    itemsById.delete(id);
+    changed = true;
+  }
+  if (!changed) return;
+  persist();
+  notifyChange();
+}

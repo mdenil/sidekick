@@ -104,4 +104,14 @@ export default async function run({ page, log, mock }) {
   const afterCount = await page.locator('#activity-drawer-panel .activity-drawer-item').count();
   assert(afterCount === beforeCount - 1, `expected dismiss to remove one row (${beforeCount} -> ${afterCount})`);
   log('dismiss x removed Activity row ✓');
+
+  await page.click('#pin-drawer-clear');
+  await page.waitForFunction(
+    () => document.querySelectorAll('#activity-drawer-panel .activity-drawer-item').length === 0,
+    null,
+    { timeout: 3_000, polling: 50 },
+  );
+  const clearHidden = await page.evaluate(() => document.getElementById('pin-drawer-clear')?.hidden ?? false);
+  assert(clearHidden, 'Activity clear button should hide after clearing all activity');
+  log('Activity clear button removed remaining rows ✓');
 }

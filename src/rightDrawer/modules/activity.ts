@@ -1,7 +1,7 @@
 import type { RightDrawerModule, RightDrawerModuleContext } from '../host.ts';
 import { miniMarkdown } from '../../util/markdown.ts';
 import {
-  clearResolved as clearResolvedActivity,
+  clearDismissible as clearDismissibleActivity,
   dismissActivity,
   listActivity,
   markRead,
@@ -25,11 +25,12 @@ export function createActivityModule(opts: {
   const render = (ctx: RightDrawerModuleContext) => {
     const items = listActivity();
     opts.list.innerHTML = '';
+    const clearable = items.some((item) => item.kind !== 'approval' || !!item.resolved);
     if (ctx.clearButton) {
-      ctx.clearButton.hidden = items.length === 0;
-      ctx.clearButton.textContent = 'Clear read';
-      ctx.clearButton.setAttribute('aria-label', 'Clear read activity');
-      ctx.clearButton.setAttribute('title', 'Clear read activity');
+      ctx.clearButton.hidden = !clearable;
+      ctx.clearButton.textContent = 'Clear';
+      ctx.clearButton.setAttribute('aria-label', 'Clear activity');
+      ctx.clearButton.setAttribute('title', 'Clear activity');
     }
     if (items.length === 0) {
       opts.empty.hidden = false;
@@ -46,7 +47,7 @@ export function createActivityModule(opts: {
     panel: opts.panel,
     toggleIds: ['btn-activity-drawer', 'btn-activity-drawer-rail'],
     render,
-    onClear: () => { clearResolvedActivity(); },
+    onClear: () => { clearDismissibleActivity(); },
     onSelect: () => { opts.onSelect?.(); },
   };
 }
