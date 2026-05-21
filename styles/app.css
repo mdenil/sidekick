@@ -2119,14 +2119,22 @@
   }
   .pin-drawer-item {
     padding: 10px 14px; border-bottom: 1px solid var(--border);
-    cursor: pointer;
     transition: background 0.12s ease;
   }
   .pin-drawer-item:hover { background: var(--surface-2); }
   .pin-item-meta {
-    display: flex; justify-content: space-between; gap: 8px;
+    display: flex; justify-content: space-between; align-items: center; gap: 8px;
     font-size: 11px; color: var(--muted); margin-bottom: 4px;
+    cursor: pointer;
+    user-select: none;
   }
+  .pin-item-meta-left { display: inline-flex; align-items: center; gap: 4px; min-width: 0; }
+  .pin-item-expand-btn {
+    width: 18px; height: 18px; padding: 0; border: 0; background: transparent;
+    color: var(--muted); display: inline-flex; align-items: center; justify-content: center;
+    border-radius: 4px; flex: 0 0 auto; cursor: pointer;
+  }
+  .pin-item-expand-btn:hover { color: var(--fg); background: var(--surface-2); }
   .pin-item-role { font-weight: 600; }
   /* Pin body renders markdown (bold/italic/code/lists/links). Collapsed
    * state caps height + adds a fade so block elements (<ul>, <pre>)
@@ -2137,6 +2145,8 @@
     font-size: 13px; line-height: 1.4; color: var(--fg);
     max-height: 4.2em; overflow: hidden;
     position: relative;
+    cursor: text;
+    user-select: text;
     word-break: break-word;
     transition: max-height 0.15s ease;
     -webkit-mask-image: linear-gradient(to bottom, #000 70%, transparent 100%);
@@ -2158,9 +2168,8 @@
   }
   .pin-item-body pre code { background: transparent; padding: 0; }
   .pin-item-body a { color: var(--primary); }
-  /* Expanded — clicking the body toggles .pin-drawer-item.expanded.
-   * Drop the height cap + fade mask + let the full stored message
-   * render (~1500 char cap from pin-time). */
+  /* Expanded — the top meta row toggles collapse. Body clicks only expand
+   * from collapsed so the expanded text remains selectable. */
   .pin-drawer-item.expanded .pin-item-body {
     max-height: none;
     -webkit-mask-image: none;
@@ -2170,6 +2179,7 @@
     margin-top: 6px;
     display: flex; align-items: center; justify-content: space-between;
     gap: 8px;
+    cursor: pointer;
   }
   .pin-item-chat {
     font-size: 11px; color: var(--muted);

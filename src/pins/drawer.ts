@@ -269,16 +269,27 @@ function renderItem(item: PinnedItem): HTMLElement {
 
   const meta = document.createElement('div');
   meta.className = 'pin-item-meta';
+  meta.setAttribute('role', 'button');
+  meta.tabIndex = 0;
+  const metaLeft = document.createElement('span');
+  metaLeft.className = 'pin-item-meta-left';
+  const expandBtn = document.createElement('button');
+  expandBtn.className = 'pin-item-expand-btn';
+  expandBtn.type = 'button';
+  expandBtn.setAttribute('aria-label', 'Expand pinned message');
+  expandBtn.setAttribute('aria-expanded', 'false');
   const role = document.createElement('span');
   role.className = 'pin-item-role';
   role.textContent = item.role === 'assistant' ? 'Agent'
     : item.role === 'system' ? 'System'
     : 'You';
+  metaLeft.appendChild(expandBtn);
+  metaLeft.appendChild(role);
   const when = document.createElement('span');
   when.className = 'pin-item-time';
   when.textContent = formatRelativeTime(item.pinnedAt);
   when.title = new Date(item.pinnedAt).toLocaleString();
-  meta.appendChild(role);
+  meta.appendChild(metaLeft);
   meta.appendChild(when);
 
   const body = document.createElement('div');
@@ -297,19 +308,15 @@ function renderItem(item: PinnedItem): HTMLElement {
   const fullText = fullTextForPin(item);
   body.dataset.text = fullText;
   body.innerHTML = miniMarkdown(fullText);
-  // Click the body to toggle expansion in-place. Multi-line clamp by
-  // default (3 lines) keeps the drawer scannable; expanded reveals
-  // the full stored text (up to ~1500 chars from pin-time). Per-item
-  // state is class-based so it survives re-renders triggered by
-  // sidekick:pins-changed (the class is re-evaluated each pass via
-  // the per-key expandedKeys set below).
-  body.style.cursor = 'pointer';
-  body.title = 'Click to expand / collapse';
-  body.onclick = (e) => {
-    e.stopPropagation();   // don't drill on body-click
-    const wasExpanded = li.classList.toggle('expanded');
-    const key = `${item.chatId}|${item.msgId}`;
-    if (wasExpanded) {
+  const key = `${item.chatId}|${item.msgId}`;
+  const setExpanded = (expanded: boolean) => {
+    li.classList.toggle('expanded', expanded);
+    expandBtn.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    expandBtn.setAttribute('aria-label', expanded ? 'Collapse pinned message' : 'Expand pinned message');
+    expandBtn.innerHTML = expanded
+      ? '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 6 8 10 12 6"/></svg>'
+      : '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 4 10 8 6 12"/></svg>';
+    if (expanded) {
       expandedKeys.add(key);
       // Re-check live text on expand — the user may have drilled into
       // the source chat between the initial render and now, making the
@@ -323,10 +330,29 @@ function renderItem(item: PinnedItem): HTMLElement {
       expandedKeys.delete(key);
     }
   };
+
+  // Collapsed body click expands for fast scanning. Once expanded, body
+  // clicks do not collapse, so dragging/selecting text is not disrupted.
+  body.title = 'Click to expand';
+  body.onclick = (e) => {
+    e.stopPropagation();
+    if (!li.classList.contains('expanded')) setExpanded(true);
+  };
+
+  const toggleExpanded = (e: Event) => {
+    e.stopPropagation();
+    setExpanded(!li.classList.contains('expanded'));
+  };
+  meta.onclick = toggleExpanded;
+  meta.onkeydown = (e) => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    e.preventDefault();
+    toggleExpanded(e);
+  };
+  expandBtn.onclick = toggleExpanded;
+
   // Apply persistent expanded state from the cross-render set.
-  if (expandedKeys.has(`${item.chatId}|${item.msgId}`)) {
-    li.classList.add('expanded');
-  }
+  setExpanded(expandedKeys.has(key));
 
   // Footer row: chat label on the left, jump-to-context icon on the
   // right. The icon is the explicit affordance Jonathan asked for —
@@ -374,7 +400,7 @@ function renderItem(item: PinnedItem): HTMLElement {
     // conversation. Field UX 2026-05-13.
     if (window.innerWidth < 700) closeDrawer();
   };
-  li.onclick = drill;
+  footer.onclick = drill;
   // Explicit handler on the jump button + stopPropagation so a click
   // doesn't double-fire via the row. Same destination either way,
   // but keeps the event accounting clean (matters for any future
