@@ -11,7 +11,7 @@
 
 import { listAllPins, totalPinCount, clearAllPins, unpinMessage, type PinnedItem } from './store.ts';
 import { log } from '../util/log.ts';
-import { createDrawer, type DrawerHandle } from '../Drawer.ts';
+import { createRightDrawerHost, type RightDrawerHost, type RightDrawerModuleContext } from '../rightDrawer/host.ts';
 import { miniMarkdown } from '../util/markdown.ts';
 import {
   clearResolved as clearResolvedActivity,
@@ -37,10 +37,9 @@ let countBanners: HTMLElement[] = [];       // both #pin-drawer-count + #pin-dra
 let activityCountBanners: HTMLElement[] = [];
 let clearBtn: HTMLElement | null = null;
 let titleEl: HTMLElement | null = null;
-let tabButtons: HTMLElement[] = [];
 let statusEl: HTMLElement | null = null;
 let statusTimer: number | null = null;
-let chromeHandle: DrawerHandle | null = null;
+let drawerHost: RightDrawerHost | null = null;
 let onPinClickCb: ((chatId: string, msgId: string) => void) | null = null;
 let onActivityOpenCb: ((chatId: string, msgId: string | null) => void) | null = null;
 let onApprovalActionCb: ((chatId: string, action: 'approve' | 'approve_session' | 'deny', msgId: string | null) => void | Promise<void>) | null = null;
@@ -54,45 +53,25 @@ let activePanel: 'pins' | 'activity' = 'pins';
 // class for absent keys).
 const expandedKeys = new Set<string>();
 
-function isOpen(): boolean {
-  return !!chromeHandle?.isOpen();
-}
-
-function openDrawer(): void { chromeHandle?.open(); }
-function closeDrawer(): void { chromeHandle?.close(); }
-
-function selectPanel(panel: 'pins' | 'activity', opts: { open?: boolean } = {}): void {
-  activePanel = panel;
-  if (titleEl) titleEl.textContent = panel === 'activity' ? 'Activity' : 'Pinned';
-  for (const btn of tabButtons) {
-    const selected = btn.dataset.rightPanel === panel;
-    btn.classList.toggle('active', selected);
-    btn.setAttribute('aria-selected', selected ? 'true' : 'false');
-  }
-  if (pinPanelEl) pinPanelEl.hidden = panel !== 'pins';
-  if (activityPanelEl) activityPanelEl.hidden = panel !== 'activity';
-  render();
-  if (opts.open) openDrawer();
-}
+function isOpen(): boolean { return !!drawerHost?.isOpen(); }
+function openDrawer(): void { drawerHost?.open(); }
+function closeDrawer(): void { drawerHost?.close(); }
 
 /** Re-render the pin list from store state. Cheap — pin counts are
  *  typically small (single-digit to dozens). Called on every
  *  sidekick:pins-changed event and on drawer open. */
-function render(): void {
-  if (activePanel === 'activity') {
-    renderActivity();
-    return;
-  }
+function renderPins(ctx?: RightDrawerModuleContext): void {
+  const activeClearBtn = ctx?.clearButton || clearBtn;
   if (!listEl || !emptyEl) return;
   const pins = listAllPins();
   listEl.innerHTML = '';
   // Clear button visible only when there's something to clear —
   // mirrors the "Mark all read" hint pattern in Settings.
-  if (clearBtn) {
-    clearBtn.hidden = pins.length === 0;
-    clearBtn.textContent = 'Clear';
-    clearBtn.setAttribute('aria-label', 'Clear all pinned messages');
-    clearBtn.setAttribute('title', 'Clear all pinned messages');
+  if (activeClearBtn) {
+    activeClearBtn.hidden = pins.length === 0;
+    activeClearBtn.textContent = 'Clear';
+    activeClearBtn.setAttribute('aria-label', 'Clear all pinned messages');
+    activeClearBtn.setAttribute('title', 'Clear all pinned messages');
   }
   if (pins.length === 0) {
     emptyEl.hidden = false;
@@ -106,15 +85,16 @@ function render(): void {
   }
 }
 
-function renderActivity(): void {
+function renderActivity(ctx?: RightDrawerModuleContext): void {
+  const activeClearBtn = ctx?.clearButton || clearBtn;
   if (!activityListEl || !activityEmptyEl) return;
   const items = listActivity();
   activityListEl.innerHTML = '';
-  if (clearBtn) {
-    clearBtn.hidden = items.length === 0;
-    clearBtn.textContent = 'Clear read';
-    clearBtn.setAttribute('aria-label', 'Clear read activity');
-    clearBtn.setAttribute('title', 'Clear read activity');
+  if (activeClearBtn) {
+    activeClearBtn.hidden = items.length === 0;
+    activeClearBtn.textContent = 'Clear read';
+    activeClearBtn.setAttribute('aria-label', 'Clear read activity');
+    activeClearBtn.setAttribute('title', 'Clear read activity');
   }
   if (items.length === 0) {
     activityEmptyEl.hidden = false;
@@ -500,7 +480,6 @@ export function initPinDrawer(opts: {
   emptyEl = document.getElementById('pin-drawer-empty');
   statusEl = document.getElementById('pin-drawer-status');
   titleEl = document.getElementById('right-drawer-title');
-  tabButtons = Array.from(document.querySelectorAll<HTMLElement>('[data-right-panel]'));
   countBanners = [
     document.getElementById('pin-drawer-count'),
     document.getElementById('pin-drawer-count-rail'),
@@ -514,28 +493,42 @@ export function initPinDrawer(opts: {
   onActivityOpenCb = opts.onActivityOpen ?? null;
   onApprovalActionCb = opts.onApprovalAction ?? null;
 
-  if (!drawerEl || !listEl || !emptyEl || !activityListEl || !activityEmptyEl) {
+  if (!drawerEl || !listEl || !emptyEl || !pinPanelEl || !activityPanelEl || !activityListEl || !activityEmptyEl) {
     log('[pin-drawer] required DOM elements missing — drawer disabled');
     return;
   }
   hydrateActivity();
 
-  // Unified drawer chrome — open/close, toggles, swipe, resizer,
-  // click-outside, Escape, .front swap, persistence. Same module
-  // the left sidebar uses; only side / body class / resizer config
-  // differ. Behavior is guaranteed-identical to the sidebar by
-  // construction.
-  chromeHandle = createDrawer({
-    id: 'pin-drawer',
-    side: 'right',
+  drawerHost = createRightDrawerHost({
+    drawerId: 'pin-drawer',
+    titleEl,
+    clearButton: clearBtn,
+    defaultModuleId: activePanel,
+    modules: [
+      {
+        id: 'activity',
+        title: 'Activity',
+        panel: activityPanelEl,
+        toggleIds: ['btn-activity-drawer', 'btn-activity-drawer-rail'],
+        render: renderActivity,
+        onClear: () => { clearResolvedActivity(); },
+        onSelect: () => { activePanel = 'activity'; },
+      },
+      {
+        id: 'pins',
+        title: 'Pinned',
+        panel: pinPanelEl,
+        toggleIds: ['btn-pin-drawer', 'btn-pin-drawer-rail'],
+        render: renderPins,
+        onClear: () => {
+          if (!window.confirm('Clear all pinned messages?')) return;
+          void clearAllPins();
+        },
+        onSelect: () => { activePanel = 'pins'; },
+      },
+    ],
     bodyClass: 'pin-drawer-open',
     prefKey: 'sidekick.pin-drawer.expanded',
-    toggleIds: [
-      'btn-pin-drawer',
-      'btn-pin-drawer-rail',
-      'btn-activity-drawer',
-      'btn-activity-drawer-rail',
-    ],
     excludeSwipeWhenTargetIn: ['#sidebar'],
     resizer: {
       handleId: 'pin-drawer-resizer',
@@ -545,35 +538,12 @@ export function initPinDrawer(opts: {
       minWidthPx: 260,
       maxWidthPx: 600,
     },
-    onOpen: () => render(),  // refresh list when drawer opens
-  });
-
-  wirePanelToggle(['btn-activity-drawer', 'btn-activity-drawer-rail'], 'activity');
-  wirePanelToggle(['btn-pin-drawer', 'btn-pin-drawer-rail'], 'pins');
-  for (const btn of tabButtons) {
-    btn.addEventListener('click', () => {
-      const panel = btn.dataset.rightPanel === 'activity' ? 'activity' : 'pins';
-      selectPanel(panel);
-    });
-  }
-
-  // Per-row controls — Clear-all only. The X close button was dropped
-  // 2026-05-16 (Jonathan: pin/session-drawer symmetry — session drawer
-  // closes via the rail toggle / Esc / click-outside / swipe; pin
-  // drawer now uses the same affordances, no header X).
-  if (clearBtn) clearBtn.addEventListener('click', () => {
-    if (activePanel === 'activity') {
-      clearResolvedActivity();
-      return;
-    }
-    if (!window.confirm('Clear all pinned messages?')) return;
-    void clearAllPins();
   });
 
   // Repaint on store mutations.
   window.addEventListener('sidekick:pins-changed', () => {
     refreshCountBanner();
-    if (isOpen()) render();
+    if (isOpen()) drawerHost?.render();
   });
   window.addEventListener('sidekick:activity-changed', () => {
     refreshActivityCountBanner();
@@ -586,26 +556,5 @@ export function initPinDrawer(opts: {
 
   refreshCountBanner();
   refreshActivityCountBanner();
-  selectPanel(activePanel);
   log('[pin-drawer] initialized');
-}
-
-function wirePanelToggle(ids: string[], panel: 'pins' | 'activity'): void {
-  for (const id of ids) {
-    const btn = document.getElementById(id);
-    if (!btn) continue;
-    btn.addEventListener('click', (e) => {
-      // Capture-phase override for Drawer.ts's generic toggle listener:
-      // the rail now has two module icons. Clicking the active module
-      // toggles the drawer; clicking the inactive module switches panels.
-      e.preventDefault();
-      e.stopImmediatePropagation();
-      e.stopPropagation();
-      if (isOpen() && activePanel === panel) {
-        closeDrawer();
-        return;
-      }
-      selectPanel(panel, { open: true });
-    }, true);
-  }
 }
