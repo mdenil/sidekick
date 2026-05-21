@@ -649,7 +649,23 @@ async function boot() {
   // resume + replay + scroll-to behavior.
   const drillToChatMessage = async (
     chatId: string, msgId: string | null,
-  ): Promise<void> => {
+    opts: { validateExists?: boolean } = {},
+  ): Promise<boolean> => {
+    if (opts.validateExists) {
+      try {
+        const probe: any = await backend.fetchSessionMessages(chatId);
+        const hasContent = (probe.messages || []).length > 0 || (probe.inflight || []).length > 0;
+        if (!hasContent) {
+          diag(`drill: ${chatId} has no durable/inflight messages; dropping stale activity link`);
+          status.setStatus('That activity item no longer has a session.', 'err');
+          return false;
+        }
+      } catch (e: any) {
+        diag(`drill: validation fetch ${chatId} failed: ${e?.message ?? e}`);
+        status.setStatus('Could not open that activity item.', 'err');
+        return false;
+      }
+    }
     const leaving = backend.getCurrentSessionId?.() ?? null;
     if (leaving !== chatId) {
       try { cleanupAbandonedChat(leaving); }
@@ -660,8 +676,10 @@ async function boot() {
       const messages = result.messages || [];
       const pagination = { firstId: result.firstId ?? null, hasMore: !!result.hasMore };
       replaySessionMessages(chatId, messages, pagination, msgId ?? undefined);
+      return true;
     } catch (e: any) {
       diag(`drill: resume ${chatId} failed: ${e?.message ?? e}`);
+      return false;
     }
   };
   // In-app notification banner — when a notification envelope arrives
@@ -703,7 +721,7 @@ async function boot() {
   };
   initPinDrawer({
     onPinClick: (chatId, msgId) => { void drillToChatMessage(chatId, msgId); },
-    onActivityOpen: (chatId, msgId) => { void drillToChatMessage(chatId, msgId); },
+    onActivityOpen: (chatId, msgId) => drillToChatMessage(chatId, msgId, { validateExists: true }),
     onApprovalAction: (chatId, action, msgId) => { void sendApprovalAction(chatId, action, msgId); },
   });
   inAppBanner.init({

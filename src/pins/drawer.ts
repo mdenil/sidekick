@@ -41,7 +41,7 @@ let statusEl: HTMLElement | null = null;
 let statusTimer: number | null = null;
 let drawerHost: RightDrawerHost | null = null;
 let onPinClickCb: ((chatId: string, msgId: string) => void) | null = null;
-let onActivityOpenCb: ((chatId: string, msgId: string | null) => void) | null = null;
+let onActivityOpenCb: ((chatId: string, msgId: string | null) => boolean | Promise<boolean | void> | void) | null = null;
 let onApprovalActionCb: ((chatId: string, action: 'approve' | 'approve_session' | 'deny', msgId: string | null) => void | Promise<void>) | null = null;
 let activePanel: 'pins' | 'activity' = 'pins';
 
@@ -186,7 +186,10 @@ function renderActivityItem(item: ActivityItem): HTMLElement {
 
   li.onclick = () => {
     markRead(item.id);
-    if (item.chatId && onActivityOpenCb) onActivityOpenCb(item.chatId, item.messageId || null);
+    if (item.chatId && onActivityOpenCb) {
+      void Promise.resolve(onActivityOpenCb(item.chatId, item.messageId || null))
+        .then((ok) => { if (ok === false) dismissActivity(item.id); });
+    }
   };
   return li;
 }
@@ -467,7 +470,7 @@ function showPinStatus(message: string): void {
  *  drill-to-chat events from item clicks. */
 export function initPinDrawer(opts: {
   onPinClick: (chatId: string, msgId: string) => void;
-  onActivityOpen?: (chatId: string, msgId: string | null) => void;
+  onActivityOpen?: (chatId: string, msgId: string | null) => boolean | Promise<boolean | void> | void;
   onApprovalAction?: (chatId: string, action: 'approve' | 'approve_session' | 'deny', msgId: string | null) => void | Promise<void>;
 }): void {
   if (drawerEl) return;  // already wired
