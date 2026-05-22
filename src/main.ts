@@ -469,6 +469,9 @@ async function boot() {
     fakeLock.show();
   };
 
+  const defaultDrawerWidthPx = () => Math.max(360, Math.min(Math.round(window.innerWidth * 0.50), 720));
+  const maxDrawerWidthPx = () => Math.max(600, Math.min(Math.round(window.innerWidth * 0.60), 900));
+
   // Sidebar — always visible (48px rail), expands on hamburger. Holds
   // new-chat, sessions list (if backend supports it), and info/settings
   // at the bottom. Desktop: expand state persists across reload and shifts
@@ -488,10 +491,10 @@ async function boot() {
     resizer: {
       handleId: 'sidebar-resizer',
       cssVar: '--sidebar-width',
-      widthPrefKey: 'sidekick.sidebarWidth',
-      defaultWidthPx: 300,
-      minWidthPx: 220,
-      maxWidthPx: 600,
+      widthPrefKey: 'sidekick.sidebarWidth.v2',
+      defaultWidthPx: defaultDrawerWidthPx(),
+      minWidthPx: 260,
+      maxWidthPx: maxDrawerWidthPx(),
     },
     onOpen: () => sessionDrawer.refresh(),  // fresh data on open
   });

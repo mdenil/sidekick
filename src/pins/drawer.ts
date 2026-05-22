@@ -22,6 +22,14 @@ let statusTimer: number | null = null;
 let drawerHost: RightDrawerHost | null = null;
 let activePanel: 'pins' | 'activity' = 'pins';
 
+function defaultDrawerWidthPx(): number {
+  return Math.max(360, Math.min(Math.round(window.innerWidth * 0.50), 720));
+}
+
+function maxDrawerWidthPx(): number {
+  return Math.max(600, Math.min(Math.round(window.innerWidth * 0.60), 900));
+}
+
 function isOpen(): boolean { return !!drawerHost?.isOpen(); }
 function openDrawer(): void { drawerHost?.open(); }
 
@@ -116,10 +124,10 @@ export function initPinDrawer(opts: {
     resizer: {
       handleId: 'pin-drawer-resizer',
       cssVar: '--pin-drawer-width',
-      widthPrefKey: 'sidekick.pinDrawerWidth',
-      defaultWidthPx: 360,
+      widthPrefKey: 'sidekick.pinDrawerWidth.v2',
+      defaultWidthPx: defaultDrawerWidthPx(),
       minWidthPx: 260,
-      maxWidthPx: 600,
+      maxWidthPx: maxDrawerWidthPx(),
     },
   });
 

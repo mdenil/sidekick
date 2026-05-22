@@ -79,7 +79,13 @@
    * exactly behind the panel without overlap. JS sidebarResize updates
    * the variable; CSS reads it. Default 300px matches the no-resize
    * baseline. */
-  body.sidebar-expanded { padding-left: var(--sidebar-width, 300px); }
+  body.sidebar-expanded { padding-left: var(--sidebar-width, var(--drawer-expanded-width)); }
+
+  /* Shared desktop drawer target. Both drawers can still be resized, but
+   * the uncustomized/default width should be wide enough to read long
+   * pinned/activity text like native chat. Use 50vw as the default reading width; drag can take a drawer
+   * wider when needed, but the two default drawers remain equal. */
+  :root { --drawer-expanded-width: clamp(360px, 50vw, 720px); }
 
   /* ── Sidebar (Gemini-style): persistent collapsed rail, expands on hamburger ── */
   #sidebar {
@@ -97,7 +103,7 @@
    * resizer can adjust it without battling the CSS cascade. Default
    * 300px; main.ts restores any persisted preference on boot and clamps
    * to [220, 600] in the drag handler. */
-  #sidebar.expanded { width: var(--sidebar-width, 300px); }
+  #sidebar.expanded { width: var(--sidebar-width, var(--drawer-expanded-width)); }
   /* Resizer: a thin column hugging the sidebar's right edge. Catches
    * pointer events on a 6px-wide hit zone (visual line is 1px). Only
    * visible/usable when the sidebar is expanded; hidden on the rail and
@@ -1857,7 +1863,7 @@
    *     the discoverable toggle here.
    */
   body { padding-right: 48px; transition: padding-right 0.18s ease; }
-  body.pin-drawer-open { padding-right: var(--pin-drawer-width, 360px); }
+  body.pin-drawer-open { padding-right: var(--pin-drawer-width, var(--drawer-expanded-width)); }
 
   /* When both drawers are open and overlap (mobile), whichever was
    * opened most recently gets `.front` and rises one z-index layer
@@ -1885,7 +1891,7 @@
     overflow: hidden;
     transition: width 0.18s ease;
   }
-  #pin-drawer:not(.collapsed) { width: var(--pin-drawer-width, 360px); }
+  #pin-drawer:not(.collapsed) { width: var(--pin-drawer-width, var(--drawer-expanded-width)); }
 
   /* Resizer on the LEFT edge of the right drawer. Hidden on rail-
    * collapsed + mobile (mirror of the sidebar-resizer pattern). */
