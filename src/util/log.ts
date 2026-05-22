@@ -107,7 +107,10 @@ export function log(...args) {
     debugEl.scrollTop = debugEl.scrollHeight;
   }
   console.log('[dbg]', ...args);
-  if (relayOn && relaySessionId) relayQueue.push(line);
+  if (relayOn && relaySessionId) {
+    relayQueue.push(line);
+    scheduleRelayFlush();
+  }
 }
 
 /** High-frequency diagnostic log. No-op unless the debug flag is on. */
@@ -119,6 +122,15 @@ export function diag(...args) {
 
 const relayQueue: string[] = [];
 let relayBootAnnounced = false;
+let relayFlushTimer: ReturnType<typeof setTimeout> | null = null;
+
+function scheduleRelayFlush(delayMs = 1000): void {
+  if (!relayOn || !relaySessionId || relayFlushTimer) return;
+  relayFlushTimer = setTimeout(() => {
+    relayFlushTimer = null;
+    void flushRelay(false);
+  }, delayMs);
+}
 
 /** Flush queued lines to the relay endpoint. Best-effort: drops the
  *  batch silently on network failure (next batch retries). */
@@ -158,11 +170,9 @@ if (relayOn && relaySessionId && typeof window !== 'undefined') {
     relayBootAnnounced = true;
     log(`[debug-relay] enabled — logs streaming to /tmp/sidekick-debug/${relaySessionId}.log (latest.log → same)`);
   });
-  // 250ms cadence is the sweet spot: tight enough that a crashed page
-  // loses <1 line on average, loose enough to coalesce burst log
-  // sequences (barge ticks, dictate splices) into one POST per ~5
-  // events instead of one POST per event.
-  setInterval(() => { void flushRelay(false); }, 250);
+  // Relay flush is lazy: schedule only after log() enqueues a line.
+  // A fixed 250ms interval was measurable phone-battery tax in dev mode,
+  // especially while the PWA was locked/backgrounded with an empty queue.
   // Flush remaining lines on page unload via Beacon — fetch with
   // keepalive can drop on Safari; sendBeacon is reliable cross-browser.
   window.addEventListener('pagehide', () => { void flushRelay(true); });
