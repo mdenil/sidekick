@@ -6,9 +6,7 @@ import {
   listActivity,
   refreshFromServer,
   markRead,
-  resolveActivity,
   type ActivityItem,
-  type ActivityResolution,
 } from '../../notifications/activityStore.ts';
 import { chatLabelFor, formatRelativeTime } from './common.ts';
 
@@ -74,7 +72,13 @@ function renderActivityItem(item: ActivityItem, opts: {
   when.className = 'activity-item-time';
   when.textContent = formatRelativeTime(item.createdAt);
   when.title = new Date(item.createdAt).toLocaleString();
+  const state = document.createElement('span');
+  state.className = 'activity-item-read-state';
+  state.textContent = item.kind === 'approval' && !item.resolved
+    ? 'Action needed'
+    : (!item.read && !item.resolved ? 'New' : 'Read');
   meta.appendChild(title);
+  meta.appendChild(state);
   meta.appendChild(when);
 
   const body = document.createElement('div');
@@ -92,8 +96,7 @@ function renderActivityItem(item: ActivityItem, opts: {
       btn.textContent = label;
       btn.onclick = (e) => {
         e.stopPropagation();
-        const resolution: ActivityResolution = action === 'approve' ? 'approved' : action === 'approve_session' ? 'approved_session' : 'denied';
-        resolveActivity(item.id, resolution);
+        dismissActivity(item.id);
         void opts.onApprovalAction?.(item.chatId!, action, item.messageId || null);
       };
       actions.appendChild(btn);

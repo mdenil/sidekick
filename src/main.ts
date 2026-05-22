@@ -3459,6 +3459,11 @@ async function boot() {
       const el = document.getElementById(id);
       if (el) setTooltip(el, pinHotkeyLabel);
     }
+    const activityHotkeyLabel = 'Activity  ·  ' + formatHotkey('Cmd+Shift+A');
+    for (const id of ['btn-activity-drawer-rail', 'btn-activity-drawer']) {
+      const el = document.getElementById(id);
+      if (el) setTooltip(el, activityHotkeyLabel);
+    }
     // Sidebar toggle gets its existing Cmd+Shift+S hint here too so
     // we don't have a tooltip-symmetry gap between the two drawers.
     const sbToggleEl = document.getElementById('sb-toggle');
@@ -3823,6 +3828,12 @@ async function boot() {
       // mouse exercises runs (handles count-banner refresh + body
       // class for the desktop push layout).
       const btn = document.getElementById('btn-pin-drawer') as HTMLButtonElement | null;
+      btn?.click();
+      return;
+    }
+    if (matches('Cmd+Shift+A')) {
+      claim();
+      const btn = document.getElementById('btn-activity-drawer') as HTMLButtonElement | null;
       btn?.click();
       return;
     }
@@ -4258,6 +4269,7 @@ function schedulePostFinalDurableRefresh(
  *  pull out image attachments. */
 function handleReplyFinal({ replyId, text, content = [], conversation, messageId, isReplay = false }: any) {
   sessionDrawer.scheduleRefresh();
+  if (!isReplay && conversation) activityStore.dismissApprovalsForChat(conversation);
 
   // Push the envelope into the store unconditionally — even for
   // background chats. The store is per-chat; the active chat re-renders

@@ -36,6 +36,7 @@ import * as activityStore from './notifications/activityStore.ts';
  *  chats: bump the badge counter. */
 export function handleNotification({ chatId, kind, content, sidekickId, isReplay }: any): void {
   const replay = isReplay === true;
+  if (!replay && chatId && kind !== 'approval') activityStore.dismissApprovalsForChat(chatId);
   if (!replay) {
     activityStore.upsertNotification({
       chatId: chatId || null,
@@ -134,4 +135,7 @@ export function handleUserMessage({ conversation, text, messageId }: any): void 
   // dedups against inflight regardless, but cleaning up keeps the
   // store hygienic.
   transcriptStore.clearPendingSend(conversation, messageId);
+  if (/^\s*\/(approve(?:\s+session|\s+always)?|deny)\b/i.test(text)) {
+    activityStore.dismissApprovalsForChat(conversation);
+  }
 }

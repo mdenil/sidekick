@@ -97,6 +97,8 @@ export default async function run({ page, log, mock }) {
   await page.click('#btn-activity-drawer-rail');
   await page.waitForSelector('#activity-drawer-panel:not([hidden]) .activity-drawer-item', { timeout: 3_000 });
   const text = await activityText(page);
+  assert(text.includes('Read'), 'read Activity row state missing');
+  assert(text.includes('New'), 'unread Activity row state missing');
   assert(text.includes('Reply · Weather Tool Check'), 'agent reply Activity title missing');
   assert(text.includes('Weather check complete'), 'agent reply Activity body missing');
   assert(text.includes('Cron · Cron Timer Check'), 'cron Activity title missing');

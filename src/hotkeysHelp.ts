@@ -123,6 +123,7 @@ function buildCatalog(): Category[] {
         { keys: ['Cmd+Shift+S', 'Ctrl+Shift+S'], label: 'Toggle sessions sidebar' },
         { keys: ['Cmd+Shift+O', 'Ctrl+Shift+O'], label: 'New chat' },
         { keys: ['Cmd+Shift+P', 'Ctrl+Shift+P'], label: 'Toggle pinned-messages drawer' },
+        { keys: ['Cmd+Shift+A', 'Ctrl+Shift+A'], label: 'Toggle Activity drawer' },
         { keys: ['↑', '↓'], label: 'Navigate sessions while the sidebar search has focus' },
       ],
     },

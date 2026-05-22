@@ -2062,12 +2062,16 @@
     padding: 10px 14px;
     border-bottom: 1px solid var(--border);
     cursor: pointer;
-    transition: background 0.12s ease;
+    transition: background 0.12s ease, opacity 0.12s ease;
+  }
+  .activity-drawer-item:not(.activity-unread):not(.activity-approval) {
+    opacity: 0.72;
   }
   .activity-drawer-item:hover { background: var(--surface-2); }
   .activity-drawer-item.activity-unread {
     border-left: 3px solid var(--primary);
     padding-left: 11px;
+    background: color-mix(in srgb, var(--primary) 4%, transparent);
   }
   .activity-drawer-item.activity-approval.activity-unread {
     border-left-color: var(--danger);
@@ -2083,6 +2087,26 @@
   .activity-item-title {
     font-weight: 700; color: var(--fg);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .activity-item-read-state {
+    flex: 0 0 auto;
+    font-size: 10px;
+    line-height: 1;
+    padding: 3px 6px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--muted);
+    background: var(--surface);
+  }
+  .activity-drawer-item.activity-unread .activity-item-read-state {
+    color: var(--primary);
+    border-color: color-mix(in srgb, var(--primary) 50%, var(--border));
+    background: color-mix(in srgb, var(--primary) 8%, var(--surface));
+  }
+  .activity-drawer-item.activity-approval:not(.activity-resolved) .activity-item-read-state {
+    color: var(--danger);
+    border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
+    background: color-mix(in srgb, var(--danger) 8%, var(--surface));
   }
   .activity-item-body {
     font-size: 13px; line-height: 1.4; color: var(--fg);

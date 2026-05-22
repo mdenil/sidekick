@@ -126,6 +126,7 @@ export async function refreshFromServer(): Promise<void> {
       const item = normalizeItem(raw);
       if (item) next.set(item.id, item);
     }
+    pruneSupersededApprovals(next);
     const firstServerHydrate = !serverHydrated;
     serverHydrated = true;
     if (firstServerHydrate && next.size === 0 && itemsById.size > 0) {
@@ -156,6 +157,22 @@ function requestRefresh(): void {
     refreshTimer = null;
     void refreshFromServer();
   }, 150);
+}
+
+function pruneSupersededApprovals(items: Map<string, ActivityItem>): void {
+  const newestByChat = new Map<string, number>();
+  for (const item of items.values()) {
+    if (!item.chatId || item.kind === 'approval') continue;
+    newestByChat.set(item.chatId, Math.max(newestByChat.get(item.chatId) ?? 0, item.createdAt));
+  }
+  for (const [id, item] of Array.from(items.entries())) {
+    if (item.kind !== 'approval' || item.resolved || !item.chatId) continue;
+    const newer = newestByChat.get(item.chatId) ?? 0;
+    if (newer > item.createdAt) {
+      items.delete(id);
+      void fetch('/api/sidekick/activity/' + encodeURIComponent(id), { method: 'DELETE' }).catch(() => {});
+    }
+  }
 }
 
 function normalizeKind(kind: unknown): ActivityKind {
@@ -244,6 +261,22 @@ export function markRead(id: string): void {
   persist();
   notifyChange();
   void postJson('/api/sidekick/activity', payloadForServer(next));
+}
+
+export function dismissApprovalsForChat(chatId: string): void {
+  hydrate();
+  if (!chatId) return;
+  let changed = false;
+  for (const [id, item] of Array.from(itemsById.entries())) {
+    if (item.chatId !== chatId || item.kind !== 'approval' || item.resolved) continue;
+    itemsById.delete(id);
+    changed = true;
+    void fetch(`/api/sidekick/activity/${encodeURIComponent(id)}`, { method: 'DELETE' }).catch(() => {});
+  }
+  if (changed) {
+    persist();
+    notifyChange();
+  }
 }
 
 export function markChatRead(chatId: string): void {

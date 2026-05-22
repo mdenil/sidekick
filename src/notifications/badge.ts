@@ -19,6 +19,7 @@
 // and can't disagree.
 
 import { log } from '../util/log.ts';
+import * as activityStore from './activityStore.ts';
 
 // Read-through cache. The Map values are the per-chat unread counts
 // the server returned at the last refresh. NEVER mutate these
@@ -105,6 +106,7 @@ async function refreshFromServer(): Promise<void> {
       for (const k of nextMarked) markedUnread.add(k);
     }
     await syncBadge();
+    if (totalUnread() === 0 && activityStore.unreadActivityCount() > 0) activityStore.markAllRead();
     if (changed) notifyChange();
   } catch { /* swallow — best-effort */ }
 }
