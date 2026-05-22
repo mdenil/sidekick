@@ -542,11 +542,11 @@ def list_messages_for_chat_with_state_db_source(
     # requested chat_id. Without this, compacted-out turns are
     # invisible (Jonathan field bug 2026-05-12).
     sql = """
-        WITH RECURSIVE session_root(id, root_system_prompt) AS (
-            SELECT id, system_prompt FROM sessions
+        WITH RECURSIVE session_root(id, root_system_prompt, is_compaction_child) AS (
+            SELECT id, system_prompt, 0 FROM sessions
              WHERE user_id = ? AND source = ?
             UNION ALL
-            SELECT s.id, sr.root_system_prompt
+            SELECT s.id, sr.root_system_prompt, 1
               FROM sessions s
               JOIN session_root sr ON s.parent_session_id = sr.id
              WHERE s.user_id IS NULL
@@ -554,7 +554,7 @@ def list_messages_for_chat_with_state_db_source(
                AND SUBSTR(COALESCE(s.system_prompt, ''), 1, 200)
                    = SUBSTR(sr.root_system_prompt, 1, 200)
         )
-        SELECT m.id, m.session_id, m.role, m.content, m.tool_name,
+        SELECT m.id, m.session_id, sr.is_compaction_child, m.role, m.content, m.tool_name,
                m.tool_call_id, m.tool_calls, m.timestamp
         FROM messages m
         JOIN session_root sr ON m.session_id = sr.id
@@ -581,13 +581,14 @@ def list_messages_for_chat_with_state_db_source(
     # head-block elision).
     compaction_head_end_per_session: Dict[str, int] = {}
     for r in rows:
-        if (r["content"] or "").startswith("[CONTEXT COMPACTION"):
+        if r["is_compaction_child"] and (r["content"] or "").startswith("[CONTEXT COMPACTION"):
             cur = compaction_head_end_per_session.get(r["session_id"], 0)
             if r["id"] > cur:
                 compaction_head_end_per_session[r["session_id"]] = r["id"]
     surviving = [
         r for r in rows
-        if not (
+        if not (r["content"] or "").startswith("[CONTEXT COMPACTION")
+        and not (
             (drop_through := compaction_head_end_per_session.get(r["session_id"])) is not None
             and r["id"] <= drop_through
         )
