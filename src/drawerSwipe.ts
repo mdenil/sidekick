@@ -379,6 +379,7 @@ export function initDrawerSwipe(opts: DrawerSwipeOptions): void {
     resetInlineTransform();
   }, { passive: true, capture: true });
   setInterval(() => {
+    if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
     if (!document.body.classList.contains('swipe-active')) return;
     const ageMs = lockSetAt ? Date.now() - lockSetAt : -1;
     if (ageMs >= 0 && ageMs < 2000) return;

@@ -142,10 +142,21 @@ async function refreshModelState() {
   }
 }
 
+function shouldPollModels(): boolean {
+  return typeof document === 'undefined' || document.visibilityState === 'visible';
+}
+
 function startModelPoll() {
   if (modelPollTimer) return;
-  // 30s — cheap: config.get is a file-read. Catches CLI-side changes.
-  modelPollTimer = setInterval(() => { refreshModelState().catch(() => {}); }, 30_000);
+  // 30s — cheap, but still avoid hidden-page wakeups on phone PWAs.
+  modelPollTimer = setInterval(() => {
+    if (shouldPollModels()) refreshModelState().catch(() => {});
+  }, 30_000);
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', () => {
+      if (shouldPollModels()) refreshModelState().catch(() => {});
+    });
+  }
 }
 
 // Built-in fallbacks. Two storage backends — keep the split principled,

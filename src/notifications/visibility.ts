@@ -1,6 +1,6 @@
 // Client-side visibility reporter. Posts visibility/focus-state changes
 // to the proxy so the dispatch gate knows whether the user is actively
-// engaged with a chat (within a 2s engagement window).
+// engaged with a chat (within a short engagement window).
 //
 // Three fire conditions:
 //
@@ -17,7 +17,7 @@
 //
 //   3. Heartbeat — every HEARTBEAT_MS while page.visibilityState is
 //      'visible' AND a chat is viewed. Without this, sitting on the
-//      same chat for >2s with no events lets the server-side
+//      same chat with no events lets the server-side
 //      timestamp age past ENGAGED_WINDOW_MS and the very next reply
 //      gets a spurious push banner (Jonathan field bug 2026-05-12).
 //
@@ -30,17 +30,48 @@ import { log } from '../util/log.ts';
 
 type VisibilityState = 'visible' | 'hidden';
 
-// Heartbeat cadence — must be strictly less than the proxy-side
-// ENGAGED_WINDOW_MS (notifications/visibility.ts, currently 2000ms)
-// so a single dropped request can't open a window where the server
-// thinks the user isn't engaged. 1500ms leaves a 500ms safety margin.
-const HEARTBEAT_MS = 1500;
+// Heartbeat cadence — must be less than the proxy-side
+// ENGAGED_WINDOW_MS (currently 10s). 8s keeps foreground engagement
+// fresh while avoiding the old 1.5s phone battery/network tax. Hidden
+// and blur still report immediately, so background replies still push.
+const HEARTBEAT_MS = 8000;
 
 let lastReportedState: VisibilityState | null = null;
 let lastReportedChat: string | null = null;
 let initialized = false;
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 let getViewedRef: (() => string | null) | null = null;
+
+function isEngagedNow(): boolean {
+  if (typeof document === 'undefined') return true;
+  return document.visibilityState === 'visible' && document.hasFocus() && !!(getViewedRef?.() || '');
+}
+
+function stopHeartbeat(): void {
+  if (heartbeatTimer) {
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
+  }
+}
+
+function startHeartbeat(): void {
+  if (heartbeatTimer || !isEngagedNow()) return;
+  heartbeatTimer = setInterval(() => {
+    if (!isEngagedNow()) {
+      stopHeartbeat();
+      return;
+    }
+    const chatId = getViewedRef?.() || '';
+    lastReportedState = 'visible';
+    lastReportedChat = chatId;
+    void postVisibility('visible', chatId);
+  }, HEARTBEAT_MS);
+}
+
+function syncHeartbeat(): void {
+  if (isEngagedNow()) startHeartbeat();
+  else stopHeartbeat();
+}
 
 async function postVisibility(state: VisibilityState, chatId: string): Promise<void> {
   try {
@@ -59,10 +90,14 @@ async function postVisibility(state: VisibilityState, chatId: string): Promise<v
 /** Idempotent. Reports only when state OR chat actually changed —
  *  avoids burning HTTP roundtrips on no-op events. */
 function reportVisibility(state: VisibilityState, chatId: string, force = false): void {
-  if (!force && state === lastReportedState && chatId === lastReportedChat) return;
+  if (!force && state === lastReportedState && chatId === lastReportedChat) {
+    syncHeartbeat();
+    return;
+  }
   lastReportedState = state;
   lastReportedChat = chatId;
   void postVisibility(state, chatId);
+  syncHeartbeat();
 }
 
 /** Wire the listeners. Called once at boot from main.ts. The
@@ -103,22 +138,12 @@ export function initVisibilityReporting(getViewed: () => string | null): void {
   window.addEventListener('blur', () => reportCurrent(true));
 
   // Heartbeat — keeps the proxy's engagement timestamp fresh while the
-  // user sits on a chat. Without this, the timestamp ages past the 2s
-  // server window and any new reply gets a spurious push banner
-  // (Jonathan field bug 2026-05-12). Bypasses maybeReport's dedup
-  // gating so the timestamp REFRESHES each tick — that's the entire
-  // point. Suppressed while page is hidden (the 'hidden' state from
-  // visibilitychange already informs the server) and when no chat is
-  // viewed.
-  heartbeatTimer = setInterval(() => {
-    if (typeof document === 'undefined') return;
-    if (document.visibilityState !== 'visible' || !document.hasFocus()) return;
-    const chatId = getViewedRef?.() || '';
-    if (!chatId) return;
-    lastReportedState = 'visible';
-    lastReportedChat = chatId;
-    void postVisibility('visible', chatId);
-  }, HEARTBEAT_MS);
+  // user sits on a chat. Without this, the timestamp ages past the server
+  // engagement window and any new reply gets a spurious push banner
+  // (Jonathan field bug 2026-05-12). The timer exists only while the
+  // page is foregrounded/focused on a chat; hidden/blur stops it instead
+  // of waking phone PWAs to no-op.
+  syncHeartbeat();
 }
 
 /** Reports the user switched to chat `chatId`. Called from
@@ -134,4 +159,5 @@ export function reportChatSwitch(chatId: string | null): void {
   // Only fire when actually changing chat/state — backbone re-renders
   // (resume() called twice for the same chat) shouldn't burn an HTTP.
   reportVisibility(state, id);
+  syncHeartbeat();
 }

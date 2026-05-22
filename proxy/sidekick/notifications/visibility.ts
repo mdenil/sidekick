@@ -18,16 +18,16 @@
 // The visibility signal is the most direct + accurate: the PWA tells
 // us, on every document.visibilitychange + every chat switch, what
 // chat (if any) the user is actively viewing. The gate trusts the
-// signal for a SHORT window (ENGAGED_WINDOW_MS = 2000ms, set 2026-05-12
-// per Jonathan's responsiveness-bias: better push twice on a fast tab
-// flick than miss a reply). Beyond the window, fall back to the
+// signal for a short window (ENGAGED_WINDOW_MS = 10000ms). The PWA
+// heartbeats every 8s while foregrounded/focused; hidden and blur clear
+// immediately so background replies still push. Beyond the window, fall back to the
 // existing hasActiveSubFor + idle gates.
 //
 // State is in-process only — no persistence. Subscriptions persist
 // across proxy restart; visibility doesn't, and that's fine because
 // the PWA re-reports on the next visibilitychange or chat switch.
 
-const ENGAGED_WINDOW_MS = 2000;
+const ENGAGED_WINDOW_MS = 10000;
 
 /** Per-chat last visibility-visible timestamp. Updated on every
  *  POST /api/sidekick/notifications/visibility with state='visible'.

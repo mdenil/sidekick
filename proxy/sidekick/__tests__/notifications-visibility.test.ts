@@ -6,9 +6,9 @@
  * or fails to fire when you've backgrounded → silent missed reply),
  * so each case is its own test.
  *
- * Window constant: ENGAGED_WINDOW_MS = 2s. The PWA reports
+ * Window constant: ENGAGED_WINDOW_MS = 10s. The PWA reports
  * visibility=visible + viewed-chat=X every time visibility toggles
- * AND every time the user switches chats. Within the 2s window, the
+ * AND every time the user switches chats. Within the engagement window, the
  * gate suppresses push. Beyond it, push fires.
  *
  * The legacy SSE+30s-idle gate remains as a fallback when visibility
@@ -87,7 +87,7 @@ async function startVisRig(opts: { subscriptionSuffix?: string } = {}) {
   };
 }
 
-/** Backdate the engagement timestamp so tests can step past the 2s
+/** Backdate the engagement timestamp so tests can step past the engagement
  *  window without sleeping. Uses the module's test seam directly. */
 async function backdateEngagement(chatId: string, msAgo: number) {
   const v = await import('../notifications/visibility.ts');
@@ -96,7 +96,7 @@ async function backdateEngagement(chatId: string, msAgo: number) {
 
 // ── Case 1: foregrounded + recent visibility → NO push ─────────────
 
-test('case 1: chat foreground, visibility=visible <2s → no push (SSE delivers)', async () => {
+test('case 1: chat foreground, fresh visibility=visible → no push (SSE delivers)', async () => {
   const g = await startVisRig({ subscriptionSuffix: 'c1' });
   try {
     await g.reportVisibility('visible', 'chat-A');
@@ -133,7 +133,7 @@ test('hidden visibility clears engagement immediately', async () => {
     await g.reportVisibility('hidden', 'chat-A');
     await g.pushEnv({ type: 'reply_final', chat_id: 'chat-A', should_push: true, text: 'reply' });
     assert.equal(g.sent.length, 1,
-      'hidden/blurred should clear engagement immediately, without a 2s grace period');
+      'hidden/blurred should clear engagement immediately, without a grace period');
   } finally {
     await g.stop();
   }
@@ -150,7 +150,7 @@ test('case 3: user switched to chat B in PWA, envelope for chat A → push for A
     // chat-A's timestamp is older than chat-B's now. Backdate it past
     // the window — this simulates the user having spent 2+ seconds
     // looking at chat-B since leaving A.
-    await backdateEngagement('chat-A', 3000);
+    await backdateEngagement('chat-A', 11_000);
 
     await g.pushEnv({ type: 'reply_final', chat_id: 'chat-A', should_push: true, text: 'reply' });
     assert.equal(g.sent.length, 1,
@@ -187,7 +187,7 @@ test('case 4: SSE attached, channel quiet >30s (legacy gate fallback) → push',
 
 // ── Case 5: two finals same chat within window → one push (tag coalesce) ─
 
-test('case 5: two reply_finals for same chat in <2s → one push (Apple-side coalesce via tag)', async () => {
+test('case 5: two reply_finals for same chat in a short burst → one push (Apple-side coalesce via tag)', async () => {
   const g = await startVisRig({ subscriptionSuffix: 'c5' });
   try {
     // User backgrounded, both envelopes off-screen.
@@ -285,7 +285,7 @@ test('case 12: visibility=hidden for 200ms → reply during blur → push', asyn
 
     await g.pushEnv({ type: 'reply_final', chat_id: 'chat-A', should_push: true, text: 'reply' });
     assert.equal(g.sent.length, 1,
-      'hidden/blurred is not engaged, even inside the old 2s grace period');
+      'hidden/blurred is not engaged, even inside the old grace period');
   } finally {
     await g.stop();
   }
@@ -293,15 +293,15 @@ test('case 12: visibility=hidden for 200ms → reply during blur → push', asyn
 
 // ── Bonus: stale visibility report (>2s) on subsequent envelope ─────
 
-test('bonus: visibility=visible reported >2s ago → push fires (decay)', async () => {
+test('bonus: visibility=visible reported past engagement window → push fires (decay)', async () => {
   const g = await startVisRig({ subscriptionSuffix: 'decay' });
   try {
     await g.reportVisibility('visible', 'chat-A');
-    await backdateEngagement('chat-A', 2500);  // outside the window
+    await backdateEngagement('chat-A', 11_000);  // outside the window
 
     await g.pushEnv({ type: 'reply_final', chat_id: 'chat-A', should_push: true, text: 'reply' });
     assert.equal(g.sent.length, 1,
-      'engagement decays past 2s — no fresh report means no engagement');
+      'engagement decays past the window — no fresh report means no engagement');
   } finally {
     await g.stop();
   }

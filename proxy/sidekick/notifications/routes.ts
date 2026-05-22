@@ -207,7 +207,7 @@ export async function handleSidekickSetPreferences(req: any, res: any): Promise<
  *
  *  Updates the proxy's per-chat engagement clock; the dispatch gate
  *  consults it to suppress redundant pushes while the user is actively
- *  viewing the chat (2s window — set 2026-05-12, responsiveness-biased).
+ *  viewing the chat (short window; hidden/blur clears immediately).
  *
  *  Always returns 200 even when VAPID is unconfigured — reporting
  *  visibility is harmless when push is disabled; ignoring the data is

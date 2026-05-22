@@ -1633,19 +1633,36 @@ export function applyCapabilities() {
 const POLL_INTERVAL_MS = 5000;
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let pollVisibilityBound = false;
+let pollRequested = false;
+
+function shouldPollList(): boolean {
+  return backend.capabilities().sessionBrowsing
+    && (typeof document === 'undefined' || document.visibilityState === 'visible');
+}
+
+function syncPollTimer(): void {
+  if (!pollRequested || !shouldPollList()) {
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    return;
+  }
+  if (!pollTimer) pollTimer = setInterval(pollTick, POLL_INTERVAL_MS);
+}
 
 function pollTick(): void {
-  if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
-  if (!backend.capabilities().sessionBrowsing) return;
+  if (!pollRequested || !shouldPollList()) {
+    syncPollTimer();
+    return;
+  }
   refresh().catch((e: any) => diag(`sessionDrawer poll: refresh failed: ${e?.message}`));
 }
 
 function startListPolling(): void {
-  if (pollTimer) return;
-  pollTimer = setInterval(pollTick, POLL_INTERVAL_MS);
+  pollRequested = true;
+  syncPollTimer();
   if (!pollVisibilityBound && typeof document !== 'undefined') {
     pollVisibilityBound = true;
     document.addEventListener('visibilitychange', () => {
+      syncPollTimer();
       // On returning to visible, kick a refresh immediately so the
       // user doesn't wait up to POLL_INTERVAL_MS for the next tick.
       if (document.visibilityState === 'visible' && backend.capabilities().sessionBrowsing) {
@@ -1656,5 +1673,6 @@ function startListPolling(): void {
 }
 
 function stopListPolling(): void {
+  pollRequested = false;
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
 }

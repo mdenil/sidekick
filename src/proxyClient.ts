@@ -184,13 +184,19 @@ async function probeSessions(): Promise<{ ok: boolean; unconfigured?: boolean }>
   }
 }
 
+function shouldRunBackgroundNetwork(): boolean {
+  return typeof document === 'undefined' || document.visibilityState === 'visible';
+}
+
 function startHealthPoll(): void {
   if (healthTimer) return;
   const tick = async () => {
-    const { ok } = await probeSessions();
-    if (ok !== connected) {
-      connected = ok;
-      subs?.onStatus?.(ok);
+    if (shouldRunBackgroundNetwork()) {
+      const { ok } = await probeSessions();
+      if (ok !== connected) {
+        connected = ok;
+        subs?.onStatus?.(ok);
+      }
     }
     healthTimer = setTimeout(tick, HEALTH_INTERVAL_MS);
   };
@@ -389,14 +395,22 @@ function bindLifecycleHandlers(): void {
   if (lifecycleHandlersBound) return;
   lifecycleHandlersBound = true;
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') {
-      log('proxy-client: visibilitychange → forceReconnect');
-      forceReconnect();
+    if (document.visibilityState === 'hidden') {
+      log('proxy-client: visibilitychange hidden → close stream channel');
+      stopStreamChannel();
+      return;
     }
+    log('proxy-client: visibilitychange visible → forceReconnect');
+    forceReconnect();
   });
   window.addEventListener('online', () => {
+    if (!shouldRunBackgroundNetwork()) return;
     log('proxy-client: online → forceReconnect');
     forceReconnect();
+  });
+  window.addEventListener('pagehide', () => {
+    log('proxy-client: pagehide → close stream channel');
+    stopStreamChannel();
   });
   window.addEventListener('pageshow', (e) => {
     if ((e as PageTransitionEvent).persisted) {

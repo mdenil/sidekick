@@ -60,6 +60,9 @@ test('blur reports hidden after heartbeat refreshed visible engagement', async (
 
     visibilityState = 'visible';
     focused = true;
+    for (const listener of documentListeners.get('visibilitychange') || []) listener();
+    assert.deepEqual(posts.at(-1), { state: 'visible', chat_id: 'chat-A' });
+
     heartbeat?.();
     assert.deepEqual(posts.at(-1), { state: 'visible', chat_id: 'chat-A' });
 
@@ -67,7 +70,7 @@ test('blur reports hidden after heartbeat refreshed visible engagement', async (
     for (const listener of windowListeners.get('blur') || []) listener();
 
     assert.deepEqual(posts.at(-1), { state: 'hidden', chat_id: 'chat-A' });
-    assert.deepEqual(posts.map(p => p.state), ['hidden', 'visible', 'hidden']);
+    assert.deepEqual(posts.map(p => p.state), ['hidden', 'visible', 'visible', 'hidden']);
   } finally {
     if (originalDocument) Object.defineProperty(globalThis, 'document', originalDocument);
     else delete (globalThis as any).document;

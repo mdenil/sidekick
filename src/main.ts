@@ -501,8 +501,12 @@ async function boot() {
   void sidebarHandle;  // currently no caller needs the handle externally
 
   // Capture-phase pointerdown logger for click-freeze diagnosis. Pure
-  // observation — no behavior change. Diag-level only (off in prod).
-  clickFreezeDiag.init();
+  // observation, but it installs timers/listeners, so keep it strictly
+  // behind explicit diagnostics instead of taxing phone PWAs in normal use.
+  if (new URLSearchParams(location.search).get('click_diag') === '1'
+      || localStorage.getItem('sidekick_click_diag') === '1') {
+    clickFreezeDiag.init();
+  }
 
   // Mobile: strip native `title` attributes from all buttons so taps
   // don't surface the system tooltip popup (iOS especially). aria-label
@@ -2242,6 +2246,7 @@ async function boot() {
   // cheap (IDB read + early-out if empty); only flushes when there's
   // pending work AND the gateway is reachable.
   setInterval(async () => {
+    if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
     try {
       const pending = await queue.pending();
       if (pending > 0 && backend.isConnected()) {
@@ -2256,6 +2261,7 @@ async function boot() {
   // call (controls.ts owns the call-status narrative).
   const WEAK_SIGNAL_MS = 8_000;
   setInterval(async () => {
+    if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
     if (webrtcControls.isOpen()) return;
     try {
       const gwConnected = backend.isConnected();
@@ -3352,9 +3358,15 @@ async function boot() {
   // about. Enough coverage: webrtcControls open/close fires through
   // controls.ts; listenActive flips through startListen/stopListen.
   // Hooking those would be cleaner but the polling here is cheap.
-  setInterval(() => { syncCallButtonVisual(); syncMicIcon(); }, 250);
-  syncCallButtonVisual();
-  syncMicIcon();
+  const syncVoiceButtonVisuals = () => { syncCallButtonVisual(); syncMicIcon(); };
+  setInterval(() => {
+    if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+    syncVoiceButtonVisuals();
+  }, 1000);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') syncVoiceButtonVisuals();
+  });
+  syncVoiceButtonVisuals();
 
   // ── Mic + Call mode chevron menus (per-button toggle rows) ─────────
   // Two independent menus. State persists in settings; reads on every
