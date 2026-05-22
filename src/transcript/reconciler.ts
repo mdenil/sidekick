@@ -424,7 +424,8 @@ function toolDisplayTitle(t: ActivityTool): { name: string; detail: string } {
   const args = normalizeToolArgs(t.args);
   const result = normalizeToolResult(t.result);
   const rawName = typeof t.name === 'string' ? t.name.trim() : '';
-  const name = rawName && rawName !== 'undefined' && rawName !== '(unknown)'
+  const lowerName = rawName.toLowerCase();
+  const name = rawName && lowerName !== 'tool' && lowerName !== 'undefined' && lowerName !== '(unknown)'
     ? rawName
     : firstStringRaw(result, ['name', 'tool_name', 'skill', 'skill_name']) || inferToolName(args, result);
   return { name, detail: toolSummaryDetail(name, args, result) };

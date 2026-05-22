@@ -627,8 +627,10 @@ function handleEnvelope(type: string, env: any, chatId: string): void {
       const error = typeof env.error === 'string' ? env.error : null;
       const truncated = !!env._truncated;
       const durationMs = typeof env.duration_ms === 'number' ? env.duration_ms : 0;
+      const toolName = typeof env.tool_name === 'string' ? env.tool_name : '';
       subs?.onToolResult?.({
         callId,
+        toolName,
         result,
         error,
         truncated,

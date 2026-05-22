@@ -161,6 +161,36 @@ describe('project: inflight', () => {
     assert.equal(ar.tools[0].name, 'search_files');
   });
 
+  it('tool_result with placeholder name still infers common tools from result shape', () => {
+    const s = state({
+      durable: [u('umsg_1', 'q')],
+      inflight: [
+        { type: 'user_message', chat_id: 'c', message_id: 'umsg_1', text: 'q' },
+        { type: 'tool_result', chat_id: 'c', call_id: 'c1', tool_name: 'tool', result: '{"total_count":1,"matches":[]}', duration_ms: 42 },
+      ],
+    });
+    const out = project(s);
+    const ar = out.find(s => s.kind === 'activityRow');
+    assert.ok(ar && ar.kind === 'activityRow');
+    assert.equal(ar.tools[0].name, 'search_files');
+  });
+
+  it('tool_result renames an earlier placeholder tool_call when the result carries the real name', () => {
+    const s = state({
+      durable: [u('umsg_1', 'q')],
+      inflight: [
+        { type: 'user_message', chat_id: 'c', message_id: 'umsg_1', text: 'q' },
+        { type: 'tool_call', chat_id: 'c', call_id: 'c1', tool_name: 'tool', args: {} },
+        { type: 'tool_result', chat_id: 'c', call_id: 'c1', tool_name: 'search_files', result: '{"total_count":1,"matches":[]}', duration_ms: 42 },
+      ],
+    });
+    const out = project(s);
+    const ar = out.find(s => s.kind === 'activityRow');
+    assert.ok(ar && ar.kind === 'activityRow');
+    assert.equal(ar.tools[0].name, 'search_files');
+    assert.equal(ar.tools[0].result, '{"total_count":1,"matches":[]}');
+  });
+
   it('ordering: user → activity row → assistant within the same turn', () => {
     const s = state({
       inflight: [

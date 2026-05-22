@@ -182,6 +182,8 @@ export interface ToolCallEvent {
 /** Result of a previously-emitted ToolCallEvent (matched via callId). */
 export interface ToolResultEvent {
   callId: string;
+  /** Tool name, when the backend includes it on the result envelope. */
+  toolName?: string;
   /** Tool's return value as a string; null if the tool returned None. */
   result: string | null;
   /** Currently always null — hermes surfaces errors inside `result`. Reserved. */

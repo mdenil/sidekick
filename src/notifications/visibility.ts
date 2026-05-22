@@ -58,8 +58,8 @@ async function postVisibility(state: VisibilityState, chatId: string): Promise<v
 
 /** Idempotent. Reports only when state OR chat actually changed —
  *  avoids burning HTTP roundtrips on no-op events. */
-function maybeReport(state: VisibilityState, chatId: string): void {
-  if (state === lastReportedState && chatId === lastReportedChat) return;
+function reportVisibility(state: VisibilityState, chatId: string, force = false): void {
+  if (!force && state === lastReportedState && chatId === lastReportedChat) return;
   lastReportedState = state;
   lastReportedChat = chatId;
   void postVisibility(state, chatId);
@@ -85,18 +85,22 @@ export function initVisibilityReporting(getViewed: () => string | null): void {
   // Initial report so the proxy knows the boot-time state without
   // needing to wait for the first visibilitychange.
   const first = compute();
-  maybeReport(first.state, first.chatId);
+  reportVisibility(first.state, first.chatId);
 
   // document.visibilitychange covers OS-level PWA background/foreground.
   // window focus/blur covers the desktop case where the browser remains
   // visible to the page but another app is in front of it.
-  const reportCurrent = () => {
+  const reportCurrent = (force = false) => {
     const { state, chatId } = compute();
-    maybeReport(state, chatId);
+    reportVisibility(state, chatId, force);
   };
-  document.addEventListener('visibilitychange', reportCurrent);
-  window.addEventListener('focus', reportCurrent);
-  window.addEventListener('blur', reportCurrent);
+  document.addEventListener('visibilitychange', () => reportCurrent(document.visibilityState === 'hidden'));
+  window.addEventListener('focus', () => reportCurrent(false));
+  // Force blur reports. Heartbeats intentionally refresh the server-side
+  // visible timestamp; if the local dedupe cache still says "hidden" from
+  // an earlier transition, a normal deduped report would skip this blur and
+  // leave the server incorrectly engaged.
+  window.addEventListener('blur', () => reportCurrent(true));
 
   // Heartbeat — keeps the proxy's engagement timestamp fresh while the
   // user sits on a chat. Without this, the timestamp ages past the 2s
@@ -111,6 +115,8 @@ export function initVisibilityReporting(getViewed: () => string | null): void {
     if (document.visibilityState !== 'visible' || !document.hasFocus()) return;
     const chatId = getViewedRef?.() || '';
     if (!chatId) return;
+    lastReportedState = 'visible';
+    lastReportedChat = chatId;
     void postVisibility('visible', chatId);
   }, HEARTBEAT_MS);
 }
@@ -127,6 +133,5 @@ export function reportChatSwitch(chatId: string | null): void {
       ? 'visible' : 'hidden';
   // Only fire when actually changing chat/state — backbone re-renders
   // (resume() called twice for the same chat) shouldn't burn an HTTP.
-  if (id === lastReportedChat && lastReportedState === state) return;
-  maybeReport(state, id);
+  reportVisibility(state, id);
 }

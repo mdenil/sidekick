@@ -410,7 +410,12 @@ function normalizeTimestamp(item: ConversationItem): number {
 
 
 function normalizeToolName(name: unknown): string {
-  return typeof name === 'string' && name.trim() ? name.trim() : '';
+  if (typeof name !== 'string') return '';
+  const trimmed = name.trim();
+  if (!trimmed) return '';
+  const lower = trimmed.toLowerCase();
+  if (lower === 'tool' || lower === 'undefined' || lower === '(unknown)') return '';
+  return trimmed;
 }
 
 function inferToolNameFromResult(result: unknown): string {
