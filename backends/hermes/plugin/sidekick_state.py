@@ -23,6 +23,17 @@ from cryptography.hazmat.primitives.serialization import (
 from cryptography.hazmat.primitives.asymmetric import ec
 
 
+DEFAULT_ACTIVITY_MAX_ITEMS = 200
+
+
+def activity_retention_limit() -> int:
+    try:
+        value = int(os.environ.get("SIDEKICK_ACTIVITY_MAX_ITEMS", str(DEFAULT_ACTIVITY_MAX_ITEMS)))
+    except (TypeError, ValueError):
+        value = DEFAULT_ACTIVITY_MAX_ITEMS
+    return max(1, value)
+
+
 # ── VAPID ─────────────────────────────────────────────────────────────
 
 def _b64url_to_raw(b64url: str) -> bytes:
@@ -236,6 +247,28 @@ def list_activity_items(db, *, limit: int = 200) -> List[Dict[str, Any]]:
     return [_activity_row_to_dict(r) for r in rows]
 
 
+def prune_activity_items(db, *, limit: Optional[int] = None) -> Dict[str, Any]:
+    """Keep unresolved approvals, cap every other Activity item.
+
+    Activity is a recoverable notification queue, not an append-only audit
+    log. Unresolved approvals are blocking workflow events and must survive
+    until actioned; everything else is dismissible history and should stay
+    bounded server-side so browser-profile caches cannot disagree about
+    retention.
+    """
+    keep = activity_retention_limit() if limit is None else max(1, int(limit))
+    cur = db.exec(
+        "DELETE FROM activity_items WHERE id IN ("
+        "  SELECT id FROM activity_items "
+        "  WHERE NOT (kind = 'approval' AND resolved IS NULL) "
+        "  ORDER BY created_at DESC, id DESC "
+        "  LIMIT -1 OFFSET ?"
+        ")",
+        (keep,),
+    )
+    return {"removed": cur.rowcount, "limit": keep}
+
+
 def upsert_activity_item(db, *, id: str, chat_id: Optional[str], kind: str, title: str,
                          body: str, created_at: Optional[float] = None,
                          urgent: bool = False, read: bool = False,
@@ -252,6 +285,7 @@ def upsert_activity_item(db, *, id: str, chat_id: Optional[str], kind: str, titl
         (id, chat_id, kind, title, body, created_at if created_at is not None else now,
          1 if urgent else 0, 1 if read else 0, message_id, resolved),
     )
+    prune_activity_items(db)
 
 
 def resolve_activity_item(db, *, id: str, resolution: str) -> Dict[str, Any]:
@@ -259,6 +293,8 @@ def resolve_activity_item(db, *, id: str, resolution: str) -> Dict[str, Any]:
         "UPDATE activity_items SET read = 1, resolved = ? WHERE id = ?",
         (resolution, id),
     )
+    if cur.rowcount > 0:
+        prune_activity_items(db)
     return {"updated": cur.rowcount > 0}
 
 
