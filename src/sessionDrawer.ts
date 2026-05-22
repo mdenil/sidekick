@@ -17,6 +17,7 @@
  */
 
 import * as backend from './backend.ts';
+import { saveCurrentScrollPosition } from "./chat.ts";
 import * as conversations from './conversations.ts';
 import * as sessionCache from './sessionCache.ts';
 import { log, diag } from './util/log.ts';
@@ -1239,6 +1240,7 @@ async function resume(id: string) {
   // fully settle.
   const leaving = viewedSessionId || optimisticActiveId;
   if (leaving && leaving !== id) {
+    saveCurrentScrollPosition();
     t?.trace('onBeforeSwitch-start', `leaving=${leaving}`);
     try { onBeforeSwitchCb?.(leaving); }
     catch (e: any) { diag(`onBeforeSwitch threw: ${e?.message || e}`); }
