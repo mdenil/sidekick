@@ -642,6 +642,10 @@ async function boot() {
   // Pure UI; binds a document-level keydown listener and renders a
   // lazy <dialog> on first open. No deps on backend/proxy state.
   hotkeysHelp.init();
+  const composerHotkeysHint = document.getElementById('composer-hotkeys-hint') as HTMLButtonElement | null;
+  if (composerHotkeysHint) {
+    composerHotkeysHint.onclick = () => hotkeysHelp.open();
+  }
   // Pin drawer — right-side surface aggregating pinned messages across
   // every chat. Click handler reuses the cmdk drill-to-message path:
   // resumeSession to fetch + render, then targetMessageId so the
@@ -873,7 +877,7 @@ async function boot() {
     // is already focused so it doesn't hijack a literal slash typed into
     // the composer or the cmd+K palette. (cmdkPalette.init wires its
     // own cmd+K handler at document level.)
-    if (e.key === '/' && !inText) {
+    if (e.key === '/' && !inText && !e.metaKey && !e.ctrlKey && !e.altKey) {
       const sidebar = document.getElementById('sidebar');
       if (sidebar && !sidebar.classList.contains('expanded')) {
         // Make sure the sidebar is open so the input is visible/clickable.

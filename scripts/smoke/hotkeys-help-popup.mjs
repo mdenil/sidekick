@@ -85,6 +85,18 @@ export default async function run({ page, log }) {
   );
   log('Esc closes ✓');
 
+  await page.click('#composer-hotkeys-hint');
+  await page.waitForSelector('dialog.hotkeys-help-dialog[open]', {
+    state: 'visible', timeout: 3_000,
+  });
+  log('composer hint opens ✓');
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(
+    () => !document.querySelector('dialog.hotkeys-help-dialog[open]'),
+    null,
+    { timeout: 2_000 },
+  );
+
   // Re-opening renders again (not a one-shot).
   await page.keyboard.down(modifier);
   await page.keyboard.press('/');

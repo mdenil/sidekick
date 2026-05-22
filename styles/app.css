@@ -3037,6 +3037,35 @@
   .attachment-chip .chip-remove:hover { background: rgba(0,0,0,0.9); }
   .composer-actions-left,
   .composer-actions-right { display: flex; align-items: center; gap: 4px; }
+  .composer-hotkeys-hint {
+    border: 1px solid transparent;
+    background: none;
+    color: var(--muted);
+    cursor: pointer;
+    border-radius: 6px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11px;
+    line-height: 1;
+    min-width: 42px;
+    height: 28px;
+    padding: 0 7px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0.7;
+    transition: color .15s, background .15s, border-color .15s, opacity .15s;
+  }
+  .composer-hotkeys-hint:hover,
+  .composer-hotkeys-hint:focus-visible {
+    color: var(--fg);
+    background: var(--surface);
+    border-color: var(--border);
+    opacity: 1;
+    outline: none;
+  }
+  @media (max-width: 699px) {
+    .composer-hotkeys-hint { display: none; }
+  }
 
   /* Icon buttons on the left + camera (attach, new-chat, camera): small, bare */
   .composer .icon-btn {
