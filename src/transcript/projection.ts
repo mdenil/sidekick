@@ -160,7 +160,7 @@ export function project(state: ChatState): BubbleSpec[] {
         existing.result = item.content;
         if (item.tool_name) existing.name = item.tool_name;
       } else {
-        row.tools.push({ callId, name: item.tool_name || '(unknown)', args: {}, result: item.content });
+        row.tools.push({ callId, name: item.tool_name || inferToolNameFromResult(item.content), args: {}, result: item.content });
       }
     } else if (item.role === 'notification') {
       const key = `notif:${item.sidekick_id || item.id}`;
@@ -215,7 +215,7 @@ export function project(state: ChatState): BubbleSpec[] {
       case 'tool_call': {
         const row = ensureActivityRow(activityByKey, specs, currentTurnKey, currentTurnTs || inflightTs, /*complete*/ false);
         if (!row.tools.find(t => t.callId === env.call_id)) {
-          row.tools.push({ callId: env.call_id, name: env.tool_name, args: env.args });
+          row.tools.push({ callId: env.call_id, name: normalizeToolName(env.tool_name), args: env.args });
         }
         break;
       }
@@ -225,11 +225,11 @@ export function project(state: ChatState): BubbleSpec[] {
         if (existing) {
           existing.result = env.result;
           if (env.duration_ms != null) existing.durationMs = env.duration_ms;
-          if (env.tool_name) existing.name = env.tool_name;
+          existing.name = normalizeToolName(env.tool_name) || inferToolNameFromResult(env.result) || existing.name;
         } else {
           row.tools.push({
             callId: env.call_id,
-            name: env.tool_name,
+            name: normalizeToolName(env.tool_name) || inferToolNameFromResult(env.result),
             args: {},
             result: env.result,
             durationMs: env.duration_ms,
@@ -406,6 +406,37 @@ function normalizeTimestamp(item: ConversationItem): number {
   if (raw == null) return 0;
   // < 1e12 → unix seconds (hermes); ≥ 1e12 → ms (openclaw).
   return raw < 1e12 ? raw * 1000 : raw;
+}
+
+
+function normalizeToolName(name: unknown): string {
+  return typeof name === 'string' && name.trim() ? name.trim() : '';
+}
+
+function inferToolNameFromResult(result: unknown): string {
+  const obj = parseObjectLike(result);
+  if (!obj) return '(unknown)';
+  if (typeof obj.name === 'string' && obj.name.trim()) return obj.name.trim();
+  if (typeof obj.tool_name === 'string' && obj.tool_name.trim()) return obj.tool_name.trim();
+  if (Array.isArray(obj.matches)) return 'search_files';
+  if (Array.isArray(obj.results)) return 'search';
+  if (obj.success === true && typeof obj.description === 'string' && typeof obj.content === 'string') return 'skill_view';
+  return '(unknown)';
+}
+
+function parseObjectLike(value: unknown): Record<string, unknown> | null {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value as Record<string, unknown>;
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed[0] !== '{') return null;
+  try {
+    const parsed = JSON.parse(trimmed);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 function parseToolCalls(raw: string | undefined): ActivityTool[] {

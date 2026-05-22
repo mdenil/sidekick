@@ -70,6 +70,30 @@ let lastUserScrollAt = 0;
 let pinnedToBottom = true;
 let missedWhileScrolled = 0;
 
+function currentScrollAnchor(): { key: string | null; offset: number | null } | null {
+  if (!transcriptEl) return null;
+  const tr = transcriptEl.getBoundingClientRect();
+  const children = Array.from(transcriptEl.children) as HTMLElement[];
+  let best: HTMLElement | null = null;
+  for (const child of children) {
+    const r = child.getBoundingClientRect();
+    if (r.bottom <= tr.top) continue;
+    if (r.top >= tr.bottom) break;
+    best = child;
+    break;
+  }
+  if (!best?.dataset?.key) return null;
+  const br = best.getBoundingClientRect();
+  return { key: best.dataset.key, offset: Math.round(br.top - tr.top) };
+}
+
+export function saveCurrentScrollPosition(): void {
+  if (!transcriptEl || !viewedSessionIdRef) return;
+  const distance = transcriptEl.scrollHeight - transcriptEl.scrollTop - transcriptEl.clientHeight;
+  const atBottom = distance <= AT_BOTTOM_THRESHOLD_PX;
+  saveScrollPosition(viewedSessionIdRef, transcriptEl.scrollTop, atBottom, currentScrollAnchor());
+}
+
 function isPinned(): boolean {
   if (!transcriptEl) return true;
   const distance = transcriptEl.scrollHeight - transcriptEl.scrollTop - transcriptEl.clientHeight;
@@ -250,9 +274,7 @@ export async function init(el: HTMLElement | null): Promise<boolean> {
       // enhancement that grows scrollHeight post-render (play-bars,
       // copy buttons added after initial layout).
       if (transcriptEl && viewedSessionIdRef) {
-        const distance = transcriptEl.scrollHeight - transcriptEl.scrollTop - transcriptEl.clientHeight;
-        const atBottom = distance <= AT_BOTTOM_THRESHOLD_PX;
-        saveScrollPosition(viewedSessionIdRef, transcriptEl.scrollTop, atBottom);
+        saveCurrentScrollPosition();
       } else if (transcriptEl && !viewedSessionIdRef) {
         // Diagnostic: a scroll fired but no viewedSessionIdRef means
         // either we're in the boot window before trackViewedSession or

@@ -141,6 +141,21 @@ CREATE TABLE IF NOT EXISTS pins (
 );
 CREATE INDEX IF NOT EXISTS idx_pins_pinned_at ON pins(pinned_at DESC);
 
+CREATE TABLE IF NOT EXISTS activity_items (
+  id          TEXT PRIMARY KEY,
+  chat_id     TEXT,
+  kind        TEXT NOT NULL,
+  title       TEXT NOT NULL,
+  body        TEXT NOT NULL,
+  created_at  REAL NOT NULL,
+  urgent      INTEGER NOT NULL DEFAULT 0,
+  read        INTEGER NOT NULL DEFAULT 0,
+  message_id  TEXT,
+  resolved    TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_activity_items_created ON activity_items(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_activity_items_chat ON activity_items(chat_id, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS unread_state (
   chat_id        TEXT PRIMARY KEY,
   last_read_at   REAL,

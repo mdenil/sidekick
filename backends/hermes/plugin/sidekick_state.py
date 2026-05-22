@@ -23,6 +23,17 @@ from cryptography.hazmat.primitives.serialization import (
 from cryptography.hazmat.primitives.asymmetric import ec
 
 
+DEFAULT_ACTIVITY_MAX_ITEMS = 200
+
+
+def activity_retention_limit() -> int:
+    try:
+        value = int(os.environ.get("SIDEKICK_ACTIVITY_MAX_ITEMS", str(DEFAULT_ACTIVITY_MAX_ITEMS)))
+    except (TypeError, ValueError):
+        value = DEFAULT_ACTIVITY_MAX_ITEMS
+    return max(1, value)
+
+
 # ── VAPID ─────────────────────────────────────────────────────────────
 
 def _b64url_to_raw(b64url: str) -> bytes:
@@ -205,6 +216,111 @@ def upsert_pin(db, *, chat_id: str, msg_id: str, role: str, text: str, timestamp
 def delete_pin(db, *, chat_id: str, msg_id: str) -> Dict[str, Any]:
     cur = db.exec("DELETE FROM pins WHERE chat_id = ? AND msg_id = ?", (chat_id, msg_id))
     return {"removed": cur.rowcount > 0}
+
+
+# ── Activity items ────────────────────────────────────────────────────
+
+def _activity_row_to_dict(row) -> Dict[str, Any]:
+    return {
+        "id": row["id"],
+        "chatId": row["chatId"],
+        "kind": row["kind"],
+        "title": row["title"],
+        "body": row["body"],
+        "createdAt": row["createdAt"],
+        "urgent": bool(row["urgent"]),
+        "read": bool(row["read"]),
+        "messageId": row["messageId"],
+        "resolved": row["resolved"],
+    }
+
+
+def list_activity_items(db, *, limit: int = 200) -> List[Dict[str, Any]]:
+    rows = db.fetchall(
+        "SELECT id, chat_id AS chatId, kind, title, body, created_at AS createdAt, "
+        "       urgent, read, message_id AS messageId, resolved "
+        "FROM activity_items ORDER BY "
+        "  CASE WHEN kind = 'approval' AND resolved IS NULL THEN 1 ELSE 0 END DESC, "
+        "  created_at DESC LIMIT ?",
+        (limit,),
+    )
+    return [_activity_row_to_dict(r) for r in rows]
+
+
+def prune_activity_items(db, *, limit: Optional[int] = None) -> Dict[str, Any]:
+    """Keep unresolved approvals, cap every other Activity item.
+
+    Activity is a recoverable notification queue, not an append-only audit
+    log. Unresolved approvals are blocking workflow events and must survive
+    until actioned; everything else is dismissible history and should stay
+    bounded server-side so browser-profile caches cannot disagree about
+    retention.
+    """
+    keep = activity_retention_limit() if limit is None else max(1, int(limit))
+    cur = db.exec(
+        "DELETE FROM activity_items WHERE id IN ("
+        "  SELECT id FROM activity_items "
+        "  WHERE NOT (kind = 'approval' AND resolved IS NULL) "
+        "  ORDER BY created_at DESC, id DESC "
+        "  LIMIT -1 OFFSET ?"
+        ")",
+        (keep,),
+    )
+    return {"removed": cur.rowcount, "limit": keep}
+
+
+def upsert_activity_item(db, *, id: str, chat_id: Optional[str], kind: str, title: str,
+                         body: str, created_at: Optional[float] = None,
+                         urgent: bool = False, read: bool = False,
+                         message_id: Optional[str] = None,
+                         resolved: Optional[str] = None) -> None:
+    now = time.time()
+    db.exec(
+        "INSERT INTO activity_items (id, chat_id, kind, title, body, created_at, urgent, read, message_id, resolved) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(id) DO UPDATE SET "
+        "  chat_id = excluded.chat_id, kind = excluded.kind, title = excluded.title, "
+        "  body = excluded.body, urgent = excluded.urgent, read = excluded.read, "
+        "  message_id = excluded.message_id, resolved = excluded.resolved",
+        (id, chat_id, kind, title, body, created_at if created_at is not None else now,
+         1 if urgent else 0, 1 if read else 0, message_id, resolved),
+    )
+    prune_activity_items(db)
+
+
+def resolve_activity_item(db, *, id: str, resolution: str) -> Dict[str, Any]:
+    cur = db.exec(
+        "UPDATE activity_items SET read = 1, resolved = ? WHERE id = ?",
+        (resolution, id),
+    )
+    if cur.rowcount > 0:
+        prune_activity_items(db)
+    return {"updated": cur.rowcount > 0}
+
+
+def mark_activity_seen(db, *, chat_id: Optional[str] = None, all_items: bool = False) -> Dict[str, Any]:
+    if all_items:
+        cur = db.exec("UPDATE activity_items SET read = 1 WHERE read = 0")
+    elif chat_id:
+        cur = db.exec(
+            "UPDATE activity_items SET read = 1 WHERE chat_id = ? AND read = 0",
+            (chat_id,),
+        )
+    else:
+        return {"updated": 0}
+    return {"updated": cur.rowcount}
+
+
+def delete_activity_item(db, *, id: str) -> Dict[str, Any]:
+    cur = db.exec("DELETE FROM activity_items WHERE id = ?", (id,))
+    return {"removed": cur.rowcount > 0}
+
+
+def clear_dismissible_activity_items(db) -> Dict[str, Any]:
+    cur = db.exec(
+        "DELETE FROM activity_items WHERE NOT (kind = 'approval' AND resolved IS NULL)"
+    )
+    return {"removed": cur.rowcount}
 
 
 # ── Unread state ──────────────────────────────────────────────────────
@@ -426,11 +542,11 @@ def list_messages_for_chat_with_state_db_source(
     # requested chat_id. Without this, compacted-out turns are
     # invisible (Jonathan field bug 2026-05-12).
     sql = """
-        WITH RECURSIVE session_root(id, root_system_prompt) AS (
-            SELECT id, system_prompt FROM sessions
+        WITH RECURSIVE session_root(id, root_system_prompt, is_compaction_child) AS (
+            SELECT id, system_prompt, 0 FROM sessions
              WHERE user_id = ? AND source = ?
             UNION ALL
-            SELECT s.id, sr.root_system_prompt
+            SELECT s.id, sr.root_system_prompt, 1
               FROM sessions s
               JOIN session_root sr ON s.parent_session_id = sr.id
              WHERE s.user_id IS NULL
@@ -438,7 +554,7 @@ def list_messages_for_chat_with_state_db_source(
                AND SUBSTR(COALESCE(s.system_prompt, ''), 1, 200)
                    = SUBSTR(sr.root_system_prompt, 1, 200)
         )
-        SELECT m.id, m.session_id, m.role, m.content, m.tool_name,
+        SELECT m.id, m.session_id, sr.is_compaction_child, m.role, m.content, m.tool_name,
                m.tool_call_id, m.tool_calls, m.timestamp
         FROM messages m
         JOIN session_root sr ON m.session_id = sr.id
@@ -465,13 +581,14 @@ def list_messages_for_chat_with_state_db_source(
     # head-block elision).
     compaction_head_end_per_session: Dict[str, int] = {}
     for r in rows:
-        if (r["content"] or "").startswith("[CONTEXT COMPACTION"):
+        if r["is_compaction_child"] and (r["content"] or "").startswith("[CONTEXT COMPACTION"):
             cur = compaction_head_end_per_session.get(r["session_id"], 0)
             if r["id"] > cur:
                 compaction_head_end_per_session[r["session_id"]] = r["id"]
     surviving = [
         r for r in rows
-        if not (
+        if not (r["content"] or "").startswith("[CONTEXT COMPACTION")
+        and not (
             (drop_through := compaction_head_end_per_session.get(r["session_id"])) is not None
             and r["id"] <= drop_through
         )

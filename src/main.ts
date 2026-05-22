@@ -46,6 +46,7 @@ import * as hotkeysHelp from './hotkeysHelp.ts';
 import { initPinDrawer } from './pins/drawer.ts';
 import { initTranscriptHighlight } from './transcriptHighlight.ts';
 import * as inAppBanner from './notifications/inAppBanner.ts';
+import * as activityStore from './notifications/activityStore.ts';
 import { attachSliderTouchAll } from './sliderTouch.ts';
 import { createDrawer } from './Drawer.ts';
 import * as clickFreezeDiag from './clickFreezeDiag.ts';
@@ -468,6 +469,9 @@ async function boot() {
     fakeLock.show();
   };
 
+  const defaultDrawerWidthPx = () => Math.max(360, Math.min(Math.round(window.innerWidth * 0.50), 720));
+  const maxDrawerWidthPx = () => Math.max(600, Math.min(Math.round(window.innerWidth * 0.60), 900));
+
   // Sidebar — always visible (48px rail), expands on hamburger. Holds
   // new-chat, sessions list (if backend supports it), and info/settings
   // at the bottom. Desktop: expand state persists across reload and shifts
@@ -487,10 +491,10 @@ async function boot() {
     resizer: {
       handleId: 'sidebar-resizer',
       cssVar: '--sidebar-width',
-      widthPrefKey: 'sidekick.sidebarWidth',
-      defaultWidthPx: 300,
-      minWidthPx: 220,
-      maxWidthPx: 600,
+      widthPrefKey: 'sidekick.sidebarWidth.v2',
+      defaultWidthPx: defaultDrawerWidthPx(),
+      minWidthPx: 260,
+      maxWidthPx: maxDrawerWidthPx(),
     },
     onOpen: () => sessionDrawer.refresh(),  // fresh data on open
   });
@@ -638,6 +642,10 @@ async function boot() {
   // Pure UI; binds a document-level keydown listener and renders a
   // lazy <dialog> on first open. No deps on backend/proxy state.
   hotkeysHelp.init();
+  const composerHotkeysHint = document.getElementById('composer-hotkeys-hint') as HTMLButtonElement | null;
+  if (composerHotkeysHint) {
+    composerHotkeysHint.onclick = () => hotkeysHelp.open();
+  }
   // Pin drawer — right-side surface aggregating pinned messages across
   // every chat. Click handler reuses the cmdk drill-to-message path:
   // resumeSession to fetch + render, then targetMessageId so the
@@ -648,7 +656,23 @@ async function boot() {
   // resume + replay + scroll-to behavior.
   const drillToChatMessage = async (
     chatId: string, msgId: string | null,
-  ): Promise<void> => {
+    opts: { validateExists?: boolean } = {},
+  ): Promise<boolean> => {
+    if (opts.validateExists) {
+      try {
+        const probe: any = await backend.fetchSessionMessages(chatId);
+        const hasContent = (probe.messages || []).length > 0 || (probe.inflight || []).length > 0;
+        if (!hasContent) {
+          diag(`drill: ${chatId} has no durable/inflight messages; dropping stale activity link`);
+          status.setStatus('That activity item no longer has a session.', 'err');
+          return false;
+        }
+      } catch (e: any) {
+        diag(`drill: validation fetch ${chatId} failed: ${e?.message ?? e}`);
+        status.setStatus('Could not open that activity item.', 'err');
+        return false;
+      }
+    }
     const leaving = backend.getCurrentSessionId?.() ?? null;
     if (leaving !== chatId) {
       try { cleanupAbandonedChat(leaving); }
@@ -659,19 +683,57 @@ async function boot() {
       const messages = result.messages || [];
       const pagination = { firstId: result.firstId ?? null, hasMore: !!result.hasMore };
       replaySessionMessages(chatId, messages, pagination, msgId ?? undefined);
+      return true;
     } catch (e: any) {
       diag(`drill: resume ${chatId} failed: ${e?.message ?? e}`);
+      return false;
     }
   };
-  initPinDrawer({
-    onPinClick: (chatId, msgId) => { void drillToChatMessage(chatId, msgId); },
-  });
   // In-app notification banner — when a notification envelope arrives
   // for a chat OTHER than the currently-viewed one, show a top-of-
   // viewport toast. Tap → same drill path as the pin drawer (resume +
   // replay + scroll to data-message-id = sidekick_id).
+  const approvalCommandForAction = (action: inAppBanner.ApprovalAction): string => {
+    if (action === 'approve_session') return '/approve session';
+    if (action === 'deny') return '/deny';
+    return '/approve';
+  };
+  const sendApprovalAction = async (
+    chatId: string,
+    action: inAppBanner.ApprovalAction,
+    msgId: string | null,
+  ): Promise<void> => {
+    const cmd = approvalCommandForAction(action);
+    await drillToChatMessage(chatId, msgId);
+    const userMessageId = `umsg_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+    transcriptStore.addPendingSend(chatId, {
+      messageId: userMessageId,
+      text: cmd,
+      source: 'text',
+      sentAt: Date.now(),
+    });
+    const failBubble = (msg: string) => {
+      diag(`approval action failed: ${msg}`);
+      status.setStatus(`Approval action failed: ${msg}`, 'err');
+      transcriptStore.markPendingSendFailed(chatId, userMessageId);
+    };
+    try {
+      const p = backend.sendMessage(cmd, { userMessageId });
+      if (p && typeof (p as any).catch === 'function') {
+        (p as Promise<unknown>).catch((e) => failBubble((e as Error)?.message || String(e)));
+      }
+    } catch (e: any) {
+      failBubble(e?.message || String(e));
+    }
+  };
+  initPinDrawer({
+    onPinClick: (chatId, msgId) => { void drillToChatMessage(chatId, msgId); },
+    onActivityOpen: (chatId, msgId) => drillToChatMessage(chatId, msgId, { validateExists: true }),
+    onApprovalAction: (chatId, action, msgId) => { void sendApprovalAction(chatId, action, msgId); },
+  });
   inAppBanner.init({
     onOpen: (chatId, msgId) => { void drillToChatMessage(chatId, msgId); },
+    onAction: (chatId, action, msgId) => { void sendApprovalAction(chatId, action, msgId); },
   });
   // Sidebar-top search button → opens the cmd+K palette. Lives next to
   // the hamburger as the rightmost icon in .sidebar-top-row (Gemini-style
@@ -815,7 +877,7 @@ async function boot() {
     // is already focused so it doesn't hijack a literal slash typed into
     // the composer or the cmd+K palette. (cmdkPalette.init wires its
     // own cmd+K handler at document level.)
-    if (e.key === '/' && !inText) {
+    if (e.key === '/' && !inText && !e.metaKey && !e.ctrlKey && !e.altKey) {
       const sidebar = document.getElementById('sidebar');
       if (sidebar && !sidebar.classList.contains('expanded')) {
         // Make sure the sidebar is open so the input is visible/clickable.
@@ -3401,6 +3463,11 @@ async function boot() {
       const el = document.getElementById(id);
       if (el) setTooltip(el, pinHotkeyLabel);
     }
+    const activityHotkeyLabel = 'Activity  ·  ' + formatHotkey('Cmd+Shift+A');
+    for (const id of ['btn-activity-drawer-rail', 'btn-activity-drawer']) {
+      const el = document.getElementById(id);
+      if (el) setTooltip(el, activityHotkeyLabel);
+    }
     // Sidebar toggle gets its existing Cmd+Shift+S hint here too so
     // we don't have a tooltip-symmetry gap between the two drawers.
     const sbToggleEl = document.getElementById('sb-toggle');
@@ -3765,6 +3832,12 @@ async function boot() {
       // mouse exercises runs (handles count-banner refresh + body
       // class for the desktop push layout).
       const btn = document.getElementById('btn-pin-drawer') as HTMLButtonElement | null;
+      btn?.click();
+      return;
+    }
+    if (matches('Cmd+Shift+A')) {
+      claim();
+      const btn = document.getElementById('btn-activity-drawer') as HTMLButtonElement | null;
       btn?.click();
       return;
     }
@@ -4200,6 +4273,7 @@ function schedulePostFinalDurableRefresh(
  *  pull out image attachments. */
 function handleReplyFinal({ replyId, text, content = [], conversation, messageId, isReplay = false }: any) {
   sessionDrawer.scheduleRefresh();
+  if (!isReplay && conversation) activityStore.dismissApprovalsForChat(conversation);
 
   // Push the envelope into the store unconditionally — even for
   // background chats. The store is per-chat; the active chat re-renders
@@ -4221,9 +4295,32 @@ function handleReplyFinal({ replyId, text, content = [], conversation, messageId
     }
   }
 
-  const viewed = sessionDrawer.getViewed();
+  // Fall back to the accumulated reply_delta text when the adapter
+  // sends an empty reply_final. Hermes does this on some real runs:
+  // the transcript can still render from delta state, and Activity
+  // should show the same useful text instead of an empty notification.
+  let finalText = text || '';
+  if (!finalText && conversation && messageId) {
+    const envs = transcriptStore.getState(conversation).inflight;
+    for (const env of envs) {
+      if (env.type === 'reply_delta' && env.message_id === messageId) {
+        finalText = env.text;
+      }
+    }
+  }
+
+  const viewed = sessionDrawer.getFocused();
   if (viewed && conversation && conversation !== viewed) {
-    if (!isReplay) badge.incrementUnread(conversation);
+    if (!isReplay) {
+      activityStore.upsertNotification({
+        chatId: conversation,
+        kind: 'agent_reply',
+        content: finalText || '',
+        sidekickId: typeof messageId === 'string' ? messageId : null,
+        chatLabel: sessionDrawer.getTitleForChat?.(conversation) || null,
+      });
+      badge.incrementUnread(conversation);
+    }
     return;
   }
 
@@ -4235,17 +4332,6 @@ function handleReplyFinal({ replyId, text, content = [], conversation, messageId
 
   const imageBlocks = extractImageBlocks(content);
 
-  // Fall back to the accumulated reply_delta text when the adapter
-  // sends an empty reply_final (telegram-shape adapters do this).
-  let finalText = text || '';
-  if (!finalText && conversation && messageId) {
-    const envs = transcriptStore.getState(conversation).inflight;
-    for (const env of envs) {
-      if (env.type === 'reply_delta' && env.message_id === messageId) {
-        finalText = env.text;
-      }
-    }
-  }
 
   if (!isReplay && viewed && conversation === viewed) {
     schedulePostFinalDurableRefresh(conversation, messageId, finalText || null);

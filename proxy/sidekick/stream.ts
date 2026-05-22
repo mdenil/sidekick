@@ -220,11 +220,13 @@ function maybeDispatchPush(env: Envelope, prevBroadcastAt: number, bodyOverride?
     // Per-kind filter — user toggled this category off in Settings →
     // Notifications. Map envelope.type → PushKinds key:
     //   reply_final  → 'agent_reply'
-    //   notification → 'notification'
+    //   notification → concrete env.kind when Sidekick has a toggle.
     // Anything else falls through to enabled-by-default (kind=unknown).
+    const notificationKind = typeof (env as any).kind === 'string' ? (env as any).kind : '';
     const kind: keyof PushKinds | null =
       env.type === 'reply_final' ? 'agent_reply'
-      : env.type === 'notification' ? 'notification'
+      : env.type === 'notification' && notificationKind === 'cron' ? 'cron'
+      : env.type === 'notification' && notificationKind === 'approval' ? 'approval'
       : null;
     if (kind && !isKindEnabled(kind)) {
       return { decision: `kind_disabled:${kind}`, chatId: cid };

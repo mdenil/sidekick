@@ -18,7 +18,7 @@ import {
 const execFileP = promisify(execFile);
 
 export const NAME = 'real-notification-types';
-export const DESCRIPTION = 'Real Hermes producers: off-screen agent_reply unread + cron notification unread/banner/history';
+export const DESCRIPTION = 'Real Hermes producers: off-screen agent_reply + cron unread, push, Activity, and history';
 export const STATUS = 'install-only';
 export const BACKEND = 'real';
 
@@ -79,6 +79,21 @@ async function waitForCronBannerOrUnread(page, chatId, marker, timeout = 130_000
   return { sawUnread, sawBanner, lastBanner };
 }
 
+
+async function openActivityAndWaitFor(page, needle, timeout = 30_000) {
+  const isVisible = await page.evaluate(() => {
+    const panel = document.getElementById('activity-drawer-panel');
+    return !!panel && !panel.hasAttribute('hidden') && !document.getElementById('pin-drawer')?.classList.contains('collapsed');
+  });
+  if (!isVisible) await page.click('#btn-activity-drawer-rail');
+  await page.waitForFunction(
+    (text) => (document.getElementById('activity-drawer-panel')?.textContent || '').includes(text),
+    needle,
+    { timeout, polling: 250 },
+  );
+  return page.evaluate(() => document.getElementById('activity-drawer-panel')?.textContent || '');
+}
+
 async function fetchMessages(page, chatId) {
   return page.evaluate(async (id) => {
     const r = await fetch(`/api/sidekick/sessions/${encodeURIComponent(id)}/messages?limit=240`);
@@ -126,6 +141,9 @@ export default async function run({ page, log }) {
   log(`sent agent_reply prompt in ${agentChat}, switched to anchor`);
   const agentUnread = await waitForUnread(page, agentChat, 90_000);
   log(`agent_reply unread chip for ${agentChat}: ${agentUnread}`);
+  const agentActivity = await openActivityAndWaitFor(page, AGENT_MARKER, 20_000);
+  assert(agentActivity.includes('Reply'), `expected agent reply Activity row, got: ${agentActivity}`);
+  log(`agent_reply Activity row visible ✓`);
   const logsAfterAgent = await recentHermesLogs(since);
   const agentBare = agentChat.replace(/^sidekick:/, "");
   const agentDispatch = logsAfterAgent.includes(`dispatch type=reply_final chat=${agentBare}`);
@@ -158,6 +176,9 @@ export default async function run({ page, log }) {
   const cronSignal = await waitForCronBannerOrUnread(page, cronChat, CRON_MARKER, 140_000);
   log(`cron signal: ${JSON.stringify(cronSignal)}`);
   assert(cronSignal.sawUnread, `expected cron chat unread badge; banner=${JSON.stringify(cronSignal.lastBanner)}`);
+  const cronActivity = await openActivityAndWaitFor(page, CRON_MARKER, 30_000);
+  assert(cronActivity.includes('Cron'), `expected cron Activity row, got: ${cronActivity}`);
+  log(`cron Activity row visible ✓`);
 
   // Switch in and verify the cron output is durable in messages/transcript.
   await clickRow(page, cronChat);

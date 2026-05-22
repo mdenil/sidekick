@@ -23,6 +23,12 @@ const PERSIST_DEBOUNCE_MS = 500;
 export interface SavedScrollPosition {
   chatId: string;
   scrollTop: number;
+  /** data-key for the first visible transcript child at save time.
+   *  Mid-chat restore prefers this anchor over raw scrollTop so layout
+   *  changes above the viewport do not move what the user was reading. */
+  anchorKey?: string | null;
+  /** Pixel offset from transcript viewport top to anchor top. */
+  anchorOffset?: number | null;
   /** True when scrollTop was within AT_BOTTOM_THRESHOLD_PX of the
    *  live edge at save time. Restore uses this to call
    *  forceScrollToBottom (which re-pins after async height growth)
@@ -107,7 +113,7 @@ export function getScrollPosition(chatId: string): SavedScrollPosition | null {
     return null;
   }
   const v = cache.get(chatId);
-  diag(`[chat-scroll] get(${chatId.slice(-12)}) → ${v ? `scrollTop=${v.scrollTop} atBottom=${v.atBottom} age=${Math.round((Date.now() - v.savedAt) / 1000)}s` : 'MISS'}`);
+  diag(`[chat-scroll] get(${chatId.slice(-12)}) → ${v ? `scrollTop=${v.scrollTop} atBottom=${v.atBottom} anchor=${v.anchorKey || ""} age=${Math.round((Date.now() - v.savedAt) / 1000)}s` : "MISS"}`);
   return v || null;
 }
 
@@ -119,6 +125,7 @@ export function saveScrollPosition(
   chatId: string,
   scrollTop: number,
   atBottom: boolean,
+  anchor?: { key: string | null; offset: number | null } | null,
 ): void {
   if (!chatId) {
     diag(`[chat-scroll] save: empty chatId, skip`);
@@ -142,6 +149,8 @@ export function saveScrollPosition(
   const record: SavedScrollPosition = {
     chatId,
     scrollTop: floored,
+    anchorKey: anchor?.key || null,
+    anchorOffset: typeof anchor?.offset === "number" ? anchor.offset : null,
     atBottom,
     savedAt: Date.now(),
   };

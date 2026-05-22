@@ -91,11 +91,11 @@ def _items_by_user_id(
     # to a compaction-rotated child are invisible (Jonathan
     # field bug 2026-05-12).
     sql = """
-        WITH RECURSIVE session_root(id, root_system_prompt) AS (
-            SELECT id, system_prompt FROM sessions
+        WITH RECURSIVE session_root(id, root_system_prompt, is_compaction_child) AS (
+            SELECT id, system_prompt, 0 FROM sessions
              WHERE user_id = ? AND source = ?
             UNION ALL
-            SELECT s.id, sr.root_system_prompt
+            SELECT s.id, sr.root_system_prompt, 1
               FROM sessions s
               JOIN session_root sr ON s.parent_session_id = sr.id
              WHERE s.user_id IS NULL
@@ -103,7 +103,7 @@ def _items_by_user_id(
                AND SUBSTR(COALESCE(s.system_prompt, ''), 1, 200)
                    = SUBSTR(sr.root_system_prompt, 1, 200)
         )
-        SELECT m.id, m.session_id, m.role, m.content, m.tool_name,
+        SELECT m.id, m.session_id, sr.is_compaction_child, m.role, m.content, m.tool_name,
                m.tool_call_id, m.tool_calls, m.timestamp,
                sml.sidekick_id, sml.kind
         FROM messages m
@@ -155,8 +155,8 @@ def _items_by_user_id(
     # `compaction_head_end_per_session[session_id] = max row id to
     # drop`. Built in a single pre-scan; lookup is O(1) per row.
     compaction_head_end_per_session: Dict[str, int] = {}
-    for row_id, session_id, role, content, *_rest in rows:
-        if (content or "").startswith("[CONTEXT COMPACTION"):
+    for row_id, session_id, is_compaction_child, role, content, *_rest in rows:
+        if is_compaction_child and (content or "").startswith("[CONTEXT COMPACTION"):
             # Latest marker wins. A single child session can only have
             # one compaction event per minting; the LAST id in
             # ascending-id order is the most permissive drop bound.
@@ -165,14 +165,15 @@ def _items_by_user_id(
                 compaction_head_end_per_session[session_id] = row_id
 
     items = []
-    for row_id, session_id, role, content, tool_name, tool_call_id, tool_calls, ts, sidekick_id, kind in rows:
+    for row_id, session_id, _is_compaction_child, role, content, tool_name, tool_call_id, tool_calls, ts, sidekick_id, kind in rows:
         text = (content or "")
-        # Drop the synthesized-history seed block of any compaction
-        # child session. Catches both the marker row itself AND every
-        # row before it within that session (the verbatim user-prompt
-        # dupe + replayed assistant/tool rows hermes inserts to seed
-        # the new context window).
+        # Drop marker rows everywhere; drop the synthesized-history
+        # seed block only for compaction child sessions. Root sessions
+        # may contain an internal compaction marker after real content;
+        # those earlier root rows are user-visible and must survive.
         drop_through = compaction_head_end_per_session.get(session_id)
+        if text.startswith("[CONTEXT COMPACTION"):
+            continue
         if drop_through is not None and row_id <= drop_through:
             continue
         item: Dict[str, Any] = {

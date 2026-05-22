@@ -12,11 +12,13 @@ test('plugin prefs delegate: expands nested kind updates to plugin push_kind key
     expandPreferenceUpdates({
       kinds: {
         cron: false,
+        approval: true,
         agent_reply: false,
       },
     }),
     [
       { key: 'push_kind_cron', value: false },
+      { key: 'push_kind_approval', value: true },
       { key: 'push_kind_agent_reply', value: false },
     ],
   );
@@ -36,6 +38,7 @@ test('plugin prefs delegate: normalizes flat plugin push_kind keys to PWA kinds 
       prefs: {
         push_kind_agent_reply: false,
         push_kind_cron: 'false',
+        push_kind_approval: 'true',
         push_kind_reminder: 'true',
         quiet_hours: { enabled: false, start: '22:00', end: '07:00' },
       },
@@ -43,11 +46,13 @@ test('plugin prefs delegate: normalizes flat plugin push_kind keys to PWA kinds 
     {
       push_kind_agent_reply: false,
       push_kind_cron: 'false',
+      push_kind_approval: 'true',
       push_kind_reminder: 'true',
       quiet_hours: { enabled: false, start: '22:00', end: '07:00' },
       kinds: {
         agent_reply: false,
         cron: false,
+        approval: true,
       },
     },
   );

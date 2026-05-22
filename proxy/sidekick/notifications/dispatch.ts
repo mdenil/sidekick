@@ -233,6 +233,31 @@ export function stripLeadingMetadata(s: string): string {
   return lines.slice(i).join('\n');
 }
 
+export function approvalPreview(raw: string): string {
+  const text = stripLeadingMetadata(raw || '');
+  const reason = /^Reason:\s*(.+)$/im.exec(text)?.[1]?.trim() || '';
+  const lines = text.split('\n');
+  const command: string[] = [];
+  let inCommand = false;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (/Dangerous command requires approval/i.test(trimmed)) {
+      inCommand = true;
+      continue;
+    }
+    if (!inCommand) continue;
+    if (!trimmed) {
+      if (command.length) command.push('');
+      continue;
+    }
+    if (/^Reason:/i.test(trimmed) || /^Reply\s+\/approve/i.test(trimmed)) break;
+    command.push(line.replace(/\s+$/, ''));
+  }
+  const cmd = command.join('\n').trim().replace(/\n{3,}/g, '\n\n');
+  if (reason && cmd) return `${reason}: ${cmd}`;
+  return reason || cmd || text;
+}
+
 /** Translate a sidekick envelope into a push payload. The shape matches
  *  the sw.js push listener's expectations:
  *    { title, body, chat_id?, tag?, icon?, url? }
@@ -303,6 +328,9 @@ export function envelopeToPayload(env: Record<string, any>, bodyOverride?: strin
   } else if (env.type === 'reply_final') {
     title = `💬 ${envTitle || speaker}`;
     body = raw;
+  } else if (env.type === 'notification' && env.kind === 'approval') {
+    title = '⚠️ Approval required';
+    body = approvalPreview(raw);
   } else if (env.type === 'notification') {
     title = `🔔 ${envTitle || speaker}`;
     body = stripLeadingMetadata(raw);

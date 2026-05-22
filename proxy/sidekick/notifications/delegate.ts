@@ -26,6 +26,7 @@ interface ForwardResult {
 const PUSH_KINDS = [
   'agent_reply',
   'cron',
+  'approval',
 ];
 
 const DEFAULT_BODY_CAP_BYTES = 8 * 1024;
@@ -271,6 +272,64 @@ export async function delegatePinDelete(
   try {
     const path = `/v1/pins/${encodeURIComponent(chatId)}/${encodeURIComponent(msgId)}`;
     const r = await forwardRaw(path, 'DELETE', null);
+    sendJson(res, r.status, r.body ?? {});
+  } catch (e: any) { sendUpstreamUnavailable(res, e); }
+}
+
+
+// ── Activity sync (server-of-truth for right-drawer Activity) ────────
+
+export async function delegateActivityList(req: http.IncomingMessage, res: http.ServerResponse) {
+  try {
+    const url = req.url || '/api/sidekick/activity';
+    const query = url.includes('?') ? '?' + url.split('?')[1] : '';
+    const r = await forwardRaw(`/v1/activity${query}`, 'GET', null);
+    sendJson(res, r.status, r.body ?? {});
+  } catch (e: any) { sendUpstreamUnavailable(res, e); }
+}
+
+export async function delegateActivityUpsert(req: http.IncomingMessage, res: http.ServerResponse) {
+  let body: any;
+  try { body = await readBody(req, 64 * 1024); }
+  catch (e: any) { return sendJson(res, 400, { error: 'bad_body', detail: e?.message }); }
+  try {
+    const r = await forwardRaw('/v1/activity', 'POST', body);
+    sendJson(res, r.status, r.body ?? {});
+  } catch (e: any) { sendUpstreamUnavailable(res, e); }
+}
+
+export async function delegateActivityResolve(req: http.IncomingMessage, res: http.ServerResponse) {
+  let body: any;
+  try { body = await readBody(req, 8 * 1024); }
+  catch (e: any) { return sendJson(res, 400, { error: 'bad_body', detail: e?.message }); }
+  try {
+    const r = await forwardRaw('/v1/activity/resolve', 'POST', body);
+    sendJson(res, r.status, r.body ?? {});
+  } catch (e: any) { sendUpstreamUnavailable(res, e); }
+}
+
+export async function delegateActivitySeen(req: http.IncomingMessage, res: http.ServerResponse) {
+  let body: any;
+  try { body = await readBody(req, 8 * 1024); }
+  catch (e: any) { return sendJson(res, 400, { error: 'bad_body', detail: e?.message }); }
+  try {
+    const r = await forwardRaw('/v1/activity/seen', 'POST', body);
+    sendJson(res, r.status, r.body ?? {});
+  } catch (e: any) { sendUpstreamUnavailable(res, e); }
+}
+
+export async function delegateActivityClear(_req: http.IncomingMessage, res: http.ServerResponse) {
+  try {
+    const r = await forwardRaw('/v1/activity/clear', 'POST', {});
+    sendJson(res, r.status, r.body ?? {});
+  } catch (e: any) { sendUpstreamUnavailable(res, e); }
+}
+
+export async function delegateActivityDelete(
+  _req: http.IncomingMessage, res: http.ServerResponse, id: string,
+) {
+  try {
+    const r = await forwardRaw(`/v1/activity/${encodeURIComponent(id)}`, 'DELETE', null);
     sendJson(res, r.status, r.body ?? {});
   } catch (e: any) { sendUpstreamUnavailable(res, e); }
 }

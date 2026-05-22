@@ -133,6 +133,34 @@ describe('project: inflight', () => {
     assert.equal(ar.complete, false);
   });
 
+  it('tool_result without a prior tool_call still uses tool_name when present', () => {
+    const s = state({
+      durable: [u('umsg_1', 'q')],
+      inflight: [
+        { type: 'user_message', chat_id: 'c', message_id: 'umsg_1', text: 'q' },
+        { type: 'tool_result', chat_id: 'c', call_id: 'c1', tool_name: 'search_files', result: '{"total_count":1,"matches":[]}', duration_ms: 42 },
+      ],
+    });
+    const out = project(s);
+    const ar = out.find(s => s.kind === 'activityRow');
+    assert.ok(ar && ar.kind === 'activityRow');
+    assert.equal(ar.tools[0].name, 'search_files');
+  });
+
+  it('tool_result without a name infers common tools from result shape', () => {
+    const s = state({
+      durable: [u('umsg_1', 'q')],
+      inflight: [
+        { type: 'user_message', chat_id: 'c', message_id: 'umsg_1', text: 'q' },
+        { type: 'tool_result', chat_id: 'c', call_id: 'c1', tool_name: '', result: '{"total_count":1,"matches":[]}', duration_ms: 42 },
+      ],
+    });
+    const out = project(s);
+    const ar = out.find(s => s.kind === 'activityRow');
+    assert.ok(ar && ar.kind === 'activityRow');
+    assert.equal(ar.tools[0].name, 'search_files');
+  });
+
   it('ordering: user → activity row → assistant within the same turn', () => {
     const s = state({
       inflight: [

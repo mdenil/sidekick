@@ -30,8 +30,10 @@ from ..sidekick_dispatcher import (
     EngagementState,
     PushDispatcher,
     ReplyBuffer,
+    _approval_preview,
     _build_payload,
     _icon_for,
+    is_approval_prompt,
     _is_kind_enabled,
     _is_push_eligible,
     _parse_cron_content,
@@ -132,6 +134,16 @@ def test_engagement_window_expires(dispatcher, db):
     assert out["delivered"] == 1
 
 
+def test_engagement_hidden_clears_immediately(dispatcher, db):
+    _add_sub(db)
+    dispatcher.engagement.mark_visible("abc-123")
+    dispatcher.engagement.mark_hidden("abc-123")
+    out = dispatcher.dispatch_envelope({
+        "type": "reply_final", "chat_id": "abc-123",
+    }, body_override="hello")
+    assert out["delivered"] == 1
+
+
 def test_engagement_key_uses_stripped_chat_id(dispatcher, db):
     """Field bug 2026-05-18: visibility was recorded under the
     PWA-supplied `sidekick:<uuid>` form but the dispatch path checks
@@ -193,6 +205,21 @@ def test_per_kind_toggle_silences_cron_only(dispatcher, db):
     assert out["delivered"] == 1
 
 
+def test_per_kind_toggle_silences_approval_only(dispatcher, db):
+    _add_sub(db)
+    state.set_pref(db, "push_kind_approval", False)
+    out = dispatcher.dispatch_envelope({
+        "type": "notification", "chat_id": "x",
+        "kind": "approval", "content": "Dangerous command requires approval",
+    })
+    assert out["skipped"] == "kind_disabled"
+    out = dispatcher.dispatch_envelope({
+        "type": "notification", "chat_id": "x",
+        "kind": "cron", "content": "Cron output",
+    })
+    assert out["delivered"] == 1
+
+
 def test_per_kind_default_is_enabled(dispatcher, db):
     """A fresh install (no prefs set) pushes everything."""
     _add_sub(db)
@@ -230,6 +257,36 @@ def test_cron_body_leads_with_agent_content_demotes_jobid():
     assert "⏰" in payload["title"]
     assert "morning brief" in payload["title"]
 
+
+def test_approval_prompt_classifier_and_preview():
+    raw = (
+        "⚠️ Dangerous command requires approval:\n\n"
+        "set -euo pipefail\n"
+        "rm -rf frames\n\n"
+        "Reason: recursive delete\n"
+        "Reply /approve to execute, /deny to cancel."
+    )
+    assert is_approval_prompt(raw)
+    preview = _approval_preview(raw)
+    assert preview.startswith("recursive delete:")
+    assert "rm -rf frames" in preview
+    assert "Reply /approve" not in preview
+
+
+def test_approval_payload_uses_urgent_title_and_preview():
+    raw = (
+        "⚠️ Dangerous command requires approval:\n\n"
+        "printf safe\n\n"
+        "Reason: command approval test\n"
+        "Reply /approve to execute."
+    )
+    payload = _build_payload({
+        "type": "notification", "chat_id": "x", "kind": "approval",
+        "content": raw,
+    })
+    assert payload["title"] == "⚠️ Approval required"
+    assert payload["body"].startswith("command approval test:")
+    assert "printf safe" in payload["body"]
 
 def test_generic_notification_strips_leading_metadata():
     """Pure-text notifications with leading session_id/run_id lines
@@ -327,8 +384,9 @@ def test_dispatcher_observe_envelope_buffers_and_drains(dispatcher):
 
 
 def test_icon_picks_kind_first():
-    """Cron notifications use the concrete cron icon."""
+    """Concrete notification kinds use their own icons."""
     assert _icon_for({"type": "notification", "kind": "cron"}) == "⏰"
+    assert _icon_for({"type": "notification", "kind": "approval"}) == "⚠️"
 
 
 def test_icon_falls_back_to_type():

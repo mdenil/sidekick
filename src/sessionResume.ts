@@ -171,21 +171,34 @@ export function replaySessionMessages(
       chat.forceScrollToBottom();
       scheduleAtBottomRepin();
     } else {
-      // Mid-chat restoration: scrollTo({behavior:'instant'}) bypasses
-      // CSS scroll-behavior: smooth so the assignment is immediate.
-      const transcriptEl2 = document.getElementById('transcript');
+      // Mid-chat restoration: prefer a stable DOM anchor over raw
+      // scrollTop. Tool rows, markdown blocks, and images can remeasure
+      // above the viewport between switch-away and switch-back; anchoring
+      // keeps the first visible row at the same visual offset.
+      const transcriptEl2 = document.getElementById("transcript");
       if (transcriptEl2) {
         const doRestore = (phase: string) => {
           if (!transcriptEl2) return;
           const before = transcriptEl2.scrollTop;
           const sh = transcriptEl2.scrollHeight;
           const ch = transcriptEl2.clientHeight;
-          transcriptEl2.scrollTo({ top: saved.scrollTop, behavior: 'instant' as ScrollBehavior });
+          let wanted = saved.scrollTop;
+          if (saved.anchorKey) {
+            const anchor = transcriptEl2.querySelector(
+              `[data-key="${CSS.escape(saved.anchorKey)}"]`,
+            ) as HTMLElement | null;
+            if (anchor) {
+              const tr = transcriptEl2.getBoundingClientRect();
+              const ar = anchor.getBoundingClientRect();
+              wanted = transcriptEl2.scrollTop + (ar.top - tr.top) - (saved.anchorOffset ?? 0);
+            }
+          }
+          transcriptEl2.scrollTo({ top: wanted, behavior: "instant" as ScrollBehavior });
           const after = transcriptEl2.scrollTop;
-          log(`[chat-resume] restore (${phase}) wanted=${saved.scrollTop} before=${before} after=${after} sh=${sh} ch=${ch} maxTop=${sh - ch}`);
+          log(`[chat-resume] restore (${phase}) wanted=${wanted} saved=${saved.scrollTop} anchor=${saved.anchorKey || ""} before=${before} after=${after} sh=${sh} ch=${ch} maxTop=${sh - ch}`);
         };
-        doRestore('sync');
-        requestAnimationFrame(() => doRestore('rAF'));
+        doRestore("sync");
+        requestAnimationFrame(() => doRestore("rAF"));
       } else {
         log(`[chat-resume] restore: transcriptEl missing`);
       }

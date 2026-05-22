@@ -1085,6 +1085,26 @@ const server = http.createServer(async (req, res) => {
           req, res, decodeURIComponent(pinDelete[1]), decodeURIComponent(pinDelete[2]),
         );
       }
+      if (req.method === 'GET' && req.url && /^\/api\/sidekick\/activity(?:\?.*)?$/.test(req.url)) {
+        return delegate.delegateActivityList(req, res);
+      }
+      if (req.method === 'POST' && req.url === '/api/sidekick/activity') {
+        return delegate.delegateActivityUpsert(req, res);
+      }
+      if (req.method === 'POST' && req.url === '/api/sidekick/activity/resolve') {
+        return delegate.delegateActivityResolve(req, res);
+      }
+      if (req.method === 'POST' && req.url === '/api/sidekick/activity/seen') {
+        return delegate.delegateActivitySeen(req, res);
+      }
+      if (req.method === 'POST' && req.url === '/api/sidekick/activity/clear') {
+        return delegate.delegateActivityClear(req, res);
+      }
+      const activityDelete = req.method === 'DELETE'
+        && req.url.match(/^\/api\/sidekick\/activity\/([^/?]+)(?:\?.*)?$/);
+      if (activityDelete) {
+        return delegate.delegateActivityDelete(req, res, decodeURIComponent(activityDelete[1]));
+      }
     }
     const sidekickSettingsUpdate = req.method === 'POST'
       && req.url.match(/^\/api\/sidekick\/settings\/([^/?]+)(?:\?.*)?$/);

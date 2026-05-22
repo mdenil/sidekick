@@ -17,9 +17,11 @@
  */
 
 import * as backend from './backend.ts';
+import { saveCurrentScrollPosition } from "./chat.ts";
 import * as conversations from './conversations.ts';
 import * as sessionCache from './sessionCache.ts';
 import { log, diag } from './util/log.ts';
+import * as status from './status.ts';
 import { parseQuery, applyFilter } from './sessionFilter.ts';
 import { getFilter as getStoredFilter, putFilter as putStoredFilter, clearFilter as clearStoredFilter } from './util/filterStore.ts';
 import { deleteSelected as bulkDeleteSelected } from './multiSelect.ts';
@@ -28,6 +30,7 @@ import * as badge from './notifications/badge.ts';
 import { isMuted as isChatMuted, setMuted as setChatMuted } from './notifications/mutes.ts';
 import { reportChatSwitch } from './notifications/visibility.ts';
 import { unreadFor, markUnread as markChatUnread, unmarkUnread as unmarkChatUnread, isMarkedUnread } from './notifications/badge.ts';
+import * as activityStore from './notifications/activityStore.ts';
 
 let onResumeCb: ((id: string, messages: any[], pagination?: { firstId: number | null; hasMore: boolean }, inflight?: any[]) => void) | null = null;
 
@@ -440,7 +443,10 @@ export function setViewed(id: string | null) {
   viewedSessionId = id;
   // Switching INTO a chat is the canonical "user has now seen this"
   // signal — clear its unread badge.
-  if (id) badge.clearUnread(id);
+  if (id) {
+    badge.clearUnread(id);
+    activityStore.markChatRead(id);
+  }
   // Also tell the proxy: the user is now actively viewing this chat.
   // Drives the dispatch gate's 2s engagement window so push doesn't
   // fire for envelopes arriving on the chat the user is right here
@@ -1234,6 +1240,7 @@ async function resume(id: string) {
   // fully settle.
   const leaving = viewedSessionId || optimisticActiveId;
   if (leaving && leaving !== id) {
+    saveCurrentScrollPosition();
     t?.trace('onBeforeSwitch-start', `leaving=${leaving}`);
     try { onBeforeSwitchCb?.(leaving); }
     catch (e: any) { diag(`onBeforeSwitch threw: ${e?.message || e}`); }
@@ -1266,9 +1273,21 @@ async function resume(id: string) {
     try {
       t?.trace('server-fetch-start');
       const result: any = await backend.resumeSession(id);
-      t?.trace('server-fetch-end', `n=${(result.messages || []).length}`);
+      t?.trace('server-fetch-end', `n=${(result.messages || []).length} error=${result.error || ''}`);
       const messages = result.messages || [];
       const pagination = { firstId: result.firstId ?? null, hasMore: !!result.hasMore };
+      if (result.error) {
+        if (myGen !== resumeGen) return;
+        const msg = cacheRendered
+          ? 'Showing cached session — reconnecting…'
+          : 'Could not load session — reconnecting…';
+        status.setStatus(msg, 'err');
+        if (!cacheRendered) {
+          onResumeCb?.(id, [], { firstId: null, hasMore: false }, []);
+        }
+        scheduleRefresh();
+        return;
+      }
       await sessionCache.putMessagesCache(id, messages);
       // Stale-generation guard — see above. Bail BEFORE logging so the
       // log line accurately reflects which fetches actually rendered.
@@ -1308,12 +1327,14 @@ async function resume(id: string) {
       scheduleRefresh();
     } catch (e: any) {
       diag(`sessionDrawer: resume ${id} failed: ${e.message}`);
-      // On server failure, drop the optimistic override only if our
-      // generation is still live — otherwise we'd clobber a newer
-      // click's optimistic state, leaving the user in a phantom-
-      // selected limbo.
       if (myGen === resumeGen) {
-        optimisticActiveId = null;
+        status.setStatus(
+          cacheRendered ? 'Showing cached session — reconnecting…' : 'Could not load session — reconnecting…',
+          'err',
+        );
+        if (!cacheRendered) {
+          optimisticActiveId = null;
+        }
         scheduleRefresh();
       }
     }

@@ -13,6 +13,7 @@ import {
   getPermission as getPushPermission,
 } from './notifications/index.ts';
 import { clearAllUnread, totalUnreadCount } from './notifications/badge.ts';
+import * as activityStore from './notifications/activityStore.ts';
 
 const STORAGE_KEY = 'sidekick.settings.v2';
 
@@ -1006,6 +1007,7 @@ export function hydrate(handlers: {
   }
   if (setMarkAllRead) setMarkAllRead.onclick = () => {
     clearAllUnread();
+    activityStore.markAllRead();
     refreshMarkAllReadHint();
   };
 

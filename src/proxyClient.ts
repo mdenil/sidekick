@@ -44,6 +44,7 @@
 
 import { log, diag } from './util/log.ts';
 import * as conversations from './conversations.ts';
+import * as sessionCache from './sessionCache.ts';
 import { markRecentlyDeleted, isRecentlyDeleted } from './sessionOps.ts';
 
 let subs: any = null;
@@ -119,7 +120,7 @@ async function fetchSessionMessages(id: string, logPrefix = 'proxy-client.fetchS
     if (!r.ok) {
       diag(`${logPrefix}: HTTP ${r.status} for ${id}`);
       log(`${logPrefix}: chat_id=${id}, history fetch failed`);
-      return { messages: [], firstId: null, hasMore: false, inflight: [] };
+      return { messages: [], firstId: null, hasMore: false, inflight: [], error: `HTTP ${r.status}` };
     }
     const d = await r.json();
     const inflightEnvelopes = Array.isArray(d.inflight) ? d.inflight : [];
@@ -133,8 +134,13 @@ async function fetchSessionMessages(id: string, logPrefix = 'proxy-client.fetchS
     return result;
   } catch (e: any) {
     diag(`${logPrefix}: ${e.message}`);
-    return { messages: [], firstId: null, hasMore: false, inflight: [] };
+    return { messages: [], firstId: null, hasMore: false, inflight: [], error: e?.message || 'network error' };
   }
+}
+
+function firstUserSnippet(messages: any[]): string {
+  const row = messages.find((m) => m?.role === 'user' && typeof m.content === 'string' && m.content.trim());
+  return row ? String(row.content).slice(0, 80) : '';
 }
 
 interface SessionsResponse {
@@ -263,7 +269,8 @@ function startStreamChannel(): void {
                    // to. Without these listeners, the handlers in
                    // handleEnvelope() are unreachable — caught only
                    // by cross-device-pin-sync.mjs smoke 2026-05-16.
-                   'unread_changed', 'pins_changed', 'conversation_deleted']) {
+                   'unread_changed', 'pins_changed', 'activity_changed',
+                   'conversation_deleted']) {
     streamES.addEventListener(t, onEvent as any);
   }
   streamES.onerror = (e) => {
@@ -416,13 +423,14 @@ function bindLifecycleHandlers(): void {
  *  the listener depends on local state already being updated (e.g.
  *  sessionDrawer's scheduleRefresh needs the IDB row gone before its
  *  re-render). */
-type CrossDeviceSyncType = 'unread_changed' | 'pins_changed' | 'conversation_deleted';
+type CrossDeviceSyncType = 'unread_changed' | 'pins_changed' | 'activity_changed' | 'conversation_deleted';
 const CROSS_DEVICE_SYNC: Record<CrossDeviceSyncType, {
   eventName: string;
   sideEffect?: (chatId: string) => void;
 }> = {
   unread_changed:        { eventName: 'sidekick:server-unread-changed' },
   pins_changed:          { eventName: 'sidekick:server-pins-changed' },
+  activity_changed:      { eventName: 'sidekick:server-activity-changed' },
   conversation_deleted:  {
     eventName: 'sidekick:server-conversation-deleted',
     sideEffect: (chatId) => { conversations.remove(chatId).catch(() => {}); },
@@ -506,6 +514,7 @@ function handleEnvelope(type: string, env: any, chatId: string): void {
 
     case 'unread_changed':
     case 'pins_changed':
+    case 'activity_changed':
     case 'conversation_deleted':
       dispatchCrossDeviceSync(env.type, env, chatId);
       return;
@@ -547,7 +556,7 @@ function handleEnvelope(type: string, env: any, chatId: string): void {
       const sidekickId = typeof env.sidekick_id === 'string' ? env.sidekick_id : '';
       const isReplay = env?._replay === true;
       log(`proxy-client: notification kind=${kind} chat_id=${chatId} sk=${sidekickId}${isReplay ? ' (replay)' : ''}`);
-      subs?.onNotification?.({ chatId, kind, content, sidekickId });
+      subs?.onNotification?.({ chatId, kind, content, sidekickId, isReplay });
       // Bump the drawer ordering so the chat with the freshest
       // notification floats up. Skip on replay (see reply_final's
       // matching guard for cascade rationale).
@@ -854,17 +863,29 @@ export const proxyClientAdapter = {
 
     if (!serverReachable) {
       // Offline / proxy down — render whatever we have locally so the
-      // drawer doesn't go blank. No first_user_message snippet
-      // available locally (PWA doesn't cache transcripts in the
-      // conversations IDB), so just fall back to "New chat" via the
-      // title field; the drawer renders that directly.
-      return local.map(conv => ({
-        id: conv.chat_id,
-        source: 'sidekick',
-        title: conv.title || 'New chat',
-        snippet: '',
-        lastMessageAt: Math.floor(conv.last_message_at / 1000),
-        messageCount: 0,
+      // drawer doesn't go blank. Prefer the last server-backed list row
+      // when present, then enrich from cached transcripts. The
+      // conversations store is intentionally thin and often only knows
+      // "New chat" / 0 msgs after a hard refresh.
+      const cachedList = await sessionCache.getListCache();
+      const cachedById = new Map((cachedList?.sessions || []).map((row: any) => [row.id, row]));
+      return Promise.all(local.map(async (conv) => {
+        const prev: any = cachedById.get(conv.chat_id) || {};
+        const cached = await sessionCache.getMessagesCache(conv.chat_id);
+        const messages = cached?.messages || [];
+        const snippet = firstUserSnippet(messages) || prev.snippet || '';
+        const localTitle = conv.title === 'New chat' ? '' : (conv.title || '');
+        const messageCount = messages.length || prev.messageCount || 0;
+        return {
+          id: conv.chat_id,
+          source: prev.source || (conv.chat_id.includes(':') ? conv.chat_id.split(':')[0] : 'sidekick'),
+          title: localTitle || prev.title || snippet || 'New chat',
+          snippet,
+          lastMessageAt: Math.floor(conv.last_message_at / 1000) || prev.lastMessageAt || 0,
+          messageCount,
+          turnCount: messages.filter((m: any) => m?.role === 'user').length || prev.turnCount || undefined,
+          toolCount: messages.filter((m: any) => m?.role === 'tool').length || prev.toolCount || undefined,
+        };
       }));
     }
 

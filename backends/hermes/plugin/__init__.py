@@ -1618,9 +1618,23 @@ class SidekickAdapter(BasePlatformAdapter):
             except Exception as exc:
                 logger.warning("[sidekick.push] dispatch failed: %s", exc)
 
+        from . import sidekick_route_events as _route_events
+
         if env_type in in_turn_types and chat_id:
             queue = self._turn_queues.get(chat_id)
             if queue is not None:
+                # Tool events are observational UI state. Keep feeding the
+                # active /v1/responses queue for Responses-compatible clients,
+                # but also publish them on the persistent Sidekick event stream
+                # so every open PWA sees tool progress incrementally. Without
+                # this, the originating request stream saw function-call items
+                # but the transcript-centric event channel only caught up from
+                # /messages after the turn ended.
+                if env_type in ("tool_call", "tool_result"):
+                    try:
+                        _route_events.publish_out_of_turn(self, env)
+                    except Exception as exc:
+                        logger.warning("[sidekick] tool event publish failed: %s", exc)
                 try:
                     queue.put_nowait(env)
                     return True
@@ -1645,7 +1659,6 @@ class SidekickAdapter(BasePlatformAdapter):
         # into /v1/conversations/{id}/items so a refresh-and-scroll
         # finds the notification in the transcript with the same
         # data-message-id machinery cmdk + pin-drawer already use.
-        from . import sidekick_route_events as _route_events
         published = _route_events.publish_out_of_turn(self, env)
 
         # Cross-device unread sync: when a push-eligible envelope lands
@@ -1796,6 +1809,26 @@ class SidekickAdapter(BasePlatformAdapter):
         wire: the message_id we return here is what the proxy keys the
         UI bubble on.
         """
+        from .sidekick_dispatcher import is_approval_prompt
+
+        # Hermes approval prompts are blocking workflow events. They
+        # arrive as normal adapter text, so classify them into a
+        # Sidekick-owned urgent notification before the regular reply
+        # path persists/renders them as assistant prose.
+        if is_approval_prompt(content or ""):
+            if chat_id not in self._known_chat_ids:
+                self._known_chat_ids.add(chat_id)
+            env = {
+                "type": "notification",
+                "chat_id": chat_id,
+                "kind": "approval",
+                "content": content,
+                "text": content,
+                "urgent": True,
+            }
+            ok = await self._safe_send_envelope(env)
+            return SendResult(success=ok, message_id=env.get("sidekick_id") or "")
+
         # Hermes cron delivery naturally arrives here through the live
         # platform adapter as a regular send() with a canonical wrapper.
         # There is no active /v1/responses queue for that background
@@ -2049,6 +2082,7 @@ class SidekickAdapter(BasePlatformAdapter):
             "type": "tool_result",
             "chat_id": chat_id,
             "call_id": tool_call_id,
+            "tool_name": tool_name,
             "result": result_str,
             "error": None,
             "duration_ms": duration_ms,

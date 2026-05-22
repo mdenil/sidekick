@@ -113,6 +113,10 @@
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 10.76V4h6v6.76l3 1.74v2.5H6v-2.5z"/></svg>
     <span id="pin-drawer-count" class="pin-count-banner" hidden>0</span>
   </button>
+  <button id="btn-activity-drawer" class="toolbar-btn mobile-only" title="Activity" aria-label="Activity">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.27 21a2 2 0 0 0 3.46 0"/><path d="M3.26 15.33A2 2 0 0 0 5 18h14a2 2 0 0 0 1.74-2.67C19.7 12.76 18 11.84 18 8a6 6 0 0 0-12 0c0 3.84-1.7 4.76-2.74 7.33"/></svg>
+    <span id="activity-drawer-count" class="pin-count-banner activity-count-banner" hidden>0</span>
+  </button>
 </div>
 
 <!-- Right-side drawer — symmetric mirror of the left sidebar.
@@ -142,23 +146,38 @@
        structure (top + content + bottom slots). -->
   <div class="pin-drawer-top">
     <div class="pin-drawer-top-row">
-      <h3 class="pin-drawer-title">Pinned</h3>
+      <h3 id="right-drawer-title" class="pin-drawer-title">Pinned</h3>
       <button id="pin-drawer-clear" class="pin-drawer-clear-btn" title="Clear all pinned messages" aria-label="Clear all pinned messages" hidden>
         Clear
-      </button>
-      <button id="btn-pin-drawer-rail" class="sb-icon-btn pin-drawer-toggle" title="Toggle pinned messages" aria-label="Toggle pinned messages">
-        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 10.76V4h6v6.76l3 1.74v2.5H6v-2.5z"/></svg>
-        <span id="pin-drawer-count-rail" class="pin-count-banner" hidden>0</span>
       </button>
     </div>
   </div>
 
+  <div class="right-drawer-rail-buttons" role="tablist" aria-label="Right drawer sections">
+    <button id="btn-activity-drawer-rail" class="sb-icon-btn pin-drawer-toggle right-drawer-rail-btn" type="button" role="tab" aria-selected="false" data-right-panel="activity" title="Activity" aria-label="Activity">
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.27 21a2 2 0 0 0 3.46 0"/><path d="M3.26 15.33A2 2 0 0 0 5 18h14a2 2 0 0 0 1.74-2.67C19.7 12.76 18 11.84 18 8a6 6 0 0 0-12 0c0 3.84-1.7 4.76-2.74 7.33"/></svg>
+      <span id="activity-drawer-count-rail" class="pin-count-banner activity-count-banner" hidden>0</span>
+    </button>
+    <button id="btn-pin-drawer-rail" class="sb-icon-btn pin-drawer-toggle right-drawer-rail-btn" type="button" role="tab" aria-selected="true" data-right-panel="pins" title="Pinned messages" aria-label="Pinned messages">
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 10.76V4h6v6.76l3 1.74v2.5H6v-2.5z"/></svg>
+      <span id="pin-drawer-count-rail" class="pin-count-banner" hidden>0</span>
+    </button>
+  </div>
+
   <div class="pin-drawer-content">
     <div id="pin-drawer-status" class="pin-drawer-status" role="status" aria-live="polite" hidden></div>
-    <ul id="pin-drawer-list" class="pin-drawer-list"></ul>
-    <div id="pin-drawer-empty" class="pin-drawer-empty" hidden>
-      No pinned messages.<br><span class="pin-drawer-hint">Tap the pin icon on any message to add it here.</span>
-    </div>
+    <section id="activity-drawer-panel" class="right-drawer-panel" data-panel="activity" hidden>
+      <ul id="activity-drawer-list" class="activity-drawer-list"></ul>
+      <div id="activity-drawer-empty" class="pin-drawer-empty" hidden>
+        No activity.<br><span class="pin-drawer-hint">Approvals and cron notifications will appear here.</span>
+      </div>
+    </section>
+    <section id="pin-drawer-panel" class="right-drawer-panel" data-panel="pins">
+      <ul id="pin-drawer-list" class="pin-drawer-list"></ul>
+      <div id="pin-drawer-empty" class="pin-drawer-empty" hidden>
+        No pinned messages.<br><span class="pin-drawer-hint">Tap the pin icon on any message to add it here.</span>
+      </div>
+    </section>
   </div>
 
   <div class="pin-drawer-bottom">
@@ -336,7 +355,7 @@
       <span class="hint" id="set-push-hint">checking support…</span>
     </div>
     <!-- Per-kind toggles. Expose only categories Hermes naturally emits
-         into Sidekick today: regular agent replies and cron output. The
+         into Sidekick today: regular agent replies, cron output, and approval prompts. The
          plugin-side dispatcher consults push_kind_<name> before dispatch. -->
     <div class="row">
       <label for="set-push-categories-toggle">Categories</label>
@@ -349,6 +368,7 @@
     <div class="push-categories-grid" id="set-push-categories-grid" hidden>
       <label class="push-cat"><input type="checkbox" data-push-kind="agent_reply"> <span class="cat-emoji" aria-hidden="true">💬</span> Agent replies</label>
       <label class="push-cat"><input type="checkbox" data-push-kind="cron"> <span class="cat-emoji" aria-hidden="true">⏰</span> Cron output</label>
+      <label class="push-cat"><input type="checkbox" data-push-kind="approval"> <span class="cat-emoji" aria-hidden="true">⚠️</span> Approvals</label>
     </div>
     <div class="row">
       <label for="set-audio-feedback">Chime volume</label>
@@ -596,6 +616,9 @@
       <input type="file" id="attach-input" accept="image/*,video/*,application/pdf" multiple hidden>
       <div class="composer-actions">
         <div class="composer-actions-left">
+          <button id="composer-hotkeys-hint" class="composer-hotkeys-hint" type="button" title="Keyboard shortcuts · Cmd+/" aria-label="Keyboard shortcuts · Cmd+/">
+            <span aria-hidden="true">Cmd+/</span>
+          </button>
           <!-- Call button: opens a duplex voice channel with the agent.
                Realtime=ON → WebRTC; OFF (default) → turn-based Listen.
                Lives on the LEFT of the composer, alongside its own

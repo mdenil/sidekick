@@ -52,6 +52,9 @@ export default async function run({ page, log }) {
       hasMessageNav: !!Array.from(dlg.querySelectorAll('.hotkeys-help-row')).find(
         r => /highlight the most recent message/i.test(r.textContent || ''),
       ),
+      hasActivityDrawer: !!Array.from(dlg.querySelectorAll('.hotkeys-help-row')).find(
+        r => /Toggle Activity drawer/i.test(r.textContent || '') && /⌘⇧A|Ctrl\+Shift\+A/.test(r.textContent || ''),
+      ),
     };
   });
   assert(snapshot, 'dialog disappeared between waitFor and evaluate');
@@ -69,6 +72,7 @@ export default async function run({ page, log }) {
   assert(snapshot.hasComposerEnter, 'expected a row describing the Send message binding');
   assert(snapshot.hasSlashSlash, 'expected a row describing the slash-popover binding');
   assert(snapshot.hasMessageNav, 'expected a row describing the message-navigation entry binding');
+  assert(snapshot.hasActivityDrawer, 'expected a row describing the Activity drawer hotkey');
   assert(snapshot.rowCount >= 12, `expected ≥12 binding rows total, got ${snapshot.rowCount}`);
   log('categories + key rows present ✓');
 
@@ -80,6 +84,18 @@ export default async function run({ page, log }) {
     { timeout: 2_000 },
   );
   log('Esc closes ✓');
+
+  await page.click('#composer-hotkeys-hint');
+  await page.waitForSelector('dialog.hotkeys-help-dialog[open]', {
+    state: 'visible', timeout: 3_000,
+  });
+  log('composer hint opens ✓');
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(
+    () => !document.querySelector('dialog.hotkeys-help-dialog[open]'),
+    null,
+    { timeout: 2_000 },
+  );
 
   // Re-opening renders again (not a one-shot).
   await page.keyboard.down(modifier);
