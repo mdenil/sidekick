@@ -596,15 +596,33 @@ def rename_conversation_sync(
             sqlite3.connect(adapter._state_db_path, timeout=5.0)
         ) as conn:
             with conn:
-                # Find the latest session for this chat — that's
-                # the one the drawer surfaces and the one a rename
-                # should target.
-                row = conn.execute(
-                    "SELECT id FROM sessions "
-                    "WHERE user_id = ? AND source = ? "
-                    "ORDER BY started_at DESC LIMIT 1",
-                    (chat_id, source),
-                ).fetchone()
+                # Find the latest session for this chat using the same
+                # effective-root semantics as _summaries_by_user_id().
+                # Compression continuations often have user_id=NULL and
+                # parent_session_id=<root>; the drawer surfaces the latest
+                # continuation title, so rename must target that same row.
+                lineage_sql = """
+                    WITH RECURSIVE session_root(id, root_user_id, root_source, root_system_prompt) AS (
+                        SELECT id, user_id, source, system_prompt
+                          FROM sessions
+                         WHERE user_id IS NOT NULL
+                        UNION ALL
+                        SELECT s.id, sr.root_user_id, sr.root_source, sr.root_system_prompt
+                          FROM sessions s
+                          JOIN session_root sr ON s.parent_session_id = sr.id
+                         WHERE s.user_id IS NULL
+                           AND LENGTH(COALESCE(sr.root_system_prompt, '')) >= 200
+                           AND SUBSTR(COALESCE(s.system_prompt, ''), 1, 200)
+                               = SUBSTR(sr.root_system_prompt, 1, 200)
+                    )
+                    SELECT s.id
+                      FROM session_root sr
+                      JOIN sessions s ON s.id = sr.id
+                     WHERE sr.root_user_id = ?
+                       AND sr.root_source = ?
+                     ORDER BY s.started_at DESC LIMIT 1
+                """
+                row = conn.execute(lineage_sql, (chat_id, source)).fetchone()
                 if row is None:
                     return "not_found"
                 latest_sid = row[0]
@@ -630,13 +648,15 @@ def rename_conversation_sync(
                 # case (latest row already has this title) falls
                 # through to a no-op UPDATE without spurious clear.
                 existing = conn.execute(
-                    "SELECT id, user_id, source FROM sessions "
+                    "SELECT id, user_id, source, parent_session_id FROM sessions "
                     "WHERE title = ? AND id != ?",
                     (title, latest_sid),
                 ).fetchone()
                 if existing is not None:
-                    other_id, other_user, other_source = existing
-                    if other_user == chat_id and other_source == source:
+                    other_id, other_user, other_source, _other_parent = existing
+                    if other_source == source and _session_belongs_to_chat(
+                        conn, other_id, chat_id, source,
+                    ):
                         # Stale sibling — release its grip on the title.
                         conn.execute(
                             "UPDATE sessions SET title = NULL "
@@ -656,6 +676,30 @@ def rename_conversation_sync(
         )
         return "error"
     return "ok"
+
+
+def _session_belongs_to_chat(
+    conn: sqlite3.Connection, session_id: str, chat_id: str, source: str,
+) -> bool:
+    """Return True if session_id resolves to chat_id/source via parent links."""
+    row = conn.execute(
+        """
+        WITH RECURSIVE ancestors(id, user_id, source, parent_session_id, depth) AS (
+            SELECT id, user_id, source, parent_session_id, 0
+              FROM sessions WHERE id = ?
+            UNION ALL
+            SELECT p.id, p.user_id, p.source, p.parent_session_id, ancestors.depth + 1
+              FROM sessions p
+              JOIN ancestors ON ancestors.parent_session_id = p.id
+             WHERE ancestors.depth < 20
+        )
+        SELECT 1 FROM ancestors
+         WHERE user_id = ? AND source = ?
+         LIMIT 1
+        """,
+        (session_id, chat_id, source),
+    ).fetchone()
+    return row is not None
 
 
 def _purge_hindsight_for_session_uuids(session_uuids: list) -> None:

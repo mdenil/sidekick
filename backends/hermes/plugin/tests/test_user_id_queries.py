@@ -875,6 +875,48 @@ def test_rename_conversation_sync_clears_stale_sibling_title(plugin, state_db):
     assert rows["s_old"] is None
 
 
+def test_rename_conversation_sync_targets_latest_continuation(plugin, state_db):
+    """Compression continuations can have user_id=NULL and inherit the
+    Sidekick chat through parent_session_id. Rename must update the latest
+    continuation row, because that is the title the drawer displays.
+    """
+    conn = sqlite3.connect(state_db)
+    conn.execute(
+        "CREATE UNIQUE INDEX idx_sessions_title_unique "
+        "ON sessions(title) WHERE title IS NOT NULL"
+    )
+    conn.commit()
+    conn.close()
+
+    chat = "chat-compressed"
+    prompt = "Sidekick prompt " * 30
+    _insert_session(
+        state_db, "root", "sidekick", chat, 1000.0,
+        title="pitch deck v10+", system_prompt=prompt,
+    )
+    _insert_message(state_db, "root", "user", "hi", 1001.0)
+    _insert_session(
+        state_db, "child", "sidekick", None, 2000.0,
+        title="SpaceX Starship Launch Outcome #2", parent="root",
+        system_prompt=prompt,
+    )
+    _insert_message(state_db, "child", "user", "follow-up", 2001.0)
+
+    adapter = _make_adapter(plugin, state_db)
+    result = adapter._rename_conversation_sync(chat, "sidekick", "pitch deck v10+")
+    assert result == "ok"
+
+    conn = sqlite3.connect(state_db)
+    rows = dict(conn.execute("SELECT id, title FROM sessions").fetchall())
+    conn.close()
+    assert rows["child"] == "pitch deck v10+"
+    assert rows["root"] is None
+
+    drawer = adapter._summaries_by_user_id(("sidekick",), 50)
+    assert len(drawer) == 1
+    assert drawer[0][3] == "pitch deck v10+"
+
+
 def test_rename_conversation_sync_idempotent_same_title(plugin, state_db):
     """Renaming to the title the row already has is a no-op success,
     NOT a conflict — the latest row matches its own title."""
