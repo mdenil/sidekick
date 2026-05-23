@@ -3049,17 +3049,43 @@
     color: var(--muted);
     cursor: pointer;
     border-radius: 6px;
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 11px;
+    font-family: var(--font-sans);
+    font-size: 12px;
     line-height: 1;
-    min-width: 36px;
-    height: 28px;
-    padding: 0 7px;
+    min-width: 0;
+    height: 30px;
+    padding: 0 8px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    opacity: 0.7;
+    gap: 8px;
+    opacity: 0.78;
     transition: color .15s, background .15s, border-color .15s, opacity .15s;
+  }
+  .composer-hotkeys-keys {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .composer-hotkeys-keys kbd {
+    min-width: 24px;
+    height: 22px;
+    padding: 0 6px;
+    border: 1px solid var(--border-strong);
+    border-bottom-color: color-mix(in srgb, var(--border-strong) 78%, #000 22%);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--fg);
+    box-shadow: 0 1px 0 rgba(0,0,0,0.16);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+    line-height: 1;
+  }
+  .composer-hotkeys-label {
+    white-space: nowrap;
   }
   .composer-hotkeys-hint:hover,
   .composer-hotkeys-hint:focus-visible {

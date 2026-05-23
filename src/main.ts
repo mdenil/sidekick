@@ -650,7 +650,8 @@ async function boot() {
   if (composerHotkeysHint) {
     const isAppleHost = /Mac|iPhone|iPad|iPod/i.test(navigator.platform || navigator.userAgent || '');
     const helpCombo = isAppleHost ? '⌘/' : 'Ctrl+/';
-    composerHotkeysHint.querySelector('[aria-hidden="true"]')!.textContent = helpCombo;
+    const modKey = composerHotkeysHint.querySelector<HTMLElement>('[data-hotkey-mod]');
+    if (modKey) modKey.textContent = isAppleHost ? '⌘' : 'Ctrl';
     composerHotkeysHint.title = `Keyboard shortcuts · ${helpCombo}`;
     composerHotkeysHint.setAttribute('aria-label', `Keyboard shortcuts · ${helpCombo}`);
     composerHotkeysHint.onclick = () => hotkeysHelp.open();
