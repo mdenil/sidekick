@@ -113,6 +113,31 @@ async function restoreMemoCards() {
 
 let memoActive = false;  // true while voice-memo recording bar is shown
 
+let listenAwaitingReplyChatId: string | null = null;
+let listenAwaitingReplyAt = 0;
+let listenReplyTtsOwned = false;
+const LISTEN_REPLY_AUTOPLAY_WINDOW_MS = 2 * 60 * 1000;
+
+function markListenAwaitingReply(chatId: string | null): void {
+  if (!chatId) return;
+  listenAwaitingReplyChatId = chatId;
+  listenAwaitingReplyAt = Date.now();
+}
+
+function shouldAutoPlayForListen(conversation: string | undefined | null): boolean {
+  if (!conversation || conversation !== listenAwaitingReplyChatId) return false;
+  if (Date.now() - listenAwaitingReplyAt > LISTEN_REPLY_AUTOPLAY_WINDOW_MS) return false;
+  const st = turnbased.getState();
+  return st === 'committing' || st === 'cooldown';
+}
+
+function consumeListenReply(chatId: string): void {
+  if (listenAwaitingReplyChatId === chatId) {
+    listenAwaitingReplyChatId = null;
+    listenAwaitingReplyAt = 0;
+  }
+}
+
 // releaseCaptureIfActive is defined as a closure inside boot() so it can
 // close the WebRTC peer connection cleanly when slash-commands or other
 // reset paths fire.
@@ -929,16 +954,29 @@ async function boot() {
     });
   }
 
-  // Bridge tts state → Listen state via the typed events, in ONE place.
-  // Replaces ad-hoc notifyReplyPlayback() calls scattered across
-  // handleReplyFinal + onBarge. SSOT: the audio's state machine is
-  // authoritative; Listen observes it. Resume after barge now Just
-  // Works because pause+resume go through the same play/pause events.
-  ttsModule.on('play-start', () => { try { turnbased.notifyReplyPlayback(true);  } catch {} });
-  ttsModule.on('resumed',    () => { try { turnbased.notifyReplyPlayback(true);  } catch {} });
-  ttsModule.on('paused',     () => { try { turnbased.notifyReplyPlayback(false); } catch {} });
-  ttsModule.on('ended',      () => { try { turnbased.notifyReplyPlayback(false); } catch {} });
-  ttsModule.on('stopped',    () => { try { turnbased.notifyReplyPlayback(false); } catch {} });
+  // Bridge TTS state → Listen state only for auto-playbacks that Listen
+  // explicitly owns. Manual per-bubble replay and unrelated incoming
+  // replies must not transition Listen out of an active capture state.
+  ttsModule.on('play-start', () => { if (listenReplyTtsOwned) { try { turnbased.notifyReplyPlayback(true);  } catch {} } });
+  ttsModule.on('resumed',    () => { if (listenReplyTtsOwned) { try { turnbased.notifyReplyPlayback(true);  } catch {} } });
+  ttsModule.on('paused',     () => {
+    if (listenReplyTtsOwned) {
+      try { turnbased.notifyReplyPlayback(false); } catch {}
+      listenReplyTtsOwned = false;
+    }
+  });
+  ttsModule.on('ended',      () => {
+    if (listenReplyTtsOwned) {
+      try { turnbased.notifyReplyPlayback(false); } catch {}
+      listenReplyTtsOwned = false;
+    }
+  });
+  ttsModule.on('stopped',    () => {
+    if (listenReplyTtsOwned) {
+      try { turnbased.notifyReplyPlayback(false); } catch {}
+      listenReplyTtsOwned = false;
+    }
+  });
   draft.init({
     transcriptEl,
     onChange: updateSendButtonState,
@@ -1352,6 +1390,7 @@ async function boot() {
     }
     return fresh;
   }
+
   function ensureUserBubble(initial: string): void {
     if (!dcUserMessageId) {
       dcUserMessageId = `umsg_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
@@ -2541,8 +2580,10 @@ async function boot() {
       // STTProvider impls so dictate.ts's cursor-aware splice machine
       // stays the single owner of the textarea state.
       const provider = browserDictate.pickStreamingProvider();
+      const chatId = sessionDrawer.getViewed() || backend.getCurrentSessionId?.() || null;
       await webrtcDictate.start({
-        sessionId: sessionDrawer.getViewed() || backend.getCurrentSessionId?.() || null,
+        sessionId: chatId,
+        chatId,
         initialCursor,
         provider,
       });
@@ -2675,6 +2716,8 @@ async function boot() {
             log('listen: empty transcript, skipping send');
             return;
           }
+          const chatId = resolveOrMintSendChatId();
+          markListenAwaitingReply(chatId);
           composer.appendText(text);
           composer.submit();
         } catch (e: any) {
@@ -2697,6 +2740,8 @@ async function boot() {
           log('listen: empty local transcript, skipping send');
           return;
         }
+        const chatId = resolveOrMintSendChatId();
+        markListenAwaitingReply(chatId);
         composer.appendText(body);
         composer.submit();
       },
@@ -4381,11 +4426,13 @@ function handleReplyFinal({ replyId, text, content = [], conversation, messageId
       : webrtcOpen ? 'webrtc-peer'
       : 'turnbased-tts';
     diag(`[reply-route] ${route} replyId=${replyId} len=${finalText.length} turnbased=${turnbased.getState()} webrtcOpen=${webrtcOpen} isReplay=${isReplay}`);
-    if (!isReplay && inListen && !webrtcOpen) {
-      void playReplyTts(finalText, settings.get().voice, replyId);
-    } else if (inListen) {
-      turnbased.notifyReplyPlayback(true);
-      turnbased.notifyReplyPlayback(false);
+    if (!isReplay && inListen && !webrtcOpen && shouldAutoPlayForListen(conversation)) {
+      consumeListenReply(conversation as string);
+      listenReplyTtsOwned = true;
+      void playReplyTts(finalText, settings.get().voice, replyId).catch(() => {
+        listenReplyTtsOwned = false;
+        try { turnbased.notifyReplyPlayback(false); } catch {}
+      });
     }
 
     if (bubble) {

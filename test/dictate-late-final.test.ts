@@ -120,7 +120,11 @@ class FakeTextarea {
 class MockSTTProvider implements STTProvider {
   private listeners: Array<(ev: TranscriptEvent) => void> = [];
   private started = false;
-  async start() { this.started = true; }
+  startOpts: { sessionId?: string | null; chatId?: string | null } | undefined;
+  async start(opts?: { sessionId?: string | null; chatId?: string | null }) {
+    this.startOpts = opts;
+    this.started = true;
+  }
   async stop() { this.started = false; }
   onTranscript(cb: (ev: TranscriptEvent) => void): Unsubscribe {
     this.listeners.push(cb);
@@ -213,6 +217,21 @@ describe('dictate — late final after user-driven reset', () => {
       1,
       'utterance text should appear exactly once',
     );
+  });
+
+  it('passes chatId through to the STT provider on start', async () => {
+    await dictate.stop();
+    provider = new MockSTTProvider();
+    await dictate.start({
+      sessionId: 'sidekick:test-chat',
+      chatId: 'sidekick:test-chat',
+      initialCursor: 0,
+      provider,
+    });
+    assert.deepEqual(provider.startOpts, {
+      sessionId: 'sidekick:test-chat',
+      chatId: 'sidekick:test-chat',
+    });
   });
 
   it('drops a late final after onUserInput reset', async () => {

@@ -188,6 +188,13 @@ function shouldRunBackgroundNetwork(): boolean {
   return typeof document === 'undefined' || document.visibilityState === 'visible';
 }
 
+function isLikelyMobileRuntime(): boolean {
+  if (typeof document !== 'undefined' && document.documentElement.classList.contains('capacitor-app')) return true;
+  if (typeof navigator === 'undefined') return false;
+  const ua = navigator.userAgent || '';
+  return /Android|iPhone|iPad|iPod/i.test(ua);
+}
+
 function startHealthPoll(): void {
   if (healthTimer) return;
   const tick = async () => {
@@ -396,8 +403,12 @@ function bindLifecycleHandlers(): void {
   lifecycleHandlersBound = true;
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden') {
-      log('proxy-client: visibilitychange hidden → close stream channel');
-      stopStreamChannel();
+      if (isLikelyMobileRuntime()) {
+        log('proxy-client: visibilitychange hidden on mobile → close stream channel');
+        stopStreamChannel();
+      } else {
+        log('proxy-client: visibilitychange hidden on desktop → keep stream channel alive');
+      }
       return;
     }
     log('proxy-client: visibilitychange visible → forceReconnect');

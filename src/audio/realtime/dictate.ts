@@ -298,6 +298,7 @@ export function init(input: HTMLTextAreaElement | null): void {
  *  without touching WebRTC. */
 export async function start(opts: {
   sessionId?: string | null;
+  chatId?: string | null;
   initialCursor?: number | null;
   provider?: STTProvider;
 } = {}): Promise<void> {
@@ -326,7 +327,10 @@ export async function start(opts: {
   activeProvider = provider;
 
   try {
-    await provider.start({ sessionId: opts.sessionId ?? null });
+    await provider.start({
+      sessionId: opts.sessionId ?? null,
+      chatId: opts.chatId ?? null,
+    });
   } catch (e: any) {
     if (activeUnsubscribe) {
       try { activeUnsubscribe(); } catch { /* ignore */ }
