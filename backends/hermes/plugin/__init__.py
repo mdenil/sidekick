@@ -2205,7 +2205,8 @@ class SidekickAdapter(BasePlatformAdapter):
         rows = await asyncio.to_thread(self._read_session_rows)
         for chat_id, session_id, title in rows:
             prev = self._session_state_cache.get(chat_id)
-            current = (session_id or "", title or "")
+            display_title = self._get_conversation_title_override(chat_id) or title or ""
+            current = (session_id or "", display_title)
             if prev is None:
                 # First sighting of this chat_id since adapter startup.
                 # Seed the cache; we'd rather miss the very first
@@ -2266,6 +2267,23 @@ class SidekickAdapter(BasePlatformAdapter):
         self._sid_to_chat_id_cache[session_id] = chat_id
         return chat_id
 
+    def _get_conversation_title_override(self, chat_id: str) -> Optional[str]:
+        db = getattr(self, "_sidekick_db", None)
+        if db is None:
+            return None
+        try:
+            row = db.fetchone(
+                "SELECT title FROM conversation_titles WHERE source = ? AND chat_id = ?",
+                (SIDEKICK_SOURCE, chat_id),
+            )
+        except Exception as exc:
+            logger.debug("[sidekick] title override read failed for %s: %s", chat_id, exc)
+            return None
+        if row is None:
+            return None
+        title = str(row["title"] if hasattr(row, "keys") else row[0]).strip()
+        return title or None
+
     def _read_session_rows(self) -> list:
         """Synchronous sqlite read — runs in a worker thread. Returns
         ``[(chat_id, session_id, title), …]`` for every sidekick
@@ -2289,17 +2307,31 @@ class SidekickAdapter(BasePlatformAdapter):
         # single round-trip; the index on (user_id, source) added at
         # startup speeds the partition scan.
         sql = """
-            SELECT user_id, id, COALESCE(title, '') FROM (
+            WITH RECURSIVE session_root(id, root_user_id, root_source, root_system_prompt) AS (
+                SELECT id, user_id, source, system_prompt
+                  FROM sessions
+                 WHERE user_id IS NOT NULL
+                UNION ALL
+                SELECT s.id, sr.root_user_id, sr.root_source, sr.root_system_prompt
+                  FROM sessions s
+                  JOIN session_root sr ON s.parent_session_id = sr.id
+                 WHERE s.user_id IS NULL
+                   AND LENGTH(COALESCE(sr.root_system_prompt, '')) >= 200
+                   AND SUBSTR(COALESCE(s.system_prompt, ''), 1, 200)
+                       = SUBSTR(sr.root_system_prompt, 1, 200)
+            )
+            SELECT root_user_id, id, COALESCE(title, '') FROM (
                 SELECT
-                    s.user_id,
+                    sr.root_user_id,
                     s.id,
                     s.title,
                     ROW_NUMBER() OVER (
-                        PARTITION BY s.user_id
+                        PARTITION BY sr.root_user_id, sr.root_source
                         ORDER BY s.started_at DESC
                     ) AS rn
-                FROM sessions s
-                WHERE s.source = ? AND s.user_id IS NOT NULL
+                FROM session_root sr
+                JOIN sessions s ON s.id = sr.id
+                WHERE sr.root_source = ?
             )
             WHERE rn = 1
         """

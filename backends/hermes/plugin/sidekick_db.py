@@ -156,6 +156,15 @@ CREATE TABLE IF NOT EXISTS activity_items (
 CREATE INDEX IF NOT EXISTS idx_activity_items_created ON activity_items(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_activity_items_chat ON activity_items(chat_id, created_at DESC);
 
+CREATE TABLE IF NOT EXISTS conversation_titles (
+  source      TEXT NOT NULL,
+  chat_id     TEXT NOT NULL,
+  title       TEXT NOT NULL,
+  updated_at  REAL NOT NULL,
+  PRIMARY KEY (source, chat_id)
+);
+CREATE INDEX IF NOT EXISTS idx_conversation_titles_updated ON conversation_titles(updated_at DESC);
+
 CREATE TABLE IF NOT EXISTS unread_state (
   chat_id        TEXT PRIMARY KEY,
   last_read_at   REAL,

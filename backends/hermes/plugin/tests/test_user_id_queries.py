@@ -237,6 +237,7 @@ def _make_adapter(plugin, state_db_path: Path):
 
     adapter = _TestAdapter.__new__(_TestAdapter)
     adapter._state_db_path = state_db_path
+    adapter._sidekick_db = None
     return adapter
 
 
@@ -915,6 +916,36 @@ def test_rename_conversation_sync_targets_latest_continuation(plugin, state_db):
     drawer = adapter._summaries_by_user_id(("sidekick",), 50)
     assert len(drawer) == 1
     assert drawer[0][3] == "pitch deck v10+"
+
+
+def test_sidekick_title_override_wins_over_latest_continuation(plugin, state_db, tmp_path):
+    """User-provided Sidekick titles are chat-level UI state and should
+    override whatever Hermes auto-titles the latest compressed session.
+    """
+    chat = "chat-title-override"
+    prompt = "Sidekick prompt " * 30
+    _insert_session(
+        state_db, "root", "sidekick", chat, 1000.0,
+        title="User Name", system_prompt=prompt,
+    )
+    _insert_message(state_db, "root", "user", "hi", 1001.0)
+    _insert_session(
+        state_db, "child", "sidekick", None, 2000.0,
+        title="Compression Auto Title", parent="root", system_prompt=prompt,
+    )
+    _insert_message(state_db, "child", "user", "follow-up", 2001.0)
+
+    sdb_mod = importlib.import_module(f"{plugin.__name__}.sidekick_db")
+    adapter = _make_adapter(plugin, state_db)
+    adapter._sidekick_db = sdb_mod.SidekickDB(tmp_path / "sidekick.db")
+    adapter._sidekick_db.exec(
+        "INSERT INTO conversation_titles (source, chat_id, title, updated_at) VALUES (?, ?, ?, ?)",
+        ("sidekick", chat, "User Name", 3000.0),
+    )
+
+    drawer = adapter._summaries_by_user_id(("sidekick",), 50)
+    assert len(drawer) == 1
+    assert drawer[0][3] == "User Name"
 
 
 def test_rename_conversation_sync_idempotent_same_title(plugin, state_db):

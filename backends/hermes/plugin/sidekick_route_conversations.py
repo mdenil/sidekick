@@ -28,6 +28,7 @@ import json
 import logging
 import os
 import sqlite3
+import time
 from typing import Tuple
 
 # aiohttp is the route handlers' return-type dep, but the sync
@@ -203,8 +204,9 @@ def _summaries_by_user_id(
         if not user_id:
             continue
         first_user_truncated = (first_user or "")[:80] or None
+        display_title = _get_conversation_title_override(adapter, source, user_id) or title or ""
         out.append((
-            user_id, source, "dm", title or "", int(mcount or 0),
+            user_id, source, "dm", display_title, int(mcount or 0),
             int(turn_count or 0), int(tool_count or 0),
             float(last_active_at or 0), float(created_at or 0),
             first_user_truncated,
@@ -675,7 +677,42 @@ def rename_conversation_sync(
             chat_id, exc,
         )
         return "error"
+    _set_conversation_title_override(adapter, source, chat_id, title)
     return "ok"
+
+
+def _get_conversation_title_override(adapter, source: str, chat_id: str) -> str | None:
+    db = getattr(adapter, "_sidekick_db", None)
+    if db is None:
+        return None
+    try:
+        row = db.fetchone(
+            "SELECT title FROM conversation_titles WHERE source = ? AND chat_id = ?",
+            (source, chat_id),
+        )
+        if row is None:
+            return None
+        title = str(row["title"] if hasattr(row, "keys") else row[0]).strip()
+        return title or None
+    except Exception as exc:
+        logger.debug("[sidekick] title override read failed for %s:%s: %s", source, chat_id, exc)
+        return None
+
+
+def _set_conversation_title_override(adapter, source: str, chat_id: str, title: str) -> None:
+    db = getattr(adapter, "_sidekick_db", None)
+    if db is None:
+        return
+    try:
+        db.exec(
+            "INSERT INTO conversation_titles (source, chat_id, title, updated_at) "
+            "VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(source, chat_id) DO UPDATE SET "
+            "title = excluded.title, updated_at = excluded.updated_at",
+            (source, chat_id, title, time.time()),
+        )
+    except Exception as exc:
+        logger.warning("[sidekick] title override write failed for %s:%s: %s", source, chat_id, exc)
 
 
 def _session_belongs_to_chat(
