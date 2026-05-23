@@ -92,6 +92,15 @@ export function replaySessionMessages(
   }
   setHistoryLoadedRef();
 
+  // Read the saved position BEFORE changing viewedSessionId / mutating
+  // the transcript. Rendering the new chat can synchronously fire
+  // scroll events while the DOM is at a transient top/empty state; if
+  // viewedSessionId has already been stamped, those events can overwrite
+  // the position we are about to restore. Suppress saves across the
+  // whole replay/restore window, not just after render.
+  const saved = !targetMessageId ? getScrollPosition(id) : null;
+  if (!targetMessageId) suppressSavesFor(1000);
+
   // setViewed must run BEFORE the store mutates so the reconciler
   // subscription sees the new active chat. The reconciler skips
   // re-renders for non-active chats; we'd lose this render otherwise.
@@ -154,9 +163,7 @@ export function replaySessionMessages(
   // paint takes the actual scrollTop. suppressSavesFor() also blocks
   // the post-render scroll event from clobbering the saved value with
   // scrollTop=0.
-  const saved = getScrollPosition(id);
   if (saved && !targetMessageId) {
-    suppressSavesFor(800);
     if (saved.atBottom) {
       // At-bottom restoration: forceScrollToBottom + watch for async
       // DOM-enhancement-driven scrollHeight growth (play-bars, copy
