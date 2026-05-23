@@ -616,9 +616,6 @@
       <input type="file" id="attach-input" accept="image/*,video/*,application/pdf" multiple hidden>
       <div class="composer-actions">
         <div class="composer-actions-left">
-          <button id="composer-hotkeys-hint" class="composer-hotkeys-hint" type="button" title="Keyboard shortcuts · Cmd+/" aria-label="Keyboard shortcuts · Cmd+/">
-            <span aria-hidden="true">Cmd+/</span>
-          </button>
           <!-- Call button: opens a duplex voice channel with the agent.
                Realtime=ON → WebRTC; OFF (default) → turn-based Listen.
                Lives on the LEFT of the composer, alongside its own
@@ -665,6 +662,11 @@
               </div>
             </div>
           </div>
+        </div>
+        <div class="composer-actions-mid">
+          <button id="composer-hotkeys-hint" class="composer-hotkeys-hint" type="button" title="Keyboard shortcuts · ⌘/" aria-label="Keyboard shortcuts · ⌘/">
+            <span aria-hidden="true">⌘/</span>
+          </button>
         </div>
         <div class="composer-actions-right">
           <!-- Starts disabled; main.ts:updateAttachButtonsState flips

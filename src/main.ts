@@ -648,6 +648,11 @@ async function boot() {
   hotkeysHelp.init();
   const composerHotkeysHint = document.getElementById('composer-hotkeys-hint') as HTMLButtonElement | null;
   if (composerHotkeysHint) {
+    const isAppleHost = /Mac|iPhone|iPad|iPod/i.test(navigator.platform || navigator.userAgent || '');
+    const helpCombo = isAppleHost ? '⌘/' : 'Ctrl+/';
+    composerHotkeysHint.querySelector('[aria-hidden="true"]')!.textContent = helpCombo;
+    composerHotkeysHint.title = `Keyboard shortcuts · ${helpCombo}`;
+    composerHotkeysHint.setAttribute('aria-label', `Keyboard shortcuts · ${helpCombo}`);
     composerHotkeysHint.onclick = () => hotkeysHelp.open();
   }
   // Pin drawer — right-side surface aggregating pinned messages across
