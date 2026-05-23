@@ -190,6 +190,7 @@ export function replaySessionMessages(
           const sh = transcriptEl2.scrollHeight;
           const ch = transcriptEl2.clientHeight;
           let wanted = saved.scrollTop;
+          transcriptEl2.scrollTo({ top: wanted, behavior: "instant" as ScrollBehavior });
           if (saved.anchorKey) {
             const anchor = transcriptEl2.querySelector(
               `[data-key="${CSS.escape(saved.anchorKey)}"]`,
@@ -197,10 +198,18 @@ export function replaySessionMessages(
             if (anchor) {
               const tr = transcriptEl2.getBoundingClientRect();
               const ar = anchor.getBoundingClientRect();
-              wanted = transcriptEl2.scrollTop + (ar.top - tr.top) - (saved.anchorOffset ?? 0);
+              const delta = (ar.top - tr.top) - (saved.anchorOffset ?? 0);
+              // Raw scrollTop is the least surprising restore for stable
+              // transcripts. Use the anchor only as a bounded correction
+              // for layout drift above the viewport; large corrections are
+              // usually a sign that render is still settling, and can jump
+              // the user several rows away from the saved position.
+              if (Math.abs(delta) > 2 && Math.abs(delta) < Math.max(240, ch * 0.5)) {
+                wanted = transcriptEl2.scrollTop + delta;
+                transcriptEl2.scrollTo({ top: wanted, behavior: "instant" as ScrollBehavior });
+              }
             }
           }
-          transcriptEl2.scrollTo({ top: wanted, behavior: "instant" as ScrollBehavior });
           const after = transcriptEl2.scrollTop;
           log(`[chat-resume] restore (${phase}) wanted=${wanted} saved=${saved.scrollTop} anchor=${saved.anchorKey || ""} before=${before} after=${after} sh=${sh} ch=${ch} maxTop=${sh - ch}`);
         };
@@ -230,18 +239,29 @@ function scheduleAtBottomRepin(): void {
   const transcriptEl = document.getElementById('transcript');
   if (!transcriptEl || typeof ResizeObserver === 'undefined') return;
   let userScrolledUp = false;
-  let lastScrollTop = transcriptEl.scrollTop;
-  const onUserScroll = () => {
-    // The user moved scrollTop UPWARD by more than the autoScroll
-    // pin threshold → stop fighting them.
+  let pendingUserScrollUntil = 0;
+  const markUserScrollIntent = () => {
+    pendingUserScrollUntil = Date.now() + 800;
+    // Once the user starts interacting with the transcript, stop the
+    // temporary bottom-repin immediately. Otherwise a ResizeObserver
+    // callback can snap back to bottom before the browser dispatches
+    // the resulting scroll event.
+    userScrolledUp = true;
+  };
+  const onScroll = () => {
+    if (Date.now() > pendingUserScrollUntil) return;
     const sh = transcriptEl.scrollHeight;
     const ch = transcriptEl.clientHeight;
     const distanceFromBottom = sh - transcriptEl.scrollTop - ch;
+    // Wheel/touch/pointer fires before the browser applies the scroll.
+    // Cancel the temporary repin only once the subsequent scroll event
+    // proves the user actually moved away from the live edge.
     if (distanceFromBottom > 100) userScrolledUp = true;
-    lastScrollTop = transcriptEl.scrollTop;
   };
-  transcriptEl.addEventListener('touchmove', onUserScroll, { passive: true });
-  transcriptEl.addEventListener('wheel', onUserScroll, { passive: true });
+  transcriptEl.addEventListener('touchmove', markUserScrollIntent, { passive: true });
+  transcriptEl.addEventListener('wheel', markUserScrollIntent, { passive: true });
+  transcriptEl.addEventListener('pointerdown', markUserScrollIntent, { passive: true });
+  transcriptEl.addEventListener('scroll', onScroll, { passive: true });
   const ro = new ResizeObserver(() => {
     if (userScrolledUp) return;
     transcriptEl.scrollTo({ top: transcriptEl.scrollHeight, behavior: 'instant' as ScrollBehavior });
@@ -256,8 +276,10 @@ function scheduleAtBottomRepin(): void {
   }
   setTimeout(() => {
     ro.disconnect();
-    transcriptEl.removeEventListener('touchmove', onUserScroll);
-    transcriptEl.removeEventListener('wheel', onUserScroll);
+    transcriptEl.removeEventListener('touchmove', markUserScrollIntent);
+    transcriptEl.removeEventListener('wheel', markUserScrollIntent);
+    transcriptEl.removeEventListener('pointerdown', markUserScrollIntent);
+    transcriptEl.removeEventListener('scroll', onScroll);
   }, REPIN_WINDOW_MS);
 }
 

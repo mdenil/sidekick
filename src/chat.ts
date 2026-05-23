@@ -87,11 +87,11 @@ function currentScrollAnchor(): { key: string | null; offset: number | null } | 
   return { key: best.dataset.key, offset: Math.round(br.top - tr.top) };
 }
 
-export function saveCurrentScrollPosition(): void {
+export function saveCurrentScrollPosition(opts: { force?: boolean } = {}): void {
   if (!transcriptEl || !viewedSessionIdRef) return;
   const distance = transcriptEl.scrollHeight - transcriptEl.scrollTop - transcriptEl.clientHeight;
   const atBottom = distance <= AT_BOTTOM_THRESHOLD_PX;
-  saveScrollPosition(viewedSessionIdRef, transcriptEl.scrollTop, atBottom, currentScrollAnchor());
+  saveScrollPosition(viewedSessionIdRef, transcriptEl.scrollTop, atBottom, currentScrollAnchor(), opts);
 }
 
 function isPinned(): boolean {
@@ -262,6 +262,8 @@ export async function init(el: HTMLElement | null): Promise<boolean> {
     // window leave pinnedToBottom alone.
     transcriptEl.addEventListener('touchmove', () => { lastUserScrollAt = Date.now(); }, { passive: true });
     transcriptEl.addEventListener('wheel', () => { lastUserScrollAt = Date.now(); }, { passive: true });
+    transcriptEl.addEventListener('pointerdown', () => { lastUserScrollAt = Date.now(); }, { passive: true });
+    transcriptEl.addEventListener('keydown', () => { lastUserScrollAt = Date.now(); }, { passive: true });
     transcriptEl.addEventListener('scroll', () => {
       const userInitiated = (Date.now() - lastUserScrollAt) < USER_SCROLL_GRACE_MS;
       // Lazy-load older history runs regardless — it cares about
@@ -274,7 +276,7 @@ export async function init(el: HTMLElement | null): Promise<boolean> {
       // enhancement that grows scrollHeight post-render (play-bars,
       // copy buttons added after initial layout).
       if (transcriptEl && viewedSessionIdRef) {
-        saveCurrentScrollPosition();
+        saveCurrentScrollPosition({ force: userInitiated });
       } else if (transcriptEl && !viewedSessionIdRef) {
         // Diagnostic: a scroll fired but no viewedSessionIdRef means
         // either we're in the boot window before trackViewedSession or

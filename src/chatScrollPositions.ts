@@ -126,15 +126,17 @@ export function saveScrollPosition(
   scrollTop: number,
   atBottom: boolean,
   anchor?: { key: string | null; offset: number | null } | null,
+  opts: { force?: boolean } = {},
 ): void {
   if (!chatId) {
     diag(`[chat-scroll] save: empty chatId, skip`);
     return;
   }
-  if (Date.now() < suppressSavesUntil) {
+  if (!opts.force && Date.now() < suppressSavesUntil) {
     // Post-render scroll storm — don't overwrite the saved value
     // with the transient scrollTop=0 the browser reports before the
-    // restore-rAF assignment settles.
+    // restore-rAF assignment settles. Real user scroll gestures pass
+    // force=true so quick switch→scroll interactions still save.
     return;
   }
   const floored = Math.max(0, Math.floor(scrollTop));
