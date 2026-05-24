@@ -15,6 +15,25 @@ import { reconcile } from './reconciler.ts';
 import { getState, subscribe } from './store.ts';
 import { scheduleSnapshotPersist } from '../chat.ts';
 
+// Phase 1 — virtualizer scaffolding. Re-exported here so consumers
+// don't reach across the module boundary into a sibling file. No
+// production caller wires it up yet; phase 2 will route the
+// rerenderInto path through bindVirtualizer behind a feature flag.
+export {
+  bindVirtualizer,
+  createHeightCache,
+  computeVisibleWindow,
+  computeAnchor,
+  scrollTopForAnchor,
+} from './virtualizer.ts';
+export type {
+  SavedAnchor,
+  VisibleWindow,
+  HeightCache,
+  VirtualizerOpts,
+  VirtualizerHandle,
+} from './virtualizer.ts';
+
 let getTranscriptEl: () => HTMLElement | null = () => document.getElementById('transcript');
 let getViewedChatId: () => string | null = () => null;
 
