@@ -35,7 +35,7 @@ import * as replyNavigator from './audio/turn-based/replyNavigator.ts';
 import * as sessionDrawer from './sessionDrawer.ts';
 import * as backend from './backend.ts';
 import * as transcriptStore from './transcript/store.ts';
-import { rerenderActive } from './transcript/index.ts';
+import { rerenderActive, getVirtualizer } from './transcript/index.ts';
 import { getScrollPosition } from './chatScrollPositions.ts';
 
 /** Pattern for assistant replies the plugin signals as "no reply" (the
@@ -144,6 +144,29 @@ export function replaySessionMessages(
       setTimeout(() => target.classList.remove('search-target-flash'), 1500);
       return;
     }
+    // Under virtualization, the target spec may be in the store but
+    // outside the visible window — scrollToKey expands the window
+    // to it; the next rAF has the bubble in DOM. The default path
+    // (no virtualizer) falls through to drillToOlderMessage as before.
+    const virt = getVirtualizer();
+    if (virt) {
+      virt.scrollToKey(targetMessageId, { block: 'center' });
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        const found = document.getElementById('transcript')?.querySelector(
+          `[data-key="${CSS.escape(targetMessageId)}"]`,
+        ) as HTMLElement | null;
+        if (found) {
+          chat.suppressLoadEarlierFor(1200);
+          found.classList.add('search-target-flash');
+          drillScrollTo(found);
+          setTimeout(() => found.classList.remove('search-target-flash'), 1500);
+        } else {
+          log(`[cmdk] target ${targetMessageId} not in store under virt — driving load-earlier drill`);
+          void drillToOlderMessage(id, targetMessageId, pagination?.firstId ?? null, !!pagination?.hasMore);
+        }
+      }));
+      return;
+    }
     // Target ISN'T in the initial replay window — drive load-earlier
     // pages until we find it or run out. Async / fire-and-forget.
     log(`[cmdk] target ${targetMessageId} not in initial window — driving load-earlier drill`);
@@ -165,7 +188,25 @@ export function replaySessionMessages(
   if (saved && !targetMessageId) {
     const el = document.getElementById('transcript');
     if (el) {
-      if (saved.atBottom) {
+      // Phase 3 anchor-restore: when the virtualizer is active AND the
+      // saved record carries an anchorKey, try a key-based restore.
+      // Falls back to atBottom/scrollTop if the anchor key isn't in
+      // current specs (chat was paginated out, message deleted, etc).
+      const virt = getVirtualizer();
+      const tryAnchor = virt && saved.anchorKey && typeof saved.anchorOffsetPx === 'number'
+        ? virt.restoreAnchor({ key: saved.anchorKey, offsetPx: saved.anchorOffsetPx })
+        : false;
+      if (tryAnchor) {
+        log(`[chat-resume] restore via anchor key=${saved.anchorKey?.slice(0, 16)} offset=${saved.anchorOffsetPx}`);
+        // Sibling chat's at-bottom repin observer would otherwise see
+        // the virtualizer's slot re-paint, treat that as "scrollHeight
+        // grew, re-snap to bottom," and undo the anchor restore. The
+        // existing mid-chat branch (saved.atBottom=false) handles this
+        // the same way — repin is per-element ResizeObserver, not
+        // per-chat, so any active observer needs cancelling on switch.
+        cancelActiveAtBottomRepin?.();
+        chat.suppressLoadEarlierFor(1500);
+      } else if (saved.atBottom) {
         log(`[chat-resume] restore at-edge (atBottom=true savedScrollTop=${saved.scrollTop}) → forceScrollToBottom + repin`);
         chat.forceScrollToBottom();
         scheduleAtBottomRepin();

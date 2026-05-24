@@ -85,7 +85,7 @@ import * as browserDictate from './audio/streaming/browserDictate.ts';
 import * as webrtcSuppress from './audio/realtime/suppress.ts';
 import * as bgTrace from './bgTrace.ts';
 import * as transcriptStore from './transcript/store.ts';
-import { bindTranscriptPipeline } from './transcript/index.ts';
+import { bindTranscriptPipeline, isVirtualizerEnabled } from './transcript/index.ts';
 import { flushScrollPosition } from './chatScrollPositions.ts';
 import { setStayAliveHint as setProxyStayAliveHint } from './proxyClient.ts';
 
@@ -4157,6 +4157,19 @@ let backfillInFlight: Promise<void> | null = null;
 async function backfillHistory() {
   if (historyLoaded) { diag('backfill: skip (already loaded)'); return; }
   if (backfillInFlight) { diag('backfill: awaiting in-flight run'); return backfillInFlight; }
+  // Under virtualization, the transcriptStore + projection + virtualizer
+  // pipeline is the canonical render path. backfillHistory predates
+  // Crack A and appends bubbles directly via chat.addLine — under
+  // virt those appends land in the slot WITHOUT data-keys and get
+  // stripped by the next reconcile pass, AND backfill's terminal
+  // forceScrollToBottom() races a user who's scrolled away during
+  // the async fetch. The store path already populates the chat on
+  // resume() / drawer click, so backfill is duplicate work.
+  if (isVirtualizerEnabled()) {
+    diag('backfill: skip (virtualizer active — store path is canonical)');
+    historyLoaded = true;
+    return;
+  }
   backfillInFlight = (async () => {
     historyLoaded = true;
 

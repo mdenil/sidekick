@@ -27,12 +27,26 @@ interface PositionRecord {
   chatId: string;
   scrollTop: number;
   atBottom?: boolean;  // legacy records may lack this; absence → false (literal restore)
+  /** Phase 3+: anchor-based restore. When present, the consumer
+   *  prefers virtualizer.restoreAnchor({key: anchorKey, offsetPx:
+   *  anchorOffsetPx}) over raw scrollTop. Legacy records (pre-
+   *  Phase 3 saves, or default-path saves where no virtualizer
+   *  was active) leave these undefined and the consumer falls
+   *  back to the scrollTop/atBottom path. Dual-read is the
+   *  Decision 6B migration model — no schema bump, no nuke.
+   *  Soft-deadline cleanup after Phase 5 soak. */
+  anchorKey?: string;
+  anchorOffsetPx?: number;
   savedAt: number;
 }
 
 export interface SavedPosition {
   scrollTop: number;
   atBottom: boolean;
+  /** Phase 3 anchor — only set when a virtualizer is active at save
+   *  time. Reads on switch prefer this over scrollTop when present. */
+  anchorKey?: string;
+  anchorOffsetPx?: number;
 }
 
 const cache = new Map<string, SavedPosition>();
@@ -64,10 +78,15 @@ export async function hydrateScrollPositions(): Promise<void> {
         const rows = (req.result || []) as PositionRecord[];
         for (const r of rows) {
           if (r?.chatId && typeof r.scrollTop === 'number') {
-            cache.set(r.chatId, {
+            const entry: SavedPosition = {
               scrollTop: r.scrollTop,
-              atBottom: r.atBottom === true,  // legacy missing → false
-            });
+              atBottom: r.atBottom === true,
+            };
+            if (typeof r.anchorKey === 'string' && typeof r.anchorOffsetPx === 'number') {
+              entry.anchorKey = r.anchorKey;
+              entry.anchorOffsetPx = r.anchorOffsetPx;
+            }
+            cache.set(r.chatId, entry);
           }
         }
         diag(`[chat-scroll] hydrate: ${rows.length} positions from IDB`);
@@ -87,13 +106,32 @@ export function getScrollPosition(chatId: string): SavedPosition | null {
   return v ?? null;
 }
 
-export function saveScrollPosition(chatId: string, scrollTop: number, atBottom: boolean): void {
+export function saveScrollPosition(
+  chatId: string,
+  scrollTop: number,
+  atBottom: boolean,
+  anchor?: { key: string; offsetPx: number } | null,
+): void {
   if (!chatId) return;
   const floored = Math.max(0, Math.floor(scrollTop));
   const prev = cache.get(chatId);
-  if (prev && prev.scrollTop === floored && prev.atBottom === atBottom) return;
-  diag(`[chat-scroll] save ${chatId.slice(-12)} → ${floored} atBottom=${atBottom} (was ${prev ? `${prev.scrollTop}/${prev.atBottom}` : 'undef'})`);
-  cache.set(chatId, { scrollTop: floored, atBottom });
+  // Quick equality check — when nothing changed, skip the IDB write.
+  if (
+    prev
+    && prev.scrollTop === floored
+    && prev.atBottom === atBottom
+    && (anchor ? prev.anchorKey === anchor.key && prev.anchorOffsetPx === anchor.offsetPx
+               : prev.anchorKey === undefined)
+  ) return;
+  const entry: SavedPosition = { scrollTop: floored, atBottom };
+  if (anchor) {
+    entry.anchorKey = anchor.key;
+    entry.anchorOffsetPx = Math.floor(anchor.offsetPx);
+  }
+  diag(`[chat-scroll] save ${chatId.slice(-12)} → ${floored} atBottom=${atBottom}` +
+    (anchor ? ` anchor=${anchor.key.slice(0, 16)}+${entry.anchorOffsetPx}` : '') +
+    ` (was ${prev ? `${prev.scrollTop}/${prev.atBottom}${prev.anchorKey ? `/${prev.anchorKey.slice(0,16)}` : ''}` : 'undef'})`);
+  cache.set(chatId, entry);
   const pendingTimer = pendingWrites.get(chatId);
   if (pendingTimer) clearTimeout(pendingTimer);
   pendingWrites.set(chatId, setTimeout(() => {
@@ -121,12 +159,17 @@ async function persistOne(chatId: string): Promise<void> {
   try {
     const db = await dbOpen();
     const tx = db.transaction(STORE, 'readwrite');
-    tx.objectStore(STORE).put({
+    const row: PositionRecord = {
       chatId,
       scrollTop: rec.scrollTop,
       atBottom: rec.atBottom,
       savedAt: Date.now(),
-    });
+    };
+    if (rec.anchorKey && typeof rec.anchorOffsetPx === 'number') {
+      row.anchorKey = rec.anchorKey;
+      row.anchorOffsetPx = rec.anchorOffsetPx;
+    }
+    tx.objectStore(STORE).put(row);
     await new Promise<void>((resolve, reject) => {
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);

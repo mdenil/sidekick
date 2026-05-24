@@ -19,8 +19,19 @@ import {
 } from './chatScrollPositions.ts';
 import { isPinned as isPinMsg, pinMessage, unpinMessage, hydrate as hydratePins } from './pins/store.ts';
 import * as backend from './backend.ts';
+import { getVirtualizerSlot, getVirtualizer } from './transcript/index.ts';
 
 let transcriptEl: HTMLElement | null = null;
+
+/** Where legacy addLine consumers (system delimiter, backfill replay)
+ *  should hand their `.line` divs. Under virtualization the content
+ *  area is the virtualizer's slot — a sibling of the top/bottom
+ *  spacers — not the transcript root. Default falls back to
+ *  transcriptEl, which is the production behavior pre-virt. Lazy:
+ *  recomputed on every call so a flag flipped after boot picks up. */
+function contentTarget(): HTMLElement | null {
+  return getVirtualizerSlot() || transcriptEl;
+}
 let scrollToBottomBtn: HTMLElement | null = null;
 const speakerNames: Record<string | number, string> = {};
 let speakerCount = 0;
@@ -62,7 +73,14 @@ let missedWhileScrolled = 0;
 
 export function saveCurrentScrollPosition(): void {
   if (!transcriptEl || !viewedSessionIdRef) return;
-  saveScrollPosition(viewedSessionIdRef, transcriptEl.scrollTop, isPinned());
+  // Under virtualization, capture the anchor (key + offset) alongside
+  // raw scrollTop. The anchor is DOM-invariant — if heights elsewhere
+  // shift after restore (image loads, tool rows expand), the anchored
+  // spec stays at the same viewport offset. scrollTop is still saved
+  // for the legacy/dual-read path; restore prefers anchor when present.
+  const virt = getVirtualizer();
+  const anchor = virt ? virt.getAnchor() : null;
+  saveScrollPosition(viewedSessionIdRef, transcriptEl.scrollTop, isPinned(), anchor);
 }
 
 
@@ -367,6 +385,11 @@ export async function init(el: HTMLElement | null): Promise<boolean> {
  *  `role='assistant' (tool_calls JSON)` rows. Follow-up. */
 function persist(): void {
   if (!transcriptEl) return;
+  // Under virtualization, transcriptEl only contains the current
+  // visible window + spacers — serializing innerHTML would freeze
+  // a partial snapshot that's wrong on reload. Snapshot is a phase-4
+  // concern (Decision 4); skip for now when virt is active.
+  if (getVirtualizerSlot()) return;
   const clone = transcriptEl.cloneNode(true) as HTMLElement;
   clone.querySelectorAll('.activity-row').forEach((el) => el.remove());
   const html = clone.innerHTML;
@@ -705,10 +728,15 @@ export function addLine(speaker: string, text: string, cls = '', opts: {
     div.appendChild(foldBtn);
   }
 
+  // Under virtualization, target the virtualizer's slot so the line
+  // lands inside the scrollable content area rather than after the
+  // bottom spacer. Falls back to transcriptEl when virt is off.
+  const target = contentTarget();
+  if (!target) return null;
   if (opts.prepend) {
-    transcriptEl.insertBefore(div, transcriptEl.firstChild);
+    target.insertBefore(div, target.firstChild);
   } else {
-    transcriptEl.appendChild(div);
+    target.appendChild(div);
   }
   if (!opts.batch) {
     autoScroll();
@@ -804,11 +832,12 @@ function openLightbox(src: string): void {
  *  like model changes or new-chat resets. Distinct visually from regular
  *  agent/user messages. */
 export function addSystemLine(text: string): HTMLElement | null {
-  if (!transcriptEl) return null;
+  const target = contentTarget();
+  if (!target) return null;
   const div = document.createElement('div');
   div.className = 'line system';
   div.textContent = text;
-  transcriptEl.appendChild(div);
+  target.appendChild(div);
   autoScroll();
   persist();
   return div;

@@ -271,7 +271,13 @@ export interface VirtualizerHandle {
  *  `slot`, `bottomSpacer` as children of `transcriptEl` (wiping any
  *  prior content — caller must ensure nothing else writes here on
  *  the virtualized path). setSpecs windows + rerenders; scroll events
- *  trigger a debounced rerender via requestAnimationFrame. */
+ *  trigger a debounced rerender via requestAnimationFrame.
+ *
+ *  Height measurement (Decision 1A from the design doc): each visible
+ *  bubble is observed by a ResizeObserver. The RO callback updates
+ *  the height cache and schedules a rerender so spacer heights stay
+ *  in sync. Bubbles unmounted on the next windowing pass naturally
+ *  drop out of the observation set when the RO is replaced. */
 export function bindVirtualizer(opts: VirtualizerOpts): VirtualizerHandle {
   const { transcriptEl, renderWindow } = opts;
   const overscan = opts.overscan ?? DEFAULT_OVERSCAN;
@@ -284,12 +290,66 @@ export function bindVirtualizer(opts: VirtualizerOpts): VirtualizerHandle {
   topSpacer.style.height = '0px';
   const slot = document.createElement('div');
   slot.className = SLOT_CLASS;
+  // Disable the browser's scroll-anchoring inside the slot. By default
+  // browsers preserve the user's visible content when DOM mutations
+  // happen above the viewport — for the reconciler's insertBefore
+  // at slot[0] during window expansion (user scrolling up), the
+  // browser bumps scrollTop by the inserted bubble's height to
+  // "keep the user where they are visually." For a traditional chat
+  // that's right, but in a virtualizer the inserted bubble's content
+  // is intended to BE the newly-visible content above — we want the
+  // user's wheel to reach it, not have scrollTop chase the insertion
+  // upward forever. overflow-anchor: none disables that preservation
+  // for the slot's mutations specifically; the transcript element
+  // itself keeps default anchoring.
+  slot.style.overflowAnchor = 'none';
   const bottomSpacer = document.createElement('div');
   bottomSpacer.className = SPACER_BOTTOM_CLASS;
   bottomSpacer.style.height = '0px';
   transcriptEl.appendChild(topSpacer);
   transcriptEl.appendChild(slot);
   transcriptEl.appendChild(bottomSpacer);
+
+  // ResizeObserver wires the per-bubble height cache. One observer
+  // for the whole slot — its callback fires once per frame with a
+  // batch of changed entries, which is cheaper than N observers.
+  // `typeof` guard for older browsers / non-DOM test contexts.
+  const ro: ResizeObserver | null = typeof ResizeObserver !== 'undefined'
+    ? new ResizeObserver((entries) => {
+        let any = false;
+        for (const entry of entries) {
+          const target = entry.target as HTMLElement;
+          const key = target.getAttribute('data-key');
+          if (!key) continue;
+          // contentBoxSize includes padding/border per the spec; we
+          // want the FULL outer height that contributes to scrollHeight.
+          // borderBoxSize is exactly that.
+          const box = entry.borderBoxSize?.[0];
+          const heightPx = box
+            ? box.blockSize
+            : (entry.contentRect?.height ?? target.offsetHeight);
+          const prev = cache.get(key, 'user');  // kind doesn't matter for ===
+          const floored = Math.max(0, Math.floor(heightPx));
+          if (prev !== floored) {
+            cache.set(key, floored);
+            any = true;
+          }
+        }
+        if (any) scheduleRerender();
+      })
+    : null;
+
+  /** Re-observe the current slot children. Cheap: we disconnect + re-
+   *  add. RO doesn't expose a "currently observing" set, and the
+   *  child-set churn per rerender is bounded by the visible-window
+   *  size (~viewport-ful + overscan). */
+  function syncObservations(): void {
+    if (!ro) return;
+    ro.disconnect();
+    for (const child of Array.from(slot.children) as HTMLElement[]) {
+      if (child.hasAttribute('data-key')) ro.observe(child);
+    }
+  }
 
   function rerender(): void {
     const win = computeVisibleWindow({
@@ -302,6 +362,7 @@ export function bindVirtualizer(opts: VirtualizerOpts): VirtualizerHandle {
     topSpacer.style.height = `${win.topSpacerPx}px`;
     bottomSpacer.style.height = `${win.bottomSpacerPx}px`;
     renderWindow(slot, currentSpecs.slice(win.visibleFrom, win.visibleTo));
+    syncObservations();
   }
 
   // Coalesce scroll-driven rerenders to one per animation frame —
@@ -354,6 +415,7 @@ export function bindVirtualizer(opts: VirtualizerOpts): VirtualizerHandle {
     },
     getHeightCache() { return cache; },
     dispose() {
+      ro?.disconnect();
       transcriptEl.removeEventListener('scroll', scheduleRerender);
       transcriptEl.innerHTML = '';
     },
