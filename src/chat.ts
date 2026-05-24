@@ -14,7 +14,8 @@ import {
 import {
   hydrateScrollPositions,
   saveScrollPosition,
-  AT_BOTTOM_THRESHOLD_PX,
+  flushScrollPosition,
+  getScrollPosition,
 } from './chatScrollPositions.ts';
 import { isPinned as isPinMsg, pinMessage, unpinMessage, hydrate as hydratePins } from './pins/store.ts';
 import * as backend from './backend.ts';
@@ -52,47 +53,18 @@ export function getRestoredViewedSessionId(): string | null {
  *  scrolled up to read earlier content), auto-scroll is suspended and the
  *  jump-to-bottom button appears.
  *
- *  Generous threshold (300) plus user-vs-JS scroll distinction (see
- *  USER_SCROLL_GRACE_MS) — 300 alone wasn't enough on a fast realtime
- *  reply because scrollHeight kept outpacing autoScroll. The real fix
- *  is only re-evaluating pinnedToBottom on USER-initiated scrolls
- *  (touchmove / wheel), not the scroll events fired by our own
- *  scrollTop assignments. */
+ *  Generous threshold (300px) so user-scroll-to-near-the-edge still
+ *  counts as pinned and autoScroll keeps following streaming replies. */
 const PINNED_THRESHOLD_PX = 300;
-/** Window after a user touchmove / wheel event during which subsequent
- *  scroll events are attributed to that user gesture. Outside the window
- *  scroll events are assumed JS-initiated and don't update pinnedToBottom.
- *  iOS momentum scrolling can fire scroll events for ~500ms after the
- *  finger lifts, so we need a generous grace window. */
-const USER_SCROLL_GRACE_MS = 800;
-let lastUserScrollAt = 0;
 
 let pinnedToBottom = true;
 let missedWhileScrolled = 0;
 
-function currentScrollAnchor(): { key: string | null; offset: number | null } | null {
-  if (!transcriptEl) return null;
-  const tr = transcriptEl.getBoundingClientRect();
-  const children = Array.from(transcriptEl.children) as HTMLElement[];
-  let best: HTMLElement | null = null;
-  for (const child of children) {
-    const r = child.getBoundingClientRect();
-    if (r.bottom <= tr.top) continue;
-    if (r.top >= tr.bottom) break;
-    best = child;
-    break;
-  }
-  if (!best?.dataset?.key) return null;
-  const br = best.getBoundingClientRect();
-  return { key: best.dataset.key, offset: Math.round(br.top - tr.top) };
+export function saveCurrentScrollPosition(): void {
+  if (!transcriptEl || !viewedSessionIdRef) return;
+  saveScrollPosition(viewedSessionIdRef, transcriptEl.scrollTop);
 }
 
-export function saveCurrentScrollPosition(opts: { force?: boolean } = {}): void {
-  if (!transcriptEl || !viewedSessionIdRef) return;
-  const distance = transcriptEl.scrollHeight - transcriptEl.scrollTop - transcriptEl.clientHeight;
-  const atBottom = distance <= AT_BOTTOM_THRESHOLD_PX;
-  saveScrollPosition(viewedSessionIdRef, transcriptEl.scrollTop, atBottom, currentScrollAnchor(), opts);
-}
 
 function isPinned(): boolean {
   if (!transcriptEl) return true;
@@ -209,13 +181,15 @@ export async function init(el: HTMLElement | null): Promise<boolean> {
   // concurrent loadSnapshot. See SCHEMA_VERSION comment for policy.
   await ensureSchemaFresh();
   // Hydrate per-chat scroll positions from IDB into an in-memory
-  // cache so sessionResume can branch synchronously on switch-in
-  // (restore vs scroll-to-bottom). Best-effort — failures just mean
-  // every chat takes the scroll-to-bottom fallback path.
+  // cache so sessionResume's first read returns the persisted value.
+  // AWAITED (not fire-and-forget) so the first replaySessionMessages
+  // after boot doesn't race the IDB read — otherwise the snapshot-
+  // restore's forceScrollToBottom would overwrite cache with the
+  // bottom of the snapshot before the persisted user-intent value
+  // lands. IDB read is fast (~10ms), well under perceptible delay.
   const t0 = performance.now();
-  hydrateScrollPositions().then(() => {
-    diag(`[chat-scroll] hydrate finished ${Math.round(performance.now() - t0)}ms after chat.init`);
-  });
+  await hydrateScrollPositions();
+  diag(`[chat-scroll] hydrate finished ${Math.round(performance.now() - t0)}ms after chat.init`);
   // Hydrate the pinned-messages store so the per-bubble pin button
   // paints with correct state on the first render. Fire-and-forget —
   // server fetch is fast (~50ms on LAN); a bubble rendered before the
@@ -223,6 +197,14 @@ export async function init(el: HTMLElement | null): Promise<boolean> {
   // flips via the sidekick:pins-changed listener once the server-
   // driven cache populates.
   void hydratePins();
+  // Flush the pending scroll-position write on page unload so a reload
+  // immediately after a scroll (faster than the 200ms IDB debounce)
+  // still picks up the latest position on next boot.
+  if (typeof window !== 'undefined') {
+    window.addEventListener('pagehide', () => {
+      if (viewedSessionIdRef) flushScrollPosition(viewedSessionIdRef);
+    });
+  }
   // Repaint all bubble pin indicators when the pin set changes.
   // Fires on: hydrate completion (catches bubbles that rendered
   // before the server fetch resolved), explicit pinMessage /
@@ -253,44 +235,27 @@ export async function init(el: HTMLElement | null): Promise<boolean> {
     scrollToBottomBtn.addEventListener('click', () => forceScrollToBottom());
   }
   if (transcriptEl) {
-    // Mark user-initiated scrolls. iOS fires scroll events both during
-    // user touch and during JS scrollTop= assignments — we can't tell
-    // them apart from inside the scroll handler. Track the last time
-    // a user gesture (touch / wheel) fired and only re-evaluate
-    // pinnedToBottom when the scroll event lands within the grace
-    // window after a user gesture. JS-initiated scrolls outside that
-    // window leave pinnedToBottom alone.
-    transcriptEl.addEventListener('touchmove', () => { lastUserScrollAt = Date.now(); }, { passive: true });
-    transcriptEl.addEventListener('wheel', () => { lastUserScrollAt = Date.now(); }, { passive: true });
-    transcriptEl.addEventListener('pointerdown', () => { lastUserScrollAt = Date.now(); }, { passive: true });
-    transcriptEl.addEventListener('keydown', () => { lastUserScrollAt = Date.now(); }, { passive: true });
     transcriptEl.addEventListener('scroll', () => {
-      const userInitiated = (Date.now() - lastUserScrollAt) < USER_SCROLL_GRACE_MS;
-      // Lazy-load older history runs regardless — it cares about
-      // scroll-near-top, not user vs JS.
       maybeLoadEarlier();
-      // Save per-chat scroll position on every scroll. 500ms debounce
-      // in the helper keeps streaming-reply cadence cheap. atBottom is
-      // the load-bearing field: on switch-back, we re-pin to the
-      // (then-current) bottom if true, which handles async DOM
-      // enhancement that grows scrollHeight post-render (play-bars,
-      // copy buttons added after initial layout).
+      // Save the current scroll position on every scroll event — both
+      // user-driven and JS-driven (autoScroll, restore). Last write
+      // wins, which is the actual user-visible position. No user-vs-JS
+      // distinction needed: the FINAL scrollTop after all events fire
+      // is what should persist.
       if (transcriptEl && viewedSessionIdRef) {
-        saveCurrentScrollPosition({ force: userInitiated });
-      } else if (transcriptEl && !viewedSessionIdRef) {
-        // Diagnostic: a scroll fired but no viewedSessionIdRef means
-        // either we're in the boot window before trackViewedSession or
-        // chat.clear() ran. Log so we can correlate timing if saves
-        // are missing for a chat.
-        diag(`[chat-scroll] scroll event but no viewedSessionIdRef (scrollTop=${transcriptEl.scrollTop})`);
+        saveCurrentScrollPosition();
       }
-      if (!userInitiated) return;
+      // Re-evaluate pinned on every scroll. autoScroll's `if (pinned)`
+      // guard does the right thing in both directions:
+      //   - User scrolls up → distance > threshold → pinned=false →
+      //     autoScroll stops following the live edge as content grows.
+      //   - User scrolls back to bottom (or autoScroll lands at bottom)
+      //     → distance ≤ threshold → pinned=true → autoScroll resumes.
+      //   - JS-driven restore sets scrollTop=N → if N is mid-chat →
+      //     pinned=false → subsequent bubble adds don't drag the user
+      //     away from the restored position.
       const wasPinned = pinnedToBottom;
       pinnedToBottom = isPinned();
-      if (pinnedToBottom !== wasPinned && transcriptEl) {
-        const distance = transcriptEl.scrollHeight - transcriptEl.scrollTop - transcriptEl.clientHeight;
-        diag(`[autoscroll] pinnedToBottom ${wasPinned}→${pinnedToBottom} (user-initiated, distance=${distance})`);
-      }
       if (pinnedToBottom && !wasPinned) missedWhileScrolled = 0;
       updateButton();
     }, { passive: true });
@@ -310,9 +275,21 @@ export async function init(el: HTMLElement | null): Promise<boolean> {
       // may still carry them and would dupe with fresh inflight replay.
       // Idempotent: a fresh snapshot has none.
       transcriptEl.querySelectorAll('.activity-row').forEach(el => el.remove());
-      // Initial load: always jump to latest regardless of the default
-      // pinned-to-bottom state.
-      forceScrollToBottom();
+      // Initial load: restore the user's last scroll position from the
+      // hydrated cache (already loaded above). Cache miss → scroll to
+      // bottom. Note: forceScrollToBottom is intentionally NOT called
+      // unconditionally here — that used to overwrite the persisted
+      // user-intent value before sessionResume's restore could read it.
+      if (restoredViewedSessionId) {
+        const savedTop = getScrollPosition(restoredViewedSessionId);
+        if (typeof savedTop === 'number') {
+          transcriptEl.scrollTo({ top: savedTop, behavior: 'instant' as ScrollBehavior });
+        } else {
+          forceScrollToBottom();
+        }
+      } else {
+        forceScrollToBottom();
+      }
       // Re-wire copy buttons on restored elements. Same source-of-truth as
       // the live-create path: prefer dataset.text (raw markdown) over
       // rendered textContent so round-trip copy is lossless.

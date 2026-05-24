@@ -18,6 +18,7 @@
 
 import * as backend from './backend.ts';
 import { saveCurrentScrollPosition } from "./chat.ts";
+import { flushScrollPosition } from "./chatScrollPositions.ts";
 import * as conversations from './conversations.ts';
 import * as sessionCache from './sessionCache.ts';
 import { log, diag } from './util/log.ts';
@@ -1241,6 +1242,11 @@ async function resume(id: string) {
   const leaving = viewedSessionId || optimisticActiveId;
   if (leaving && leaving !== id) {
     saveCurrentScrollPosition();
+    // Bypass the IDB debounce: a fast switch can outrun the 200ms timer,
+    // and a reload before the timer fires would lose the position
+    // entirely. The cache already has the latest scrollTop from the
+    // saveCurrentScrollPosition call above.
+    flushScrollPosition(leaving);
     t?.trace('onBeforeSwitch-start', `leaving=${leaving}`);
     try { onBeforeSwitchCb?.(leaving); }
     catch (e: any) { diag(`onBeforeSwitch threw: ${e?.message || e}`); }

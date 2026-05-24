@@ -1,64 +1,39 @@
 // Per-chat scroll-position memory.
 //
-// "Wherever the user last was in this session, else bottom" — the
-// behavior every chat / messaging app defaults to, emulated for the
-// single-page sidekick. Save scrollTop on scroll, restore on switch-
-// back. No flags, no observers, no special cases.
+// Save scrollTop on scroll, restore on switch-back. Cache miss → caller
+// scrolls to bottom (the "wherever the user last was, else bottom"
+// default every chat app implements).
 //
 // Storage:
-//   - In-memory Map (chatId → SavedPosition) is the read source so
-//     sessionResume can branch synchronously on restore vs scroll-to-
-//     bottom without making the call chain async.
-//   - IDB is the persistence backend; hydrated once at chat.init,
-//     write-through (debounced 500ms per chat) on save.
-//   - Cache miss → caller scrolls to bottom (per Jonathan, 2026-05-11:
-//     "if there's a cache miss in IDB make it scroll to bottom").
+//   - In-memory Map (chatId → scrollTop) is the read source so
+//     sessionResume branches synchronously on restore.
+//   - IDB persists the cache; hydrated once at chat.init, debounced
+//     write-through on save. flush() runs the pending write immediately
+//     — sessionDrawer's onBeforeSwitch + pagehide both call it so the
+//     latest position survives reloads / fast switches.
 
 import { diag } from './util/log.ts';
 
 const DB_NAME = 'sidekick-scroll';
 const STORE = 'positions';
-const PERSIST_DEBOUNCE_MS = 500;
+const PERSIST_DEBOUNCE_MS = 200;
 
-export interface SavedScrollPosition {
+interface PositionRecord {
   chatId: string;
   scrollTop: number;
-  /** data-key for the first visible transcript child at save time.
-   *  Mid-chat restore prefers this anchor over raw scrollTop so layout
-   *  changes above the viewport do not move what the user was reading. */
-  anchorKey?: string | null;
-  /** Pixel offset from transcript viewport top to anchor top. */
-  anchorOffset?: number | null;
-  /** True when scrollTop was within AT_BOTTOM_THRESHOLD_PX of the
-   *  live edge at save time. Restore uses this to call
-   *  forceScrollToBottom (which re-pins after async height growth)
-   *  instead of setting a stale scrollTop. Without this, a chat
-   *  whose scrollHeight grows after restore (lazy DOM enhancement —
-   *  play-bars, copy buttons, timestamps added after initial layout)
-   *  leaves the user at the old bottom = new middle. Smoke pins this
-   *  via scripts/smoke/scroll-position-persists-on-switch.mjs. */
-  atBottom: boolean;
   savedAt: number;
 }
 
-/** Threshold for "at the live edge" — matches autoScroll's pinned
- *  threshold in chat.ts. */
+/** Pixels-from-bottom threshold used by the restore path: if the saved
+ *  scrollTop is within this distance of the CURRENT maxTop, snap to the
+ *  current bottom instead of restoring the literal value. Handles "user
+ *  was at the live edge; new messages arrived while away → user wants
+ *  the new live edge, not the old one." */
 export const AT_BOTTOM_THRESHOLD_PX = 300;
 
-const cache = new Map<string, SavedScrollPosition>();
+const cache = new Map<string, number>();
+const pendingWrites = new Map<string, ReturnType<typeof setTimeout>>();
 let hydrated = false;
-
-/** Timestamp until which saveScrollPosition() is a no-op. Set by the
- *  restore path after replaySessionMessages so the post-render scroll
- *  event (which fires with scrollTop=0 before the scrollTop assignment
- *  has settled into the new content) doesn't clobber the saved value.
- *  Lasts ~500ms — long enough to cover the rAF retry + final scroll
- *  event from the assignment, short enough that genuine user scrolls
- *  within the next half-second still register. */
-let suppressSavesUntil = 0;
-export function suppressSavesFor(ms: number): void {
-  suppressSavesUntil = Math.max(suppressSavesUntil, Date.now() + ms);
-}
 
 function dbOpen(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -74,11 +49,6 @@ function dbOpen(): Promise<IDBDatabase> {
   });
 }
 
-/** Load all saved positions into the in-memory cache. Called once at
- *  chat.init so sessionResume can branch synchronously at switch
- *  time. Best-effort — failures leave the cache empty (every chat
- *  becomes a cache miss → forceScrollToBottom fallback, which is the
- *  pre-feature default behavior). */
 export async function hydrateScrollPositions(): Promise<void> {
   if (hydrated) return;
   hydrated = true;
@@ -87,17 +57,16 @@ export async function hydrateScrollPositions(): Promise<void> {
     const req = db.transaction(STORE, 'readonly').objectStore(STORE).getAll();
     await new Promise<void>((resolve) => {
       req.onsuccess = () => {
-        const rows = (req.result || []) as SavedScrollPosition[];
+        const rows = (req.result || []) as PositionRecord[];
         for (const r of rows) {
-          if (r?.chatId) cache.set(r.chatId, r);
+          if (r?.chatId && typeof r.scrollTop === 'number') {
+            cache.set(r.chatId, r.scrollTop);
+          }
         }
-        diag(`[chat-scroll] hydrate ok: ${rows.length} positions from IDB`);
+        diag(`[chat-scroll] hydrate: ${rows.length} positions from IDB`);
         resolve();
       };
-      req.onerror = () => {
-        diag(`[chat-scroll] hydrate getAll() onerror`);
-        resolve();
-      };
+      req.onerror = () => resolve();
     });
     db.close();
   } catch (e: any) {
@@ -105,88 +74,51 @@ export async function hydrateScrollPositions(): Promise<void> {
   }
 }
 
-/** Synchronously read the saved position for `chatId`, or null on
- *  cache miss. Caller treats null as "scroll to bottom." */
-export function getScrollPosition(chatId: string): SavedScrollPosition | null {
-  if (!chatId) {
-    diag(`[chat-scroll] get: empty chatId → null`);
-    return null;
-  }
+export function getScrollPosition(chatId: string): number | null {
+  if (!chatId) return null;
   const v = cache.get(chatId);
-  diag(`[chat-scroll] get(${chatId.slice(-12)}) → ${v ? `scrollTop=${v.scrollTop} atBottom=${v.atBottom} anchor=${v.anchorKey || ""} age=${Math.round((Date.now() - v.savedAt) / 1000)}s` : "MISS"}`);
-  return v || null;
+  return typeof v === 'number' ? v : null;
 }
 
-/** Update the cached position for `chatId`. Writes through to IDB
- *  on a per-chat 500ms debounce — high-frequency scroll events
- *  during a streaming reply collapse to one disk write. atBottom is
- *  derived from current scrollTop vs maxTop at the call site. */
-export function saveScrollPosition(
-  chatId: string,
-  scrollTop: number,
-  atBottom: boolean,
-  anchor?: { key: string | null; offset: number | null } | null,
-  opts: { force?: boolean } = {},
-): void {
-  if (!chatId) {
-    diag(`[chat-scroll] save: empty chatId, skip`);
-    return;
-  }
-  if (!opts.force && Date.now() < suppressSavesUntil) {
-    // Post-render scroll storm — don't overwrite the saved value
-    // with the transient scrollTop=0 the browser reports before the
-    // restore-rAF assignment settles. Real user scroll gestures pass
-    // force=true so quick switch→scroll interactions still save.
-    return;
-  }
+export function saveScrollPosition(chatId: string, scrollTop: number): void {
+  if (!chatId) return;
   const floored = Math.max(0, Math.floor(scrollTop));
-  // Log only when scrollTop changes meaningfully from the last save —
-  // streaming-reply autoscroll fires many events with identical values
-  // (already at bottom, scrollHeight grew but scrollTop pinned). Cuts
-  // signal/noise without losing the "user scrolled to X" event.
-  const prev = cache.get(chatId);
-  if (!prev || Math.abs(prev.scrollTop - floored) >= 50 || prev.atBottom !== atBottom) {
-    diag(`[chat-scroll] save(${chatId.slice(-12)}) scrollTop=${floored} atBottom=${atBottom}${prev ? ` (was ${prev.scrollTop} atBottom=${prev.atBottom})` : ' [new]'}`);
+  if (cache.get(chatId) === floored) return;
+  cache.set(chatId, floored);
+  const pendingTimer = pendingWrites.get(chatId);
+  if (pendingTimer) clearTimeout(pendingTimer);
+  pendingWrites.set(chatId, setTimeout(() => {
+    pendingWrites.delete(chatId);
+    void persistOne(chatId);
+  }, PERSIST_DEBOUNCE_MS));
+}
+
+/** Flush the pending IDB write for chatId IMMEDIATELY. Called on session
+ *  switch and pagehide so the latest position survives reloads / fast
+ *  switches that would otherwise outrun the 200ms debounce. */
+export function flushScrollPosition(chatId: string): void {
+  if (!chatId) return;
+  const pending = pendingWrites.get(chatId);
+  if (pending) {
+    clearTimeout(pending);
+    pendingWrites.delete(chatId);
   }
-  const record: SavedScrollPosition = {
-    chatId,
-    scrollTop: floored,
-    anchorKey: anchor?.key || null,
-    anchorOffset: typeof anchor?.offset === "number" ? anchor.offset : null,
-    atBottom,
-    savedAt: Date.now(),
-  };
-  cache.set(chatId, record);
-  schedulePersist(record);
+  void persistOne(chatId);
 }
 
-const pendingWrites = new Map<string, ReturnType<typeof setTimeout>>();
-
-function schedulePersist(record: SavedScrollPosition): void {
-  const prev = pendingWrites.get(record.chatId);
-  if (prev) clearTimeout(prev);
-  const t = setTimeout(() => {
-    pendingWrites.delete(record.chatId);
-    // Read FRESH from cache — a later save during the debounce window
-    // would have updated cache; we want to persist the most-recent
-    // value, not the one captured at schedule time.
-    const latest = cache.get(record.chatId);
-    if (latest) void persistOne(latest);
-  }, PERSIST_DEBOUNCE_MS);
-  pendingWrites.set(record.chatId, t);
-}
-
-async function persistOne(record: SavedScrollPosition): Promise<void> {
+async function persistOne(chatId: string): Promise<void> {
+  const scrollTop = cache.get(chatId);
+  if (typeof scrollTop !== 'number') return;
   try {
     const db = await dbOpen();
     const tx = db.transaction(STORE, 'readwrite');
-    tx.objectStore(STORE).put(record);
+    tx.objectStore(STORE).put({ chatId, scrollTop, savedAt: Date.now() });
     await new Promise<void>((resolve, reject) => {
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
     });
     db.close();
   } catch (e: any) {
-    diag(`[chat-scroll] persist failed for ${record.chatId}: ${e?.message ?? e}`);
+    diag(`[chat-scroll] persist failed for ${chatId}: ${e?.message ?? e}`);
   }
 }

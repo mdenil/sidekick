@@ -36,7 +36,7 @@ import * as sessionDrawer from './sessionDrawer.ts';
 import * as backend from './backend.ts';
 import * as transcriptStore from './transcript/store.ts';
 import { rerenderActive } from './transcript/index.ts';
-import { getScrollPosition, suppressSavesFor } from './chatScrollPositions.ts';
+import { getScrollPosition, AT_BOTTOM_THRESHOLD_PX } from './chatScrollPositions.ts';
 
 /** Pattern for assistant replies the plugin signals as "no reply" (the
  *  agent chose to stay silent). We drop them from the rendered
@@ -93,13 +93,10 @@ export function replaySessionMessages(
   setHistoryLoadedRef();
 
   // Read the saved position BEFORE changing viewedSessionId / mutating
-  // the transcript. Rendering the new chat can synchronously fire
-  // scroll events while the DOM is at a transient top/empty state; if
-  // viewedSessionId has already been stamped, those events can overwrite
-  // the position we are about to restore. Suppress saves across the
-  // whole replay/restore window, not just after render.
+  // the transcript. Saves run unconditionally on every scroll event
+  // (last write wins), so transient renders that fire scroll(0) just
+  // get overwritten by the post-restore scroll(saved). No suppression.
   const saved = !targetMessageId ? getScrollPosition(id) : null;
-  if (!targetMessageId) suppressSavesFor(1000);
 
   // setViewed must run BEFORE the store mutates so the reconciler
   // subscription sees the new active chat. The reconciler skips
@@ -152,71 +149,40 @@ export function replaySessionMessages(
     log(`[cmdk] target ${targetMessageId} not in initial window — driving load-earlier drill`);
     void drillToOlderMessage(id, targetMessageId, pagination?.firstId ?? null, !!pagination?.hasMore);
   }
-  // Restore scroll: saved position → land where the user left off;
-  // cache miss → scroll to bottom. cmdk message-hit drills
-  // (targetMessageId) bypass this path entirely.
-  //
-  // Two-phase: immediate assignment + rAF retry. The just-cleared-
-  // and-repopulated transcript silently ignores scrollTop assignments
-  // for one frame on Chromium (also confirmed by autoScroll's parallel
-  // failure mode in the same log). Retrying on rAF after the next
-  // paint takes the actual scrollTop. suppressSavesFor() also blocks
-  // the post-render scroll event from clobbering the saved value with
-  // scrollTop=0.
-  if (saved && !targetMessageId) {
-    if (saved.atBottom) {
-      // At-bottom restoration: forceScrollToBottom + watch for async
-      // DOM-enhancement-driven scrollHeight growth (play-bars, copy
-      // buttons, etc.) for a brief window after restore. ResizeObserver
-      // re-snaps to the new bottom each time scrollHeight grows, until
-      // the window closes or the user manually scrolls up. Without
-      // this, a chat whose scrollHeight grows ~2200px post-render
-      // (smoke: 5276 → 7514) leaves the user at the OLD bottom = NEW
-      // mid-chat. Pinned by smoke
-      // scripts/smoke/scroll-position-persists-on-switch.mjs.
-      log(`[chat-resume] restore atBottom → forceScrollToBottom + repin`);
-      chat.forceScrollToBottom();
-      scheduleAtBottomRepin();
-    } else {
-      // Mid-chat restoration: prefer a stable DOM anchor over raw
-      // scrollTop. Tool rows, markdown blocks, and images can remeasure
-      // above the viewport between switch-away and switch-back; anchoring
-      // keeps the first visible row at the same visual offset.
-      const transcriptEl2 = document.getElementById("transcript");
-      if (transcriptEl2) {
-        const doRestore = (phase: string) => {
-          if (!transcriptEl2) return;
-          const before = transcriptEl2.scrollTop;
-          const sh = transcriptEl2.scrollHeight;
-          const ch = transcriptEl2.clientHeight;
-          let wanted = saved.scrollTop;
-          transcriptEl2.scrollTo({ top: wanted, behavior: "instant" as ScrollBehavior });
-          if (saved.anchorKey) {
-            const anchor = transcriptEl2.querySelector(
-              `[data-key="${CSS.escape(saved.anchorKey)}"]`,
-            ) as HTMLElement | null;
-            if (anchor) {
-              const tr = transcriptEl2.getBoundingClientRect();
-              const ar = anchor.getBoundingClientRect();
-              const delta = (ar.top - tr.top) - (saved.anchorOffset ?? 0);
-              // Raw scrollTop is the least surprising restore for stable
-              // transcripts. Use the anchor only as a bounded correction
-              // for layout drift above the viewport; large corrections are
-              // usually a sign that render is still settling, and can jump
-              // the user several rows away from the saved position.
-              if (Math.abs(delta) > 2 && Math.abs(delta) < Math.max(240, ch * 0.5)) {
-                wanted = transcriptEl2.scrollTop + delta;
-                transcriptEl2.scrollTo({ top: wanted, behavior: "instant" as ScrollBehavior });
-              }
-            }
-          }
-          const after = transcriptEl2.scrollTop;
-          log(`[chat-resume] restore (${phase}) wanted=${wanted} saved=${saved.scrollTop} anchor=${saved.anchorKey || ""} before=${before} after=${after} sh=${sh} ch=${ch} maxTop=${sh - ch}`);
-        };
-        doRestore("sync");
-        requestAnimationFrame(() => doRestore("rAF"));
+  // Restore scroll. Three cases:
+  //   - cache miss → scroll to bottom (default for new / never-viewed chats).
+  //   - saved is within AT_BOTTOM_THRESHOLD_PX of the CURRENT bottom →
+  //     user was effectively at the live edge; snap to the new bottom
+  //     (handles "new messages arrived while away" + post-render layout
+  //     growth via scheduleAtBottomRepin).
+  //   - otherwise → restore the literal scrollTop. Instant, no rAF
+  //     retry, no anchor correction. Post-render scroll(0) storms get
+  //     overwritten by this assignment; saves write the final value.
+  if (typeof saved === 'number' && !targetMessageId) {
+    const el = document.getElementById('transcript');
+    if (el) {
+      const maxTop = el.scrollHeight - el.clientHeight;
+      if (saved >= maxTop - AT_BOTTOM_THRESHOLD_PX) {
+        log(`[chat-resume] restore at-edge (saved=${saved} maxTop=${maxTop}) → forceScrollToBottom + repin`);
+        chat.forceScrollToBottom();
+        scheduleAtBottomRepin();
       } else {
-        log(`[chat-resume] restore: transcriptEl missing`);
+        log(`[chat-resume] restore mid-chat saved=${saved} maxTop=${maxTop}`);
+        // Cancel any sibling chat's still-live at-bottom repin
+        // observer — it would otherwise scroll us to the live edge
+        // as A's content fills the transcript.
+        cancelActiveAtBottomRepin?.();
+        // Suppress lazy-prepend for a beat. Restoring near scrollTop=0
+        // would otherwise trip maybeLoadEarlier (any scrollTop within
+        // LOAD_EARLIER_THRESHOLD_PX of 0 fires lazy-load), and
+        // prependHistory would shift scrollTop by the height of the
+        // prepended content — dragging the user off `saved`.
+        chat.suppressLoadEarlierFor(1500);
+        el.scrollTo({ top: saved, behavior: 'instant' as ScrollBehavior });
+        // The scrollTo fires a scroll event synchronously; the listener
+        // updates pinnedToBottom from isPinned() against the restored
+        // position, so subsequent autoScroll calls during post-render
+        // layout settle correctly skip (mid-chat → pinned=false).
       }
     }
   } else if (!targetMessageId) {
@@ -235,9 +201,16 @@ export function replaySessionMessages(
  *  intentional reading position. 1.5s window covers the common
  *  cases without lingering. */
 const REPIN_WINDOW_MS = 1500;
+/** The active scheduleAtBottomRepin's teardown callback. Cancel before
+ *  starting a new replay so a fast switch (chat B at-edge → chat A
+ *  mid-chat within REPIN_WINDOW_MS) doesn't have B's still-live
+ *  ResizeObserver dragging A's scrollTop to the live edge. */
+let cancelActiveAtBottomRepin: (() => void) | null = null;
 function scheduleAtBottomRepin(): void {
   const transcriptEl = document.getElementById('transcript');
   if (!transcriptEl || typeof ResizeObserver === 'undefined') return;
+  // Cancel any previous repin from a sibling chat that hasn't expired yet.
+  cancelActiveAtBottomRepin?.();
   let userScrolledUp = false;
   let pendingUserScrollUntil = 0;
   const markUserScrollIntent = () => {
@@ -274,13 +247,16 @@ function scheduleAtBottomRepin(): void {
   for (const child of Array.from(transcriptEl.children)) {
     if (child instanceof HTMLElement) ro.observe(child);
   }
-  setTimeout(() => {
+  const teardown = () => {
     ro.disconnect();
     transcriptEl.removeEventListener('touchmove', markUserScrollIntent);
     transcriptEl.removeEventListener('wheel', markUserScrollIntent);
     transcriptEl.removeEventListener('pointerdown', markUserScrollIntent);
     transcriptEl.removeEventListener('scroll', onScroll);
-  }, REPIN_WINDOW_MS);
+    if (cancelActiveAtBottomRepin === teardown) cancelActiveAtBottomRepin = null;
+  };
+  cancelActiveAtBottomRepin = teardown;
+  setTimeout(teardown, REPIN_WINDOW_MS);
 }
 
 // Crack A: renderHistoryMessage and its anchor helpers are GONE.
