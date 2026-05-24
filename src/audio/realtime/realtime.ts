@@ -421,6 +421,23 @@ export async function open(
   pc.addEventListener('track', (ev: RTCTrackEvent) => {
     log('[webrtc] ontrack kind=', ev.track.kind);
     if (ev.track.kind !== 'audio') return;
+    // Bump the receiver's playout-delay hint above the browser default
+    // (~50ms "interactive"). On cellular / weak wifi the default buffer
+    // is too thin to absorb jitter and the user hears chunks drop. 300ms
+    // is roughly where WhatsApp-class voice calls sit — perceptually
+    // still real-time, with enough headroom to ride through ~250ms
+    // network burps. Field bug 2026-05-24 (Jonathan): sidekick call
+    // dropouts were noticeably worse than WhatsApp on the same network;
+    // exposed buffer-hint was the smoking gun. Hint is best-effort —
+    // browsers may not honor it exactly, but Chromium + WebKit both
+    // respect it within the 0-3s range. Set via `(ev.receiver as any)`
+    // because the typed DOM lib lags the actual implementation.
+    try {
+      const receiver = ev.receiver as any;
+      if (receiver && typeof receiver === 'object') receiver.playoutDelayHint = 0.3;
+    } catch (e: any) {
+      diag('[webrtc] playoutDelayHint set failed:', e?.message);
+    }
     const stream = ev.streams && ev.streams[0]
       ? ev.streams[0]
       : (() => { const ms = new MediaStream(); ms.addTrack(ev.track); return ms; })();
