@@ -175,6 +175,25 @@ describe('project: inflight', () => {
     assert.equal(ar.tools[0].name, 'search_files');
   });
 
+  it('tool_result with placeholder name infers cronjob from scheduled skill result', () => {
+    const result = JSON.stringify({
+      success: true,
+      job: { job_id: 'abc', name: 'R2 Pulse comms check-in', skill: 'comms-sweep' },
+      skills: ['comms-sweep'],
+    });
+    const s = state({
+      durable: [u('umsg_1', 'q')],
+      inflight: [
+        { type: 'user_message', chat_id: 'c', message_id: 'umsg_1', text: 'q' },
+        { type: 'tool_result', chat_id: 'c', call_id: 'c1', tool_name: 'tool', result, duration_ms: 42 },
+      ],
+    });
+    const out = project(s);
+    const ar = out.find(s => s.kind === 'activityRow');
+    assert.ok(ar && ar.kind === 'activityRow');
+    assert.equal(ar.tools[0].name, 'cronjob');
+  });
+
   it('tool_result renames an earlier placeholder tool_call when the result carries the real name', () => {
     const s = state({
       durable: [u('umsg_1', 'q')],

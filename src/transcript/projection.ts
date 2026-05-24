@@ -425,6 +425,7 @@ function inferToolNameFromResult(result: unknown): string {
   if (typeof obj.tool_name === 'string' && obj.tool_name.trim()) return obj.tool_name.trim();
   if (Array.isArray(obj.matches)) return 'search_files';
   if (Array.isArray(obj.results)) return 'search';
+  if (obj.job && typeof obj.job === 'object' && !Array.isArray(obj.job)) return 'cronjob';
   if (obj.success === true && typeof obj.description === 'string' && typeof obj.content === 'string') return 'skill_view';
   return '(unknown)';
 }

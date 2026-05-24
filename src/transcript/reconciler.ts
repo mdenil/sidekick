@@ -440,6 +440,7 @@ function inferToolName(
   if (raw && raw !== 'function_call_output') return raw;
   if (Array.isArray(result?.matches)) return 'search_files';
   if (Array.isArray(result?.results)) return 'search';
+  if (recordValue(result, 'job')) return 'cronjob';
   if (result?.success === true && typeof result?.description === 'string' && typeof result?.content === 'string') return 'skill_view';
   return 'tool';
 }
@@ -457,6 +458,14 @@ function toolSummaryDetail(
   if (name === 'gog') {
     return firstString(args, ['description', 'title'])
       || firstString(result, ['description', 'title']);
+  }
+
+  if (name === 'cronjob' || recordValue(result, 'job')) {
+    return nestedFirstString(result, [
+      ['job', 'skill'],
+      ['job', 'name'],
+      ['skills', 0],
+    ]) || firstString(result, ['skill', 'skill_name', 'name', 'title']);
   }
 
   return firstString(args, [
@@ -518,6 +527,30 @@ function normalizeToolResult(result: unknown): Record<string, unknown> | null {
 
 function firstString(obj: Record<string, unknown> | null, keys: string[]): string {
   return compactToolDetail(firstStringRaw(obj, keys));
+}
+
+function nestedFirstString(obj: Record<string, unknown> | null, paths: Array<Array<string | number>>): string {
+  for (const path of paths) {
+    let cur: unknown = obj;
+    for (const part of path) {
+      if (cur && typeof cur === 'object') {
+        cur = Array.isArray(cur)
+          ? (typeof part === 'number' ? cur[part] : undefined)
+          : (cur as Record<string, unknown>)[String(part)];
+      } else {
+        cur = undefined;
+      }
+    }
+    if (typeof cur === 'string' && cur.trim()) return compactToolDetail(cur.trim());
+  }
+  return '';
+}
+
+function recordValue(obj: Record<string, unknown> | null, key: string): Record<string, unknown> | null {
+  const value = obj?.[key];
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
 }
 
 function firstStringRaw(obj: Record<string, unknown> | null, keys: string[]): string {
