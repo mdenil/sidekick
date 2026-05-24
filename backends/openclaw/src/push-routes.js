@@ -145,6 +145,7 @@ export function registerPushRoutes(api, { db, dispatcher }) {
         || body?.state === 'focus';
       if (!chatId) { sendJson(res, 400, { error: 'invalid_request', message: 'chat_id required' }); return true; }
       if (visible) dispatcher.engagement.markVisible(chatId);
+      else dispatcher.engagement.markHidden?.(chatId);
       sendJson(res, 200, { ok: true, chat_id: chatId, visible });
       return true;
     },

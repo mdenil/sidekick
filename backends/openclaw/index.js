@@ -85,7 +85,7 @@ export default definePluginEntry({
     // turns we dispatch.
     const gatewayClient = new GatewayClient({ profile: process.env.OPENCLAW_SK_PROFILE || 'sk-integ' });
     const eventBus = new AgentEventBus();
-    const pushDispatcher = new PushDispatcher({ db });
+    const pushDispatcher = new PushDispatcher({ db, eventBus });
     const turnBuffer = new TurnBuffer();
     api.agent.events.registerAgentEventSubscription({
       id: 'sidekick.responses.fanout',

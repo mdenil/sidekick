@@ -18,8 +18,12 @@ import {
   ensureVapidKeys, listSubscriptions, isMuted,
   markSubscriptionUsed, removeSubscription,
 } from './push-storage.js';
+import { upsertActivityItem } from './activity-storage.js';
 
-const ENGAGEMENT_WINDOW_MS = 2_000;   // PWA visibility heartbeat valid for 2s
+// The PWA reports while focused every 8s, and sends hidden/blurred
+// immediately. The backend window must exceed the heartbeat or a user
+// sitting in the active chat intermittently receives redundant pushes.
+const ENGAGEMENT_WINDOW_MS = 12_000;
 
 /** Tracks the last "visible" heartbeat per chat_id from the PWA via
  *  POST /v1/push/visibility. If the heartbeat is within ENGAGEMENT_
@@ -30,10 +34,13 @@ export class EngagementState {
     this.lastSeenAt = new Map();   // chat_id → ms
   }
   markVisible(chatId) {
-    this.lastSeenAt.set(chatId, Date.now());
+    this.lastSeenAt.set(normalizeChatId(chatId), Date.now());
+  }
+  markHidden(chatId) {
+    this.lastSeenAt.delete(normalizeChatId(chatId));
   }
   isEngaged(chatId, now = Date.now()) {
-    const t = this.lastSeenAt.get(chatId);
+    const t = this.lastSeenAt.get(normalizeChatId(chatId));
     return t != null && now - t < ENGAGEMENT_WINDOW_MS;
   }
 }
@@ -41,16 +48,37 @@ export class EngagementState {
 /** Build a push payload from an agent event. Title/body shape matches
  *  what sw.js push listener expects: { title, body, chat_id?, tag?,
  *  icon?, url? }. */
-function buildPayload({ chatId, text, kind }) {
+function normalizeChatId(chatId) {
+  if (typeof chatId !== 'string') return '';
+  const trimmed = chatId.trim();
+  const m = /^agent:[^:]+:(.+)$/.exec(trimmed);
+  return m ? m[1] : trimmed;
+}
+
+function messageIdForEvent(event) {
+  const id = event?.data?.messageId || event?.data?.message_id || event?.messageId || event?.runId;
+  return typeof id === 'string' && id ? `msg_${id.replace(/^msg_/, '')}` : '';
+}
+
+/** Build a push payload from an agent event. Title/body shape matches
+ *  what sw.js push listener expects: { title, body, chat_id?, tag?,
+ *  icon?, url? }. */
+function buildPayload({ chatId, text, kind, messageId = '' }) {
+  const normalizedChatId = normalizeChatId(chatId);
   const titleEmoji = kind === 'cron' ? '⏰' : '💬';
   const speaker = 'Sidekick';
   const body = (text || '').slice(0, 200);
+  let url = '/';
+  if (normalizedChatId) {
+    url = `/?chat=${encodeURIComponent(normalizedChatId)}`;
+    if (messageId) url += `&msg=${encodeURIComponent(messageId)}`;
+  }
   return {
     title: `${titleEmoji} ${speaker}`,
     body,
-    chat_id: chatId,
-    tag: chatId || 'sidekick',
-    url: chatId ? `/?chat_id=${encodeURIComponent(chatId)}` : '/',
+    chat_id: normalizedChatId,
+    tag: normalizedChatId || 'sidekick',
+    url,
   };
 }
 
@@ -95,11 +123,12 @@ export class TurnTextAccumulator {
 }
 
 export class PushDispatcher {
-  constructor({ db, engagement, logger = console } = {}) {
+  constructor({ db, engagement, logger = console, eventBus = null } = {}) {
     this.db = db;
     this.engagement = engagement ?? new EngagementState();
     this.accumulator = new TurnTextAccumulator();
     this.logger = logger;
+    this.eventBus = eventBus;
     this.vapid = null;          // lazy
   }
 
@@ -119,25 +148,27 @@ export class PushDispatcher {
       const text = this.accumulator.finalize(event.runId);
       const chatId = sessionKey || event.sessionKey || event?.data?.sessionKey;
       if (!text || !chatId) return;
-      this.dispatchPush({ chatId, text }).catch((err) => {
+      this.dispatchPush({ chatId, text, messageId: messageIdForEvent(event) }).catch((err) => {
         this.logger.warn?.(`[sidekick.push] dispatch failed: ${err?.message ?? err}`);
       });
     }
   }
 
-  async dispatchPush({ chatId, text, kind = 'reply_final' }) {
-    if (this.engagement.isEngaged(chatId)) {
-      this.logger.debug?.(`[sidekick.push] skip: user engaged with ${chatId}`);
+  async dispatchPush({ chatId, text, kind = 'reply_final', messageId = '' }) {
+    const normalizedChatId = normalizeChatId(chatId);
+    if (this.engagement.isEngaged(normalizedChatId)) {
+      this.logger.debug?.(`[sidekick.push] skip: user engaged with ${normalizedChatId}`);
       return { delivered: 0, pruned: 0, skipped: 'user_engaged' };
     }
-    if (isMuted(this.db, chatId)) {
-      this.logger.debug?.(`[sidekick.push] skip: chat ${chatId} muted`);
+    if (isMuted(this.db, normalizedChatId)) {
+      this.logger.debug?.(`[sidekick.push] skip: chat ${normalizedChatId} muted`);
       return { delivered: 0, pruned: 0, skipped: 'muted' };
     }
     this.ensureVapid();
     const subs = listSubscriptions(this.db);
     if (subs.length === 0) return { delivered: 0, pruned: 0 };
-    const payload = JSON.stringify(buildPayload({ chatId, text, kind }));
+    const itemId = messageId || `msg_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    const payload = JSON.stringify(buildPayload({ chatId: normalizedChatId, text, kind, messageId: itemId }));
     let delivered = 0;
     let pruned = 0;
     for (const sub of subs) {
@@ -160,7 +191,39 @@ export class PushDispatcher {
         }
       }
     }
-    this.logger.info?.(`[sidekick.push] dispatched chat=${chatId} delivered=${delivered} pruned=${pruned}`);
+    this.logger.info?.(`[sidekick.push] dispatched chat=${normalizedChatId} delivered=${delivered} pruned=${pruned}`);
+    if (delivered > 0) {
+      this.persistActivityForPush({ chatId: normalizedChatId, text, kind, itemId });
+    }
     return { delivered, pruned };
   }
+
+  persistActivityForPush({ chatId, text, kind, itemId }) {
+    if (!this.db || !chatId || !itemId) return;
+    const activityKind = kind === 'cron' ? 'cron' : 'agent_reply';
+    const title = activityKind === 'cron' ? 'Cron notification' : 'Agent reply';
+    try {
+      upsertActivityItem(this.db, {
+        id: itemId,
+        chat_id: chatId,
+        kind: activityKind,
+        title,
+        body: String(text || ''),
+        read: false,
+        urgent: false,
+        message_id: itemId,
+      });
+      this.eventBus?.pushEnvelope?.({
+        type: 'activity_changed',
+        chat_id: chatId,
+        item_id: itemId,
+        kind: activityKind,
+        cause: 'push',
+      });
+    } catch (err) {
+      this.logger.warn?.(`[sidekick.push] activity persist failed: ${err?.message ?? err}`);
+    }
+  }
 }
+
+export { ENGAGEMENT_WINDOW_MS, buildPayload, normalizeChatId };

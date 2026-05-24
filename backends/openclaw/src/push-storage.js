@@ -13,7 +13,9 @@
  * `~/code/hermes-agent-private/hosts/cortex/sidekick-supplemental-store-schema.md`
  * for the design discussion.
  */
-import { generateVAPIDKeys } from 'web-push';
+import webpush from 'web-push';
+
+const { generateVAPIDKeys } = webpush;
 
 const DEFAULT_VAPID_SUBJECT = process.env.SIDEKICK_VAPID_SUBJECT
   || 'mailto:jscholz@reimaginerobotics.ai';
