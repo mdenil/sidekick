@@ -19,7 +19,7 @@
 //      ships the prefix verbatim back to the agent (preserving the
 //      provider routing hint).
 
-import { waitForReady, assert } from './lib.mjs';
+import { waitForReady, openSettingsSection, assert } from './lib.mjs';
 
 export const NAME = 'picker-provider-prefixed';
 export const DESCRIPTION = 'Model picker shows provider-prefixed values for non-OpenRouter providers';
@@ -54,13 +54,11 @@ export function MOCK_SETUP(mock) {
 export default async function run({ page, log, mock }) {
   await waitForReady(page);
 
-  // Open settings panel → triggers agentSettings.load → schema fetch.
-  await page.click('#sb-settings');
-  await page.waitForFunction(
-    () => document.getElementById('settings')?.classList.contains('on'),
-    null,
-    { timeout: 2_000 },
-  );
+  // Open settings panel and navigate to the Agent section. Desktop
+  // two-column shell hides every non-active settings group; without
+  // the section nav click the model picker exists in DOM but is
+  // hidden.
+  await openSettingsSection(page, 'agent');
   await page.waitForSelector('[data-agent-setting="model"] select', { timeout: 3_000 });
   log('settings panel + model select rendered');
 

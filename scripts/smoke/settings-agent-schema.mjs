@@ -13,7 +13,7 @@
 //      /api/sidekick/settings/model and the dropdown reflects the
 //      agent's response.
 
-import { waitForReady } from './lib.mjs';
+import { waitForReady, openSettingsSection } from './lib.mjs';
 import { installMockBackend } from './mock-backend.mjs';
 
 export const NAME = 'settings-agent-schema';
@@ -47,13 +47,10 @@ export default async function run({ page, log, mock }) {
 
   // Open settings panel via the sidebar's "Settings" button. The
   // panel renderer fires agentSettings.load() in its open path.
-  await page.click('#sb-settings');
-  await page.waitForFunction(
-    () => document.getElementById('settings')?.classList.contains('on'),
-    null,
-    { timeout: 2_000 },
-  );
-  log('settings panel opened');
+  // Two-column shell: navigate to the Agent section so the schema
+  // row is visible (other groups stay [hidden] otherwise).
+  await openSettingsSection(page, 'agent');
+  log('settings panel opened to Agent section');
 
   // The schema row injects with data-agent-setting="model"; wait for
   // it to render (the static placeholder ships with the same attr,

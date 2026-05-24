@@ -23,7 +23,7 @@
 //   6. Flip to an unknown-to-models.dev model; assert
 //      "accepts text · capability unknown to models.dev".
 
-import { waitForReady, assert } from './lib.mjs';
+import { waitForReady, openSettingsSection, assert } from './lib.mjs';
 
 export const NAME = 'model-switch-system-line';
 export const DESCRIPTION = 'Model switch surfaces a system line listing accepted input modalities';
@@ -109,14 +109,11 @@ export default async function run({ page, log }) {
 
   await waitForReady(page);
 
-  // Open settings panel → triggers agentSettings.load → schema fetch
-  // → model select rendered.
-  await page.click('#sb-settings');
-  await page.waitForFunction(
-    () => document.getElementById('settings')?.classList.contains('on'),
-    null,
-    { timeout: 2_000 },
-  );
+  // Open settings panel and navigate to the Agent section so the
+  // model picker is visible (desktop two-column shell hides inactive
+  // groups). schema fetch fires on panel-open; the agent nav click
+  // just exposes the row that's already there.
+  await openSettingsSection(page, 'agent');
   await page.waitForSelector('[data-agent-setting="model"] select', { timeout: 3_000 });
   log('settings panel opened, model select rendered');
 

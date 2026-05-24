@@ -87,10 +87,14 @@ export default async function run({ page, log }) {
   assert(await sidebarOpen(page), `sidebar should remain open with pin drawer open`);
   log(`both drawers open ✓`);
 
-  // Click the pin item — drills + should close ONLY the pin drawer.
+  // Click the pin item's drill target. The right-drawer refactor (commit
+  // e936c90, 2026-05-21) moved the drill onclick from the LI itself to
+  // its `.pin-item-footer` (and its inner jump button). A click on the
+  // LI no longer triggers the drill — dispatch against the footer so
+  // the handler actually fires.
   await page.evaluate(() => {
-    const item = document.querySelector('#pin-drawer-list .pin-drawer-item');
-    item?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    const footer = document.querySelector('#pin-drawer-list .pin-drawer-item .pin-item-footer');
+    footer?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
   });
   await page.waitForTimeout(800);
 

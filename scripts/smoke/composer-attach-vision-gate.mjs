@@ -18,7 +18,7 @@
 //      is disabled.
 //   6. Switch back to vision-capable; assert re-enabled.
 
-import { waitForReady, assert } from './lib.mjs';
+import { waitForReady, openSettingsSection, assert } from './lib.mjs';
 
 export const NAME = 'composer-attach-vision-gate';
 export const DESCRIPTION = 'Image-upload buttons enable only when selected model supports vision';
@@ -116,15 +116,13 @@ export default async function run({ page, log }) {
   );
   log('btn-attach enabled with gemma-3-27b-it (vision-capable) ✓');
 
-  // Open settings panel so we can drive model-switch UI.
-  await page.click('#sb-settings');
-  await page.waitForFunction(
-    () => document.getElementById('settings')?.classList.contains('on'),
-    null,
-    { timeout: 2_000 },
-  );
+  // Open settings panel and navigate to the Agent section so the
+  // model picker row is visible. Desktop two-column shell hides every
+  // non-active settings group; without this the locator below resolves
+  // to a hidden <select>.
+  await openSettingsSection(page, 'agent');
   await page.waitForSelector('[data-agent-setting="model"] select', { timeout: 3_000 });
-  log('settings panel opened');
+  log('settings panel opened to Agent section');
 
   // Switch to text-only model.
   await page.evaluate(() => {

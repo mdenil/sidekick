@@ -237,6 +237,26 @@ export async function openSidebar(page, { timeout = 3_000 } = {}) {
   );
 }
 
+/** Open the settings panel and switch to a specific section. The
+ *  desktop two-column shell (commit 384140e) hides every settings group
+ *  except the active one — clicking `#sb-settings` alone leaves the
+ *  Agent / Voice / Interaction groups invisible. Smokes that drive
+ *  agent-setting controls (model picker, agent-declared rows) must
+ *  navigate to their section explicitly. Section names match
+ *  `[data-section]` on `.settings-group` and `[data-target]` on the
+ *  nav buttons: notifications, display, agent, voice-input,
+ *  voice-output, voice-phrases, interaction. */
+export async function openSettingsSection(page, section, { timeout = 3_000 } = {}) {
+  await page.click('#sb-settings');
+  await page.waitForFunction(
+    () => document.getElementById('settings')?.classList.contains('on'),
+    null,
+    { timeout },
+  );
+  await page.click(`.settings-nav-btn[data-target="${section}"]`);
+  await page.waitForSelector(`.settings-group[data-section="${section}"]:not([hidden])`, { timeout });
+}
+
 /** Click the new-chat button. Handles both the desktop (drawer-open)
  *  and mobile (drawer-collapsed) layouts. */
 export async function clickNewChat(page, { timeout = 5_000 } = {}) {

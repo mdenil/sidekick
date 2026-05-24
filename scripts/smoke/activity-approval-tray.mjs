@@ -94,7 +94,13 @@ export default async function run({ page, log, mock }) {
     badgeHidden: document.getElementById('activity-drawer-count-rail')?.hidden ?? true,
   }));
   assert(after.transcript.includes('/deny'), 'Deny action did not send /deny into the approval chat');
-  assert(after.activity.includes('denied'), 'Activity item did not mark denied');
+  // a3177a3 (2026-05-22) "Tighten Activity read and approval state" flipped
+  // the post-action behavior from resolveActivity → dismissActivity:
+  // approval rows now LEAVE the tray entirely after Approve/Session/Deny
+  // rather than persisting with a "denied" badge. The smoke now asserts
+  // the approval preview is GONE (not that the item shows "denied").
+  assert(!after.activity.includes('activity tray smoke'),
+    'Deny action did not remove the approval item from the Activity tray');
   assert(after.badgeHidden, 'unresolved approval badge did not clear after Deny');
-  log('Deny action sent /deny and resolved Activity item ✓');
+  log('Deny action sent /deny and dismissed Activity item ✓');
 }
