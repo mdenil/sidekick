@@ -27,6 +27,7 @@ from __future__ import annotations
 import pytest
 
 from ..sidekick_dispatcher import (
+    ENGAGEMENT_WINDOW_MS,
     EngagementState,
     PushDispatcher,
     ReplyBuffer,
@@ -115,14 +116,13 @@ def test_engagement_for_different_chat_does_not_block(dispatcher, db):
 
 
 def test_engagement_window_expires(dispatcher, db):
-    """Past the 2s window, engagement no longer suppresses."""
+    """Past the engagement window, engagement no longer suppresses."""
     _add_sub(db)
     dispatcher.engagement.mark_visible("chat-X")
-    # Simulate "now" 3 seconds after the mark.
     import time as _t
     real_time = _t.time
     try:
-        future = real_time() + 3.0
+        future = real_time() + (ENGAGEMENT_WINDOW_MS / 1000.0) + 1.0
         # The dispatch path reads time.time() inside is_engaged(now_ms=None);
         # we patch to force the expiry.
         _t.time = lambda: future
@@ -158,6 +158,25 @@ def test_engagement_key_uses_stripped_chat_id(dispatcher, db):
         "type": "reply_final", "chat_id": "abc-uuid",
     }, body_override="hello")
     assert out["skipped"] == "user_engaged"
+
+
+def test_push_payload_url_routes_to_chat_and_message():
+    payload = _build_payload({
+        "type": "notification",
+        "kind": "cron",
+        "chat_id": "abc-uuid",
+        "sidekick_id": "notif_123",
+        "content": "Cron output",
+    })
+    assert payload["url"] == "/?chat=sidekick%3Aabc-uuid&msg=notif_123"
+    assert "chat_id=" not in payload["url"]
+
+    already_prefixed = _build_payload({
+        "type": "reply_final",
+        "chat_id": "sidekick:abc-uuid",
+        "message_id": "msg_123",
+    }, body_override="hello")
+    assert already_prefixed["url"] == "/?chat=sidekick%3Aabc-uuid&msg=msg_123"
 
 
 # ── Per-kind toggle ────────────────────────────────────────────────────

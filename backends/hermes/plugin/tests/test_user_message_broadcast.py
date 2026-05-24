@@ -454,6 +454,95 @@ def _make_envelope_routing_adapter(plugin):
     return adapter
 
 
+class _FakePushDispatcher:
+    def __init__(self, *, delivered=1, body="delivered body"):
+        self.delivered = delivered
+        self.body = body
+        self.dispatched = []
+
+    def observe_envelope(self, env):
+        if env.get("type") == "reply_final":
+            return self.body
+        return None
+
+    def dispatch_envelope(self, env, *, body_override=None):
+        self.dispatched.append({"env": dict(env), "body_override": body_override})
+        if self.delivered <= 0:
+            return {"delivered": 0, "pruned": 0, "skipped": "user_engaged"}
+        return {"delivered": self.delivered, "pruned": 0}
+
+
+def _make_push_activity_adapter(plugin, tmp_path, monkeypatch, *, delivered=1):
+    import importlib
+    state = importlib.import_module(f"{plugin.__name__}.sidekick_state")
+    db_mod = importlib.import_module(f"{plugin.__name__}.sidekick_db")
+    SidekickDB = db_mod.SidekickDB
+
+    adapter = _make_envelope_routing_adapter(plugin)
+    adapter._sidekick_db = SidekickDB(tmp_path / "sidekick.db")
+    adapter._push_dispatcher = _FakePushDispatcher(delivered=delivered)
+    adapter._state_db_path = None
+    monkeypatch.setenv("SIDEKICK_PUSH_OWNED_BY_PLUGIN", "true")
+    return adapter, state
+
+
+def test_delivered_agent_reply_push_creates_activity_item(plugin, tmp_path, monkeypatch):
+    adapter, state = _make_push_activity_adapter(plugin, tmp_path, monkeypatch)
+
+    asyncio.run(adapter._safe_send_envelope({
+        "type": "reply_final",
+        "chat_id": "chat-activity",
+        "message_id": "msg_activity_1",
+    }))
+
+    items = state.list_activity_items(adapter._sidekick_db)
+    assert len(items) == 1
+    item = items[0]
+    assert item["id"] == "msg_activity_1"
+    assert item["messageId"] == "msg_activity_1"
+    assert item["chatId"] == "sidekick:chat-activity"
+    assert item["kind"] == "agent_reply"
+    assert item["body"] == "delivered body"
+    assert item["read"] is False
+
+
+def test_suppressed_agent_reply_push_does_not_create_activity_item(plugin, tmp_path, monkeypatch):
+    adapter, state = _make_push_activity_adapter(
+        plugin, tmp_path, monkeypatch, delivered=0
+    )
+
+    asyncio.run(adapter._safe_send_envelope({
+        "type": "reply_final",
+        "chat_id": "chat-engaged",
+        "message_id": "msg_engaged_1",
+    }))
+
+    assert state.list_activity_items(adapter._sidekick_db) == []
+
+
+def test_delivered_cron_notification_push_creates_activity_item(plugin, tmp_path, monkeypatch):
+    adapter, state = _make_push_activity_adapter(plugin, tmp_path, monkeypatch)
+
+    asyncio.run(adapter._safe_send_envelope({
+        "type": "notification",
+        "chat_id": "cron-chat",
+        "kind": "cron",
+        "sidekick_id": "notif_cron_1",
+        "content": "Cron output body",
+    }))
+
+    items = state.list_activity_items(adapter._sidekick_db)
+    assert len(items) == 1
+    item = items[0]
+    assert item["id"] == "notif_cron_1"
+    assert item["messageId"] == "notif_cron_1"
+    assert item["chatId"] == "sidekick:cron-chat"
+    assert item["kind"] == "cron"
+    assert item["title"] == "Cron notification"
+    assert item["body"] == "Cron output body"
+    assert item["read"] is False
+
+
 @pytest.mark.parametrize("env_type", ["tool_call", "tool_result"])
 def test_active_turn_tool_events_also_publish_to_persistent_event_stream(plugin, env_type):
     """Live tool progress must reach the transcript-centric /v1/events stream.

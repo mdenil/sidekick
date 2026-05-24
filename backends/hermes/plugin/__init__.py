@@ -1614,7 +1614,14 @@ class SidekickAdapter(BasePlatformAdapter):
                     # adapter emitted text on the final itself —
                     # fall back to env.text/content.
                     body_override = env.get("text") or env.get("content") or ""
-                self._push_dispatcher.dispatch_envelope(env, body_override=body_override)
+                dispatch_result = self._push_dispatcher.dispatch_envelope(
+                    env, body_override=body_override
+                )
+                self._persist_activity_for_push(
+                    env,
+                    body_override=body_override,
+                    dispatch_result=dispatch_result,
+                )
             except Exception as exc:
                 logger.warning("[sidekick.push] dispatch failed: %s", exc)
 
@@ -1688,6 +1695,98 @@ class SidekickAdapter(BasePlatformAdapter):
                 logger.debug("[sidekick] unread_changed publish failed: %s", exc)
 
         return published
+
+    def _persist_activity_for_push(
+        self,
+        env: Dict[str, Any],
+        *,
+        body_override: Optional[str] = None,
+        dispatch_result: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Persist Activity rows for notifications that actually fired.
+
+        Activity is the durable counterpart to OS/Web Push, not an all-message
+        feed. If dispatch is suppressed because the chat is engaged, muted, or
+        disabled by prefs, do not create an Activity item. This keeps the right
+        drawer aligned with what the user was externally alerted about.
+        """
+        if self._sidekick_db is None:
+            return
+        delivered = 0
+        if isinstance(dispatch_result, dict):
+            try:
+                delivered = int(dispatch_result.get("delivered") or 0)
+            except Exception:
+                delivered = 0
+        if delivered <= 0:
+            return
+
+        env_type = env.get("type") if isinstance(env.get("type"), str) else ""
+        raw_chat_id = env.get("chat_id") if isinstance(env.get("chat_id"), str) else ""
+        if not raw_chat_id:
+            return
+        chat_id = raw_chat_id if _GATEWAY_ID_SEP in raw_chat_id else f"{SIDEKICK_SOURCE}{_GATEWAY_ID_SEP}{raw_chat_id}"
+
+        if env_type == "reply_final":
+            kind = "agent_reply"
+            item_id = env.get("message_id") if isinstance(env.get("message_id"), str) else ""
+            title_label = env.get("title") if isinstance(env.get("title"), str) else ""
+            title = f"Reply · {title_label}" if title_label else "Agent reply"
+            body = body_override or env.get("content") or env.get("text") or ""
+        elif env_type == "notification":
+            env_kind = env.get("kind") if isinstance(env.get("kind"), str) else "notification"
+            kind = env_kind if env_kind in ("approval", "cron") else "notification"
+            item_id = env.get("sidekick_id") if isinstance(env.get("sidekick_id"), str) else ""
+            if not item_id:
+                item_id = env.get("message_id") if isinstance(env.get("message_id"), str) else ""
+            if not item_id:
+                item_id = f"notif_{int(time.time() * 1000)}_{secrets.token_hex(3)}"
+                env["sidekick_id"] = item_id
+            raw_title = env.get("title") if isinstance(env.get("title"), str) else ""
+            if kind == "approval":
+                title = raw_title or "Approval required"
+            elif kind == "cron":
+                title = raw_title or "Cron notification"
+            else:
+                title = raw_title or "Notification"
+            body = body_override or env.get("content") or env.get("text") or ""
+        else:
+            return
+
+        if not item_id:
+            return
+        if not isinstance(body, str):
+            body = str(body)
+        urgent = bool(env.get("urgent")) or kind == "approval"
+
+        try:
+            from . import sidekick_state as _sstate
+            _sstate.upsert_activity_item(
+                self._sidekick_db,
+                id=item_id,
+                chat_id=chat_id,
+                kind=kind,
+                title=title,
+                body=body,
+                created_at=time.time(),
+                urgent=urgent,
+                read=False,
+                message_id=item_id,
+                resolved=None,
+            )
+            try:
+                from . import sidekick_route_events as _route_events
+                _route_events.publish_out_of_turn(self, {
+                    "type": "activity_changed",
+                    "chat_id": chat_id,
+                    "item_id": item_id,
+                    "kind": kind,
+                    "cause": env_type,
+                })
+            except Exception as exc:
+                logger.debug("[sidekick] activity_changed publish failed: %s", exc)
+        except Exception as exc:
+            logger.warning("[sidekick] activity persist failed: %s", exc)
 
     def _persist_notification(self, env: Dict[str, Any]) -> None:
         """Write a notification envelope to state.db.messages as an

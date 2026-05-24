@@ -23,6 +23,7 @@ import logging
 import re
 import time
 from typing import Dict, Optional
+from urllib.parse import quote
 
 from pywebpush import webpush, WebPushException  # type: ignore
 
@@ -37,9 +38,11 @@ from .sidekick_state import (
 
 logger = logging.getLogger("hermes.sidekick.push")
 
-# Visibility heartbeat valid for 2 seconds — matches the openclaw
-# plugin + the proxy's original implementation.
-ENGAGEMENT_WINDOW_MS = 2_000
+# Visibility heartbeat validity window. The PWA reports while focused every
+# 8s, and immediately sends hidden/blurred on loss of engagement. The server
+# window must exceed the focused heartbeat interval or a user sitting in the
+# active chat will intermittently receive pushes for the chat they are reading.
+ENGAGEMENT_WINDOW_MS = 12_000
 
 # How much of the body to ship in the push payload. Watch banners
 # truncate hard; Apple's notification service tends to clip ~200
@@ -301,12 +304,22 @@ def _build_payload(env: Dict, *, body_override: Optional[str] = None) -> Dict:
         body = body[: max(0, available - 1)].rstrip() + "…"
     body = body + suffix
 
+    message_id = env.get("sidekick_id") or env.get("message_id") or ""
+    if not isinstance(message_id, str):
+        message_id = ""
+    url = "/"
+    if chat_id:
+        url_chat_id = chat_id if ":" in chat_id else f"sidekick:{chat_id}"
+        url = f"/?chat={quote(url_chat_id, safe='')}"
+        if message_id:
+            url += f"&msg={quote(message_id, safe='')}"
+
     return {
         "title": f"{icon} {title_label}".strip(),
         "body": body[:PUSH_BODY_MAX_CHARS],
         "chat_id": chat_id,
         "tag": chat_id or "sidekick",
-        "url": f"/?chat_id={chat_id}" if chat_id else "/",
+        "url": url,
     }
 
 
