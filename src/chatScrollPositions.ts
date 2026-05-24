@@ -5,8 +5,13 @@
 // default every chat app implements).
 //
 // Storage:
-//   - In-memory Map (chatId → scrollTop) is the read source so
-//     sessionResume branches synchronously on restore.
+//   - In-memory Map (chatId → {scrollTop, atBottom}) is the read source
+//     so sessionResume branches synchronously on restore. atBottom is
+//     captured from chat.isPinned() at save time: it answers the
+//     question "did the user want the live edge?" directly, without
+//     having to compare scrollTop against a maxTop that may not reflect
+//     the chat's final height at restore time (partial cache renders,
+//     post-mount layout shift from tool rows / images / code blocks).
 //   - IDB persists the cache; hydrated once at chat.init, debounced
 //     write-through on save. flush() runs the pending write immediately
 //     — sessionDrawer's onBeforeSwitch + pagehide both call it so the
@@ -21,17 +26,16 @@ const PERSIST_DEBOUNCE_MS = 200;
 interface PositionRecord {
   chatId: string;
   scrollTop: number;
+  atBottom?: boolean;  // legacy records may lack this; absence → false (literal restore)
   savedAt: number;
 }
 
-/** Pixels-from-bottom threshold used by the restore path: if the saved
- *  scrollTop is within this distance of the CURRENT maxTop, snap to the
- *  current bottom instead of restoring the literal value. Handles "user
- *  was at the live edge; new messages arrived while away → user wants
- *  the new live edge, not the old one." */
-export const AT_BOTTOM_THRESHOLD_PX = 300;
+export interface SavedPosition {
+  scrollTop: number;
+  atBottom: boolean;
+}
 
-const cache = new Map<string, number>();
+const cache = new Map<string, SavedPosition>();
 const pendingWrites = new Map<string, ReturnType<typeof setTimeout>>();
 let hydrated = false;
 
@@ -60,7 +64,10 @@ export async function hydrateScrollPositions(): Promise<void> {
         const rows = (req.result || []) as PositionRecord[];
         for (const r of rows) {
           if (r?.chatId && typeof r.scrollTop === 'number') {
-            cache.set(r.chatId, r.scrollTop);
+            cache.set(r.chatId, {
+              scrollTop: r.scrollTop,
+              atBottom: r.atBottom === true,  // legacy missing → false
+            });
           }
         }
         diag(`[chat-scroll] hydrate: ${rows.length} positions from IDB`);
@@ -74,17 +81,19 @@ export async function hydrateScrollPositions(): Promise<void> {
   }
 }
 
-export function getScrollPosition(chatId: string): number | null {
+export function getScrollPosition(chatId: string): SavedPosition | null {
   if (!chatId) return null;
   const v = cache.get(chatId);
-  return typeof v === 'number' ? v : null;
+  return v ?? null;
 }
 
-export function saveScrollPosition(chatId: string, scrollTop: number): void {
+export function saveScrollPosition(chatId: string, scrollTop: number, atBottom: boolean): void {
   if (!chatId) return;
   const floored = Math.max(0, Math.floor(scrollTop));
-  if (cache.get(chatId) === floored) return;
-  cache.set(chatId, floored);
+  const prev = cache.get(chatId);
+  if (prev && prev.scrollTop === floored && prev.atBottom === atBottom) return;
+  diag(`[chat-scroll] save ${chatId.slice(-12)} → ${floored} atBottom=${atBottom} (was ${prev ? `${prev.scrollTop}/${prev.atBottom}` : 'undef'})`);
+  cache.set(chatId, { scrollTop: floored, atBottom });
   const pendingTimer = pendingWrites.get(chatId);
   if (pendingTimer) clearTimeout(pendingTimer);
   pendingWrites.set(chatId, setTimeout(() => {
@@ -95,7 +104,7 @@ export function saveScrollPosition(chatId: string, scrollTop: number): void {
 
 /** Flush the pending IDB write for chatId IMMEDIATELY. Called on session
  *  switch and pagehide so the latest position survives reloads / fast
- *  switches that would otherwise outrun the 200ms debounce. */
+ *  switches that would outrun the 200ms debounce. */
 export function flushScrollPosition(chatId: string): void {
   if (!chatId) return;
   const pending = pendingWrites.get(chatId);
@@ -107,12 +116,17 @@ export function flushScrollPosition(chatId: string): void {
 }
 
 async function persistOne(chatId: string): Promise<void> {
-  const scrollTop = cache.get(chatId);
-  if (typeof scrollTop !== 'number') return;
+  const rec = cache.get(chatId);
+  if (!rec) return;
   try {
     const db = await dbOpen();
     const tx = db.transaction(STORE, 'readwrite');
-    tx.objectStore(STORE).put({ chatId, scrollTop, savedAt: Date.now() });
+    tx.objectStore(STORE).put({
+      chatId,
+      scrollTop: rec.scrollTop,
+      atBottom: rec.atBottom,
+      savedAt: Date.now(),
+    });
     await new Promise<void>((resolve, reject) => {
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);

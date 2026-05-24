@@ -62,7 +62,7 @@ let missedWhileScrolled = 0;
 
 export function saveCurrentScrollPosition(): void {
   if (!transcriptEl || !viewedSessionIdRef) return;
-  saveScrollPosition(viewedSessionIdRef, transcriptEl.scrollTop);
+  saveScrollPosition(viewedSessionIdRef, transcriptEl.scrollTop, isPinned());
 }
 
 
@@ -281,9 +281,13 @@ export async function init(el: HTMLElement | null): Promise<boolean> {
       // unconditionally here — that used to overwrite the persisted
       // user-intent value before sessionResume's restore could read it.
       if (restoredViewedSessionId) {
-        const savedTop = getScrollPosition(restoredViewedSessionId);
-        if (typeof savedTop === 'number') {
-          transcriptEl.scrollTo({ top: savedTop, behavior: 'instant' as ScrollBehavior });
+        const savedRec = getScrollPosition(restoredViewedSessionId);
+        if (savedRec) {
+          if (savedRec.atBottom) {
+            forceScrollToBottom();
+          } else {
+            transcriptEl.scrollTo({ top: savedRec.scrollTop, behavior: 'instant' as ScrollBehavior });
+          }
         } else {
           forceScrollToBottom();
         }

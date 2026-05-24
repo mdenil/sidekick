@@ -36,7 +36,7 @@ import * as sessionDrawer from './sessionDrawer.ts';
 import * as backend from './backend.ts';
 import * as transcriptStore from './transcript/store.ts';
 import { rerenderActive } from './transcript/index.ts';
-import { getScrollPosition, AT_BOTTOM_THRESHOLD_PX } from './chatScrollPositions.ts';
+import { getScrollPosition } from './chatScrollPositions.ts';
 
 /** Pattern for assistant replies the plugin signals as "no reply" (the
  *  agent chose to stay silent). We drop them from the rendered
@@ -151,23 +151,26 @@ export function replaySessionMessages(
   }
   // Restore scroll. Three cases:
   //   - cache miss → scroll to bottom (default for new / never-viewed chats).
-  //   - saved is within AT_BOTTOM_THRESHOLD_PX of the CURRENT bottom →
-  //     user was effectively at the live edge; snap to the new bottom
-  //     (handles "new messages arrived while away" + post-render layout
-  //     growth via scheduleAtBottomRepin).
-  //   - otherwise → restore the literal scrollTop. Instant, no rAF
-  //     retry, no anchor correction. Post-render scroll(0) storms get
-  //     overwritten by this assignment; saves write the final value.
-  if (typeof saved === 'number' && !targetMessageId) {
+  //   - saved.atBottom=true → user was at the live edge at save time. Snap
+  //     to the current bottom + scheduleAtBottomRepin (handles "new messages
+  //     arrived while away" + post-render layout growth).
+  //   - saved.atBottom=false → mid-chat. Restore the literal scrollTop
+  //     with a single instant scrollTo. NO maxTop heuristic: comparing
+  //     saved against the current maxTop falsely fires "at-edge" when the
+  //     initial cache render is partial (a 335-message chat painting just
+  //     200 → maxTop=6958 even though the chat's true height ends up
+  //     12836). Field bug 2026-05-24 (scroll_save_failing2.mov sequel):
+  //     [pitch deck] mid-history restored to bottom + repin → drift
+  //     5385px as more bubbles + tool rows + images rendered.
+  if (saved && !targetMessageId) {
     const el = document.getElementById('transcript');
     if (el) {
-      const maxTop = el.scrollHeight - el.clientHeight;
-      if (saved >= maxTop - AT_BOTTOM_THRESHOLD_PX) {
-        log(`[chat-resume] restore at-edge (saved=${saved} maxTop=${maxTop}) → forceScrollToBottom + repin`);
+      if (saved.atBottom) {
+        log(`[chat-resume] restore at-edge (atBottom=true savedScrollTop=${saved.scrollTop}) → forceScrollToBottom + repin`);
         chat.forceScrollToBottom();
         scheduleAtBottomRepin();
       } else {
-        log(`[chat-resume] restore mid-chat saved=${saved} maxTop=${maxTop}`);
+        log(`[chat-resume] restore mid-chat saved=${saved.scrollTop}`);
         // Cancel any sibling chat's still-live at-bottom repin
         // observer — it would otherwise scroll us to the live edge
         // as A's content fills the transcript.
@@ -178,7 +181,7 @@ export function replaySessionMessages(
         // prependHistory would shift scrollTop by the height of the
         // prepended content — dragging the user off `saved`.
         chat.suppressLoadEarlierFor(1500);
-        el.scrollTo({ top: saved, behavior: 'instant' as ScrollBehavior });
+        el.scrollTo({ top: saved.scrollTop, behavior: 'instant' as ScrollBehavior });
         // The scrollTo fires a scroll event synchronously; the listener
         // updates pinnedToBottom from isPinned() against the restored
         // position, so subsequent autoScroll calls during post-render
