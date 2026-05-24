@@ -393,6 +393,24 @@ async function reconcileActiveChat(gapMs: number): Promise<void> {
   }
 }
 
+/** External "should-stay-alive" hint. Consumers register a getter that
+ *  returns true when the tab MUST stay live in background — currently
+ *  set by WebRTC controls when a call is open. When the hint is true,
+ *  we keep the SSE stream channel alive on visibilitychange-hidden so
+ *  iOS doesn't suspend the tab's JS context and starve the WebRTC
+ *  peer's ICE consent freshness pings. Field bug 2026-05-24
+ *  (post-8025949): locked-screen calls were dying ~5-6 min into
+ *  background because the SSE close on hidden removed the iOS
+ *  "active connection" signal that kept the tab live. */
+let externalStayAliveHint: (() => boolean) | null = null;
+export function setStayAliveHint(getter: () => boolean): void {
+  externalStayAliveHint = getter;
+}
+function shouldStayAlive(): boolean {
+  try { return !!externalStayAliveHint?.(); }
+  catch { return false; }
+}
+
 /** Bind OS-lifecycle listeners ONCE per page. Mobile-Safari kills
  *  EventSource silently when the PWA is backgrounded, the radio
  *  suspends, or the device hands off cell→wifi; native EventSource
@@ -404,8 +422,12 @@ function bindLifecycleHandlers(): void {
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden') {
       if (isLikelyMobileRuntime()) {
-        log('proxy-client: visibilitychange hidden on mobile → close stream channel');
-        stopStreamChannel();
+        if (shouldStayAlive()) {
+          log('proxy-client: visibilitychange hidden on mobile but stay-alive hint set (active call) → keep stream channel alive');
+        } else {
+          log('proxy-client: visibilitychange hidden on mobile → close stream channel');
+          stopStreamChannel();
+        }
       } else {
         log('proxy-client: visibilitychange hidden on desktop → keep stream channel alive');
       }

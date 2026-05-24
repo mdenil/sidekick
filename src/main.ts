@@ -87,6 +87,7 @@ import * as bgTrace from './bgTrace.ts';
 import * as transcriptStore from './transcript/store.ts';
 import { bindTranscriptPipeline } from './transcript/index.ts';
 import { flushScrollPosition } from './chatScrollPositions.ts';
+import { setStayAliveHint as setProxyStayAliveHint } from './proxyClient.ts';
 
 // Card kind modules
 import imageCard from './cards/kinds/image.ts';
@@ -1351,6 +1352,19 @@ async function boot() {
     // transitions all need re-evaluation. evaluateWakeLock is idempotent.
     onCallStateChange: () => evaluateWakeLock(),
   });
+
+  // Tell proxyClient to KEEP the SSE channel open while a WebRTC call
+  // is active, even when the tab goes hidden. The long-lived SSE
+  // connection is what tells iOS "this tab is doing real work, don't
+  // suspend its JS" — without it, the WebRTC peer's ICE consent
+  // freshness pings stop firing in background and the call drops after
+  // ~5 minutes. Field bug 2026-05-24: locked-screen call survived
+  // ~6 minutes, then died; relay log showed `visibilitychange hidden
+  // → close stream channel` immediately after the lock, followed by
+  // `[webrtc] data channel close` six minutes later. The keepalive
+  // is bounded to call duration, so battery cost is limited to active
+  // calls which are already power-on by nature.
+  setProxyStayAliveHint(() => webrtcControls.isOpen());
 
   // WebRTC data-channel events: parallel text path that surfaces
   // user-speech transcripts and assistant reply deltas as the call
