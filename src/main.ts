@@ -86,6 +86,7 @@ import * as webrtcSuppress from './audio/realtime/suppress.ts';
 import * as bgTrace from './bgTrace.ts';
 import * as transcriptStore from './transcript/store.ts';
 import { bindTranscriptPipeline } from './transcript/index.ts';
+import { flushScrollPosition } from './chatScrollPositions.ts';
 
 // Card kind modules
 import imageCard from './cards/kinds/image.ts';
@@ -2057,7 +2058,21 @@ async function boot() {
       // outbox, it'll send against the NEW session. That's a conscious
       // trade: user asked for a fresh thread, they get one.
       const prevViewed = sessionDrawer.getViewed();
-      if (prevViewed) transcriptStore.clearAll(prevViewed);
+      if (prevViewed) {
+        // Mirror sessionDrawer.resume()'s leaving-chat pattern. Without
+        // this, transcriptStore.clearAll(prevViewed) → reconciler removes
+        // bubbles → scrollHeight collapses → browser fires scroll(0)
+        // → chat.ts scroll listener saves scrollTop=0 against
+        // viewedSessionIdRef (which still points at prevViewed) →
+        // prevViewed's saved scroll position is poisoned to 0. Restore
+        // on return reads 0 → scrollTo top. Field bug 2026-05-24
+        // (scroll_save_failing2.mov): mid-history → New chat → send
+        // → return jumped to top of prior chat.
+        chat.saveCurrentScrollPosition();
+        flushScrollPosition(prevViewed);
+        chat.trackViewedSession(null);
+        transcriptStore.clearAll(prevViewed);
+      }
       draft.dismiss();
       voiceMemos.clearAll().catch(() => {});
       // Clear remaining input surfaces atomically. Without this,
