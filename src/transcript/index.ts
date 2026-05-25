@@ -46,16 +46,33 @@ export interface BindOpts {
 }
 
 /** Returns true if the virtualizer should be used for transcript
- *  rendering. Checks `localStorage['sidekick.virtualize']` first
- *  (sticky across reloads — what most users will set), then URL
- *  param `?virt=1` (one-shot, for dev iteration). The flag is read
- *  ONCE per session at first-render time; toggling it mid-session
- *  requires a reload. */
+ *  rendering. Phase 5a attempt at default-on (2026-05-25) was reverted
+ *  because 21 of 134 mocked smokes were tightly coupled to default-path
+ *  mechanics (scrollTop semantics, "all bubbles in DOM" assumptions,
+ *  load-earlier prepend math, replyPlayer DOM-class state, etc.).
+ *  These need per-smoke audits — most are test-quality issues, not
+ *  virt bugs — before the default can flip safely. Today: opt-in only
+ *  via `localStorage['sidekick.virtualize'] = '1'` or `?virt=1`. */
 export function isVirtualizerEnabled(): boolean {
   try {
     if (typeof window !== 'undefined') {
       if (window.localStorage?.getItem('sidekick.virtualize') === '1') return true;
-      if (new URLSearchParams(window.location.search).get('virt') === '1') return true;
+      // `?virt=1` is a sticky enable: persist to localStorage so a PWA
+      // shortcut without the param (which iOS sometimes drops on
+      // add-to-home-screen) still picks up the user's intent on the
+      // next launch. Symmetric `?virt=0` clears.
+      if (typeof window.location !== 'undefined') {
+        const sp = new URLSearchParams(window.location.search);
+        const v = sp.get('virt');
+        if (v === '1') {
+          try { window.localStorage?.setItem('sidekick.virtualize', '1'); } catch {}
+          return true;
+        }
+        if (v === '0') {
+          try { window.localStorage?.removeItem('sidekick.virtualize'); } catch {}
+          return false;
+        }
+      }
     }
   } catch { /* SSR / privacy mode — flag off */ }
   return false;

@@ -262,6 +262,14 @@ export interface VirtualizerHandle {
   /** Direct access to the height cache. Phase 2's ResizeObserver
    *  writes through this; Phase 4's snapshot path reads `entries()`. */
   getHeightCache(): HeightCache;
+  /** All current spec keys in order. Filter by `navigable` for the
+   *  keyboard-nav use case — drops non-user/assistant kinds so ↑↓
+   *  skips activity rows and notifications. Returned array is a
+   *  defensive copy; mutating it has no effect on the virtualizer. */
+  getKeys(opts?: { navigable?: boolean }): string[];
+  /** The current spec list (defensive shallow copy). Callers needing
+   *  per-key metadata (kind, role) should use this. */
+  getSpecs(): BubbleSpec[];
   /** Tear down DOM + listeners. Tests use this; production never
    *  unbinds (the transcript element lives for the app's lifetime). */
   dispose(): void;
@@ -414,6 +422,15 @@ export function bindVirtualizer(opts: VirtualizerOpts): VirtualizerHandle {
       transcriptEl.scrollTo({ top: transcriptEl.scrollHeight, behavior: behavior as ScrollBehavior });
     },
     getHeightCache() { return cache; },
+    getKeys(opts) {
+      if (opts?.navigable) {
+        return currentSpecs
+          .filter(s => s.kind === 'user' || s.kind === 'assistant')
+          .map(s => s.key);
+      }
+      return currentSpecs.map(s => s.key);
+    },
+    getSpecs() { return currentSpecs.slice(); },
     dispose() {
       ro?.disconnect();
       transcriptEl.removeEventListener('scroll', scheduleRerender);
