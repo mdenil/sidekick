@@ -316,8 +316,8 @@ function navigateByKey(direction: -1 | 1): boolean {
     if (next < 0 || next >= visibleRowIds.length) return false;
   }
   const targetId = visibleRowIds[next];
-  // Synchronous .active flip — instant feedback (matches the click
-  // handler's optimistic paint).
+  // Synchronous .active flip + optimistic-claim — instant feedback that
+  // any scheduleRefresh racing the async resume() can't undo.
   const listEl = document.getElementById('sessions-list');
   if (listEl) {
     listEl.querySelectorAll('li.active').forEach(el => el.classList.remove('active'));
@@ -330,6 +330,7 @@ function navigateByKey(direction: -1 | 1): boolean {
       (targetLi as HTMLElement).scrollIntoView({ block: 'nearest' });
     }
   }
+  optimisticActiveId = targetId;
   // Async resume — fetch transcript + render. Same path the click
   // handler uses, so behavior (chat.clear + replay + drawer refresh)
   // is identical to a click.
@@ -967,6 +968,12 @@ function renderRow(s: any, activeId: string): HTMLLIElement {
       listEl.querySelectorAll('li.active').forEach(el => el.classList.remove('active'));
       li.classList.add('active');
     }
+    // Claim optimistic-active SYNCHRONOUSLY here so any scheduleRefresh
+    // that fires before resume()'s own optimistic-set (5-15ms later,
+    // after onBeforeSwitchCb returns) doesn't repaint the OLD viewed
+    // chat as active — that produced the "active → leaving → new"
+    // flicker Jonathan reported (2026-05-25, post-virt-default soak).
+    optimisticActiveId = s.id;
     trace('sync-active-flip');
     resume(s.id);
   };
