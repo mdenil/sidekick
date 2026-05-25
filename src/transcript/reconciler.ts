@@ -32,7 +32,21 @@ import type { ActivityRowSpec, ActivityTool, AssistantBubbleSpec, BubbleSpec, No
 
 const KEY_ATTR = 'data-key';
 
-export function reconcile(transcriptEl: HTMLElement, specs: BubbleSpec[]): void {
+/** Options for reconcile().
+ *
+ *  `batchBubbles`: pass true to suppress chat.addLine's per-bubble
+ *  autoScroll + persist side effects. Used by the virtualizer's
+ *  renderWindow callback — under virt the window shifts during
+ *  touch-scroll, each new bubble's autoScroll would re-check pinned
+ *  and snap the page back. Default path (reconcile called directly
+ *  on #transcript from streaming/durable updates) leaves this false
+ *  to preserve the per-bubble follow-along. */
+export interface ReconcileOpts {
+  batchBubbles?: boolean;
+}
+
+export function reconcile(transcriptEl: HTMLElement, specs: BubbleSpec[], opts: ReconcileOpts = {}): void {
+  const batchBubbles = !!opts.batchBubbles;
   // Snapshot existing keyed children up-front so the move/insert pass
   // can find them in O(1). Children WITHOUT `data-key` are stale —
   // they come from a pre-Crack-A `chat.restoreSnapshot()` DOM-string
@@ -81,7 +95,7 @@ export function reconcile(transcriptEl: HTMLElement, specs: BubbleSpec[]): void 
 
     let el = existing.get(spec.key);
     if (!el) {
-      el = createForSpec(spec);
+      el = createForSpec(spec, batchBubbles);
       if (!el) continue;
       el.setAttribute(KEY_ATTR, spec.key);
     } else {
@@ -109,16 +123,16 @@ export function reconcile(transcriptEl: HTMLElement, specs: BubbleSpec[]): void 
 
 // ── create ─────────────────────────────────────────────────────────────
 
-function createForSpec(spec: BubbleSpec): HTMLElement | null {
+function createForSpec(spec: BubbleSpec, batch: boolean): HTMLElement | null {
   switch (spec.kind) {
-    case 'user':       return createUser(spec);
-    case 'assistant':  return createAssistant(spec);
-    case 'notification': return createNotification(spec);
+    case 'user':       return createUser(spec, batch);
+    case 'assistant':  return createAssistant(spec, batch);
+    case 'notification': return createNotification(spec, batch);
     case 'activityRow': return createActivityRow(spec);
   }
 }
 
-function createUser(spec: UserBubbleSpec): HTMLElement | null {
+function createUser(spec: UserBubbleSpec, batch: boolean): HTMLElement | null {
   const cls = ['line', 's0'];
   if (spec.pending) cls.push('pending');
   if (spec.failed) cls.push('failed');
@@ -129,11 +143,12 @@ function createUser(spec: UserBubbleSpec): HTMLElement | null {
     messageId: spec.key,
     source: spec.source,
     pending: spec.pending,
+    batch,
   });
   return el || null;
 }
 
-function createAssistant(spec: AssistantBubbleSpec): HTMLElement | null {
+function createAssistant(spec: AssistantBubbleSpec, batch: boolean): HTMLElement | null {
   const cls = ['agent'];
   if (spec.streaming) cls.push('streaming');
   const el = chat.addLine(getAgentSpeaker(), spec.text, cls.join(' '), {
@@ -141,6 +156,7 @@ function createAssistant(spec: AssistantBubbleSpec): HTMLElement | null {
     timestamp: spec.timestamp,
     messageId: spec.key,
     replyId: spec.key,
+    batch,
   });
   if (!el) return null;
   if (spec.streaming) ensureThinkingDots(el);
@@ -160,7 +176,7 @@ function applyNotificationKindClass(el: HTMLElement, kind: string): void {
   if (kind) el.classList.add(`notification-${kind}`);
 }
 
-function createNotification(spec: NotificationBubbleSpec): HTMLElement | null {
+function createNotification(spec: NotificationBubbleSpec, batch: boolean): HTMLElement | null {
   const emoji = notificationEmoji(spec.notificationKind);
   // Match the legacy handleNotification rendering verbatim: speaker
   // is the raw `kind` string (lowercase as the agent emits it) when
@@ -173,6 +189,7 @@ function createNotification(spec: NotificationBubbleSpec): HTMLElement | null {
     markdown: true,
     timestamp: spec.timestamp,
     messageId: spec.key,
+    batch,
   }) || null;
   if (el) applyNotificationKindClass(el, spec.notificationKind || 'notification');
   return el;

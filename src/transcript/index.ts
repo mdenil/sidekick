@@ -135,7 +135,17 @@ function ensureVirtualizer(el: HTMLElement): void {
     // full transcript element or the virtualizer's slot — it just
     // diffs against children of whatever element it's given. Same
     // contract, smaller parent.
-    renderWindow: (slotEl, specs) => { reconcile(slotEl, specs); },
+    //
+    // `batchBubbles: true` suppresses chat.addLine's per-bubble
+    // autoScroll. Under virt the window shifts during touch-scroll;
+    // each new bubble's autoScroll would re-check pinnedToBottom and
+    // snap the page back to bottom. Field bug 2026-05-25 (Jonathan,
+    // mobile PWA): "scroll moves a little, then pops back" — the
+    // reconciler's per-create autoScroll fired dozens of times per
+    // finger move. Default path (reconcile called directly on
+    // #transcript from streaming/durable updates) leaves this flag
+    // off and gets the legacy per-bubble follow-along.
+    renderWindow: (slotEl, specs) => { reconcile(slotEl, specs, { batchBubbles: true }); },
   });
 }
 
