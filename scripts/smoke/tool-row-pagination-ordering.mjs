@@ -80,8 +80,10 @@ function turnStructure(page) {
   return page.evaluate(() => {
     const t = document.getElementById('transcript');
     if (!t) return [];
+    // Under virt the bubbles + activity rows live in slot.children.
+    const container = t.querySelector(':scope > .transcript-slot') || t;
     const out = [];
-    for (const child of Array.from(t.children)) {
+    for (const child of Array.from(container.children)) {
       if (child.classList.contains('activity-row')) {
         out.push(`ar`);
       } else if (child.classList.contains('line')) {

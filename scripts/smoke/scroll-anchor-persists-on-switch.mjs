@@ -42,9 +42,12 @@ async function currentAnchor(page) {
   return page.evaluate(() => {
     const t = document.getElementById("transcript");
     if (!t) return null;
+    // Under virt, transcript children are [spacer-top, slot, spacer-
+    // bottom]; the .line bubbles live inside .transcript-slot. Walk
+    // .line descendants directly so the lookup works under both paths.
     const tr = t.getBoundingClientRect();
-    for (const child of Array.from(t.children)) {
-      const el = child;
+    const lines = Array.from(t.querySelectorAll(".line"));
+    for (const el of lines) {
       const r = el.getBoundingClientRect();
       if (r.bottom <= tr.top) continue;
       if (r.top >= tr.bottom) break;
@@ -64,11 +67,24 @@ export default async function run({ page, log }) {
   await openSidebar(page);
   await clickRow(page, CHAT_A);
   await page.waitForTimeout(800);
-  const lineCount = await page.locator("#transcript .line").count();
-  assert(lineCount >= 45, `chat A must render enough rows to scroll, got ${lineCount}`);
+  // Precondition: chat is deeply scrollable. Under virt only ~30
+  // bubbles are in DOM at a time so the legacy `.line.count() >= 45`
+  // assertion doesn't hold; use scrollHeight vs viewport instead —
+  // the signal we actually care about is "there's room to scroll."
+  const scrollGeom = await page.evaluate(() => {
+    const t = document.getElementById("transcript");
+    if (!t) return null;
+    return { scrollHeight: t.scrollHeight, clientHeight: t.clientHeight };
+  });
+  assert(scrollGeom && scrollGeom.scrollHeight > scrollGeom.clientHeight * 3,
+    `chat A must be deeply scrollable: scrollHeight=${scrollGeom?.scrollHeight} clientHeight=${scrollGeom?.clientHeight}`);
+  // Scroll the 27th bubble into view. Walk `.line` descendants (works
+  // under virt; the bubble lives inside the slot, not as a direct
+  // child of transcriptEl).
   await page.evaluate(() => {
     const t = document.getElementById("transcript");
-    const row = t?.querySelectorAll(".line")[26];
+    const lines = t?.querySelectorAll(".line");
+    const row = lines?.[26];
     if (!t || !row) return;
     row.scrollIntoView({ block: "start", inline: "nearest" });
     t.scrollTo({ top: t.scrollTop + 73, behavior: "instant" });

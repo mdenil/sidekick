@@ -205,7 +205,16 @@ export function replaySessionMessages(
         // the same way — repin is per-element ResizeObserver, not
         // per-chat, so any active observer needs cancelling on switch.
         cancelActiveAtBottomRepin?.();
-        chat.suppressLoadEarlierFor(1500);
+        // NO load-earlier suppress here. The anchor restore lands the
+        // user back on the SAME bubble they were viewing, with the SAME
+        // viewport offset. Unlike the legacy mid-chat scrollTop restore,
+        // we don't need a 1.5s suppress window — the chat IS in a
+        // user-meaningful position immediately after restoreAnchor,
+        // and any subsequent scroll-to-top is a genuine user gesture
+        // that should fire load-earlier. Field bug 2026-05-25 (smoke):
+        // load-earlier-history failed because two duplicate resumes
+        // both ran the anchor branch (cache-cb + server-cb path), the
+        // second suppress blocked the smoke's immediate scrollTop=0.
       } else if (saved.atBottom) {
         log(`[chat-resume] restore at-edge (atBottom=true savedScrollTop=${saved.scrollTop}) → forceScrollToBottom + repin`);
         chat.forceScrollToBottom();
@@ -393,6 +402,32 @@ async function drillToOlderMessage(
     } catch (e: any) {
       diag(`[cmdk] drill page ${i + 1} fetch failed: ${e?.message || e}`);
       return;
+    }
+    // Under virt the prepended messages are in the store but the slot
+    // only renders the ~30-spec window near the bottom — querySelector
+    // would miss every time. Check the virt spec list directly, then
+    // scrollToKey expands the window to the target before we look for
+    // the bubble in DOM. The default path keeps the original DOM-only
+    // check since all messages are in DOM there.
+    const virt = getVirtualizer();
+    if (virt) {
+      const specs = virt.getSpecs();
+      if (specs.some(s => s.key === targetMessageId)) {
+        virt.scrollToKey(targetMessageId, { block: 'center' });
+        await new Promise<void>(r => requestAnimationFrame(() => requestAnimationFrame(() => r())));
+        const found = transcriptEl.querySelector(
+          `[data-key="${CSS.escape(targetMessageId)}"]`,
+        ) as HTMLElement | null;
+        if (found) {
+          log(`[cmdk] drill found ${targetMessageId} under virt after ${i + 1} page(s)`);
+          chat.suppressLoadEarlierFor(1200);
+          found.classList.add('search-target-flash');
+          drillScrollTo(found);
+          setTimeout(() => found.classList.remove('search-target-flash'), 1500);
+          return;
+        }
+      }
+      continue;
     }
     const target = transcriptEl.querySelector(
       `[data-key="${CSS.escape(targetMessageId)}"]`,

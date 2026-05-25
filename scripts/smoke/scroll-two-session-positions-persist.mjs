@@ -42,9 +42,11 @@ async function firstVisibleAnchor(page) {
   return page.evaluate(() => {
     const t = document.getElementById("transcript");
     if (!t) return null;
+    // Walk `.line` descendants — works under virt (.transcript-slot
+    // wraps the bubbles) and default.
     const tr = t.getBoundingClientRect();
-    for (const child of Array.from(t.children)) {
-      const el = child;
+    const lines = Array.from(t.querySelectorAll(".line"));
+    for (const el of lines) {
       const r = el.getBoundingClientRect();
       if (r.bottom <= tr.top) continue;
       if (r.top >= tr.bottom) break;
@@ -59,19 +61,31 @@ async function firstVisibleAnchor(page) {
   });
 }
 
-async function scrollToRowByGesture(page, rowIndex) {
-  await page.evaluate((idx) => {
+async function isScrollable(page) {
+  return page.evaluate(() => {
     const t = document.getElementById("transcript");
-    const row = t?.querySelectorAll(".line")[idx];
-    if (!t || !row) throw new Error(`missing row ${idx}`);
-    // Dispatch the same input event the app uses to mark a scroll as
-    // user-initiated, then set a deterministic scrollTop and emit scroll.
-    // This keeps the smoke about frontend scroll memory, not OS wheel
-    // acceleration or transcript height variance.
+    return !!t && t.scrollHeight > t.clientHeight * 3;
+  });
+}
+
+async function scrollToRowByGesture(page, rowIndex, totalRows) {
+  await page.evaluate(({ idx, total }) => {
+    const t = document.getElementById("transcript");
+    if (!t) throw new Error("missing transcript element");
+    // Under virt the chat opens at-bottom and the slot only contains
+    // the last ~30 specs — `.line[14]` may not be in DOM. Compute a
+    // target scrollTop as a fraction of scrollHeight ≈ idx/total of
+    // the scrollable range. This is approximate (heights vary) but
+    // good enough to put the target spec inside the visible slot
+    // after the virtualizer's rerender. Wheel event signals
+    // "user-initiated" so scheduleAtBottomRepin disengages.
     t.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: 8 }));
-    t.scrollTo({ top: row.offsetTop + 8, behavior: "instant" });
+    const maxTop = t.scrollHeight - t.clientHeight;
+    const fraction = total > 1 ? idx / (total - 1) : 0;
+    const target = Math.round(maxTop * fraction);
+    t.scrollTo({ top: target, behavior: "instant" });
     t.dispatchEvent(new Event("scroll", { bubbles: true }));
-  }, rowIndex);
+  }, { idx: rowIndex, total: totalRows });
   await page.waitForTimeout(700);
   return firstVisibleAnchor(page);
 }
@@ -89,17 +103,17 @@ export default async function run({ page, log }) {
 
   await clickRow(page, CHAT_A);
   await page.waitForTimeout(800);
-  assert(await page.locator("#transcript .line").count() >= 55, "chat A must be scrollable");
-  const aSaved = await scrollToRowByGesture(page, 14);
+  assert(await isScrollable(page), "chat A must be scrollable (scrollHeight > 3× viewport)");
+  const aSaved = await scrollToRowByGesture(page, 14, 64);
   log(`A saved: key=${aSaved?.key} top=${aSaved?.top} scrollTop=${aSaved?.scrollTop}`);
 
   await clickRow(page, CHAT_B);
   await page.waitForTimeout(800);
-  assert(await page.locator("#transcript .line").count() >= 55, "chat B must be scrollable");
+  assert(await isScrollable(page), "chat B must be scrollable (scrollHeight > 3× viewport)");
   // Intentionally scroll B immediately after switching. This catches the
   // regression where restore-save suppression blocks a real user scroll,
   // causing B to lose its own position later.
-  const bSaved = await scrollToRowByGesture(page, 42);
+  const bSaved = await scrollToRowByGesture(page, 42, 64);
   log(`B saved: key=${bSaved?.key} top=${bSaved?.top} scrollTop=${bSaved?.scrollTop}`);
   assert(aSaved?.key !== bSaved?.key, `A and B need distinct anchors. A=${aSaved?.key} B=${bSaved?.key}`);
   assert(!aSaved?.key?.includes("a-two-pos-64"), `A should not be pinned to bottom, got ${aSaved?.key}`);

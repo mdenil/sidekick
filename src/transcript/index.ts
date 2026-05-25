@@ -56,26 +56,27 @@ export interface BindOpts {
 export function isVirtualizerEnabled(): boolean {
   try {
     if (typeof window !== 'undefined') {
-      if (window.localStorage?.getItem('sidekick.virtualize') === '1') return true;
-      // `?virt=1` is a sticky enable: persist to localStorage so a PWA
-      // shortcut without the param (which iOS sometimes drops on
-      // add-to-home-screen) still picks up the user's intent on the
-      // next launch. Symmetric `?virt=0` clears.
+      // Explicit opt-OUT wins over the default.
+      if (window.localStorage?.getItem('sidekick.virtualize') === '0') return false;
+      // `?virt=0` is a sticky disable; `?virt=1` clears any prior
+      // explicit opt-out. Either way the URL param persists to
+      // localStorage so PWA shortcuts that drop the query string still
+      // honor the user's intent.
       if (typeof window.location !== 'undefined') {
         const sp = new URLSearchParams(window.location.search);
         const v = sp.get('virt');
-        if (v === '1') {
-          try { window.localStorage?.setItem('sidekick.virtualize', '1'); } catch {}
-          return true;
-        }
         if (v === '0') {
-          try { window.localStorage?.removeItem('sidekick.virtualize'); } catch {}
+          try { window.localStorage?.setItem('sidekick.virtualize', '0'); } catch {}
           return false;
+        }
+        if (v === '1') {
+          try { window.localStorage?.removeItem('sidekick.virtualize'); } catch {}
+          return true;
         }
       }
     }
-  } catch { /* SSR / privacy mode — flag off */ }
-  return false;
+  } catch { /* SSR / privacy mode — fall through to default */ }
+  return true;
 }
 
 /** Slot element the virtualizer renders into, when active. Exposed

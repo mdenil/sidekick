@@ -52,11 +52,25 @@ async function snapScroll(page) {
   return page.evaluate(() => {
     const t = document.getElementById('transcript');
     if (!t) return null;
+    const tr = t.getBoundingClientRect();
+    const lines = Array.from(t.querySelectorAll('.line'));
+    let firstVisible = null;
+    for (const el of lines) {
+      const r = el.getBoundingClientRect();
+      if (r.bottom <= tr.top) continue;
+      if (r.top >= tr.bottom) break;
+      firstVisible = {
+        key: el.getAttribute('data-key'),
+        topOffset: Math.round(r.top - tr.top),
+      };
+      break;
+    }
     return {
       scrollTop: Math.round(t.scrollTop),
       scrollHeight: t.scrollHeight,
       clientHeight: t.clientHeight,
       maxTop: t.scrollHeight - t.clientHeight,
+      firstVisible,
     };
   });
 }
@@ -105,13 +119,27 @@ export default async function run({ page, log }) {
   await send(page, 'hello agent');
   await page.waitForTimeout(800);
 
-  // ── Step 4: click A in the drawer. Must restore to aMid ± 100.
+  // ── Step 4: click A in the drawer. Must restore to the SAME
+  // first-visible bubble (anchor-restore preserves message identity
+  // even when scrollTop differs due to height-cache divergence).
   await clickRow(page, CHAT_A);
   await page.waitForTimeout(1500);
   const aRestored = await snapScroll(page);
-  log(`A restored after new-chat round-trip: scrollTop=${aRestored.scrollTop} (expected ~${aMid.scrollTop})`);
+  log(`A restored after new-chat round-trip: scrollTop=${aRestored.scrollTop} firstVisible=${JSON.stringify(aRestored.firstVisible)}`);
+  assert(aMid.firstVisible?.key && aRestored.firstVisible?.key,
+    `must capture first-visible at save+restore (saved=${JSON.stringify(aMid.firstVisible)} restored=${JSON.stringify(aRestored.firstVisible)})`);
+  assert(aRestored.firstVisible.key === aMid.firstVisible.key,
+    `chat A must restore the SAME first-visible bubble after new-chat round-trip. ` +
+    `saved=${aMid.firstVisible.key} restored=${aRestored.firstVisible.key}`);
+  // Defensive offset check (≤50px to account for any layout settle).
+  const offsetDrift = Math.abs(
+    (aRestored.firstVisible.topOffset ?? 0) - (aMid.firstVisible.topOffset ?? 0));
+  assert(offsetDrift <= 50,
+    `chat A anchor offset drifted ${offsetDrift}px after new-chat round-trip`);
+  // Legacy scrollTop check kept loose (~300) for diagnostic logging
+  // when the message-identity check fires.
   const drift = Math.abs(aRestored.scrollTop - aMid.scrollTop);
-  assert(drift <= 100,
-    `chat A must restore within 100px of saved mid-position after new-chat round-trip. ` +
+  assert(drift <= 500,
+    `chat A scrollTop drifted unreasonably after new-chat round-trip. ` +
     `saved=${aMid.scrollTop} restored=${aRestored.scrollTop} drift=${drift} maxTop=${aRestored.maxTop}`);
 }

@@ -292,6 +292,21 @@ export function bindVirtualizer(opts: VirtualizerOpts): VirtualizerHandle {
   const cache = createHeightCache();
   let currentSpecs: BubbleSpec[] = [];
 
+  // Preserve keyless `.line.system` rows from any pre-virt content
+  // (e.g. addSystemLine added the "context reset" delimiter before
+  // the first store mutation triggered ensureVirtualizer). Migrate
+  // them into the slot so they survive the wipe + still appear in
+  // the rendered window. Field bug 2026-05-25 (slash-commands smoke).
+  const preservedSystemRows: HTMLElement[] = [];
+  for (const child of Array.from(transcriptEl.children) as HTMLElement[]) {
+    if (
+      child.classList.contains('line') &&
+      child.classList.contains('system') &&
+      !child.getAttribute('data-key')
+    ) {
+      preservedSystemRows.push(child);
+    }
+  }
   transcriptEl.innerHTML = '';
   const topSpacer = document.createElement('div');
   topSpacer.className = SPACER_TOP_CLASS;
@@ -317,6 +332,7 @@ export function bindVirtualizer(opts: VirtualizerOpts): VirtualizerHandle {
   transcriptEl.appendChild(topSpacer);
   transcriptEl.appendChild(slot);
   transcriptEl.appendChild(bottomSpacer);
+  for (const sys of preservedSystemRows) slot.appendChild(sys);
 
   // ResizeObserver wires the per-bubble height cache. One observer
   // for the whole slot — its callback fires once per frame with a
@@ -406,12 +422,61 @@ export function bindVirtualizer(opts: VirtualizerOpts): VirtualizerHandle {
       transcriptEl.scrollTo({ top: Math.max(0, targetTop), behavior: 'instant' as ScrollBehavior });
     },
     getAnchor() {
+      // Prefer DOM-truth for the visible window. The slot's children
+      // have real measured layouts; reading them via
+      // getBoundingClientRect gives the exact spec-at-viewport-top
+      // independent of what the height cache thinks. Cache-only
+      // computeAnchor is inaccurate when specs OUTSIDE the slot were
+      // never measured (cache holds per-kind defaults that diverge
+      // 100-200px from real heights for long lorem-ipsum bubbles).
+      const tr = transcriptEl.getBoundingClientRect();
+      const slotChildren = Array.from(slot.children) as HTMLElement[];
+      for (const el of slotChildren) {
+        const key = el.getAttribute('data-key');
+        if (!key) continue;
+        const r = el.getBoundingClientRect();
+        if (r.bottom <= tr.top) continue;
+        if (r.top >= tr.bottom) break;
+        // First visible-or-straddling spec. Offset is the spec's top
+        // relative to the transcript's viewport top — POSITIVE means
+        // the spec's top is ABOVE the viewport top (user scrolled
+        // into the bubble). Consistent with SavedAnchor's semantics.
+        return { key, offsetPx: Math.round(tr.top - r.top) };
+      }
+      // No slot child intersects the viewport — fall back to cache-
+      // cumulative (which handles past-end / pre-window cases).
       return computeAnchor({ specs: currentSpecs, cache, scrollTop: transcriptEl.scrollTop });
     },
     restoreAnchor(anchor) {
       const top = scrollTopForAnchor({ specs: currentSpecs, cache, anchor });
       if (top === null) return false;
       transcriptEl.scrollTo({ top, behavior: 'instant' as ScrollBehavior });
+      // Cache-only scrollTopForAnchor gives the initial scrollTop
+      // based on per-kind default heights for specs never measured —
+      // for long lorem-ipsum / tool-row chats those defaults
+      // underestimate by 100-300px each, accumulating into hundreds
+      // of pixels of mis-placement by the time we reach the anchor.
+      // After the rerender + RO measure cycle mounts the anchor key
+      // in the slot, refine: compute the scroll delta needed so the
+      // anchor's actual DOM position matches the saved offsetPx,
+      // and adjust. Two rAF ticks cover the schedule chain
+      // (scroll-event → rAF rerender → RO → next rAF rerender).
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        const el = slot.querySelector(`[data-key="${CSS.escape(anchor.key)}"]`) as HTMLElement | null;
+        if (!el) return;
+        const tr = transcriptEl.getBoundingClientRect();
+        const r = el.getBoundingClientRect();
+        // anchor.offsetPx semantic: scrollTop - spec.top in PRE-save
+        // coordinates → positive means scrollTop is BELOW spec.top
+        // (user scrolled into the bubble). Symmetric here: actual
+        // delta = (tr.top - r.top). We want that to equal
+        // anchor.offsetPx. If not, shift scrollTop by the difference.
+        const actualOffset = tr.top - r.top;
+        const delta = anchor.offsetPx - actualOffset;
+        if (Math.abs(delta) > 1) {
+          transcriptEl.scrollTo({ top: transcriptEl.scrollTop + delta, behavior: 'instant' as ScrollBehavior });
+        }
+      }));
       return true;
     },
     isPinnedToBottom(thresholdPx = 300) {

@@ -99,9 +99,9 @@ export default async function run({ page, log }) {
   await clickRow(page, CHAT_A);
   await page.waitForTimeout(800);
 
-  const lineCount = await page.locator('#transcript .line').count();
-  assert(lineCount >= 30, `chat A must have rendered enough lines to scroll, got ${lineCount}`);
-
+  // Under virt only ~30 specs are in DOM at a time (windowed). The
+  // signal we care about is "chat A is scrollable" — assert that
+  // directly via scrollHeight vs viewport.
   const aLoaded = await snapScroll(page);
   log(`A loaded: scrollHeight=${aLoaded.scrollHeight} clientHeight=${aLoaded.clientHeight} maxTop=${aLoaded.maxTop}`);
   assert(aLoaded.maxTop > aLoaded.clientHeight,

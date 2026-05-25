@@ -120,8 +120,11 @@ function transcriptStructure(page) {
   return page.evaluate(() => {
     const t = document.getElementById('transcript');
     if (!t) return [];
+    // Under virt the bubbles + activity rows live in slot.children, not
+    // transcript.children directly. Walk the slot when present.
+    const container = t.querySelector(':scope > .transcript-slot') || t;
     const out = [];
-    for (const child of Array.from(t.children)) {
+    for (const child of Array.from(container.children)) {
       if (child.classList.contains('activity-row')) {
         const n = child.querySelectorAll('[data-call-id]').length;
         out.push(`ar[${n}]`);
@@ -147,10 +150,14 @@ function assertNotClumped(structure, label) {
     if (tok.startsWith('ar[')) arIdxs.push(i);
     if (tok.startsWith('u:')) uIdxs.push(i);
   });
-  assert(arIdxs.length >= 5,
-    `[${label}] expected ≥5 activity rows, got ${arIdxs.length}: ${JSON.stringify(structure)}`);
-  assert(uIdxs.length >= 6,
-    `[${label}] expected ≥6 user bubbles, got ${uIdxs.length}: ${JSON.stringify(structure)}`);
+  // Under virt only the visible window (~10 specs) is in DOM; expect
+  // ≥2 activity rows + ≥3 user bubbles in that slice. The field bug
+  // (rows clumped at end) still shows up in the bottom window because
+  // the visible turns near the bottom would all have ar's at their end.
+  assert(arIdxs.length >= 2,
+    `[${label}] expected ≥2 activity rows, got ${arIdxs.length}: ${JSON.stringify(structure)}`);
+  assert(uIdxs.length >= 3,
+    `[${label}] expected ≥3 user bubbles, got ${uIdxs.length}: ${JSON.stringify(structure)}`);
 
   // Invariant 1: no two activity rows adjacent. (Each turn has at most
   // one row; two adjacent rows would mean turn N+1's row landed before
@@ -194,13 +201,18 @@ export default async function run({ page, log }) {
   await clickRow(page, CHAT_ID);
 
   // Wait for everything to settle. We expect 6 user msgs, 6 activity
-  // rows (one per turn), and 4 final assistant text bubbles.
+  // rows (one per turn), and 4 final assistant text bubbles in the
+  // STORE. Under virt only the visible window is in DOM (~10 specs);
+  // expect ≥2 activity rows interleaved with their turns at the bottom
+  // of the chat. The structural assertion below catches the field bug
+  // (rows clumping at the tail) even with only a partial window.
   await page.waitForFunction(() => {
     const t = document.getElementById('transcript');
     if (!t) return false;
+    const container = t.querySelector(':scope > .transcript-slot') || t;
     return (
-      t.querySelectorAll('.activity-row').length >= 6 &&
-      t.querySelectorAll('.line[data-message-id]').length >= 10
+      container.querySelectorAll('.activity-row').length >= 2 &&
+      container.querySelectorAll('.line[data-message-id]').length >= 4
     );
   }, null, { timeout: 6_000 });
 
@@ -216,9 +228,10 @@ export default async function run({ page, log }) {
   await page.waitForFunction(() => {
     const t = document.getElementById('transcript');
     if (!t) return false;
+    const container = t.querySelector(':scope > .transcript-slot') || t;
     return (
-      t.querySelectorAll('.activity-row').length >= 6 &&
-      t.querySelectorAll('.line[data-message-id]').length >= 10
+      container.querySelectorAll('.activity-row').length >= 2 &&
+      container.querySelectorAll('.line[data-message-id]').length >= 4
     );
   }, null, { timeout: 6_000 });
 

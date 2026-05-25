@@ -777,6 +777,23 @@ export function onLoadEarlier(cb: (beforeId: number) => Promise<void>) {
  *  preserved at the top of the transcript. */
 export function prependHistory(renderFn: () => void) {
   if (!transcriptEl) { renderFn(); return; }
+  // Under virt the scrollHeight delta uses CACHE heights for newly-
+  // prepended (unmeasured) specs. Cache defaults underestimate by
+  // 50-100px each compared to actual measured heights, so the bump
+  // computed below leaves the user staring at a bubble 100s of px off
+  // their pre-prepend anchor. Use the virtualizer's DOM-truth anchor
+  // pair instead: capture {key, offsetPx} from the first-visible
+  // bubble, then restore against the same key after the prepend +
+  // rerender. The 2-rAF refinement in restoreAnchor measures actual
+  // heights and corrects any cache-driven drift.
+  const virt = getVirtualizer();
+  if (virt) {
+    const anchor = virt.getAnchor();
+    renderFn();
+    if (anchor) virt.restoreAnchor(anchor);
+    persist();
+    return;
+  }
   const oldScrollTop = transcriptEl.scrollTop;
   const oldScrollHeight = transcriptEl.scrollHeight;
   renderFn();

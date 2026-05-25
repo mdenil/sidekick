@@ -91,15 +91,18 @@ export default async function run({ page, log }) {
   // This simulates the field-bug condition where some earlier render
   // path (IDB snapshot from a prior session, integer-id vs sidekick_id
   // drift, etc.) ended up with multiple DOM bubbles for one logical
-  // message.
+  // message. Under virt the bubbles live inside .transcript-slot;
+  // append there so the reconciler sees the dupe on its next pass.
   await page.evaluate((mid) => {
     const transcriptEl = document.getElementById('transcript');
     if (!transcriptEl) return;
+    const slot = transcriptEl.querySelector(':scope > .transcript-slot');
+    const container = slot || transcriptEl;
     const dupe = document.createElement('div');
     dupe.className = 'line s0 pinned';
     dupe.dataset.messageId = mid;
     dupe.innerHTML = `<span class="text">duplicate of pinned target</span>`;
-    transcriptEl.appendChild(dupe);
+    container.appendChild(dupe);
   }, PINNED_MSG_ID);
 
   // Pre-heal sanity: we should now have 2 bubbles for this msgId.

@@ -42,9 +42,11 @@ async function currentAnchor(page) {
   return page.evaluate(() => {
     const t = document.getElementById("transcript");
     if (!t) return null;
+    // Walk `.line` descendants (works under virt: bubbles are inside
+    // .transcript-slot, not direct children of transcriptEl).
     const tr = t.getBoundingClientRect();
-    for (const child of Array.from(t.children)) {
-      const el = child;
+    const lines = Array.from(t.querySelectorAll(".line"));
+    for (const el of lines) {
       const r = el.getBoundingClientRect();
       if (r.bottom <= tr.top) continue;
       if (r.top >= tr.bottom) break;
@@ -82,12 +84,19 @@ export default async function run({ page, log }) {
   await clickRow(page, CHAT_A);
   await page.waitForTimeout(800);
 
-  const lineCount = await page.locator("#transcript .line").count();
-  assert(lineCount >= 50, `chat A must render enough rows to scroll, got ${lineCount}`);
+  // Under virt only ~30 specs are in DOM at a time. Use scrollHeight
+  // vs viewport as the "chat is deeply scrollable" precondition.
+  const sg = await page.evaluate(() => {
+    const t = document.getElementById("transcript");
+    return t ? { sh: t.scrollHeight, ch: t.clientHeight } : null;
+  });
+  assert(sg && sg.sh > sg.ch * 3,
+    `chat A must be deeply scrollable: scrollHeight=${sg?.sh} clientHeight=${sg?.ch}`);
 
   await page.evaluate(() => {
     const t = document.getElementById("transcript");
-    const row = t?.querySelectorAll(".line")[30];
+    const lines = t?.querySelectorAll(".line");
+    const row = lines?.[30];
     if (!t || !row) return;
     row.scrollIntoView({ block: "start", inline: "nearest" });
     t.scrollTo({ top: t.scrollTop + 91, behavior: "instant" });

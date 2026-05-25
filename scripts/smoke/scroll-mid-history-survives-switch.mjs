@@ -53,11 +53,30 @@ async function snapScroll(page) {
   return page.evaluate(() => {
     const t = document.getElementById('transcript');
     if (!t) return null;
+    // Capture first-visible bubble for under-virt-correct invariants:
+    // anchor restore preserves SAME bubble across switch, but the
+    // computed scrollTop may differ by a few hundred px when offscreen
+    // height-cache defaults diverge from actual heights. Asserting
+    // on first-visible KEY is the user-meaningful invariant.
+    const tr = t.getBoundingClientRect();
+    const lines = Array.from(t.querySelectorAll('.line'));
+    let firstVisible = null;
+    for (const el of lines) {
+      const r = el.getBoundingClientRect();
+      if (r.bottom <= tr.top) continue;
+      if (r.top >= tr.bottom) break;
+      firstVisible = {
+        key: el.getAttribute('data-key'),
+        topOffset: Math.round(r.top - tr.top),
+      };
+      break;
+    }
     return {
       scrollTop: Math.round(t.scrollTop),
       scrollHeight: t.scrollHeight,
       clientHeight: t.clientHeight,
       maxTop: t.scrollHeight - t.clientHeight,
+      firstVisible,
     };
   });
 }
@@ -111,23 +130,35 @@ export default async function run({ page, log }) {
   assert(bMid.scrollTop > 200 && bMid.scrollTop < bMid.maxTop - 200,
     `chat B must be mid-history. scrollTop=${bMid.scrollTop} maxTop=${bMid.maxTop}`);
 
-  // ── Step 3: switch back to A. Must restore to aMid.scrollTop ± 100.
+  // ── Step 3: switch back to A. Anchor restore must land on the SAME
+  //          first-visible bubble at the SAME viewport offset (≤25px).
+  //          Pixel-drift on scrollTop alone is fragile under virt because
+  //          height-cache defaults for unmeasured offscreen specs diverge
+  //          from actual measured heights.
   await clickRow(page, CHAT_A);
   await page.waitForTimeout(1500);
   const aRestored = await snapScroll(page);
-  log(`A restored: scrollTop=${aRestored.scrollTop} (expected ~${aMid.scrollTop})`);
-  const aDrift = Math.abs(aRestored.scrollTop - aMid.scrollTop);
-  assert(aDrift <= 100,
-    `chat A must restore within 100px of saved mid-position. ` +
-    `saved=${aMid.scrollTop} restored=${aRestored.scrollTop} drift=${aDrift} maxTop=${aRestored.maxTop}`);
+  log(`A restored: scrollTop=${aRestored.scrollTop} firstVisible=${JSON.stringify(aRestored.firstVisible)}`);
+  assert(aMid.firstVisible?.key && aRestored.firstVisible?.key,
+    `must capture first-visible at save+restore`);
+  assert(aRestored.firstVisible.key === aMid.firstVisible.key,
+    `chat A must restore the SAME first-visible bubble. saved=${aMid.firstVisible.key} restored=${aRestored.firstVisible.key}`);
+  const aOffsetDrift = Math.abs(
+    (aRestored.firstVisible.topOffset ?? 0) - (aMid.firstVisible.topOffset ?? 0));
+  assert(aOffsetDrift <= 25,
+    `chat A anchor viewport offset drifted ${aOffsetDrift}px (need ≤25). ` +
+    `saved-top=${aMid.firstVisible.topOffset} restored-top=${aRestored.firstVisible.topOffset}`);
 
-  // ── Step 4: switch back to B. Must restore to bMid.scrollTop ± 100.
+  // ── Step 4: switch back to B. Same invariant.
   await clickRow(page, CHAT_B);
   await page.waitForTimeout(1500);
   const bRestored = await snapScroll(page);
-  log(`B restored: scrollTop=${bRestored.scrollTop} (expected ~${bMid.scrollTop})`);
-  const bDrift = Math.abs(bRestored.scrollTop - bMid.scrollTop);
-  assert(bDrift <= 100,
-    `chat B must restore within 100px of saved mid-position. ` +
-    `saved=${bMid.scrollTop} restored=${bRestored.scrollTop} drift=${bDrift} maxTop=${bRestored.maxTop}`);
+  log(`B restored: scrollTop=${bRestored.scrollTop} firstVisible=${JSON.stringify(bRestored.firstVisible)}`);
+  assert(bRestored.firstVisible.key === bMid.firstVisible.key,
+    `chat B must restore the SAME first-visible bubble. saved=${bMid.firstVisible.key} restored=${bRestored.firstVisible.key}`);
+  const bOffsetDrift = Math.abs(
+    (bRestored.firstVisible.topOffset ?? 0) - (bMid.firstVisible.topOffset ?? 0));
+  assert(bOffsetDrift <= 25,
+    `chat B anchor viewport offset drifted ${bOffsetDrift}px (need ≤25). ` +
+    `saved-top=${bMid.firstVisible.topOffset} restored-top=${bRestored.firstVisible.topOffset}`);
 }
