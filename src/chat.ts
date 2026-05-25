@@ -44,6 +44,14 @@ let speakerCount = 0;
  *  reload can restore the drawer highlight to the right row. */
 let viewedSessionIdRef: string | null = null;
 
+/** Per-msgId fold state. The "Show more / Show less" toggle on long
+ *  bubbles needs to survive virt unmount/remount: a bubble scrolled
+ *  outside the visible window is destroyed, its expanded class lost.
+ *  Map lookup at addLine time restores the user's toggle. Cleared on
+ *  chat.clear (New chat rotation) so the keyspace can't grow without
+ *  bound. Module-level — same shape as pin store, simple + cheap. */
+const foldStateByMsgId = new Map<string, 'expanded' | 'collapsed'>();
+
 /** Let main.ts record which session the chat is currently rendering.
  *  Drawer reads it back after boot via getViewedSessionId() — survives
  *  page reload because we persist it in the chat snapshot. */
@@ -741,7 +749,10 @@ export function addLine(speaker: string, text: string, cls = '', opts: {
 
   // Long-bubble fold (Jonathan, 2026-05-05). Bubbles whose source text
   // exceeds the threshold get clipped with a "Show more" toggle. Per-
-  // bubble state is in-memory only — resets on reload, by design.
+  // bubble state lives in `foldStateByMsgId` so a virt unmount/remount
+  // preserves the user's toggle — the bubble's DOM is gone after a
+  // scroll-out, but msgId is stable; remount restores the prior state
+  // via the map lookup below.
   // CSS in app.css controls the preview height (--bubble-fold-preview-lines)
   // and fade. Threshold lives here so it scales with content type
   // (markdown lines render shorter than user-typed lines).
@@ -757,7 +768,9 @@ export function addLine(speaker: string, text: string, cls = '', opts: {
     // them in full); user bubbles start FOLDED (own messages are reference,
     // collapse by default to save scroll real estate). Per Jonathan, 2026-
     // 05-05. Either side can be toggled per-bubble.
-    const startExpanded = cls.includes('agent');
+    const defaultExpanded = cls.includes('agent');
+    const persistedState = opts.messageId ? foldStateByMsgId.get(String(opts.messageId)) : undefined;
+    const startExpanded = persistedState === undefined ? defaultExpanded : persistedState === 'expanded';
     if (startExpanded) div.classList.add('expanded');
     const foldBtn = document.createElement('button');
     foldBtn.className = 'bubble-fold-toggle';
@@ -766,6 +779,7 @@ export function addLine(speaker: string, text: string, cls = '', opts: {
       e.stopPropagation();
       const expanded = div.classList.toggle('expanded');
       foldBtn.textContent = expanded ? 'Show less' : 'Show more';
+      if (opts.messageId) foldStateByMsgId.set(String(opts.messageId), expanded ? 'expanded' : 'collapsed');
     };
     div.appendChild(foldBtn);
   }
@@ -907,6 +921,7 @@ export function clear(): void {
   if (transcriptEl) transcriptEl.innerHTML = '';
   viewedSessionIdRef = null;
   restoredViewedSessionId = null;
+  foldStateByMsgId.clear();
   clearSnapshot().catch(() => {});
 }
 
