@@ -28,6 +28,7 @@ import { miniMarkdown } from '../util/markdown.ts';
 import { escapeHtml } from '../util/dom.ts';
 import * as settings from '../settings.ts';
 import { getAgentLabel } from '../config.ts';
+import { applyBubbleState as applyReplyPlayerState } from '../audio/turn-based/replyPlayer.ts';
 import type { ActivityRowSpec, ActivityTool, AssistantBubbleSpec, BubbleSpec, NotificationBubbleSpec, UserBubbleSpec } from './types.ts';
 
 const KEY_ATTR = 'data-key';
@@ -160,6 +161,11 @@ function createAssistant(spec: AssistantBubbleSpec, batch: boolean): HTMLElement
   });
   if (!el) return null;
   if (spec.streaming) ensureThinkingDots(el);
+  // Under virtualization the bubble's DOM is destroyed when it scrolls
+  // outside the window. Reapply any persisted tts playback state (loaded
+  // bar, played bar, .tts-* classes) so a remounted bubble paints the
+  // user's last view instead of zeroed-out bars.
+  applyReplyPlayerState(el, spec.key);
   return el;
 }
 

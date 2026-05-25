@@ -38,6 +38,67 @@ import * as replyCache from './replyCache.ts';
 let transcriptEl: HTMLElement | null = null;
 let initialized = false;
 
+/** Per-replyId playback state. Under virtualization the bubble's DOM is
+ *  destroyed when the spec leaves the visible window — without an
+ *  out-of-DOM mirror, the loaded/played bar widths + state classes
+ *  reset to zero when the bubble remounts. Each tts event updates this
+ *  map; `applyBubbleState` reads it when the reconciler creates a new
+ *  agent bubble. Default-path (full DOM) is unaffected — the map is
+ *  written either way but only matters on remount. */
+interface BubbleState {
+  active: boolean;
+  streaming: boolean;
+  playing: boolean;
+  paused: boolean;
+  played: boolean;
+  loadedRatio: number;
+  playedRatio: number;
+}
+const bubbleStates = new Map<string, BubbleState>();
+function getOrCreateState(replyId: string): BubbleState {
+  let s = bubbleStates.get(replyId);
+  if (!s) {
+    s = { active: false, streaming: false, playing: false, paused: false, played: false, loadedRatio: 0, playedRatio: 0 };
+    bubbleStates.set(replyId, s);
+  }
+  return s;
+}
+function clearActiveExcept(except: string): void {
+  for (const [key, state] of bubbleStates) {
+    if (key === except) continue;
+    if (state.active || state.streaming || state.playing || state.paused) {
+      state.active = state.streaming = state.playing = state.paused = false;
+    }
+  }
+}
+
+/** Test hook: directly set the persisted playback state without going
+ *  through the tts event path. Smokes use this to assert that virt
+ *  unmount/remount preserves the per-replyId state. Not part of the
+ *  production API. */
+export function __testSetBubbleState(replyId: string, partial: Partial<BubbleState>): void {
+  const s = getOrCreateState(replyId);
+  Object.assign(s, partial);
+  const bubble = findBubble(replyId);
+  if (bubble) applyBubbleState(bubble, replyId);
+}
+
+/** Reapply persisted playback state to a newly-mounted agent bubble.
+ *  Called by the reconciler (createAssistant) after addLine returns so
+ *  bubbles scrolled back into the virtualizer's window paint their
+ *  prior tts state instead of resetting to "fresh" zeroed bars. */
+export function applyBubbleState(bubble: HTMLElement, replyId: string): void {
+  const s = bubbleStates.get(replyId);
+  if (!s) return;
+  bubble.classList.toggle('tts-active', s.active);
+  bubble.classList.toggle('tts-streaming', s.streaming);
+  bubble.classList.toggle('tts-playing', s.playing);
+  bubble.classList.toggle('tts-paused', s.paused);
+  bubble.classList.toggle('tts-played', s.played);
+  setLoadedRatio(bubble, s.loadedRatio);
+  setPlayedRatio(bubble, s.playedRatio);
+}
+
 export type ReplyPlayerOpts = {
   transcriptEl: HTMLElement;
   /** Resolve the voice setting (sync or async). Used for cache-hit
@@ -154,6 +215,10 @@ function clearAllStateClassesExcept(except: HTMLElement): void {
 // ── tts event handlers ───────────────────────────────────────────────
 
 function onSynthStart({ replyId }: { replyId: string }) {
+  clearActiveExcept(replyId);
+  const s = getOrCreateState(replyId);
+  s.active = true; s.streaming = true; s.played = false; s.paused = false;
+  s.loadedRatio = 0; s.playedRatio = 0;
   const bubble = findBubble(replyId);
   if (!bubble) return;
   clearAllStateClassesExcept(bubble);
@@ -164,12 +229,15 @@ function onSynthStart({ replyId }: { replyId: string }) {
 }
 
 function onLoadProgress({ replyId, ratio }: { replyId: string; ratio: number }) {
+  getOrCreateState(replyId).loadedRatio = ratio;
   const bubble = findBubble(replyId);
   if (!bubble) return;
   setLoadedRatio(bubble, ratio);
 }
 
 function onDurationKnown({ replyId }: { replyId: string }) {
+  const s = getOrCreateState(replyId);
+  s.streaming = false; s.loadedRatio = 1;
   const bubble = findBubble(replyId);
   if (!bubble) return;
   bubble.classList.remove('tts-streaming');
@@ -177,6 +245,9 @@ function onDurationKnown({ replyId }: { replyId: string }) {
 }
 
 function onPlayStart({ replyId }: { replyId: string }) {
+  clearActiveExcept(replyId);
+  const s = getOrCreateState(replyId);
+  s.active = true; s.playing = true; s.streaming = false; s.paused = false; s.played = false;
   const bubble = findBubble(replyId);
   if (!bubble) return;
   clearAllStateClassesExcept(bubble);
@@ -185,20 +256,24 @@ function onPlayStart({ replyId }: { replyId: string }) {
 }
 
 function onProgress({ replyId, position, duration }: { replyId: string; position: number; duration: number }) {
+  const ref = duration || 1;
+  getOrCreateState(replyId).playedRatio = position / ref;
   const bubble = findBubble(replyId);
   if (!bubble) return;
-  const ref = duration || 1;
   setPlayedRatio(bubble, position / ref);
 }
 
 function onSeek({ replyId, position, duration }: { replyId: string; position: number; duration: number }) {
+  const ref = duration || 1;
+  getOrCreateState(replyId).playedRatio = position / ref;
   const bubble = findBubble(replyId);
   if (!bubble) return;
-  const ref = duration || 1;
   setPlayedRatio(bubble, position / ref);
 }
 
 function onPaused({ replyId }: { replyId: string }) {
+  const s = getOrCreateState(replyId);
+  s.playing = false; s.played = false; s.paused = true; s.active = true;
   const bubble = findBubble(replyId);
   if (!bubble) return;
   bubble.classList.remove('tts-playing', 'tts-played');
@@ -206,6 +281,8 @@ function onPaused({ replyId }: { replyId: string }) {
 }
 
 function onResumed({ replyId }: { replyId: string }) {
+  const s = getOrCreateState(replyId);
+  s.paused = false; s.playing = true; s.active = true;
   const bubble = findBubble(replyId);
   if (!bubble) return;
   bubble.classList.remove('tts-paused');
@@ -213,6 +290,9 @@ function onResumed({ replyId }: { replyId: string }) {
 }
 
 function onEnded({ replyId }: { replyId: string }) {
+  const s = getOrCreateState(replyId);
+  s.active = false; s.streaming = false; s.playing = false; s.paused = false;
+  s.played = true; s.loadedRatio = 1; s.playedRatio = 1;
   const bubble = findBubble(replyId);
   if (!bubble) return;
   bubble.classList.remove('tts-active', 'tts-streaming', 'tts-playing', 'tts-paused');
@@ -222,6 +302,9 @@ function onEnded({ replyId }: { replyId: string }) {
 }
 
 function onStopped({ replyId, reason }: { replyId: string; reason: string }) {
+  const s = getOrCreateState(replyId);
+  s.active = false; s.streaming = false; s.playing = false; s.paused = false;
+  if (reason === 'play-error' || reason === 'tts-http-error') s.playedRatio = 0;
   const bubble = findBubble(replyId);
   if (!bubble) return;
   bubble.classList.remove('tts-active', 'tts-streaming', 'tts-playing', 'tts-paused');
