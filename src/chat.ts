@@ -182,11 +182,16 @@ export function autoScroll(): void {
     const now = performance.now();
     const inBurst = now < _autoScrollBurstUntil;
     _autoScrollBurstUntil = now + 200;
-    if (inBurst) {
-      transcriptEl.scrollTo({ top: transcriptEl.scrollHeight, behavior: 'instant' as ScrollBehavior });
-    } else {
-      transcriptEl.scrollTop = transcriptEl.scrollHeight;
-    }
+    // Both branches use scrollTo(behavior:'instant'). Raw scrollTop
+    // assignment honors CSS scroll-behavior:smooth on .transcript and
+    // animates over ~300ms — under virt every intermediate scroll
+    // event triggers a rerender + spacer height adjustment, which
+    // surfaces as a "twitch" during streaming / dictation newlines.
+    // The first-of-burst case previously used the smooth path to give
+    // a gentle ride on the very first reply_delta of a turn; with virt
+    // the rerender cost makes that animation visibly chunky. Instant
+    // is cleaner across both paths.
+    transcriptEl.scrollTo({ top: transcriptEl.scrollHeight, behavior: 'instant' as ScrollBehavior });
     const stAfter = transcriptEl.scrollTop;
     const shAfter = transcriptEl.scrollHeight;
     const tail = shAfter - stAfter - ch;

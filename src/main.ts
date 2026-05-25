@@ -1649,7 +1649,14 @@ async function boot() {
       document.documentElement.style.setProperty('--composer-height', `${h}px`);
     }
     if (wasPinned && transcriptEl) {
-      transcriptEl.scrollTop = transcriptEl.scrollHeight;
+      // scrollTo with behavior:'instant' — CSS scroll-behavior:smooth
+      // on .transcript would otherwise animate this snap over ~300ms.
+      // During the animation, virt fires a rerender per intermediate
+      // scroll event, spacer heights adjust slightly each time, and
+      // the user sees the transcript "twitch" as they hit a newline
+      // mid-dictation. Instant scroll keeps the composer-resize fully
+      // decoupled from the transcript's visual position.
+      transcriptEl.scrollTo({ top: transcriptEl.scrollHeight, behavior: 'instant' as ScrollBehavior });
     }
   }
   composerInput.addEventListener('input', () => { autoResize(); updateSendButtonState(); });
