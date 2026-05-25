@@ -29,6 +29,7 @@ import { escapeHtml } from '../util/dom.ts';
 import * as settings from '../settings.ts';
 import { getAgentLabel } from '../config.ts';
 import { applyBubbleState as applyReplyPlayerState } from '../audio/turn-based/replyPlayer.ts';
+import { rehydrateCards } from '../cards/attach.ts';
 import type { ActivityRowSpec, ActivityTool, AssistantBubbleSpec, BubbleSpec, NotificationBubbleSpec, UserBubbleSpec } from './types.ts';
 
 const KEY_ATTR = 'data-key';
@@ -163,9 +164,11 @@ function createAssistant(spec: AssistantBubbleSpec, batch: boolean): HTMLElement
   if (spec.streaming) ensureThinkingDots(el);
   // Under virtualization the bubble's DOM is destroyed when it scrolls
   // outside the window. Reapply any persisted tts playback state (loaded
-  // bar, played bar, .tts-* classes) so a remounted bubble paints the
-  // user's last view instead of zeroed-out bars.
+  // bar, played bar, .tts-* classes) AND replay attached cards so a
+  // remounted bubble paints the user's last view instead of zeroed-out
+  // bars + empty card slot.
   applyReplyPlayerState(el, spec.key);
+  rehydrateCards(el, spec.key);
   return el;
 }
 
