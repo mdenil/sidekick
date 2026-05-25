@@ -19,7 +19,8 @@ import {
 } from './chatScrollPositions.ts';
 import { isPinned as isPinMsg, pinMessage, unpinMessage, hydrate as hydratePins } from './pins/store.ts';
 import * as backend from './backend.ts';
-import { getVirtualizerSlot, getVirtualizer } from './transcript/index.ts';
+import { getVirtualizerSlot, getVirtualizer, rerenderActive } from './transcript/index.ts';
+import * as transcriptStore from './transcript/store.ts';
 
 let transcriptEl: HTMLElement | null = null;
 
@@ -281,7 +282,38 @@ export async function init(el: HTMLElement | null): Promise<boolean> {
 
   try {
     const saved = await loadSnapshot();
-    if (saved && transcriptEl) {
+    if (saved && transcriptEl && saved.state && saved.sessionId) {
+      // Virt-path cold-load: inject the persisted store state and
+      // let the projection + reconciler render. The active chat-id is
+      // claimed here (so concurrent backfill / boot's most-recent
+      // fallback can't double-up) and the scroll position restores
+      // from the chat-scroll cache. Server fetch arrives later via
+      // backfillHistory / replaySessionMessages and replaces durable
+      // wholesale; the snapshot is just the offline-cache bridge.
+      restoredViewedSessionId = saved.sessionId;
+      viewedSessionIdRef = restoredViewedSessionId;
+      transcriptStore.setDurable(
+        saved.sessionId,
+        saved.state.durable,
+        saved.state.pagination,
+      );
+      // The render itself happens in bindTranscriptPipeline's subscriber
+      // (fired by setDurable above) — but that subscriber isn't bound
+      // yet at chat.init time. trigger the render here so the cached
+      // transcript paints before the server fetch lands. Lazy
+      // ensureVirtualizer is fine; the upstream caller resumes from
+      // here and the virt slot will already exist when SSE replay /
+      // resume fire.
+      rerenderActive();
+      // Restore the user's last scroll position from the hydrated
+      // cache. Cache miss → scroll to bottom.
+      const savedRec = getScrollPosition(restoredViewedSessionId);
+      if (savedRec?.atBottom) forceScrollToBottom();
+      else if (savedRec) transcriptEl.scrollTo({ top: savedRec.scrollTop, behavior: 'instant' as ScrollBehavior });
+      else forceScrollToBottom();
+      return true;
+    }
+    if (saved && transcriptEl && saved.html) {
       transcriptEl.innerHTML = saved.html;
       restoredViewedSessionId = saved.sessionId || null;
       viewedSessionIdRef = restoredViewedSessionId;
@@ -386,14 +418,24 @@ export async function init(el: HTMLElement | null): Promise<boolean> {
 function persist(): void {
   if (!transcriptEl) return;
   // Under virtualization, transcriptEl only contains the current
-  // visible window + spacers — serializing innerHTML would freeze
-  // a partial snapshot that's wrong on reload. Snapshot is a phase-4
-  // concern (Decision 4); skip for now when virt is active.
-  if (getVirtualizerSlot()) return;
+  // visible window + spacers — serializing innerHTML would freeze a
+  // partial snapshot that's wrong on reload. Save the transcriptStore's
+  // durable + pagination for the active chat instead; cold-load injects
+  // it into the store and the projection + reconciler render via the
+  // normal pipeline (Decision 4A, 2026-05-25).
+  if (getVirtualizerSlot()) {
+    if (!viewedSessionIdRef) return;
+    const state = transcriptStore.getState(viewedSessionIdRef);
+    saveSnapshot(
+      { state: { durable: state.durable.slice(), pagination: { ...state.pagination } } },
+      viewedSessionIdRef,
+    ).catch((e) => diag(`chat.persist failed: ${e?.message || 'idb error'}`));
+    return;
+  }
   const clone = transcriptEl.cloneNode(true) as HTMLElement;
   clone.querySelectorAll('.activity-row').forEach((el) => el.remove());
   const html = clone.innerHTML;
-  saveSnapshot(html, viewedSessionIdRef).catch((e) => diag(`chat.persist failed: ${e?.message || 'idb error'}`));
+  saveSnapshot({ html }, viewedSessionIdRef).catch((e) => diag(`chat.persist failed: ${e?.message || 'idb error'}`));
 }
 
 let scheduledPersistTimer: number | null = null;

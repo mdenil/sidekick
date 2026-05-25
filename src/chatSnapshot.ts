@@ -37,19 +37,35 @@ const SNAPSHOT_KEY = 'current';
 // driven rebuild.
 //
 // History:
-//   2026-05-11 — current. Bubble dedup keyed by plugin-supplied
-//                sidekick_id with integer fallback; control envelopes
-//                (approval prompts, etc.) persist to state.db and arrive
-//                through history fetch instead of the deprecated
-//                IDB-only addSystemLine path.
-const SCHEMA_VERSION = '2026-05-20-durable-order';
+//   2026-05-11 — sidekick_id-keyed dedup + state.db-driven control envelopes.
+//   2026-05-25 — virt-aware snapshot: persist transcriptStore state
+//                (`durable`, `pagination`, `sessionId`) instead of serialized
+//                DOM HTML. Under virt the DOM contains only the visible
+//                window (~30 bubbles + spacers), so an HTML snapshot would
+//                freeze a partial view that's wrong on reload. Persisting
+//                the store state lets cold-load restore via the projection
+//                + reconciler pipeline — same path as a normal resume,
+//                rendered through the virtualizer.
+const SCHEMA_VERSION = '2026-05-25-virt-state-snapshot';
 const SCHEMA_VERSION_KEY = 'sidekick.idb-schema-version';
 
-/** Snapshot record persisted to IDB. `html` is the serialized
- *  transcript DOM; `sessionId` is the chat the snapshot belongs to
- *  (so reload can re-seed the drawer highlight to the right row). */
+/** Snapshot record persisted to IDB.
+ *
+ *  Two shapes coexist for backwards compatibility:
+ *    - `state` (preferred, virt-aware): the transcriptStore's durable +
+ *      pagination for the active chat. Cold-load injects it into the
+ *      store and the projection renders via the normal pipeline.
+ *    - `html` (legacy, default-path): serialized transcript DOM. Used
+ *      when the virtualizer is off; cold-load does `innerHTML = html`.
+ *  Readers may see either. `sessionId` identifies the active chat. */
 export interface SnapshotRecord {
-  html: string;
+  /** Legacy default-path: serialized DOM. Absent under virt. */
+  html?: string;
+  /** Virt-path: store state for projection-driven cold-load. */
+  state?: {
+    durable: any[];
+    pagination: { firstId: number | null; hasMore: boolean };
+  };
   sessionId?: string;
 }
 
@@ -108,7 +124,11 @@ export async function loadSnapshot(): Promise<SnapshotRecord | null> {
     const db = await dbOpen();
     const rec = await reqP(db.transaction(STORE, 'readonly').objectStore(STORE).get(SNAPSHOT_KEY));
     db.close();
-    if (rec?.html) return { html: rec.html, sessionId: rec.sessionId };
+    if (!rec) return null;
+    if (rec.state && Array.isArray(rec.state.durable)) {
+      return { state: rec.state, sessionId: rec.sessionId };
+    }
+    if (rec.html) return { html: rec.html, sessionId: rec.sessionId };
   } catch {}
   return null;
 }
@@ -118,12 +138,20 @@ export async function loadSnapshot(): Promise<SnapshotRecord | null> {
  *  record. Caller passes the session id explicitly; this module
  *  doesn't track which chat is on screen. Throws are NOT caught here;
  *  the caller (chat.persist) attaches a .catch to log + swallow. */
-export async function saveSnapshot(html: string, sessionId: string | null): Promise<void> {
+export async function saveSnapshot(
+  payload: { html: string } | { state: { durable: any[]; pagination: { firstId: number | null; hasMore: boolean } } },
+  sessionId: string | null,
+): Promise<void> {
   try {
     const db = await dbOpen();
-    await reqP(db.transaction(STORE, 'readwrite').objectStore(STORE).put({
-      key: SNAPSHOT_KEY, html, sessionId: sessionId ?? undefined, at: Date.now(),
-    }));
+    const row: any = {
+      key: SNAPSHOT_KEY,
+      sessionId: sessionId ?? undefined,
+      at: Date.now(),
+    };
+    if ('html' in payload) row.html = payload.html;
+    else row.state = payload.state;
+    await reqP(db.transaction(STORE, 'readwrite').objectStore(STORE).put(row));
     db.close();
   } catch {}
 }

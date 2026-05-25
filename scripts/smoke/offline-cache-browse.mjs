@@ -37,6 +37,10 @@ export default async function run({ page, log, mock }) {
     { timeout: 3_000, polling: 50 },
   );
   log('primed IDB list and transcript caches');
+  // Let the snapshot-persist debounce (250ms) flush before reload — the
+  // virt-path persist serializes the transcriptStore state, which is
+  // the offline-cache fallback for the post-reload empty server case.
+  await page.waitForTimeout(400);
 
   mock.setSessionsFailure(503);
   mock.setMessageFailure(CHAT_ID, 503);
