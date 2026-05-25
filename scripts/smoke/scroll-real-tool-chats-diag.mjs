@@ -13,9 +13,15 @@
 //   5. tool rows + images render → maxTop grows → repin drags viewport
 //      to the new bottom → drift ~5000px from the user's actual position
 //
-// Fix: store atBottom flag alongside scrollTop, decided at SAVE time
-// from chat.isPinned(). On restore, branch on the flag, not a maxTop
-// comparison that can't see save-time context.
+// Fix history:
+//   - a2fe0d6: atBottom flag set at save time; restore branches on the
+//     flag instead of a maxTop heuristic.
+//   - virt-default + anchor-restore (2026-05-25): scroll-restore lands
+//     on the SAME bubble at the SAME offset, not within a scrollTop
+//     tolerance. The hardening pass below uses message-identity instead
+//     of pixel drift — different bubbles ending up at viewport top IS
+//     the user-visible bug, and a 300px scrollTop tolerance lets that
+//     through silently.
 //
 // Read-only — no message sends. Uses two long real chats Jonathan
 // named for the diagnostic ([pitch deck] 335 msgs + 160 tools; [JOAM]
@@ -28,10 +34,10 @@
 import { waitForReady, openSidebar, clickRow, assert } from './lib.mjs';
 
 export const NAME = 'scroll-real-tool-chats-diag';
-export const DESCRIPTION = 'Real backend A↔B↔A on Jonathan\'s tool-heavy chats — mid-history restore must not drift > 300px (regression guard for partial-render at-edge bug)';
+export const DESCRIPTION = 'Real backend A↔B↔A on Jonathan\'s tool-heavy chats — anchor message identity + ≤50px offset (regression guard for partial-render at-edge bug)';
 export const STATUS = 'install-only';
 export const BACKEND = 'real';
-const DRIFT_TOLERANCE_PX = 300;
+const OFFSET_TOLERANCE_PX = 50;
 
 const CHAT_PITCH = 'sidekick:ae6435b5-53aa-4819-b594-d21652c89397';  // [pitch deck], 335 msgs, 160 tools
 const CHAT_JOAM = 'sidekick:4a26d7f6-1902-42af-a348-649e9c5a0bc4';   // [JOAM], 99 msgs
@@ -43,6 +49,8 @@ async function snap(page) {
     // First visible message bubble — used as a deterministic identity
     // for "this is where the viewport landed" comparisons (instead of
     // raw scrollTop, which differs across renders if maxTop drifts).
+    // Walks `.line` descendants so it works under virt (bubbles live
+    // inside .transcript-slot) and default (direct children).
     const lines = Array.from(t.querySelectorAll('.line'));
     const viewTop = t.getBoundingClientRect().top;
     let firstVisible = null;
@@ -145,9 +153,21 @@ export default async function run({ page, log }) {
   log('=== scroll-related log lines (browser console) ===');
   for (const line of scrollLogs) log('  ' + line);
 
-  const drift = Math.abs(pitchRestored.scrollTop - pitchMid.scrollTop);
-  assert(drift <= DRIFT_TOLERANCE_PX,
-    `[pitch deck] mid-history restore drifted ${drift}px. ` +
-    `saved=${pitchMid.scrollTop} restored=${pitchRestored.scrollTop} maxTop_at_restore=${pitchRestored.maxTop}. ` +
-    `Pre-fix this drifted ~5000px due to partial-render at-edge heuristic.`);
+  // Message-identity invariant: the SAME bubble must be at viewport top
+  // before and after the round-trip. scrollTop alone is fragile under
+  // virt — cache-driven height estimates for offscreen specs leave the
+  // scrollTop computed at restore time several hundred pixels off the
+  // measured maxTop, even when the user's view is exactly the same.
+  assert(pitchMid.firstVisible?.key && pitchRestored.firstVisible?.key,
+    `must capture firstVisible at both points (before=${JSON.stringify(pitchMid.firstVisible)} after=${JSON.stringify(pitchRestored.firstVisible)})`);
+  assert(pitchMid.firstVisible.key === pitchRestored.firstVisible.key,
+    `[pitch deck] anchor bubble must match across switch: ` +
+    `before=${pitchMid.firstVisible.key} after=${pitchRestored.firstVisible.key}`);
+  const offsetDrift = Math.abs(
+    (pitchRestored.firstVisible.topRelToViewport ?? 0) - (pitchMid.firstVisible.topRelToViewport ?? 0)
+  );
+  assert(offsetDrift <= OFFSET_TOLERANCE_PX,
+    `[pitch deck] anchored bubble offset drifted ${offsetDrift}px ` +
+    `(want ≤${OFFSET_TOLERANCE_PX}). ` +
+    `before=${pitchMid.firstVisible.topRelToViewport} after=${pitchRestored.firstVisible.topRelToViewport}`);
 }
