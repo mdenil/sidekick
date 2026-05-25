@@ -566,6 +566,36 @@ export function scheduleRefresh(): void {
   }, 50);
 }
 
+/** Top-N most-recent sessions get a fire-and-forget message prefetch
+ *  the first time refresh() lands a successful server list. Soaks IDB
+ *  for "switch from hard refresh into recently-used chat" — without
+ *  the warm-up, the first click pays full server latency even though
+ *  the cache is empty only by accident of timing. */
+const PREFETCH_TOP_N = 8;
+let prefetchDone = false;
+
+async function warmPrefetch(top: any[]): Promise<void> {
+  for (const s of top) {
+    if (!s?.id) continue;
+    // Skip if a fresh cache entry already exists (resume() may have
+    // populated it just now). Cheap probe: 60s freshness window.
+    try {
+      const existing = await sessionCache.getMessagesCache(s.id);
+      if (existing && Date.now() - existing.updatedAt < 60_000) continue;
+    } catch { /* keep going on errors */ }
+    try {
+      const r: any = await backend.fetchSessionMessages(s.id);
+      const messages = Array.isArray(r?.messages) ? r.messages : [];
+      if (messages.length > 0) {
+        await sessionCache.putMessagesCache(s.id, messages, {
+          firstId: r.firstId ?? null,
+          hasMore: !!r.hasMore,
+        });
+      }
+    } catch { /* silent — cache miss path still works on click */ }
+  }
+}
+
 export async function refresh() {
   const listEl = document.getElementById('sessions-list');
   if (!listEl) return;
@@ -652,6 +682,16 @@ export async function refresh() {
       }
     }
     for (const s of sessions) lastSeenIds.add(s.id);
+    // Boot-time warm-up: prefetch the top N chats' messages into
+    // sessionCache so a switch from a hard refresh feels instant on
+    // first try. Without this, the very first click on any non-viewed
+    // chat after reload pays the full server round-trip (the cache
+    // populates only as a side effect of resume()). Fire-and-forget;
+    // failures are silent — the cache miss path still works.
+    if (!prefetchDone) {
+      prefetchDone = true;
+      void warmPrefetch(sessions.slice(0, PREFETCH_TOP_N));
+    }
   } catch (e: any) {
     diag(`sessionDrawer: list failed: ${e.message}`);
     if (!cached?.sessions?.length) {
@@ -1274,7 +1314,11 @@ async function resume(id: string) {
       if (myGen === resumeGen) {
         t?.trace('cache-render-start');
         log(`sessionDrawer: resumed ${id} from cache (${cached.messages.length} messages)`);
-        onResumeCb?.(id, cached.messages);
+        // Pass cached pagination so the cache-painted view has the
+        // right hasMore/firstId — otherwise load-earlier silently
+        // no-ops because replaySessionMessages defaults pagination to
+        // null/false when missing.
+        onResumeCb?.(id, cached.messages, cached.pagination, []);
         t?.trace('cache-render-end');
         scheduleRefresh();
         cacheRendered = true;
@@ -1301,7 +1345,7 @@ async function resume(id: string) {
         scheduleRefresh();
         return;
       }
-      await sessionCache.putMessagesCache(id, messages);
+      await sessionCache.putMessagesCache(id, messages, pagination);
       // Stale-generation guard — see above. Bail BEFORE logging so the
       // log line accurately reflects which fetches actually rendered.
       if (myGen !== resumeGen) return;

@@ -37,7 +37,13 @@ const DB_VERSION = 1;
 //   v2 — bumped 2026-05-17 (Crack B of the turn-taking audit). No
 //        actual shape change here — establishing the discard-on-
 //        mismatch pattern. Future shape edits bump again.
-export const CACHE_SCHEMA_VERSION = 2;
+//   v3 — bumped 2026-05-25. messages cache now stores pagination
+//        ({firstId, hasMore}) alongside the message array so the
+//        cache-rendered path can call chat.setPaginationState
+//        correctly. Without it, load-earlier silently no-ops because
+//        the cache-match optimization skips the server re-render that
+//        used to be the only source of pagination state.
+export const CACHE_SCHEMA_VERSION = 3;
 
 /** True when a stored cache record's shape is current. A missing or
  *  mismatched `schemaVersion` means the record was written by an older
@@ -102,7 +108,13 @@ export async function putListCache(sessions: any[]): Promise<void> {
   } catch {}
 }
 
-export async function getMessagesCache(id: string): Promise<{ messages: any[], updatedAt: number } | null> {
+export interface CachedMessages {
+  messages: any[];
+  pagination: { firstId: number | null; hasMore: boolean };
+  updatedAt: number;
+}
+
+export async function getMessagesCache(id: string): Promise<CachedMessages | null> {
   try {
     const db = await openDB();
     const tx = db.transaction(MESSAGES_STORE, 'readwrite');
@@ -114,16 +126,24 @@ export async function getMessagesCache(id: string): Promise<{ messages: any[], u
       return null;
     }
     db.close();
-    return { messages: rec.messages, updatedAt: rec.updatedAt };
+    return {
+      messages: rec.messages,
+      pagination: rec.pagination || { firstId: null, hasMore: false },
+      updatedAt: rec.updatedAt,
+    };
   } catch { return null; }
 }
 
-export async function putMessagesCache(id: string, messages: any[]): Promise<void> {
+export async function putMessagesCache(
+  id: string,
+  messages: any[],
+  pagination: { firstId: number | null; hasMore: boolean } = { firstId: null, hasMore: false },
+): Promise<void> {
   try {
     const db = await openDB();
     await reqP(
       db.transaction(MESSAGES_STORE, 'readwrite').objectStore(MESSAGES_STORE)
-        .put({ id, messages, updatedAt: Date.now(), schemaVersion: CACHE_SCHEMA_VERSION })
+        .put({ id, messages, pagination, updatedAt: Date.now(), schemaVersion: CACHE_SCHEMA_VERSION })
     );
     db.close();
   } catch {}
