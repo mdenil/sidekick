@@ -991,6 +991,23 @@ function handleRtcProxy(req, res) {
 
 const server = createHttpServer(async (req, res) => {
   if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
+  // Health probe for the native (Capacitor) bootstrap in mobile/webdir.
+  // Returns a READABLE, CORS-enabled sentinel so the app can verify a host
+  // is actually running THIS stack before redirecting to it. A bare socket
+  // answering — e.g. a decommissioned host still bound to :3001, or a 404
+  // — must NOT count as reachable (that's what stranded the app on a white
+  // screen after a host migration). ACAO:* lets the capacitor://localhost
+  // origin read the body cross-origin; a host without this endpoint fails
+  // the probe and the app falls back to its URL picker.
+  if (req.method === 'GET' && req.url && /^\/health(?:\?.*)?$/.test(req.url)) {
+    res.writeHead(200, {
+      'Content-Type': 'application/json',
+      'Access-Control-Allow-Origin': '*',
+      'Cache-Control': 'no-store',
+    });
+    res.end(JSON.stringify({ ok: true, app: 'sidekick' }));
+    return;
+  }
   // WebRTC voice signaling proxy → /v1/rtc/* on hermes upstream.
   if (req.url && req.url.startsWith('/api/rtc')) return handleRtcProxy(req, res);
   // Sidekick agent-contract endpoints. Match before the static
