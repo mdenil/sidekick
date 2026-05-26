@@ -23,7 +23,7 @@ let drawerHost: RightDrawerHost | null = null;
 let activePanel: 'pins' | 'activity' = 'pins';
 
 function defaultDrawerWidthPx(): number {
-  return Math.max(360, Math.min(Math.round(window.innerWidth * 0.50), 720));
+  return Math.max(320, Math.min(Math.round(window.innerWidth * 0.24), 420));
 }
 
 function maxDrawerWidthPx(): number {
@@ -124,7 +124,7 @@ export function initPinDrawer(opts: {
     resizer: {
       handleId: 'pin-drawer-resizer',
       cssVar: '--pin-drawer-width',
-      widthPrefKey: 'sidekick.pinDrawerWidth.v2',
+      widthPrefKey: 'sidekick.pinDrawerWidth.v3',
       defaultWidthPx: defaultDrawerWidthPx(),
       minWidthPx: 260,
       maxWidthPx: maxDrawerWidthPx(),

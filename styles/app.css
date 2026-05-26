@@ -81,11 +81,10 @@
    * baseline. */
   body.sidebar-expanded { padding-left: var(--sidebar-width, var(--drawer-expanded-width)); }
 
-  /* Shared desktop drawer target. Both drawers can still be resized, but
-   * the uncustomized/default width should be wide enough to read long
-   * pinned/activity text like native chat. Use 50vw as the default reading width; drag can take a drawer
-   * wider when needed, but the two default drawers remain equal. */
-  :root { --drawer-expanded-width: clamp(360px, 50vw, 720px); }
+  /* Shared desktop drawer target. Both drawers can still be resized. Keep
+   * the default compact so opening both drawers does not crush the chat on
+   * wide screens; drag can take either drawer wider when needed. */
+  :root { --drawer-expanded-width: clamp(320px, 24vw, 420px); }
 
   /* ── Sidebar (Gemini-style): persistent collapsed rail, expands on hamburger ── */
   #sidebar {

@@ -496,7 +496,7 @@ async function boot() {
     fakeLock.show();
   };
 
-  const defaultDrawerWidthPx = () => Math.max(360, Math.min(Math.round(window.innerWidth * 0.50), 720));
+  const defaultDrawerWidthPx = () => Math.max(320, Math.min(Math.round(window.innerWidth * 0.24), 420));
   const maxDrawerWidthPx = () => Math.max(600, Math.min(Math.round(window.innerWidth * 0.60), 900));
 
   // Sidebar — always visible (48px rail), expands on hamburger. Holds
@@ -518,7 +518,7 @@ async function boot() {
     resizer: {
       handleId: 'sidebar-resizer',
       cssVar: '--sidebar-width',
-      widthPrefKey: 'sidekick.sidebarWidth.v2',
+      widthPrefKey: 'sidekick.sidebarWidth.v3',
       defaultWidthPx: defaultDrawerWidthPx(),
       minWidthPx: 260,
       maxWidthPx: maxDrawerWidthPx(),
