@@ -86,11 +86,25 @@ export function reconcile(transcriptEl: HTMLElement, specs: BubbleSpec[], opts: 
   for (const el of stale) el.remove();
 
   const visited = new Set<string>();
-  // Iterate specs in order, building the DOM into the right shape.
-  // `cursor` tracks "the element that should be next in DOM" so we
-  // can insertBefore the spec's element at the right position.
-  let cursor: HTMLElement | null = null;
 
+  // Keyless `.line.system` rows ("New chat started", context-reset /
+  // model-switch delimiters) are timeline markers the projection doesn't
+  // own — they have no data-key and aren't in `specs`. They must keep
+  // their DOM position relative to the surrounding messages.
+  const isKeylessSystemRow = (n: ChildNode | null): boolean =>
+    !!n && n instanceof HTMLElement
+    && !n.getAttribute(KEY_ATTR)
+    && n.classList.contains('system');
+
+  // Position spec elements in spec order using a DOM cursor that SKIPS
+  // keyless system rows. The previous implementation positioned spec[i]
+  // at `children[i]`, which counted a system marker as occupying a slot —
+  // so each appended message did insertBefore(msg, marker) and the marker
+  // sank one row per message (field bug 2026-05-26: "New chat started"
+  // started at the top of a fresh chat and got pushed to the bottom as
+  // the conversation grew). Anchoring to the spec subsequence instead
+  // leaves markers pinned to their place in the timeline.
+  let cursor: ChildNode | null = transcriptEl.firstChild;
   for (let i = 0; i < specs.length; i++) {
     const spec = specs[i];
     visited.add(spec.key);
@@ -104,23 +118,23 @@ export function reconcile(transcriptEl: HTMLElement, specs: BubbleSpec[], opts: 
       updateForSpec(el, spec);
     }
 
-    // Ensure DOM position: if the child at index i isn't `el`, move it.
-    const want = el;
-    const have = transcriptEl.children[i] as HTMLElement | undefined;
-    if (have !== want) {
-      transcriptEl.insertBefore(want, have || null);
+    // Advance the cursor past any marker rows so a message is placed
+    // around (not on top of) them.
+    while (cursor && isKeylessSystemRow(cursor)) cursor = cursor.nextSibling;
+    if (cursor === el) {
+      // Already in the right place; step over it.
+      cursor = el.nextSibling;
+    } else {
+      transcriptEl.insertBefore(el, cursor);
+      // el now sits immediately before `cursor`; the next spec belongs
+      // after el, i.e. still before `cursor` — leave cursor as-is.
     }
-    cursor = want;
   }
 
   // Remove anything that didn't appear in specs.
   for (const [key, el] of existing) {
     if (!visited.has(key)) el.remove();
   }
-
-  // Touch cursor to avoid unused-var lint; the loop above already
-  // positions everything correctly.
-  void cursor;
 }
 
 // ── create ─────────────────────────────────────────────────────────────
