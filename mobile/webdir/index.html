@@ -135,6 +135,31 @@
 </head>
 <body>
 
+<!-- ===== TEMP DEBUG OVERLAY (revert before ship) ===== -->
+<div id="__dbg" style="position:fixed;top:0;left:0;right:0;z-index:99999;background:#001a00;color:#6f6;font:12px/1.4 ui-monospace,monospace;padding:8px;white-space:pre-wrap;word-break:break-all;max-height:60vh;overflow:auto;border-bottom:2px solid #6f6;">BOOT DEBUG v3 — booting…
+</div>
+<script>
+  // Resilient, runs before the main IIFE. Captures the saved URL + any
+  // early error onto the on-screen panel so a white screen still tells us
+  // what happened (the WKWebView isn't inspectable on this device).
+  (function () {
+    var dbgEl = document.getElementById('__dbg');
+    window.__dbg = function (m) { try { dbgEl.textContent += '\n' + m; } catch (e) {} };
+    window.onerror = function (msg, src, ln, col) {
+      window.__dbg('JS ERROR: ' + msg + ' @' + (src || '?') + ':' + ln + ':' + col);
+      return false;
+    };
+    try {
+      var s = null;
+      try { s = localStorage.getItem('sidekick_server_url'); } catch (e) { window.__dbg('localStorage threw: ' + e); }
+      window.__dbg('origin=' + location.href);
+      window.__dbg('saved=' + JSON.stringify(s));
+      window.__dbg('online=' + navigator.onLine);
+    } catch (e) { window.__dbg('early-dbg threw: ' + e); }
+  })();
+</script>
+<!-- ===== /TEMP DEBUG OVERLAY ===== -->
+
 <div id="connecting-view">
   <div class="logo">sidekick</div>
   <div class="spinner"></div>
@@ -266,12 +291,14 @@
     setStatus('Checking ' + url + ' …', null);
     $btn.disabled = true;
     const res = await probe(url, 8000);
+    window.__dbg && window.__dbg('commit probe(' + url + '): ' + JSON.stringify(res));
     if (!res.ok) {
       setStatus('Could not reach ' + url + ' — ' + res.err, 'err');
       $btn.disabled = false;
       return;
     }
     try { localStorage.setItem(STORAGE_KEY, url); } catch (_) { /* private mode etc */ }
+    window.__dbg && window.__dbg('commit OK → redirecting to ' + url + '/ (if you then see white, the DESTINATION PWA is the problem)');
     setStatus('Connected. Loading …', 'ok');
     // Small delay so the user sees the success state before the
     // WebView swaps origins. Cap WebViews preserve the AVAudioSession
@@ -292,13 +319,20 @@
   // must not force the user to look the URL up again; it's pre-filled so
   // they can just retry (or edit to a new host).
   async function bootRedirect(saved) {
+    window.__dbg && window.__dbg('bootRedirect: showConnecting, probing ' + saved + ' …');
     showConnecting(saved);
     const res = await probe(saved, BOOT_PROBE_MS);
-    if (cancelledBoot) return;            // user tapped "Change server"
+    window.__dbg && window.__dbg('probe result: ' + JSON.stringify(res));
+    if (cancelledBoot) { window.__dbg && window.__dbg('cancelled by user'); return; }
     if (res.ok) {
-      location.href = saved + '/';
+      // DEBUG: redirect SUPPRESSED so we can read the panel. Show the form
+      // instead. If you see this, the bootstrap works and the white screen
+      // was the REDIRECT DESTINATION (the PWA at the saved URL), not us.
+      window.__dbg && window.__dbg('PROBE OK → would redirect to ' + saved + '/  (SUPPRESSED in debug build)');
+      showForm(saved, 'DEBUG: probe OK, redirect suppressed. White screen was the destination, not the bootstrap.');
       return;
     }
+    window.__dbg && window.__dbg('PROBE FAILED → showing form');
     showForm(saved, 'Could not reach ' + saved + ' — ' + res.err + '. Retry, or enter a new server URL.');
   }
 
@@ -324,6 +358,7 @@
     try { return localStorage.getItem(STORAGE_KEY); } catch (_) { return null; }
   })();
 
+  window.__dbg && window.__dbg('main: saved=' + JSON.stringify(saved) + ' FORCE_CONFIG=' + FORCE_CONFIG);
   if (saved && !FORCE_CONFIG) {
     // Probe-gated auto-redirect (see bootRedirect). Body shows the
     // connecting splash, not a black screen.
