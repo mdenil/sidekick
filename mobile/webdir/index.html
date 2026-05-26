@@ -27,18 +27,26 @@
     min-height: 100vh;
     min-height: 100dvh;
   }
-  /* Hide body by default. JS unhides ONLY when the form should be
-     shown (no saved URL, or ?config=1). Saved-URL auto-redirect
-     never paints the form, so there's no flicker on relaunch.
-     Background stays the dark color so the briefly-empty page
-     blends with the next destination. */
+  /* Body stays hidden until JS picks a view (connecting splash or the
+     form). Background stays dark so the briefly-empty page blends with
+     the next destination — no white flash on relaunch. */
   body { visibility: hidden; }
-  body.show {
+  body.show-connecting, body.show-form {
     visibility: visible;
     padding: max(env(safe-area-inset-top), 24px) 18px max(env(safe-area-inset-bottom), 24px);
     display: flex; flex-direction: column; align-items: center;
     justify-content: center; gap: 28px;
   }
+  /* Two mutually-exclusive views. Only the one matching the body class
+     paints. */
+  #connecting-view, #form-view {
+    display: none;
+    flex-direction: column; align-items: center; gap: 28px;
+    width: 100%;
+  }
+  body.show-connecting #connecting-view { display: flex; }
+  body.show-form #form-view { display: flex; }
+
   .logo {
     font-family: var(--font-mono);
     font-size: 32px; letter-spacing: -0.5px;
@@ -99,37 +107,71 @@
     background: rgba(255,255,255,0.06);
     padding: 1px 5px; border-radius: 4px;
   }
+
+  /* Connecting splash — shown while we probe the saved URL on launch.
+     A spinner + the host being tried + a "Change server" escape so a
+     dead/migrated host is never a one-way trip into a black screen. */
+  .spinner {
+    width: 28px; height: 28px;
+    border: 3px solid rgba(255,255,255,0.15);
+    border-top-color: var(--primary);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .link-btn {
+    width: auto;
+    background: none; color: var(--muted);
+    font-size: 14px; font-weight: 500;
+    padding: 8px 12px;
+    text-decoration: underline;
+  }
+  .link-btn:hover { color: var(--fg); }
+  #connecting-status {
+    color: var(--fg); font-family: var(--font-mono); font-size: 13px;
+    word-break: break-all;
+  }
 </style>
 </head>
 <body>
 
-<div class="logo">sidekick</div>
-<h1>Connect to your server</h1>
-<p>
-  Enter the URL where your <code>sidekick</code> proxy is reachable.
-  Your hermes-agent backend (and the proxy in front of it) runs this URL.
-</p>
+<div id="connecting-view">
+  <div class="logo">sidekick</div>
+  <div class="spinner"></div>
+  <p id="connecting-status">Connecting…</p>
+  <button type="button" id="change-server" class="link-btn">Change server</button>
+</div>
 
-<form id="form" autocomplete="off">
-  <label class="url-label" for="url">Server URL</label>
-  <input
-    id="url"
-    type="url"
-    placeholder="https://your-host.example.com:3001"
-    autocapitalize="off"
-    autocorrect="off"
-    spellcheck="false"
-    inputmode="url"
-    required
-  />
-  <button type="submit" id="connect">Connect</button>
-  <div id="status" class="status"></div>
-</form>
+<div id="form-view">
+  <div class="logo">sidekick</div>
+  <h1>Connect to your server</h1>
+  <p>
+    Enter the URL where your <code>sidekick</code> proxy is reachable.
+    Your hermes-agent backend (and the proxy in front of it) runs this URL.
+  </p>
 
-<p class="footnote">
-  Saved URLs are remembered. To re-pick later, reinstall the app
-  (a settings-side reset is on the way).
-</p>
+  <form id="form" autocomplete="off">
+    <label class="url-label" for="url">Server URL</label>
+    <input
+      id="url"
+      type="url"
+      placeholder="https://your-host.example.com:3001"
+      autocapitalize="off"
+      autocorrect="off"
+      spellcheck="false"
+      inputmode="url"
+      required
+    />
+    <button type="submit" id="connect">Connect</button>
+    <div id="status" class="status"></div>
+  </form>
+
+  <p class="footnote">
+    Saved URLs are remembered. If your server can't be reached on launch,
+    you'll land back here with the URL pre-filled so you can retry or
+    point at a new host.
+  </p>
+</div>
 
 <script>
 (() => {
@@ -138,15 +180,40 @@
   const STORAGE_KEY = 'sidekick_server_url';
   const QS = new URLSearchParams(location.search);
   const FORCE_CONFIG = QS.get('config') === '1';
+  // Boot-probe timeout. Shorter than the manual-connect probe (8s) so a
+  // dead/migrated host drops us to the form within a few seconds instead
+  // of hanging the WebView on a black screen. The happy path (server up)
+  // resolves in one round-trip, well under this.
+  const BOOT_PROBE_MS = 5000;
 
   const $url = document.getElementById('url');
   const $btn = document.getElementById('connect');
   const $status = document.getElementById('status');
   const $form = document.getElementById('form');
+  const $connectingStatus = document.getElementById('connecting-status');
+  const $changeServer = document.getElementById('change-server');
+
+  // Set true if the user taps "Change server" mid-probe, so a late-
+  // resolving probe doesn't redirect out from under them.
+  let cancelledBoot = false;
 
   function setStatus(text, kind) {
     $status.textContent = text || '';
     $status.className = 'status' + (kind ? ' ' + kind : '');
+  }
+
+  function showConnecting(host) {
+    $connectingStatus.textContent = 'Connecting to ' + host + ' …';
+    document.body.classList.remove('show-form');
+    document.body.classList.add('show-connecting');
+  }
+
+  function showForm(prefill, errMsg) {
+    if (prefill) $url.value = prefill;
+    setStatus(errMsg || '', errMsg ? 'err' : null);
+    document.body.classList.remove('show-connecting');
+    document.body.classList.add('show-form');
+    $btn.disabled = false;
   }
 
   function normalize(raw) {
@@ -159,7 +226,7 @@
     return s;
   }
 
-  async function probe(url) {
+  async function probe(url, timeoutMs) {
     // Best-effort reachability check. The bootstrap loads from the
     // capacitor://localhost origin (or http://localhost on Android),
     // so any fetch to the user's server is cross-origin. The proxy's
@@ -175,7 +242,7 @@
     // isn't. That's enough for "reachable y/n" — actual server
     // identity is verified by the redirect itself.
     const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 8000);
+    const t = setTimeout(() => ctrl.abort(), timeoutMs || 8000);
     try {
       await fetch(url + '/version', {
         method: 'GET',
@@ -187,8 +254,8 @@
       return { ok: true };
     } catch (e) {
       clearTimeout(t);
-      // AbortError after 8s = timeout. TypeError = network unreachable
-      // (DNS / connection refused / TLS). Surface a friendly message.
+      // AbortError after the timeout = unreachable/slow. TypeError =
+      // network unreachable (DNS / connection refused / TLS / offline).
       const msg = (e && e.name === 'AbortError') ? 'timed out'
         : (e && e.message) || 'unreachable';
       return { ok: false, err: msg };
@@ -198,51 +265,50 @@
   async function commit(url) {
     setStatus('Checking ' + url + ' …', null);
     $btn.disabled = true;
-    try {
-      const res = await probe(url);
-      if (!res.ok) {
-        setStatus('Could not reach ' + url + ' — ' + res.err, 'err');
-        $btn.disabled = false;
-        return;
-      }
-      try { localStorage.setItem(STORAGE_KEY, url); } catch (_) { /* private mode etc */ }
-      setStatus('Connected. Loading …', 'ok');
-      // Small delay so the user sees the success state before the
-      // WebView swaps origins. Cap WebViews preserve the AVAudioSession
-      // and getUserMedia permission state across this redirect (same
-      // process, same WKWebView instance).
-      setTimeout(() => {
-        location.href = url + '/';
-      }, 200);
-    } finally {
-      // (intentionally don't re-enable the button on success — we're
-      // about to redirect)
+    const res = await probe(url, 8000);
+    if (!res.ok) {
+      setStatus('Could not reach ' + url + ' — ' + res.err, 'err');
+      $btn.disabled = false;
+      return;
     }
+    try { localStorage.setItem(STORAGE_KEY, url); } catch (_) { /* private mode etc */ }
+    setStatus('Connected. Loading …', 'ok');
+    // Small delay so the user sees the success state before the
+    // WebView swaps origins. Cap WebViews preserve the AVAudioSession
+    // and getUserMedia permission state across this redirect (same
+    // process, same WKWebView instance).
+    setTimeout(() => { location.href = url + '/'; }, 200);
+    // (intentionally don't re-enable the button on success — redirecting)
   }
 
-  // Auto-redirect on subsequent launches unless the user is explicitly
-  // here to reconfigure (?config=1 query param, set by a future
-  // settings-side reset button).
-  const saved = (() => {
-    try { return localStorage.getItem(STORAGE_KEY); } catch (_) { return null; }
-  })();
-
-  if (saved && !FORCE_CONFIG) {
-    // Auto-redirect path: body stays hidden, no paint, no flicker.
-    // Field repro 2026-05-10 (Jonathan): pre-fix the "Connect to
-    // your server" form briefly painted on every relaunch before
-    // the redirect fired.
-    location.href = saved + '/';
-    return;
+  // Launch path with a saved URL: probe BEFORE redirecting. Pre-fix
+  // (2026-05) this did a blind `location.href = saved + '/'`, which
+  // stranded the WebView on a black screen whenever the saved host was
+  // unreachable — e.g. after a backend host migration (cortex→fontbrain)
+  // or simply opening the app offline. Now we show a "Connecting…"
+  // splash, probe with a timeout, redirect on success, and on
+  // failure/timeout fall back to the form. Crucially we NEVER clear the
+  // saved URL on a failed probe — airplane mode or a transient outage
+  // must not force the user to look the URL up again; it's pre-filled so
+  // they can just retry (or edit to a new host).
+  async function bootRedirect(saved) {
+    showConnecting(saved);
+    const res = await probe(saved, BOOT_PROBE_MS);
+    if (cancelledBoot) return;            // user tapped "Change server"
+    if (res.ok) {
+      location.href = saved + '/';
+      return;
+    }
+    showForm(saved, 'Could not reach ' + saved + ' — ' + res.err + '. Retry, or enter a new server URL.');
   }
 
-  // Form-needed path. Pre-fill the field with the prior choice so
-  // the user can edit incrementally. Unhide the body now that we
-  // know we're staying on this page.
-  if (saved && FORCE_CONFIG) {
-    $url.value = saved;
-  }
-  document.body.classList.add('show');
+  // Manual escape from the connecting splash — for when the user already
+  // knows the saved host is gone and doesn't want to wait out the probe.
+  $changeServer.addEventListener('click', () => {
+    cancelledBoot = true;
+    const saved = (() => { try { return localStorage.getItem(STORAGE_KEY); } catch (_) { return null; } })();
+    showForm(saved || '', null);
+  });
 
   $form.addEventListener('submit', (e) => {
     e.preventDefault();
@@ -253,6 +319,21 @@
     }
     void commit(url);
   });
+
+  const saved = (() => {
+    try { return localStorage.getItem(STORAGE_KEY); } catch (_) { return null; }
+  })();
+
+  if (saved && !FORCE_CONFIG) {
+    // Probe-gated auto-redirect (see bootRedirect). Body shows the
+    // connecting splash, not a black screen.
+    void bootRedirect(saved);
+    return;
+  }
+
+  // No saved URL, or the user explicitly came to reconfigure (?config=1).
+  // Pre-fill the field with any prior choice so edits are incremental.
+  showForm(saved && FORCE_CONFIG ? saved : '', null);
 })();
 </script>
 </body>
