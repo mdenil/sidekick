@@ -229,6 +229,34 @@ export function autoScroll(): void {
   }
 }
 
+/** Explicitly set the pinned-to-bottom flag. Session-restore calls this
+ *  with `false` for a mid/anchor restore so autoScroll() can't snap the
+ *  heavy incoming chat to the live edge while it renders and fight the
+ *  anchor restore (field bug 2026-05-26: visible bounce-to-bottom on
+ *  switching into the pitch deck mid-history). The scroll listener already
+ *  re-derives pinned on the next real scroll, so this just removes the
+ *  window where a false-positive isPinned() (at scrollTop≈0 right after the
+ *  switch-then-load clear collapses scrollHeight) lets autoScroll run. */
+export function setPinnedToBottom(v: boolean): void {
+  pinnedToBottom = v;
+  updateButton();
+}
+
+/** Cross-module hook so a session switch can cancel any live at-bottom
+ *  repin (owned by sessionResume) BEFORE the switch-then-load clear
+ *  collapses scrollHeight — otherwise the LEAVING chat's repin
+ *  ResizeObserver wakes on the 0→tall transition and snaps the incoming
+ *  chat to the bottom mid-restore. sessionResume registers its canceller;
+ *  sessionDrawer invokes it at switch start. Routed through chat.ts to
+ *  avoid a sessionDrawer↔sessionResume import cycle. */
+let _atBottomRepinCanceller: (() => void) | null = null;
+export function registerAtBottomRepinCanceller(fn: (() => void) | null): void {
+  _atBottomRepinCanceller = fn;
+}
+export function cancelAtBottomRepin(): void {
+  try { _atBottomRepinCanceller?.(); } catch { /* noop */ }
+}
+
 /** Returns true if a transcript snapshot was restored. Caller may still
  *  run backfill — dedup on text handles overlap. Async because IDB reads
  *  can't be synchronous; the cold-boot flash is sub-frame on modern devices. */

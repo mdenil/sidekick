@@ -17,7 +17,7 @@
  */
 
 import * as backend from './backend.ts';
-import { saveCurrentScrollPosition } from "./chat.ts";
+import { saveCurrentScrollPosition, cancelAtBottomRepin } from "./chat.ts";
 import { flushScrollPosition } from "./chatScrollPositions.ts";
 import * as conversations from './conversations.ts';
 import * as sessionCache from './sessionCache.ts';
@@ -1318,6 +1318,14 @@ async function resume(id: string) {
     // AFTER saveCurrentScrollPosition keeps the leaving chat's saved
     // scrollTop accurate (clearing first would save against an emptied,
     // collapsed transcript and lose the position).
+    //
+    // Cancel the LEAVING chat's at-bottom repin FIRST: showTranscriptLoading
+    // collapses scrollHeight (0→tall on the incoming render), and a still-
+    // live repin ResizeObserver would treat that as "content grew, snap to
+    // bottom" and yank the incoming chat to the live edge mid-restore (the
+    // pitch-deck bounce, field 2026-05-26). The restore branches also cancel
+    // it, but only AFTER the clear+render — too late to stop the wake.
+    cancelAtBottomRepin();
     showTranscriptLoading();
     t?.trace('transcript-cleared');
   }

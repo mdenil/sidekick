@@ -237,6 +237,11 @@ export function replaySessionMessages(
         // the same way — repin is per-element ResizeObserver, not
         // per-chat, so any active observer needs cancelling on switch.
         cancelActiveAtBottomRepin?.();
+        // We are NOT at the bottom — assert it so a stray autoScroll (or a
+        // false-positive isPinned() at the post-clear scrollTop≈0) can't
+        // snap us to the live edge while the heavy chat finishes rendering
+        // and fight this anchor restore. Field 2026-05-26 (pitch deck).
+        chat.setPinnedToBottom(false);
         // NO load-earlier suppress here. The anchor restore lands the
         // user back on the SAME bubble they were viewing, with the SAME
         // viewport offset. Unlike the legacy mid-chat scrollTop restore,
@@ -263,6 +268,7 @@ export function replaySessionMessages(
         // prependHistory would shift scrollTop by the height of the
         // prepended content — dragging the user off `saved`.
         chat.suppressLoadEarlierFor(1500);
+        chat.setPinnedToBottom(false);
         el.scrollTo({ top: saved.scrollTop, behavior: 'instant' as ScrollBehavior });
         // The scrollTo fires a scroll event synchronously; the listener
         // updates pinnedToBottom from isPinned() against the restored
@@ -341,6 +347,10 @@ function scheduleAtBottomRepin(): void {
     if (cancelActiveAtBottomRepin === teardown) cancelActiveAtBottomRepin = null;
   };
   cancelActiveAtBottomRepin = teardown;
+  // Let a session switch cancel this repin at switch START (before the
+  // switch-then-load clear collapses scrollHeight and wakes the RO). The
+  // closure always cancels whatever the current active repin is.
+  chat.registerAtBottomRepinCanceller(() => cancelActiveAtBottomRepin?.());
   setTimeout(teardown, REPIN_WINDOW_MS);
 }
 
