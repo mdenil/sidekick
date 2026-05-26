@@ -1464,6 +1464,37 @@
     flex: 1; overflow-y: auto; overflow-x: hidden; padding: 18px; scroll-behavior: smooth;
     position: relative;
   }
+  /* Switch-then-load loading state (Jonathan, 2026-05-25). Click handler
+     flips the transcript to the target chat synchronously — for an
+     uncached chat the viewport empties until cache/server lands. A
+     subtle spinner appears after 200ms so a fast cache hit shows nothing
+     (no flash), while a slow uncached load gets clear visual feedback
+     that the click registered. Spinner is centered absolutely; the
+     transcript itself stays empty (no DOM placeholder) so the next
+     render is a clean append. */
+  .transcript::after {
+    content: '';
+    position: absolute;
+    top: 50%; left: 50%;
+    width: 32px; height: 32px;
+    margin: -16px 0 0 -16px;
+    border: 2px solid color-mix(in srgb, var(--muted) 40%, transparent);
+    border-top-color: var(--muted);
+    border-radius: 50%;
+    opacity: 0;
+    pointer-events: none;
+    z-index: 5;
+  }
+  .transcript.transcript-loading::after {
+    animation: transcript-spin 0.9s linear infinite,
+               transcript-spinner-fade-in 0.2s ease 0.2s forwards;
+  }
+  @keyframes transcript-spin {
+    to { transform: rotate(360deg); }
+  }
+  @keyframes transcript-spinner-fade-in {
+    to { opacity: 0.7; }
+  }
   /* cmd+K message-search flash: when the user activates a message hit,
      replaySessionMessages scrolls to the matching bubble and toggles
      this class for 1.5s to draw the eye. Removed by setTimeout in

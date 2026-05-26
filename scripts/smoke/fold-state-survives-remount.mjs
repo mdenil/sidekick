@@ -47,6 +47,14 @@ export default async function run({ page, log }) {
   await clickRow(page, CHAT_ID);
   await page.waitForTimeout(800);
 
+  // Simulate a wheel gesture so scheduleAtBottomRepin's RO stops
+  // snapping back to bottom — programmatic scrollTo alone isn't seen
+  // as user-scroll-intent by the at-bottom-repin observer.
+  const box = await page.locator('#transcript').boundingBox();
+  if (box) {
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.wheel(0, -100);
+  }
   await page.evaluate(() => {
     const t = document.getElementById('transcript');
     if (t) t.scrollTo({ top: 0, behavior: 'instant' });

@@ -89,36 +89,40 @@ export default async function run({ page, log }) {
   // Scroll to top to trigger loadEarlier. The scroll handler fires
   // maybeLoadEarlier on every scroll event regardless of who initiated
   // it. Brief settle first so any post-replay forceScrollToBottom
-  // has completed before we move the cursor up.
+  // has completed before we move the cursor up. Wheel gesture signals
+  // scheduleAtBottomRepin this is user-initiated so its RO doesn't
+  // snap back on subsequent layout settles.
   await page.waitForTimeout(200);
+  const box = await page.locator('#transcript').boundingBox();
+  if (box) {
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.wheel(0, -100);
+  }
   await page.evaluate(() => {
     const t = document.getElementById('transcript');
     if (t) {
-      t.scrollTop = 0;
+      t.scrollTo({ top: 0, behavior: 'instant' });
       t.dispatchEvent(new Event('scroll', { bubbles: true }));
     }
   });
 
-  // Wait for the older page to land. msg-11 is the newest of msgs 11-20
-  // (the middle slice). When that appears, loadEarlier did its work.
-  try {
-    await page.waitForFunction(
-      () => /msg-11 user marker/.test(document.getElementById('transcript')?.textContent || ''),
-      null,
-      { timeout: 5_000, polling: 100 },
-    );
-  } catch (e) {
-    log(`load-earlier never fired. Before-cursor requests seen: ${beforeRequests.length}`);
-    if (beforeRequests.length > 0) {
-      log(`  ${beforeRequests[0]}`);
-    }
-    throw e;
+  // Wait for the before-cursor fetch to fire. Under virt the slot only
+  // renders a ~10-spec window, so checking `msg-11 in textContent` is
+  // fragile — the bubble is in the STORE but may sit outside the
+  // currently visible window. The network request is the deterministic
+  // proof that loadEarlier did its work.
+  for (let i = 0; i < 50 && beforeRequests.length === 0; i++) {
+    await page.waitForTimeout(100);
   }
-  log('older page loaded (msg-11..20 prepended) ✓');
+  assert(beforeRequests.length > 0,
+    `load-earlier never fired (no before= request after 5s)`);
+  log('older page fetched ✓');
 
-  // Critical assertion: top-to-bottom DOM order must be monotonic.
-  // After two pages we should have msg-11..30 in order. Pull every
-  // bubble's marker number and assert ascending.
+  // Critical assertion: chronological order INSIDE the store. The
+  // visible window may be a slice but its order must be ascending.
+  // Walk whichever bubbles are in DOM and verify they're monotonic.
+  // Even one inversion catches the prepend-loop-direction regression.
+  await page.waitForTimeout(300);  // settle window + scroll-into-place after prepend
   const orderInfo = await page.evaluate(() => {
     const lines = Array.from(document.querySelectorAll('#transcript .line.s0, #transcript .line.agent'));
     const markers = [];
@@ -128,11 +132,9 @@ export default async function run({ page, log }) {
     }
     return markers;
   });
-  log(`DOM marker order (first/last 4): [${orderInfo.slice(0, 4).join(', ')}, …, ${orderInfo.slice(-4).join(', ')}]`);
-  assert(
-    orderInfo.length >= 20,
-    `expected at least 20 marker-bubbles in DOM after load-earlier; got ${orderInfo.length}`,
-  );
+  log(`DOM marker order (visible window): [${orderInfo.join(', ')}]`);
+  assert(orderInfo.length >= 5,
+    `expected ≥5 marker-bubbles in DOM (visible window); got ${orderInfo.length}`);
   for (let i = 1; i < orderInfo.length; i++) {
     assert(
       orderInfo[i] > orderInfo[i - 1],

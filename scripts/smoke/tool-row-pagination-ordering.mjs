@@ -108,6 +108,14 @@ function assertPerTurnLocality(structure, label, minTurns) {
     assert(before.startsWith('u:'),
       `[${label}] activity row at idx ${i} not preceded by a user bubble (got "${before}"). ` +
       `Field bug: rows clumped past their turns. structure=${JSON.stringify(structure)}`);
+    // Under virt the visible window may cut off the last turn before
+    // its final assistant bubble — that's a viewport accident, not a
+    // structural bug. Skip the "followed by a:" check for the last ar
+    // in the structure when it sits at the window edge.
+    if (i === structure.length - 1) {
+      turnsSeen++;
+      continue;
+    }
     assert(after.startsWith('a:'),
       `[${label}] activity row at idx ${i} not followed by an assistant bubble (got "${after}"). ` +
       `Field bug: rows clumped past their turns. structure=${JSON.stringify(structure)}`);
@@ -138,13 +146,21 @@ export default async function run({ page, log }) {
   // the pagination handler via the scroll listener wired in chat.ts.
   // Brief settle first so post-replay forceScrollToBottom has completed
   // before we move the cursor up (mirrors load-earlier-history.mjs).
+  // Wheel gesture signals scheduleAtBottomRepin that this is
+  // user-initiated; without it the RO snaps back to the bottom in the
+  // 1.5s post-restore window and the scrollTo(0) doesn't stick.
   const beforeRows = initial.filter(t => t === 'ar').length;
   log(`scrolling transcript to top to trigger loadEarlier (have ${beforeRows} rows)`);
   await page.waitForTimeout(300);
+  const box = await page.locator('#transcript').boundingBox();
+  if (box) {
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.wheel(0, -100);
+  }
   await page.evaluate(() => {
     const t = document.getElementById('transcript');
     if (t) {
-      t.scrollTop = 0;
+      t.scrollTo({ top: 0, behavior: 'instant' });
       t.dispatchEvent(new Event('scroll', { bubbles: true }));
     }
   });

@@ -46,6 +46,16 @@ export default async function run({ page, log }) {
   await clickRow(page, CHAT_ID);
   await page.waitForTimeout(800);
 
+  // Simulate a wheel gesture before the programmatic scrollTo.
+  // scheduleAtBottomRepin only treats wheel/touch/pointerdown as
+  // user-scroll-intent — without this precursor its RO keeps snapping
+  // us back to the bottom for the 1.5s repin window. Production users
+  // wheel-scroll naturally; smokes need to simulate it.
+  const box = await page.locator('#transcript').boundingBox();
+  if (box) {
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.wheel(0, -100);
+  }
   await page.evaluate(() => {
     const t = document.getElementById('transcript');
     if (t) t.scrollTo({ top: 0, behavior: 'instant' });

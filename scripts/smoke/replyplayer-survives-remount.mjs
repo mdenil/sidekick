@@ -50,7 +50,14 @@ export default async function run({ page, log }) {
 
   // Scroll the target bubble into the window. With 60 specs at the
   // bottom-pinned default, msg-3 is way above the window — scrollTo
-  // the top.
+  // the top. Simulate a wheel gesture first so scheduleAtBottomRepin's
+  // RO stops snapping back; without it, programmatic scrollTo is
+  // ignored by the at-bottom-repin observer for the 1.5s window.
+  const box = await page.locator('#transcript').boundingBox();
+  if (box) {
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.wheel(0, -100);
+  }
   await page.evaluate(() => {
     const t = document.getElementById('transcript');
     if (t) t.scrollTo({ top: 0, behavior: 'instant' });

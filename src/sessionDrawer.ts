@@ -1317,8 +1317,12 @@ async function resume(id: string) {
         // Pass cached pagination so the cache-painted view has the
         // right hasMore/firstId — otherwise load-earlier silently
         // no-ops because replaySessionMessages defaults pagination to
-        // null/false when missing.
-        onResumeCb?.(id, cached.messages, cached.pagination, []);
+        // null/false when missing. inflight=undefined (not []) so
+        // replaySessionMessages PRESERVES the live inflight envelopes
+        // that accumulated in transcriptStore while another chat was
+        // viewed — passing [] would wipe in-flight bubbles for the
+        // chat we're returning to.
+        onResumeCb?.(id, cached.messages, cached.pagination, undefined);
         t?.trace('cache-render-end');
         scheduleRefresh();
         cacheRendered = true;

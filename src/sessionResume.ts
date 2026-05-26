@@ -119,7 +119,19 @@ export function replaySessionMessages(
     firstId: pagination?.firstId ?? null,
     hasMore: !!pagination?.hasMore,
   });
-  transcriptStore.setInflight(id, Array.isArray(inflight) ? inflight : []);
+  // Only clobber inflight when the caller explicitly passed an array.
+  // The cache-render path in sessionDrawer.resume passes undefined so
+  // the live inflight envelopes (user_message echo + reply_delta
+  // accumulated while a SEPARATE chat was viewed) survive switch-back.
+  // Field bug 2026-05-25 (Jonathan, [pitch deck]): typed + agent
+  // started replying, switched away, switched back — user bubble +
+  // agent reply vanished because the cached resume's setInflight([])
+  // wiped them. The full server-fetch re-render normally repopulates,
+  // but the cache-match optimization (same durable length → skip
+  // re-render + replayInflight) doesn't always re-paint cleanly.
+  if (Array.isArray(inflight)) {
+    transcriptStore.setInflight(id, inflight);
+  }
 
   // Force a render — setViewed may have flipped during a notify pass
   // and the subscriber's last call landed on the old chat. rerenderActive
@@ -193,7 +205,18 @@ export function replaySessionMessages(
       // Falls back to atBottom/scrollTop if the anchor key isn't in
       // current specs (chat was paginated out, message deleted, etc).
       const virt = getVirtualizer();
-      const tryAnchor = virt && saved.anchorKey && typeof saved.anchorOffsetPx === 'number'
+      // Precedence: saved.atBottom WINS over anchor restore. The
+      // anchor key captures whichever spec was first-visible at save
+      // time — for an at-bottom view that's some spec roughly one
+      // viewport above the live edge. Restoring to that anchor pins
+      // the user to that spec, not to the bottom; if new turns arrived
+      // (or post-cache lazy content stretches scrollHeight) the user
+      // ends up visibly ABOVE the bottom and has to manually scroll
+      // back. Field bug 2026-05-25 (Jonathan, [pitch deck]): "scroll
+      // away from the bottom of pitch deck and back — it's somewhere
+      // higher up." atBottom is the user-intent flag; honor it first.
+      const tryAnchor = !saved.atBottom
+        && virt && saved.anchorKey && typeof saved.anchorOffsetPx === 'number'
         ? virt.restoreAnchor({ key: saved.anchorKey, offsetPx: saved.anchorOffsetPx })
         : false;
       if (tryAnchor) {
@@ -335,6 +358,13 @@ function scheduleAtBottomRepin(): void {
 function drillScrollTo(target: HTMLElement): void {
   const transcriptEl = document.getElementById('transcript');
   if (!transcriptEl) return;
+  // Cancel any still-live scheduleAtBottomRepin observer. Without
+  // this, the RO sees post-drill scrollHeight growth (e.g. from the
+  // load-earlier prepend that brought the target into view) and
+  // snaps scrollTop back to scrollHeight — the drillScrollTo retries
+  // race against repin and the user lands at the wrong position.
+  // Field bug 2026-05-25 (pin-drawer-cycle-scrollback · mobile flake).
+  cancelActiveAtBottomRepin?.();
   const apply = () => {
     const tr = transcriptEl.getBoundingClientRect();
     const tg = target.getBoundingClientRect();

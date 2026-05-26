@@ -235,6 +235,12 @@ export async function init(el: HTMLElement | null): Promise<boolean> {
   if (typeof window !== 'undefined') {
     window.addEventListener('pagehide', () => {
       if (viewedSessionIdRef) flushScrollPosition(viewedSessionIdRef);
+      // Force-flush the snapshot debounce. Without this, a reload
+      // immediately after a chat switch loses the last 250ms of activity
+      // — the IDB-persisted snapshot still reflects the PREVIOUS chat
+      // and post-reload boot restores the wrong one. Field bug
+      // 2026-05-25 (switch-away-and-back smoke under switch-then-load).
+      flushSnapshotPersist();
     });
   }
   // Repaint all bubble pin indicators when the pin set changes.
@@ -465,6 +471,17 @@ export function scheduleSnapshotPersist(delayMs = 250): void {
     scheduledPersistTimer = null;
     persist();
   }, delayMs);
+}
+
+/** Force-fire the pending snapshot persist now. pagehide handler uses
+ *  this so a reload immediately after a chat switch doesn't lose the
+ *  250ms-debounced write. */
+export function flushSnapshotPersist(): void {
+  if (scheduledPersistTimer != null) {
+    window.clearTimeout(scheduledPersistTimer);
+    scheduledPersistTimer = null;
+  }
+  persist();
 }
 
 /** Public flush helper — callers that batch many addLine calls (e.g.

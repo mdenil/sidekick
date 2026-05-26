@@ -160,6 +160,11 @@ function rerenderInto(chatId: string): void {
   } else {
     reconcile(el, specs);
   }
+  // Switch-then-load: the row-click handler sets .transcript-loading
+  // synchronously when flipping focus to a new chat. Clear it as soon
+  // as the first non-empty render lands so the spinner disappears
+  // when content arrives (whether from cache or server).
+  if (specs.length > 0) el.classList.remove('transcript-loading');
   scheduleSnapshotPersist();
 }
 
