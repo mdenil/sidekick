@@ -22,6 +22,45 @@
  * audioBufferToWav() encodes for HTMLAudioElement consumption. First call
  * per chime pays the render cost (~few ms), subsequent calls reuse the
  * cached blob URL.
+ *
+ * ── Cue catalogue (single source of truth) ──────────────────────────────
+ * Every named cue, what fires it, and what it means. Per-cue oscillator
+ * design notes live on scheduleChime() below.
+ *
+ *   send         outbound message shipped to backend       (rising click)
+ *   receive      inbound message/reply arrived             (descending pop)
+ *   error        a transactional failure (send/queue)      (2 low desc tones)
+ *   start        local mic capture began (memo/streaming)  (very short tick)
+ *   commit       commit-word ("over") detected pre-send    (high rising tick)
+ *   connect      WebRTC peer connection established         (asc two-tone)
+ *   listening    STT pipe hot, "your turn" (call-start +    (soft two-tone
+ *                every TTS-end transition)                   fade-in)
+ *   barge        user voice cut in over TTS                 (short sine ping)
+ *   call-dropped a CONNECTED call ended unexpectedly        (slow descending
+ *                (network drop / ICE failure), NOT a         two-note, lower
+ *                user-initiated hangup. Distinct, lower      + longer than
+ *                and slower than `error` so a backgrounded   error)
+ *                user reads it as "the call died" not "a
+ *                message failed". Pairs with haptic() for
+ *                the suspended-AudioContext case.
+ *
+ * ── iOS-PWA constraints ─────────────────────────────────────────────────
+ *  - The AudioContext suspends on `visibilitychange=hidden` and resumes on
+ *    `=visible`; cues that fire while backgrounded may not play, which is
+ *    why some flows defer the cue to return-to-foreground.
+ *  - When the context is suspended (backgrounded device), audio won't play
+ *    at all — use haptic() alongside the chime so a pocketed phone still
+ *    signals (call-dropped does this).
+ *  - HTMLAudioElement.play() inherits the current AVAudioSession category
+ *    at play() time, so chimes route to the same output as TTS (BT when
+ *    'playback', earpiece when 'play-and-record').
+ *
+ * ── Volume convention ───────────────────────────────────────────────────
+ *  Per-cue baked gains are pre-scaled by RENDER_SCALE; el.volume is set to
+ *  the user's `audioFeedbackVolume` (0..1, default 0.5) at play time. A
+ *  volume of 0 suppresses all cues (logged, not a bug). "Attention" cues
+ *  (error, barge, call-dropped) are baked louder so they cut through wind
+ *  / traffic in bike-mode.
  */
 
 import * as settings from '../../settings.ts';
@@ -29,7 +68,8 @@ import { diag } from '../../util/log.ts';
 
 export type ChimeName =
   | 'send' | 'receive' | 'error' | 'start'
-  | 'commit' | 'connect' | 'listening' | 'barge';
+  | 'commit' | 'connect' | 'listening' | 'barge'
+  | 'call-dropped';
 
 // Pre-render at scale=4 so el.volume=userVolume reproduces the legacy
 // oscillator path's amplitude curve.
@@ -55,6 +95,7 @@ function chimeDuration(name: ChimeName): number {
     case 'listening': return 0.18;
     case 'barge':     return 0.14;
     case 'error':     return 0.36;
+    case 'call-dropped': return 0.46;
   }
 }
 
@@ -88,6 +129,13 @@ function chimeDuration(name: ChimeName): number {
  *   - barge:   single short sine ping (~80ms, ~600Hz) — "I heard you,
  *              stopping". Fires the moment the BargeWindow detector
  *              triggers, BEFORE the upstream halt round-trip.
+ *   - call-dropped: slow descending two-note (G4→D4, then D4→G3) over
+ *              ~420ms — fires when a CONNECTED call ends unexpectedly
+ *              (network drop / ICE failure), never on a user hangup.
+ *              Deliberately lower, slower and longer than `error` so a
+ *              user on a bike with the phone pocketed reads it as "the
+ *              call just died" rather than "a message failed". Triangle
+ *              for wind audibility; baked at error-class gain.
  */
 function scheduleChime(name: ChimeName, ctx: BaseAudioContext, t0: number): void {
   const scale = RENDER_SCALE;
@@ -198,6 +246,29 @@ function scheduleChime(name: ChimeName, ctx: BaseAudioContext, t0: number): void
     gain2.gain.exponentialRampToValueAtTime(0.001, t2 + 0.14);
     osc2.start(t2);
     osc2.stop(t2 + 0.14);
+  } else if (name === 'call-dropped') {
+    // Two slow descending notes (G4→D4, then D4→G3), lower/longer than
+    // `error`. Reads as a "call ended" disconnect tone, not a
+    // transactional failure.
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(392, t0);
+    osc.frequency.linearRampToValueAtTime(294, t0 + 0.16);
+    gain.gain.setValueAtTime(0.12 * scale, t0);
+    gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.18);
+    osc.start(t0);
+    osc.stop(t0 + 0.18);
+    const osc2 = ctx.createOscillator();
+    const gain2 = ctx.createGain();
+    osc2.connect(gain2);
+    gain2.connect(ctx.destination);
+    osc2.type = 'triangle';
+    const t2 = t0 + 0.24;
+    osc2.frequency.setValueAtTime(294, t2);
+    osc2.frequency.linearRampToValueAtTime(196, t2 + 0.16);
+    gain2.gain.setValueAtTime(0.12 * scale, t2);
+    gain2.gain.exponentialRampToValueAtTime(0.001, t2 + 0.20);
+    osc2.start(t2);
+    osc2.stop(t2 + 0.20);
   }
 }
 
@@ -334,4 +405,19 @@ export function playFeedback(name: ChimeName): void {
       });
     }
   })();
+}
+
+/**
+ * Fire a vibration pattern via the Vibration API. Best-effort: silently
+ * no-ops where unsupported (notably iOS Safari/PWA does not implement
+ * navigator.vibrate today). Used as a fallback signal alongside a chime
+ * for events that can fire while the AudioContext is suspended on a
+ * backgrounded device (e.g. call-dropped) — if the audio can't play, at
+ * least the phone buzzes. `pattern` follows the Vibration API contract:
+ * a single duration in ms, or an array of [vibrate, pause, vibrate, …].
+ */
+export function haptic(pattern: number | number[] = [100, 50, 100]): void {
+  try {
+    (navigator as any)?.vibrate?.(pattern);
+  } catch { /* best-effort — unsupported or blocked */ }
 }

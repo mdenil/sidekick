@@ -208,7 +208,7 @@ function formatHotkey(combo: string): string {
  *  modes (e.g. handsfree) doesn't require auditing every site that
  *  asks "are we in a call?" */
 function isInCall(): boolean {
-  return turnbased.getState() !== 'idle' || webrtcControls.isOpen();
+  return turnbased.getState() !== 'idle' || webrtcControls.isOpen() || webrtcControls.isReconnecting();
 }
 
 /** Acquire/release the 'setting'-keyed wake-lock based on whether a
@@ -1350,8 +1350,38 @@ async function boot() {
     onStatus: (msg, kind) => status.setStatus(msg, kind ?? null),
     // Wake-lock follows call lifecycle — connected/closing/failed/idle
     // transitions all need re-evaluation. evaluateWakeLock is idempotent.
-    onCallStateChange: () => evaluateWakeLock(),
+    onCallStateChange: (state) => {
+      evaluateWakeLock();
+      // A new call attempt supersedes a stale "Call dropped" banner.
+      if (state === 'requesting-mic' || state === 'connecting' || state === 'connected') {
+        hideCallDroppedBanner();
+      }
+    },
+    // Network dropped a connected call (not a user hangup) — show a
+    // distinct banner with one-tap reconnect. See showCallDroppedBanner.
+    onCallDropped: (reason) => showCallDroppedBanner(reason),
   });
+
+  // ── Call-dropped banner ───────────────────────────────────────────────
+  // Raised by onCallDropped above when the network tears down a connected
+  // call. Reconnect reopens a call on the current chat (toggleCall, since
+  // the dropped call is already closed by the time we're here); dismiss
+  // just hides it. The banner self-hides whenever a new call starts so a
+  // stale "dropped" message can't linger over a live call.
+  const callDroppedBanner = document.getElementById('call-dropped-banner');
+  function showCallDroppedBanner(reason: string) {
+    if (!callDroppedBanner) return;
+    log('[call-dropped-banner] show, reason=', reason);
+    callDroppedBanner.hidden = false;
+  }
+  function hideCallDroppedBanner() {
+    if (callDroppedBanner) callDroppedBanner.hidden = true;
+  }
+  document.getElementById('call-dropped-reconnect')?.addEventListener('click', () => {
+    hideCallDroppedBanner();
+    void webrtcControls.toggleCall();
+  });
+  document.getElementById('call-dropped-dismiss')?.addEventListener('click', hideCallDroppedBanner);
 
   // Tell proxyClient to KEEP the SSE channel open while a WebRTC call
   // is active, even when the tab goes hidden. The long-lived SSE
@@ -1364,7 +1394,7 @@ async function boot() {
   // `[webrtc] data channel close` six minutes later. The keepalive
   // is bounded to call duration, so battery cost is limited to active
   // calls which are already power-on by nature.
-  setProxyStayAliveHint(() => webrtcControls.isOpen());
+  setProxyStayAliveHint(() => webrtcControls.isOpen() || webrtcControls.isReconnecting());
 
   // WebRTC data-channel events: parallel text path that surfaces
   // user-speech transcripts and assistant reply deltas as the call

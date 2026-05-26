@@ -33,7 +33,7 @@
 
 import { log, diag } from '../../util/log.ts';
 import { logAudioState } from '../shared/headphones.ts';
-import { playFeedback } from '../shared/feedback.ts';
+import { playFeedback, haptic } from '../shared/feedback.ts';
 import * as audioPlatform from '../shared/platform.ts';
 import * as settings from '../../settings.ts';
 import type {
@@ -44,11 +44,29 @@ import type {
 
 export type CallMode = 'stream' | 'talk';
 
+/**
+ * Why a call's peer connection was torn down. Threaded into close() and
+ * logged in `[webrtc-close]` so a "what happened to my call" report is one
+ * grep away (see hosts/cortex/call-resilience-plan.md, Phase A).
+ *
+ *   user-hangup   the user tapped hang up (or a mode-switch closed+reopened)
+ *   net-failed    a CONNECTED call's PC went `failed`/`closed` unexpectedly
+ *   net-disconnect a CONNECTED call's PC went `disconnected` (reserved for
+ *                 Phase B's reconnect path; not yet a close trigger)
+ *   setup-failed  the call never reached `connected` (mic/offer/answer error)
+ */
+export type CloseReason =
+  | 'user-hangup'
+  | 'net-failed'
+  | 'net-disconnect'
+  | 'setup-failed';
+
 export type CallState =
   | 'idle'
   | 'requesting-mic'
   | 'connecting'
   | 'connected'
+  | 'reconnecting'
   | 'closing'
   | 'failed';
 
@@ -156,6 +174,55 @@ export function setStateListener(cb: (state: CallState, mode: CallMode | null) =
   onStateChange = cb;
 }
 
+/** Fired only when a CONNECTED call is torn down by the network (not by a
+ *  user hangup). The UI uses this to raise a distinct "Call dropped —
+ *  network unstable" banner with a Reconnect affordance, so the user knows
+ *  it wasn't them. State-listener `failed`→`idle` transitions are too
+ *  transient (close() runs immediately) to drive that banner on their own. */
+let onDropped: ((reason: CloseReason) => void) | null = null;
+
+export function setDroppedListener(cb: (reason: CloseReason) => void) {
+  onDropped = cb;
+}
+
+// ── Reconnect (Phase B) ─────────────────────────────────────────────────
+// WhatsApp-class soft recovery. When a CONNECTED call's PC drops
+// (disconnected/failed), we DON'T tear the call down — we hold a
+// `reconnecting` state and re-open a fresh peer connection on the same
+// chat, retrying within an escalation window before finally giving up.
+//
+// Why re-open instead of pc.restartIce(): the bridge mints a brand-new
+// peer per /v1/rtc/offer and evicts the server-side PC the moment its
+// connection state hits failed/closed (audio-bridge/signaling.py). There's
+// no renegotiation endpoint for an existing peer_id, so a client ICE
+// restart has nothing to re-offer to. A full re-open with the same chatId
+// continues the same conversation (dispatch routes by chat_id, not
+// peer_id) and survives today's bridge unchanged. True ICE restart is a
+// future optimization gated on bridge-side support (the old Phase C).
+let RECONNECT_WINDOW_MS = 75_000;     // 60-90s escalation window (overrides
+                                      // Chromium's ~10s disconnected→failed)
+let RECONNECT_MAX_ATTEMPTS = 8;       // bound retries within the window
+let reconnecting = false;
+let reconnectAttempts = 0;
+let reconnectStartedAt = 0;
+let lastOpenArgs: { mode: CallMode; opts: { sessionId?: string | null; chatId?: string | null } } | null = null;
+let reconnectGiveUpTimer: ReturnType<typeof setTimeout> | null = null;
+let reconnectRetryTimer: ReturnType<typeof setTimeout> | null = null;
+
+export function isReconnecting(): boolean {
+  return reconnecting;
+}
+
+/** Test-only: shrink the escalation window / attempt budget so the
+ *  recovery-exhausted path is exercisable in a smoke without a 75s wait.
+ *  Pass null to restore production defaults. */
+export function setReconnectParamsForTests(
+  p: { windowMs?: number; maxAttempts?: number } | null,
+): void {
+  RECONNECT_WINDOW_MS = p?.windowMs ?? 75_000;
+  RECONNECT_MAX_ATTEMPTS = p?.maxAttempts ?? 8;
+}
+
 function notify(s: CallState, mode: CallMode | null) {
   if (onStateChange) {
     try { onStateChange(s, mode); } catch (e) { diag('webrtc state listener err', e); }
@@ -163,12 +230,111 @@ function notify(s: CallState, mode: CallMode | null) {
 }
 
 function setState(s: CallState) {
-  if (!active) {
-    notify(s, null);
+  // While a reconnect sequence is in flight, the transient setup states of
+  // each re-open attempt (requesting-mic / connecting) are surfaced to the
+  // UI as one continuous `reconnecting` rather than flashing the fresh-call
+  // sequence on every retry. The REAL internal state is still recorded on
+  // active.state so isOpen()/wasConnected logic stays accurate.
+  // While reconnecting, every transient state of a re-open attempt
+  // (requesting-mic / connecting / closing / a signaling failure) is
+  // surfaced as one continuous `reconnecting`. We only ever emit a real
+  // terminal state once endReconnect() has cleared the flag (success →
+  // connected, give-up → closing→idle).
+  const emit: CallState =
+    (reconnecting && s !== 'connected' && s !== 'idle')
+      ? 'reconnecting'
+      : s;
+  if (active) active.state = s;
+  notify(emit, active ? active.mode : null);
+}
+
+// ── Reconnect helpers ───────────────────────────────────────────────────
+
+/** Clear all reconnect bookkeeping + timers. Idempotent. */
+function endReconnect(): void {
+  reconnecting = false;
+  reconnectAttempts = 0;
+  if (reconnectGiveUpTimer != null) { clearTimeout(reconnectGiveUpTimer); reconnectGiveUpTimer = null; }
+  if (reconnectRetryTimer != null) { clearTimeout(reconnectRetryTimer); reconnectRetryTimer = null; }
+}
+
+/** Enter the reconnecting state for a connected call that just dropped.
+ *  Starts the escalation backstop and fires the first re-open attempt. */
+function beginReconnect(reason: CloseReason): void {
+  if (reconnecting) return;
+  reconnecting = true;
+  reconnectAttempts = 0;
+  reconnectStartedAt = performance.now();
+  log(`[webrtc-recovery] connected → reconnecting (reason=${reason})`);
+  notify('reconnecting', active ? active.mode : null);
+  reconnectGiveUpTimer = setTimeout(() => giveUpReconnect(), RECONNECT_WINDOW_MS);
+  scheduleReconnectAttempt(0);
+}
+
+/** Schedule the next re-open attempt with backoff, unless the window /
+ *  attempt budget is exhausted (the give-up timer is the backstop). */
+function scheduleReconnectAttempt(delayMs?: number): void {
+  if (!reconnecting) return;
+  if (reconnectRetryTimer != null) { clearTimeout(reconnectRetryTimer); reconnectRetryTimer = null; }
+  if (reconnectAttempts >= RECONNECT_MAX_ATTEMPTS) {
+    // Burned the attempt budget — the network is genuinely down, no point
+    // idling until the window timer. Give up now. (The window timer is
+    // still the backstop for the slow case where each attempt hangs.)
+    log(`[webrtc-recovery] retry budget exhausted (${reconnectAttempts}/${RECONNECT_MAX_ATTEMPTS})`);
+    giveUpReconnect();
     return;
   }
-  active.state = s;
-  notify(s, active.mode);
+  const wait = delayMs ?? Math.min(800 * Math.max(1, reconnectAttempts), 4000);
+  reconnectRetryTimer = setTimeout(() => { void attemptReopen(); }, wait);
+}
+
+/** One re-open attempt: quietly tear down the dead PC (keeping the UI on
+ *  `reconnecting`) and open a fresh one with the original call args. The
+ *  new PC's connectionstatechange handler decides success (→ connected) or
+ *  another retry (→ failed). */
+async function attemptReopen(): Promise<void> {
+  if (!reconnecting) return;
+  reconnectAttempts++;
+  log(`[webrtc-recovery] reconnect attempt ${reconnectAttempts}`);
+  const args = lastOpenArgs;
+  if (!args) { giveUpReconnect(); return; }
+  try { await close('net-failed', { silent: true }); } catch { /* ignore */ }
+  if (!reconnecting) return;  // gave up (or user hung up) during teardown
+  try {
+    await open(args.mode, args.opts);
+    // Signaling succeeded; whether we actually CONNECT is reported by the
+    // new PC's connectionstatechange handler. If it never connects, that
+    // handler schedules the next attempt.
+  } catch (e: any) {
+    diag('[webrtc-recovery] re-open signaling failed:', e?.message);
+    scheduleReconnectAttempt();  // back off, try again within the window
+  }
+}
+
+/** Escalation expired (or no args to retry with): give up for real. Fires
+ *  the call-dropped cue and tears the call all the way down to idle. */
+function giveUpReconnect(): void {
+  if (!reconnecting) return;
+  const elapsed = Math.round(performance.now() - reconnectStartedAt);
+  log(`[webrtc-recovery] reconnecting → idle (give up after ${elapsed}ms, ${reconnectAttempts} attempts, reason=escalation-timeout)`);
+  endReconnect();
+  playFeedback('call-dropped');
+  haptic([100, 50, 100]);
+  if (onDropped) { try { onDropped('net-failed'); } catch (e) { diag('webrtc dropped listener err', e); } }
+  void close('net-failed');  // reconnecting now false → notify('idle') fires
+}
+
+// Coming back to the foreground while reconnecting is a strong signal the
+// network is probably back too (phone out of pocket / screen on). Skip the
+// backoff and retry immediately. Installed once at module load.
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && reconnecting) {
+      log('[webrtc-recovery] foreground while reconnecting — immediate retry');
+      if (reconnectRetryTimer != null) { clearTimeout(reconnectRetryTimer); reconnectRetryTimer = null; }
+      void attemptReopen();
+    }
+  });
 }
 
 export function isOpen(): boolean {
@@ -291,6 +457,10 @@ export async function open(
     log('[webrtc] open() called but session already active; closing first');
     await close();
   }
+
+  // Remember the call args so a reconnect can re-open the same chat with
+  // the same mode. Reused by attemptReopen (Phase B).
+  lastOpenArgs = { mode, opts: { sessionId: opts?.sessionId ?? null, chatId: opts?.chatId ?? null } };
 
   // Phase timing — emitted on every state transition so a "5s+ to
   // connect" complaint is debuggable from the chat log alone. Phases:
@@ -529,7 +699,10 @@ export async function open(
   // Trickle ICE: queue candidates until we have a peer_id, then POST each.
   pc.addEventListener('icecandidate', (ev) => {
     if (!ev.candidate) return;
-    if (!active) return;
+    // Stale-handler guard: a reconnect attempt swaps `active` to a new
+    // session; candidates from a torn-down PC must not post under the new
+    // peer_id (see attemptReopen).
+    if (!active || active.pc !== pc) return;
     if (active.peerId) {
       void postIce(active.peerId, ev.candidate);
     } else {
@@ -538,10 +711,19 @@ export async function open(
   });
 
   pc.addEventListener('connectionstatechange', () => {
+    // Stale-handler guard: during a reconnect, prior (dead) PCs keep firing
+    // state changes after `active` has moved on to a fresh PC. Only the
+    // current active PC drives the state machine.
+    if (!active || active.pc !== pc) return;
     log('[webrtc] connectionstate=', pc.connectionState);
-    if (!active) return;
-    if (pc.connectionState === 'connected') {
+    const cs = pc.connectionState;
+    if (cs === 'connected') {
       phase('ice→connected');
+      if (reconnecting) {
+        const elapsed = Math.round(performance.now() - reconnectStartedAt);
+        log(`[webrtc-recovery] reconnecting → connected (after ${elapsed}ms, attempt ${reconnectAttempts}, reason=success)`);
+        endReconnect();
+      }
       setState('connected');
       // No chime here. The 'listening' chime is now driven by the
       // bridge sending {type: 'listening'} over the data channel
@@ -552,10 +734,35 @@ export async function open(
       // happens after peer is "connected") AND would double up at
       // call-start with the bridge's first-frame envelope. See
       // docs/SIDEKICK_AUDIO_PROTOCOL.md.
-    } else if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
-      log(`[webrtc] connection state -> ${pc.connectionState}; treating as failed`);
+    } else if (cs === 'disconnected') {
+      // Transient connectivity loss (cellular/wifi handoff). For a live
+      // call this is the earliest, best moment to start recovering —
+      // Chromium won't declare `failed` for ~10s, but we don't want to
+      // wait. Never-connected calls ignore this (handled at `failed`).
+      if (active.state === 'connected' && !reconnecting) {
+        beginReconnect('net-disconnect');
+      }
+    } else if (cs === 'failed' || cs === 'closed') {
+      if (reconnecting) {
+        // A reconnect attempt's fresh PC failed too — try again within the
+        // escalation window (the give-up timer is the hard backstop).
+        log('[webrtc-recovery] reconnect attempt PC failed; scheduling retry');
+        scheduleReconnectAttempt();
+        return;
+      }
+      const wasConnected = active.state === 'connected';
+      log(`[webrtc] connection state -> ${cs}; (wasConnected=${wasConnected})`);
+      if (wasConnected) {
+        // A live call dropped without passing through `disconnected`
+        // first (or we missed it). Recover rather than tear down — the
+        // call-dropped cue + banner now fire only when reconnect gives up.
+        beginReconnect('net-failed');
+        return;
+      }
+      // Never connected → genuine setup failure. Surface as failed + tear
+      // down (the open() error path also logs the specific cause).
       setState('failed');
-      void close();
+      void close('setup-failed');
     }
   });
 
@@ -579,7 +786,7 @@ export async function open(
       `name=${e?.name ?? 'Unknown'}`,
       `message=${e?.message ?? '(none)'}`);
     setState('failed');
-    await close();
+    await close('setup-failed');
     throw e;
   }
 
@@ -658,7 +865,7 @@ export async function open(
       `name=${e?.name ?? 'Unknown'}`,
       `message=${e?.message ?? '(none)'}`);
     setState('failed');
-    await close();
+    await close('setup-failed');
     throw e;
   }
   phase('signal');
@@ -666,7 +873,7 @@ export async function open(
   if (!answer || !answer.peer_id) {
     log('[webrtc] answer payload missing peer_id');
     setState('failed');
-    await close();
+    await close('setup-failed');
     throw new Error('answer payload missing peer_id');
   }
 
@@ -682,7 +889,7 @@ export async function open(
       `name=${e?.name ?? 'Unknown'}`,
       `message=${e?.message ?? '(none)'}`);
     setState('failed');
-    await close();
+    await close('setup-failed');
     throw e;
   }
 
@@ -719,8 +926,20 @@ async function postIce(peerId: string, candidate: RTCIceCandidate) {
   }
 }
 
-export async function close(): Promise<void> {
+export async function close(
+  reason: CloseReason = 'user-hangup',
+  opts?: { silent?: boolean },
+): Promise<void> {
+  // A user-initiated hangup cancels any in-flight reconnect. (Internal
+  // reconnect teardown passes 'net-failed' + silent, so it won't trip
+  // this — only an actual hangup or a give-up, which clears reconnect
+  // state itself before calling close.)
+  if (reason === 'user-hangup') endReconnect();
   if (!active) return;
+  // Suppress the terminal `idle` notify when we're tearing the dead PC
+  // down mid-reconnect — the UI must stay on `reconnecting`, not flash
+  // idle between attempts.
+  const silent = opts?.silent === true || reconnecting;
   const closeT0 = performance.now();
   setState('closing');
   const session = active;
@@ -751,7 +970,8 @@ export async function close(): Promise<void> {
   }
   const tLocalClose = performance.now();
   log(
-    `[webrtc-close] local-steps mic=${Math.round(tMicReleased - tStart)}ms ` +
+    `[webrtc-close] reason=${reason} ` +
+    `local-steps mic=${Math.round(tMicReleased - tStart)}ms ` +
     `dc=${Math.round(tDataChClose - tMicReleased)}ms ` +
     `pc=${Math.round(tPcClose - tDataChClose)}ms ` +
     `audio=${Math.round(tLocalClose - tPcClose)}ms`,
@@ -772,7 +992,7 @@ export async function close(): Promise<void> {
   }
   const tRemoteClose = performance.now();
   log(`[webrtc-timing] close local=${Math.round(tLocalClose - closeT0)}ms remote=${Math.round(tRemoteClose - tLocalClose)}ms total=${Math.round(tRemoteClose - closeT0)}ms`);
-  notify('idle', null);
+  if (!silent) notify('idle', null);
 }
 
 // ─── STTProvider implementation ────────────────────────────────────────

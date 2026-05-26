@@ -606,6 +606,15 @@
       </svg>
       <span class="scroll-to-bottom-badge" aria-hidden="true"></span>
     </button>
+    <!-- Raised when a CONNECTED call is dropped by the network (not a user
+         hangup) — see audio/realtime onDropped. Distinct from a clean
+         hangup so the user knows it wasn't them, with a one-tap reconnect.
+         Hidden until a drop fires. -->
+    <div id="call-dropped-banner" class="call-dropped-banner" role="alert" hidden>
+      <span class="call-dropped-banner-text">Call dropped — network unstable</span>
+      <button id="call-dropped-reconnect" class="call-dropped-reconnect" type="button">Reconnect</button>
+      <button id="call-dropped-dismiss" class="call-dropped-dismiss" type="button" aria-label="Dismiss">✕</button>
+    </div>
     <div class="composer">
       <div class="composer-attachments" id="composer-attachments" style="display:none"></div>
       <textarea id="composer-input" rows="1" placeholder="Type / for commands"></textarea>

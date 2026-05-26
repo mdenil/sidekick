@@ -44,6 +44,12 @@ export interface ControlsOpts {
    *  to poll `isOpen()`. State strings: 'idle' | 'requesting-mic' |
    *  'connecting' | 'connected' | 'closing' | 'failed'. */
   onCallStateChange?: (state: string, mode: string | null) => void;
+  /** Fires when a CONNECTED call was dropped by the network (not a user
+   *  hangup). Host uses it to raise the "Call dropped — network unstable"
+   *  banner with a Reconnect affordance. `reason` is the close reason from
+   *  realtime.ts ('net-failed' today; 'net-disconnect' reserved for the
+   *  Phase B reconnect path). */
+  onCallDropped?: (reason: string) => void;
 }
 
 let opts: ControlsOpts | null = null;
@@ -54,6 +60,14 @@ function btnEl(id: string): HTMLButtonElement | null {
 
 export function init(o: ControlsOpts) {
   opts = o;
+
+  // Network-drop signal (connected call torn down by the network, not the
+  // user). Distinct from the state listener below because the drop reason
+  // doesn't survive the transient failed→idle state transitions.
+  conn.setDroppedListener((reason) => {
+    diag('[webrtc-controls] call dropped, reason=', reason);
+    try { opts?.onCallDropped?.(reason); } catch { /* noop */ }
+  });
 
   conn.setStateListener((state, mode) => {
     log('[webrtc-controls] state=', state, 'mode=', mode);
@@ -89,12 +103,22 @@ export function init(o: ControlsOpts) {
         || state === 'closing';
       call.disabled = transient;
       call.classList.toggle('disabled', transient);
+      // Reconnecting stays tappable (tap = cancel/hang up) and gets a
+      // distinct pulsing-yellow visual so the user knows recovery is in
+      // progress — see .icon-btn-plain.reconnecting in app.css.
+      call.classList.toggle('reconnecting', state === 'reconnecting');
     }
     // Reset the dictation state machine whenever a call ends so a
     // pending utterance buffer or silence timer doesn't leak across
     // calls. requesting-mic / connecting on a fresh open is also a
     // safe place to clear (idempotent).
-    if (state === 'idle' || state === 'closing' || state === 'failed' || state === 'requesting-mic') {
+    // 'reconnecting' is included: when a call drops we release the dead
+    // mic stream, so the barge loop (which holds an AnalyserNode on that
+    // stream) must stop — a fresh one starts when reconnect lands back on
+    // 'connected'. Resetting dictation/suppress also gives the recovered
+    // call a clean slate.
+    if (state === 'idle' || state === 'closing' || state === 'failed'
+        || state === 'requesting-mic' || state === 'reconnecting') {
       dictation.reset();
       suppress.reset();
       realtimeBarge.stop();
@@ -130,6 +154,7 @@ export function init(o: ControlsOpts) {
     if (state === 'requesting-mic') opts.onStatus('Requesting mic…');
     else if (state === 'connecting') opts.onStatus(`Connecting (${mode})…`);
     else if (state === 'connected') opts.onStatus(mode === 'talk' ? 'On call' : 'Streaming', 'ok');
+    else if (state === 'reconnecting') opts.onStatus('Reconnecting…', 'live');
     else if (state === 'closing') opts.onStatus('Closing…');
     else if (state === 'failed') opts.onStatus('Call failed', 'err');
     else if (state === 'idle') opts.onStatus('');
@@ -142,8 +167,11 @@ export function init(o: ControlsOpts) {
  *  tts=false → stream (STT only, no TTS). Surfaces errors via the
  *  onStatus callback. */
 export async function toggleCall(): Promise<void> {
-  if (conn.isOpen()) {
-    log('[webrtc-controls] toggleCall close (currentMode=', conn.currentMode(), ')');
+  // isReconnecting() so a tap during recovery hangs up (cancels reconnect)
+  // rather than spuriously opening a second call — isOpen() is false while
+  // a re-open attempt is mid-flight.
+  if (conn.isOpen() || conn.isReconnecting()) {
+    log('[webrtc-controls] toggleCall close (currentMode=', conn.currentMode(), ' reconnecting=', conn.isReconnecting(), ')');
     await conn.close();
     return;
   }
@@ -183,11 +211,18 @@ export async function openCall(mode: conn.CallMode): Promise<void> {
 }
 
 export async function closeIfOpen(): Promise<void> {
-  if (conn.isOpen()) await conn.close();
+  if (conn.isOpen() || conn.isReconnecting()) await conn.close();
 }
 
 export function isOpen(): boolean {
   return conn.isOpen();
+}
+
+/** True while a dropped call is attempting soft recovery (Phase B). The
+ *  call isn't `connected` but it's not gone either — used so stay-alive
+ *  hints and the hang-up affordance treat recovery as a live call. */
+export function isReconnecting(): boolean {
+  return conn.isReconnecting();
 }
 
 export function currentMode(): conn.CallMode | null {
