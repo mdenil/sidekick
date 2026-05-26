@@ -112,6 +112,34 @@ export async function launchBrowser(browser, { headed: _headed = false, mobile =
         viewport: { width: 1280, height: 800 },
       });
   const page = await ctx.newPage();
+
+  // Reliability floor for explicit wait timeouts. Many scenarios hardcode
+  // tight waitForFunction/waitForSelector timeouts (~2-3s) that are fine on
+  // a fast box but flake under full-suite load on slower hosts — the wait
+  // genuinely needs ~2.8s but the cap is 3s, so it tips over
+  // non-deterministically (a different scenario fails each full run). We
+  // raise any explicit timeout below MIN_WAIT_MS up to the floor. This is
+  // SAFE: it only ever *increases* a wait budget, and the suite's real
+  // timing assertions ("connect <1s", barge fire <1.5s, …) are wall-clock
+  // Date.now() + assert, NOT wait-timeouts — so flooring can't make a slow
+  // path pass a latency check. A negative wait (expected to time out) just
+  // waits a bit longer; still correct. Set SMOKE_MIN_WAIT_MS=0 to disable.
+  const MIN_WAIT_MS = Number(process.env.SMOKE_MIN_WAIT_MS ?? 8000);
+  if (MIN_WAIT_MS > 0) {
+    const floor = (args) => {
+      const last = args[args.length - 1];
+      if (last && typeof last === 'object' && typeof last.timeout === 'number'
+          && last.timeout < MIN_WAIT_MS) {
+        last.timeout = MIN_WAIT_MS;
+      }
+      return args;
+    };
+    for (const m of ['waitForFunction', 'waitForSelector']) {
+      const orig = page[m].bind(page);
+      page[m] = (...args) => orig(...floor(args));
+    }
+  }
+
   const cleanup = async () => {
     try { await ctx.close(); } catch {}
   };
