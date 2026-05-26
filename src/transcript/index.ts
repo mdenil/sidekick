@@ -13,7 +13,7 @@
 import { project } from './projection.ts';
 import { reconcile } from './reconciler.ts';
 import { getState, subscribe } from './store.ts';
-import { scheduleSnapshotPersist } from '../chat.ts';
+import { scheduleSnapshotPersist, runWithScrollSaveSuppressed } from '../chat.ts';
 import { bindVirtualizer as bindVirt, type VirtualizerHandle } from './virtualizer.ts';
 
 export {
@@ -117,6 +117,39 @@ export function bindTranscriptPipeline(opts: BindOpts): () => void {
     if (viewed && chatId !== viewed) return;
     rerenderInto(chatId);
   });
+}
+
+/** Switch-then-load: blank the transcript + show the loading spinner
+ *  IMMEDIATELY when the user clicks a different chat row, before the
+ *  incoming transcript is ready. Pure in-DOM operation — empties the
+ *  rendered content and adds the `.transcript-loading` class (the CSS
+ *  spinner fades in after 200ms; a fast cache hit clears it first via
+ *  rerenderInto's `specs.length > 0` removal so no flash). Decoupled
+ *  from any IDB persistence: the click handler calls this synchronously,
+ *  and "which session is viewed" stays on its existing async path. This
+ *  is why it can't reintroduce the IDB-pagehide race that reverted the
+ *  prior attempt — nothing here writes to (or awaits) IndexedDB.
+ *
+ *  Handles both render paths:
+ *   - virtualizer active → clearContent() blanks the slot in place,
+ *     keeping the scaffold for the next setSpecs.
+ *   - default path → empty #transcript directly. */
+export function showTranscriptLoading(): void {
+  const el = getTranscriptEl();
+  if (!el) return;
+  // Emptying the transcript collapses its scrollHeight and fires a
+  // synthetic scroll-to-0 event while the LEAVING chat is still the
+  // viewed one. Suppress the scroll listener's position-save across the
+  // clear so that synthetic scroll doesn't clobber the leaving chat's
+  // just-saved position with a garbage (empty-transcript) anchor.
+  runWithScrollSaveSuppressed(() => {
+    if (virtualizer) {
+      virtualizer.clearContent();
+    } else {
+      el.innerHTML = '';
+    }
+  });
+  el.classList.add('transcript-loading');
 }
 
 /** Force a re-render of the active chat. Call after a session-switch
