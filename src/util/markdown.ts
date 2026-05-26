@@ -24,18 +24,18 @@ export function miniMarkdown(s) {
   t = t.replace(/^###\s+(.+)$/gm, '<h3>$1</h3>');
   t = t.replace(/^##\s+(.+)$/gm, '<h2>$1</h2>');
   t = t.replace(/^#\s+(.+)$/gm, '<h1>$1</h1>');
-  // Bullet lists
-  t = t.replace(/^(?:[-*]\s+.+\n?)+/gm, m => {
-    const items = m.trim().split('\n').map(l => '<li>' + l.replace(/^[-*]\s+/, '') + '</li>').join('');
-    return `<ul>${items}</ul>`;
-  });
-  // Numbered lists. Same shape as bullet but consecutive lines beginning
-  // with digits-dot-space → <ol><li>…</li></ol>. Risk of false positives
-  // on prose like "10. October" is real but low for chat content.
-  t = t.replace(/^(?:\d+\.\s+.+\n?)+/gm, m => {
-    const items = m.trim().split('\n').map(l => '<li>' + l.replace(/^\d+\.\s+/, '') + '</li>').join('');
-    return `<ol>${items}</ol>`;
-  });
+  // Lists (bullet + ordered). A line-based block parser groups consecutive
+  // list items into a single <ul>/<ol>. Crucially it keeps a list together
+  // across two things that previously split it into many single-item lists
+  // (each restarting at 1):
+  //   1. indented continuation lines belonging to an item, e.g.
+  //        1. Title
+  //           a description paragraph for that item
+  //   2. blank lines separating items (CommonMark "loose" lists).
+  // The old per-line regex (`^(?:\d+\.\s+.+\n?)+`) stopped at the first
+  // non-numbered line, so the v13-spine outline rendered as a stack of
+  // single-item <ol>s — every item shown as "1." (Jonathan field report).
+  t = renderLists(t);
   // Markdown links
   t = t.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
   // Angle-bracketed URLs: <url> → escaped as &lt;url&gt; by escapeHtml
@@ -57,6 +57,63 @@ export function miniMarkdown(s) {
     BLOCK_OPENER.test(p) ? p : `<p>${p.replace(/\n/g, '<br>')}</p>`
   ).join('');
   return t;
+}
+
+/** Line-based list renderer for bullet (`-`/`*`) and ordered (`\d+.`) lists.
+ *  Walks the text line by line. A run of list items — possibly interleaved
+ *  with indented continuation lines and single blank-line separators — is
+ *  collapsed into one <ul>/<ol> so ordered lists increment correctly even
+ *  when the source repeats `1.` for every item (browsers auto-number <li>).
+ *  Non-list lines pass through untouched. */
+function renderLists(text) {
+  const BULLET = /^[-*]\s+(.*)$/;
+  const ORDERED = /^\d+\.\s+(.*)$/;
+  const lines = text.split('\n');
+  const out = [];
+  let i = 0;
+  while (i < lines.length) {
+    const bulletStart = BULLET.test(lines[i]);
+    const orderedStart = ORDERED.test(lines[i]);
+    if (!bulletStart && !orderedStart) {
+      out.push(lines[i]);
+      i++;
+      continue;
+    }
+    const ordered = orderedStart;
+    const marker = ordered ? ORDERED : BULLET;
+    const items = []; // array of arrays of text fragments (item + continuations)
+    let j = i;
+    while (j < lines.length) {
+      const m = lines[j].match(marker);
+      if (m) {
+        // New list item of the matching kind.
+        items.push([m[1]]);
+        j++;
+        continue;
+      }
+      // Indented continuation line belongs to the current item.
+      if (items.length > 0 && /^\s+\S/.test(lines[j])) {
+        items[items.length - 1].push(lines[j].trim());
+        j++;
+        continue;
+      }
+      // A single blank line may separate items in a "loose" list. Only
+      // continue the list if another item of the same kind follows the
+      // (one) blank line; otherwise the list ends here.
+      if (lines[j].trim() === '' && j + 1 < lines.length && marker.test(lines[j + 1])) {
+        j++; // skip the blank line, keep accumulating
+        continue;
+      }
+      break;
+    }
+    const tag = ordered ? 'ol' : 'ul';
+    const html = `<${tag}>` +
+      items.map(frags => '<li>' + frags.join('<br>') + '</li>').join('') +
+      `</${tag}>`;
+    out.push(html);
+    i = j;
+  }
+  return out.join('\n');
 }
 
 /** GFM pipe-table renderer. Scans for a header row + separator row + one
