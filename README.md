@@ -21,7 +21,7 @@ Clones into `./sidekick` in your current directory, installs deps, and boots:
 - Sidekick proxy on `http://localhost:3001` (open this in a browser)
 - Bundled stub agent on `:4001` (echo LLM, no API keys needed)
 
-Add a [Deepgram](https://console.deepgram.com) key to `./sidekick/.env` to enable voice; everything else is optional.
+Add a [Deepgram](https://console.deepgram.com) key to `./sidekick/.env` to enable voice; everything else is optional. Browser microphone and WebRTC APIs require a secure context when you access Sidekick from another device, so use HTTPS for phone/laptop access. Localhost can stay HTTP.
 
 Manual install:
 
@@ -52,7 +52,7 @@ Most chat UIs treat voice as a bolt-on. Sidekick is voice-first:
 
 | Frontend | Status | Notes |
 |---|---|---|
-| **Desktop browser** | ✅ Stable | Full feature set. Chrome / Edge / Safari / Firefox. Open `http://localhost:3001` and go. |
+| **Desktop browser** | ✅ Stable | Full feature set. Chrome / Edge / Safari / Firefox. Open `http://localhost:3001` locally, or HTTPS when connecting remotely. |
 | **Mobile PWA** | ✅ Stable | Installable web app — "Add to Home Screen" on iOS / "Install app" on Android adds an icon that launches like a native app, no app-store install required. Fastest way to try Sidekick on a phone. Most features work; backgrounding is best-effort (browsers can suspend mic when the screen locks), and the browser re-asks for mic permission on each cold launch. |
 | **iOS / Android native** | 🚧 Coming soon | Capacitor wrapper to fix the mic-permission and background-audio gaps the PWA can't. |
 
@@ -73,6 +73,29 @@ Two surfaces:
 - **`sidekick.config.yaml`** — non-secret deployment tuning (branding, theme, preferred-models filter, server ports). See [`example.sidekick.config.yaml`](example.sidekick.config.yaml). Point sidekick at it via `SIDEKICK_CONFIG=/path/to/file`.
 
 The Settings panel inside the app handles per-user preferences (theme, mic device, TTS voice, STT keyterms, etc.) live without restart.
+
+### HTTPS for Voice
+
+Voice capture, push, installable PWA behavior, and WebRTC calling need a browser secure context outside `localhost`. If you open Sidekick as `http://host:3001` from a phone or another laptop, text chat can work while microphone/call features fail or never request permission.
+
+Sidekick can terminate HTTPS directly when both TLS files are configured:
+
+```bash
+SIDEKICK_HTTPS_CERT_FILE=/path/to/sidekick.crt
+SIDEKICK_HTTPS_KEY_FILE=/path/to/sidekick.key
+npm start
+```
+
+Equivalent YAML:
+
+```yaml
+server:
+  https:
+    cert_file: /path/to/sidekick.crt
+    key_file: /path/to/sidekick.key
+```
+
+A self-signed cert is enough to create a secure context after the browser trusts or accepts it. For a trusted certificate with no browser warning, put Tailscale Serve, Caddy, nginx, or another TLS proxy in front of the local Sidekick listener.
 
 ## API + state surface
 

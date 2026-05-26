@@ -40,6 +40,13 @@ server:
   port: 3001
   host: ~                 # null = 127.0.0.1; '0.0.0.0' to bind all interfaces
   disable_screenshot: false  # set true to skip Playwright link-preview cards
+  # Voice capture requires a browser secure context. For remote access,
+  # run Sidekick over HTTPS by setting both files below, or use a
+  # trusted reverse proxy such as Tailscale Serve / Caddy in front of
+  # the local HTTP listener.
+  https:
+    cert_file: ~          # env override: SIDEKICK_HTTPS_CERT_FILE
+    key_file: ~           # env override: SIDEKICK_HTTPS_KEY_FILE
 
 # Ambient corner widget — leave null to use browser geolocation.
 weather:

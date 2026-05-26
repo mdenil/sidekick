@@ -115,6 +115,20 @@ function cfgVal<T>(envName: string, cfgPath: string, fallback: T): T {
 
 const PORT = Number(cfgVal('PORT', 'server.port', 3001));
 const HOST = cfgVal('HOST', 'server.host', '127.0.0.1') as string;
+const HTTPS_CERT_FILE = cfgVal('SIDEKICK_HTTPS_CERT_FILE', 'server.https.cert_file', '') as string;
+const HTTPS_KEY_FILE = cfgVal('SIDEKICK_HTTPS_KEY_FILE', 'server.https.key_file', '') as string;
+const HTTPS_ENABLED = HTTPS_CERT_FILE !== '' || HTTPS_KEY_FILE !== '';
+
+function createHttpServer(handler: http.RequestListener): http.Server | https.Server {
+  if (!HTTPS_ENABLED) return http.createServer(handler);
+  if (!HTTPS_CERT_FILE || !HTTPS_KEY_FILE) {
+    throw new Error('HTTPS requires both SIDEKICK_HTTPS_CERT_FILE and SIDEKICK_HTTPS_KEY_FILE');
+  }
+  return https.createServer({
+    cert: fsSync.readFileSync(HTTPS_CERT_FILE),
+    key: fsSync.readFileSync(HTTPS_KEY_FILE),
+  }, handler);
+}
 
 const DEEPGRAM_KEY = process.env.DEEPGRAM_API_KEY || '';
 if (!DEEPGRAM_KEY) {
@@ -975,7 +989,7 @@ function handleRtcProxy(req, res) {
   else upReq.end();
 }
 
-const server = http.createServer(async (req, res) => {
+const server = createHttpServer(async (req, res) => {
   if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
   // WebRTC voice signaling proxy → /v1/rtc/* on hermes upstream.
   if (req.url && req.url.startsWith('/api/rtc')) return handleRtcProxy(req, res);
@@ -1241,5 +1255,6 @@ server.on('upgrade', (req, socket, head) => {
 });
 
 server.listen(PORT, HOST, () => {
-  console.log(`SideKick server on http://${HOST}:${PORT} (TTS: ${DEFAULT_TTS_MODEL})`);
+  const protocol = HTTPS_ENABLED ? 'https' : 'http';
+  console.log(`SideKick server on ${protocol}://${HOST}:${PORT} (TTS: ${DEFAULT_TTS_MODEL})`);
 });
