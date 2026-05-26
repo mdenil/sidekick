@@ -270,6 +270,12 @@ export interface VirtualizerHandle {
   /** The current spec list (defensive shallow copy). Callers needing
    *  per-key metadata (kind, role) should use this. */
   getSpecs(): BubbleSpec[];
+  /** Empty the rendered window WITHOUT tearing down the slot/spacer
+   *  scaffold or listeners. Used by the switch-then-load clear so the
+   *  viewport blanks instantly on a row switch; the next setSpecs (from
+   *  the incoming chat's replay) repopulates. Resets internal specs +
+   *  spacer heights so the blank state is consistent. */
+  clearContent(): void;
   /** Tear down DOM + listeners. Tests use this; production never
    *  unbinds (the transcript element lives for the app's lifetime). */
   dispose(): void;
@@ -496,6 +502,18 @@ export function bindVirtualizer(opts: VirtualizerOpts): VirtualizerHandle {
       return currentSpecs.map(s => s.key);
     },
     getSpecs() { return currentSpecs.slice(); },
+    clearContent() {
+      // Switch-then-load: blank the rendered window in place. Keep the
+      // slot/spacer scaffold + scroll listener intact so the very next
+      // setSpecs (the incoming chat's replay) rerenders normally. We
+      // empty the slot, collapse the spacers, and drop currentSpecs so
+      // a stale window doesn't repaint before the new specs arrive.
+      currentSpecs = [];
+      ro?.disconnect();
+      slot.innerHTML = '';
+      topSpacer.style.height = '0px';
+      bottomSpacer.style.height = '0px';
+    },
     dispose() {
       ro?.disconnect();
       transcriptEl.removeEventListener('scroll', scheduleRerender);

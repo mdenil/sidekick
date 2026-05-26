@@ -138,6 +138,15 @@ export function replaySessionMessages(
   // is idempotent.
   rerenderActive();
 
+  // Switch-then-load: the row-click handler may have added
+  // `.transcript-loading` (blanked + spinner) for this switch. rerenderInto
+  // clears it once a NON-EMPTY render lands, but an empty chat (0 durable
+  // messages, no inflight) would never trip that path and the spinner
+  // would spin forever. Clear unconditionally here now that the target
+  // chat's content has been applied — this is the definitive "incoming
+  // transcript is rendered" signal.
+  document.getElementById('transcript')?.classList.remove('transcript-loading');
+
   chat.setPaginationState(pagination?.firstId ?? null, !!pagination?.hasMore);
   // If the resume was driven by a message-search hit, find the matching
   // bubble and scroll it into view + flash. Best-effort: if the hit

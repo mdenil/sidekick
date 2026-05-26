@@ -32,6 +32,7 @@ import { isMuted as isChatMuted, setMuted as setChatMuted } from './notification
 import { reportChatSwitch } from './notifications/visibility.ts';
 import { unreadFor, markUnread as markChatUnread, unmarkUnread as unmarkChatUnread, isMarkedUnread } from './notifications/badge.ts';
 import * as activityStore from './notifications/activityStore.ts';
+import { showTranscriptLoading } from './transcript/index.ts';
 
 let onResumeCb: ((id: string, messages: any[], pagination?: { firstId: number | null; hasMore: boolean }, inflight?: any[]) => void) | null = null;
 
@@ -332,8 +333,9 @@ function navigateByKey(direction: -1 | 1): boolean {
   }
   optimisticActiveId = targetId;
   // Async resume — fetch transcript + render. Same path the click
-  // handler uses, so behavior (chat.clear + replay + drawer refresh)
-  // is identical to a click.
+  // handler uses, so behavior (scroll-save + switch-then-load clear +
+  // replay + drawer refresh) is identical to a click; resume() handles
+  // the synchronous transcript blank-and-spinner internally.
   resume(targetId).catch((e: any) => {
     diag(`sessionDrawer: arrow-nav resume failed: ${e?.message || e}`);
   });
@@ -1015,6 +1017,10 @@ function renderRow(s: any, activeId: string): HTMLLIElement {
     // flicker Jonathan reported (2026-05-25, post-virt-default soak).
     optimisticActiveId = s.id;
     trace('sync-active-flip');
+    // Switch-then-load: resume() blanks the transcript + shows the
+    // spinner synchronously (after it saves the leaving chat's scroll
+    // position) so the old chat's content doesn't linger until the new
+    // one loads (Jonathan field report 2026-05-26).
     resume(s.id);
   };
   // macOS Chrome / Safari fire `contextmenu` on ctrl+click instead
@@ -1298,6 +1304,22 @@ async function resume(id: string) {
     try { onBeforeSwitchCb?.(leaving); }
     catch (e: any) { diag(`onBeforeSwitch threw: ${e?.message || e}`); }
     t?.trace('onBeforeSwitch-end');
+    // Switch-then-load: blank the transcript + show the spinner NOW —
+    // after the leaving chat's scroll position is saved/flushed above,
+    // but before the (async) cache/server fetch repopulates. The old
+    // chat's content disappears instantly instead of lingering until the
+    // new transcript lands (Jonathan field report 2026-05-26). This is a
+    // pure in-DOM operation (empty the rendered content + add the
+    // `.transcript-loading` class) — it issues NO IDB write and awaits
+    // nothing, so it can't reintroduce the IDB-pagehide persistence race
+    // that got the prior synchronous-clear attempt reverted. The spinner
+    // class is cleared once the incoming chat's render lands (see
+    // rerenderInto + replaySessionMessages). Ordering matters: doing this
+    // AFTER saveCurrentScrollPosition keeps the leaving chat's saved
+    // scrollTop accurate (clearing first would save against an emptied,
+    // collapsed transcript and lose the position).
+    showTranscriptLoading();
+    t?.trace('transcript-cleared');
   }
   // Claim the optimistic active id immediately so refresh() paints the
   // clicked row as active even before the server fetch completes (and

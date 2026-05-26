@@ -80,6 +80,32 @@ const PINNED_THRESHOLD_PX = 300;
 let pinnedToBottom = true;
 let missedWhileScrolled = 0;
 
+/** When true, the transcript `scroll` listener skips its
+ *  saveCurrentScrollPosition() write. Set briefly by the switch-then-load
+ *  clear: emptying the transcript collapses its scrollHeight, which fires
+ *  a scroll-to-0 event WHILE viewedSessionIdRef still points at the
+ *  LEAVING chat — without this guard that synthetic scroll overwrites the
+ *  leaving chat's just-saved (real) position with scrollTop=0 and a
+ *  garbage anchor, so switch-back restores to the wrong place
+ *  (scroll-mid-history-survives-switch regression). The explicit save in
+ *  resume() already ran before the clear, so suppressing here loses
+ *  nothing. */
+let scrollSaveSuppressed = false;
+/** Run `fn` (the transcript clear) with scroll-save suppressed, then
+ *  re-enable on the next macrotask so the synchronous + any same-tick
+ *  scroll events triggered by the clear are all skipped, but genuine
+ *  user/restore scrolls afterward save normally. */
+export function runWithScrollSaveSuppressed(fn: () => void): void {
+  scrollSaveSuppressed = true;
+  try { fn(); }
+  finally {
+    // Defer re-enable past the synchronous scroll dispatch the clear
+    // induced. setTimeout(0) lands after the browser flushes the scroll
+    // event queue for this clamp.
+    setTimeout(() => { scrollSaveSuppressed = false; }, 0);
+  }
+}
+
 export function saveCurrentScrollPosition(): void {
   if (!transcriptEl || !viewedSessionIdRef) return;
   // Under virtualization, capture the anchor (key + offset) alongside
@@ -280,7 +306,7 @@ export async function init(el: HTMLElement | null): Promise<boolean> {
       // wins, which is the actual user-visible position. No user-vs-JS
       // distinction needed: the FINAL scrollTop after all events fire
       // is what should persist.
-      if (transcriptEl && viewedSessionIdRef) {
+      if (transcriptEl && viewedSessionIdRef && !scrollSaveSuppressed) {
         saveCurrentScrollPosition();
       }
       // Re-evaluate pinned on every scroll. autoScroll's `if (pinned)`
