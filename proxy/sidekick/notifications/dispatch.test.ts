@@ -1,0 +1,47 @@
+// Regression: an approval push must use a DISTINCT notification tag from
+// reply pushes, so the stream of `reply_final` ("Still working…") pushes
+// during a long autonomous turn can't coalesce-overwrite the urgent,
+// actionable approval banner on the same chat.
+//
+// Field 2026-05-26 (Jonathan, pitch deck): the approval push was delivered
+// (FCM delivered=1) but never surfaced — every push for the chat shared
+// tag `chat:<id>`, so the next heartbeat reply replaced the approval
+// banner. Fix: approvals tag as `approval:<id>`.
+
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { envelopeToPayload } from './dispatch.ts';
+
+const CID = 'sidekick:ae6435b5-pitch-deck';
+
+test('approval and reply pushes for the same chat use different tags', () => {
+  const approval = envelopeToPayload({
+    type: 'notification',
+    kind: 'approval',
+    chat_id: CID,
+    content: '⚠️ Dangerous command requires approval:\n\nrm -rf /tmp/x\n\nReason: recursive delete',
+  });
+  const reply = envelopeToPayload({
+    type: 'reply_final',
+    chat_id: CID,
+    content: 'Still working… (12 min elapsed — iteration 47/60)',
+  });
+
+  assert.equal(approval.tag, `approval:${CID}`, 'approval should get its own tag namespace');
+  assert.equal(reply.tag, `chat:${CID}`, 'reply keeps the per-chat tag');
+  assert.notEqual(
+    approval.tag, reply.tag,
+    'approval and reply tags must differ — otherwise a reply heartbeat coalesces over the approval',
+  );
+});
+
+test('approvals for the same chat still coalesce with each other', () => {
+  const a1 = envelopeToPayload({ type: 'notification', kind: 'approval', chat_id: CID, content: 'Dangerous command requires approval: a' });
+  const a2 = envelopeToPayload({ type: 'notification', kind: 'approval', chat_id: CID, content: 'Dangerous command requires approval: b' });
+  assert.equal(a1.tag, a2.tag, 'two approvals on the same chat share a tag (one outstanding banner)');
+});
+
+test('no chat_id → undefined tag (no coalescing key)', () => {
+  const p = envelopeToPayload({ type: 'notification', kind: 'approval', content: 'x' });
+  assert.equal(p.tag, undefined);
+});

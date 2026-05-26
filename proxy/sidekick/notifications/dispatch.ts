@@ -363,13 +363,26 @@ export function envelopeToPayload(env: Record<string, any>, bodyOverride?: strin
         : `/?chat=${encodeURIComponent(chatId)}`)
     : '/';
 
+  // tag coalesces per-chat: same chat = same tag = OS replaces the prior
+  // notification instead of stacking. BUT approvals get their OWN tag
+  // namespace: an approval is urgent + actionable and must NOT be
+  // overwritten by the stream of `reply_final` ("Still working…") pushes
+  // that share the chat during a long autonomous turn. Field 2026-05-26
+  // (Jonathan): a pitch-deck approval push (delivered=1) was silently
+  // replaced by the next heartbeat reply for the same chat, so the
+  // approval banner never surfaced. Approvals still coalesce with each
+  // other per-chat (one outstanding approval banner), just independent of
+  // replies.
+  const isApproval = env.type === 'notification' && env.kind === 'approval';
+  const tag = chatId
+    ? (isApproval ? `approval:${chatId}` : `chat:${chatId}`)
+    : undefined;
+
   return {
     title,
     body: finalBody,
     chat_id: chatId,
-    // tag coalesces per-chat: same chat = same tag = OS replaces the
-    // prior notification instead of stacking.
-    tag: chatId ? `chat:${chatId}` : undefined,
+    tag,
     url,
   };
 }
