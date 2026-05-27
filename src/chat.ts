@@ -272,6 +272,15 @@ function installScrollWriteTracing(el: HTMLElement): void {
   }
 }
 
+/** The single source of truth for "is the scrollbar at the live edge?".
+ *  Maintained by the scroll listener on EVERY scroll event (user wheel/
+ *  touch AND programmatic/virtualizer scrolls), so anything gating on it
+ *  (autoScroll follow-tail, the at-bottom re-pin) yields the instant the
+ *  user scrolls up. */
+export function isPinnedToBottom(): boolean {
+  return pinnedToBottom;
+}
+
 export function setPinnedToBottom(v: boolean): void {
   pinnedToBottom = v;
   updateButton();

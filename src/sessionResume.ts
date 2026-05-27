@@ -302,48 +302,30 @@ function scheduleAtBottomRepin(): void {
   if (!transcriptEl || typeof ResizeObserver === 'undefined') return;
   // Cancel any previous repin from a sibling chat that hasn't expired yet.
   cancelActiveAtBottomRepin?.();
-  let userScrolledUp = false;
-  let pendingUserScrollUntil = 0;
-  const markUserScrollIntent = () => {
-    pendingUserScrollUntil = Date.now() + 800;
-    // Once the user starts interacting with the transcript, stop the
-    // temporary bottom-repin immediately. Otherwise a ResizeObserver
-    // callback can snap back to bottom before the browser dispatches
-    // the resulting scroll event.
-    userScrolledUp = true;
-  };
-  const onScroll = () => {
-    if (Date.now() > pendingUserScrollUntil) return;
-    const sh = transcriptEl.scrollHeight;
-    const ch = transcriptEl.clientHeight;
-    const distanceFromBottom = sh - transcriptEl.scrollTop - ch;
-    // Wheel/touch/pointer fires before the browser applies the scroll.
-    // Cancel the temporary repin only once the subsequent scroll event
-    // proves the user actually moved away from the live edge.
-    if (distanceFromBottom > 100) userScrolledUp = true;
-  };
-  transcriptEl.addEventListener('touchmove', markUserScrollIntent, { passive: true });
-  transcriptEl.addEventListener('wheel', markUserScrollIntent, { passive: true });
-  transcriptEl.addEventListener('pointerdown', markUserScrollIntent, { passive: true });
-  transcriptEl.addEventListener('scroll', onScroll, { passive: true });
+  // Re-pin to the bottom when the transcript (or a child bubble) resizes
+  // during the settle window after a restore-to-bottom — BUT only while the
+  // user is still pinned to the bottom. `chat.isPinnedToBottom()` is the
+  // SINGLE source of truth, updated on EVERY scroll event (wheel, touch,
+  // AND programmatic / virtualizer-rerender scrolls), so the instant the
+  // user scrolls up off the bottom this re-pin yields — it can no longer
+  // fight the user. The old wheel/touch/pointerdown "intent" detection
+  // missed programmatic + rerender-driven scrolls and snapped the user back
+  // to the bottom (field 2026-05-27: scroll-up didn't stick). Follow-the-
+  // tail during streaming is handled by autoScroll() on each append; this
+  // RO just covers async height growth (play-bars, late images) post-restore.
   const ro = new ResizeObserver(() => {
-    if (userScrolledUp) return;
+    if (!chat.isPinnedToBottom()) return;
     transcriptEl.scrollTo({ top: transcriptEl.scrollHeight, behavior: 'instant' as ScrollBehavior });
   });
   ro.observe(transcriptEl);
-  // Also observe direct children — scrollHeight changes when a CHILD
-  // grows (e.g. a bubble has a play-bar appended), and the parent's
-  // ResizeObserver fires for its own size only, not children's. Watch
-  // each child for the same window.
+  // Also observe direct children — scrollHeight changes when a CHILD grows
+  // (e.g. a bubble gets a play-bar appended); the parent RO fires for its
+  // own size only, not children's.
   for (const child of Array.from(transcriptEl.children)) {
     if (child instanceof HTMLElement) ro.observe(child);
   }
   const teardown = () => {
     ro.disconnect();
-    transcriptEl.removeEventListener('touchmove', markUserScrollIntent);
-    transcriptEl.removeEventListener('wheel', markUserScrollIntent);
-    transcriptEl.removeEventListener('pointerdown', markUserScrollIntent);
-    transcriptEl.removeEventListener('scroll', onScroll);
     if (cancelActiveAtBottomRepin === teardown) cancelActiveAtBottomRepin = null;
   };
   cancelActiveAtBottomRepin = teardown;
