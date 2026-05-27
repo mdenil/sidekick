@@ -4,7 +4,7 @@
 
 import { escapeHtml } from './util/dom.ts';
 import { miniMarkdown } from './util/markdown.ts';
-import { diag, log } from './util/log.ts';
+import { diag, log, isDebugEnabled } from './util/log.ts';
 import {
   ensureSchemaFresh,
   loadSnapshot,
@@ -237,6 +237,41 @@ export function autoScroll(): void {
  *  re-derives pinned on the next real scroll, so this just removes the
  *  window where a false-positive isPinned() (at scrollTop≈0 right after the
  *  switch-then-load clear collapses scrollHeight) lets autoScroll run. */
+/** DEBUG-ONLY: trace every programmatic scroll write on the transcript —
+ *  both `el.scrollTo(...)` and `el.scrollTop = …` — with a caller hint, so a
+ *  repro names the EXACT code re-asserting a scroll target (field 2026-05-27:
+ *  scroll-to-bottom snaps back to a saved anchor via an un-logged writer).
+ *  Only installed when the debug pill is on: `new Error().stack` per write is
+ *  too costly for production. The browser's own smooth-scroll animation
+ *  frames don't go through these JS setters, so the trace stays sparse —
+ *  one line per genuine code-issued scroll write. */
+function installScrollWriteTracing(el: HTMLElement): void {
+  const callerHint = (): string =>
+    ((new Error().stack || '').split('\n').slice(2, 5)
+      .map(s => s.trim().replace(/^at\s+/, ''))
+      .filter(s => s && !s.includes('installScrollWriteTracing') && !s.includes('callerHint'))
+      .join('  ←  ')) || '?';
+  const origScrollTo = el.scrollTo.bind(el);
+  (el as any).scrollTo = (...args: any[]) => {
+    const o = args[0];
+    const top = (o && typeof o === 'object') ? o.top : args[1];
+    const beh = (o && typeof o === 'object') ? o.behavior : undefined;
+    diag(`[scroll-write] scrollTo top=${Math.round(Number(top) || 0)} beh=${beh || 'auto'} via ${callerHint()}`);
+    return (origScrollTo as any)(...args);
+  };
+  const desc = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop');
+  if (desc?.get && desc.set) {
+    Object.defineProperty(el, 'scrollTop', {
+      configurable: true,
+      get() { return desc.get!.call(el); },
+      set(v: number) {
+        diag(`[scroll-write] scrollTop= ${Math.round(Number(v) || 0)} via ${callerHint()}`);
+        desc.set!.call(el, v);
+      },
+    });
+  }
+}
+
 export function setPinnedToBottom(v: boolean): void {
   pinnedToBottom = v;
   updateButton();
@@ -262,6 +297,7 @@ export function cancelAtBottomRepin(): void {
  *  can't be synchronous; the cold-boot flash is sub-frame on modern devices. */
 export async function init(el: HTMLElement | null): Promise<boolean> {
   transcriptEl = el;
+  if (transcriptEl && isDebugEnabled()) installScrollWriteTracing(transcriptEl);
   // Schema check FIRST — if the on-disk format is stale, nuke IDB
   // before any reader path runs. Avoids racing a delete against a
   // concurrent loadSnapshot. See SCHEMA_VERSION comment for policy.
