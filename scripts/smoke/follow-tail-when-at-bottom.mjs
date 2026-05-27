@@ -70,11 +70,25 @@ export default async function run({ page, log, mock }) {
   log(`on open: distFromBottom=${m.distFromBottom} (sh=${m.sh} ch=${m.ch})`);
   assert(m.distFromBottom <= 60, `should open at the bottom, dist=${m.distFromBottom}`);
 
-  // 2. Reply while at bottom → follows.
-  await pushReply(page, mock, 'msg_ft_live1', 'FOLLOW_TAIL_REPLY_ONE streaming in');
+  // 2. STREAM a reply (multiple deltas) while at bottom → the view must
+  //    follow each delta so the latest stays in view (the hands-free
+  //    "watch the reply come in" case).
+  const streamId = 'msg_ft_stream';
+  let acc = '';
+  for (let k = 0; k < 5; k++) {
+    acc += `STREAMING chunk ${k} — ${'follow me '.repeat(12)}\n`;
+    mock.pushEnvelope({ type: 'reply_delta', chat_id: CHAT_ID, message_id: streamId, text: acc });
+    await page.waitForTimeout(160);
+    const md = await metrics(page);
+    log(`  stream delta ${k}: distFromBottom=${md.distFromBottom} (sh=${md.sh})`);
+    assert(md.distFromBottom <= 60,
+      `while at bottom, the view must follow each streaming delta — dist=${md.distFromBottom} at chunk ${k}`);
+  }
+  mock.pushEnvelope({ type: 'reply_final', chat_id: CHAT_ID, message_id: streamId });
+  await page.waitForTimeout(250);
   m = await metrics(page);
-  log(`after reply (at bottom): distFromBottom=${m.distFromBottom}`);
-  assert(m.distFromBottom <= 60, `at-bottom reply must auto-follow to the new bottom, dist=${m.distFromBottom}`);
+  log(`after stream final (at bottom): distFromBottom=${m.distFromBottom}`);
+  assert(m.distFromBottom <= 60, `at-bottom stream must end pinned to the new bottom, dist=${m.distFromBottom}`);
 
   // 3. Scroll UP off the bottom.
   await page.evaluate(() => {
