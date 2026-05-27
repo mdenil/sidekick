@@ -258,6 +258,23 @@ export function approvalPreview(raw: string): string {
   return reason || cmd || text;
 }
 
+/** True for the transient progress "heartbeat" the agent emits once per
+ *  iteration during a long autonomous turn, e.g.
+ *    "⏳ Still working... (12 min elapsed — iteration 47/60, running: terminal)"
+ *  These arrive as reply_final and would otherwise fire a push EACH
+ *  iteration — pure noise, and (sharing the per-chat tag) they
+ *  coalesce-overwrite each other and buried a real approval (field
+ *  2026-05-26). Suppress them from push; the in-app transcript/Activity
+ *  still shows progress, and the reply that actually ENDS the turn isn't a
+ *  heartbeat so it still pushes. Two matchers: the ⏳-prefixed form, plus a
+ *  structural fallback in case the emoji is stripped upstream. */
+export function isProgressHeartbeat(raw: string): boolean {
+  const s = (raw || '').trim();
+  if (!s) return false;
+  return /^⏳\s*Still working\b/i.test(s)
+    || /\bStill working\.{0,3}\s*\(\s*\d+\s*min elapsed\b.*\biteration\s*\d+\s*\/\s*\d+/i.test(s);
+}
+
 /** Translate a sidekick envelope into a push payload. The shape matches
  *  the sw.js push listener's expectations:
  *    { title, body, chat_id?, tag?, icon?, url? }

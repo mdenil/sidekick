@@ -53,6 +53,7 @@ import {
   dispatchPush,
   envelopeToPayload,
   isPushEligible,
+  isProgressHeartbeat,
 } from './notifications/dispatch.ts';
 import { isConfigured as isNotificationsConfigured } from './notifications/index.ts';
 import { isPushOwnedByPlugin } from './notifications/delegate.ts';
@@ -217,6 +218,17 @@ function maybeDispatchPush(env: Envelope, prevBroadcastAt: number, bodyOverride?
     }
     const cid = typeof env.chat_id === 'string' ? env.chat_id : '';
     if (!cid) return { decision: 'missing_chat_id', chatId: '' };
+    // Suppress the per-iteration "⏳ Still working… (N min elapsed —
+    // iteration X/60)" heartbeats the agent emits during a long autonomous
+    // turn. reply_final carries its text via bodyOverride (drained from the
+    // reply buffer); notifications carry content/text. Pushing each is
+    // noise and they coalesce-clobber each other (field 2026-05-26). The
+    // turn's actual final answer isn't a heartbeat, so it still pushes.
+    const hbText = (typeof bodyOverride === 'string' && bodyOverride)
+      ? bodyOverride
+      : (typeof (env as any).content === 'string' ? (env as any).content
+        : typeof (env as any).text === 'string' ? (env as any).text : '');
+    if (isProgressHeartbeat(hbText)) return { decision: 'heartbeat_progress', chatId: cid };
     // Per-kind filter — user toggled this category off in Settings →
     // Notifications. Map envelope.type → PushKinds key:
     //   reply_final  → 'agent_reply'

@@ -10,7 +10,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { envelopeToPayload } from './dispatch.ts';
+import { envelopeToPayload, isProgressHeartbeat } from './dispatch.ts';
 
 const CID = 'sidekick:ae6435b5-pitch-deck';
 
@@ -44,4 +44,21 @@ test('approvals for the same chat still coalesce with each other', () => {
 test('no chat_id → undefined tag (no coalescing key)', () => {
   const p = envelopeToPayload({ type: 'notification', kind: 'approval', content: 'x' });
   assert.equal(p.tag, undefined);
+});
+
+test('progress heartbeats are detected (and suppressed from push)', () => {
+  // The exact shapes seen in the field (sidekick.sql).
+  assert.ok(isProgressHeartbeat('⏳ Still working... (12 min elapsed — iteration 47/60, running: terminal)'));
+  assert.ok(isProgressHeartbeat('⏳ Still working... (3 min elapsed — iteration 15/60, receiving stream response)'));
+  // Structural fallback if the emoji is stripped somewhere upstream.
+  assert.ok(isProgressHeartbeat('Still working (6 min elapsed — iteration 14/60, running: terminal)'));
+});
+
+test('real replies and approvals are NOT treated as heartbeats', () => {
+  assert.ok(!isProgressHeartbeat('Here are the crons you have set up: ...'));
+  assert.ok(!isProgressHeartbeat('Done — I migrated all 11 recurring jobs.'));
+  assert.ok(!isProgressHeartbeat('⚠️ Dangerous command requires approval:\n\nrm -rf /tmp/x'));
+  assert.ok(!isProgressHeartbeat(''));
+  // A reply that merely mentions the phrase mid-sentence must not match.
+  assert.ok(!isProgressHeartbeat('I was still working on the deck when you asked.'));
 });
