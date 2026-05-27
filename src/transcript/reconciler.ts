@@ -218,6 +218,22 @@ function createNotification(spec: NotificationBubbleSpec, batch: boolean): HTMLE
   return el;
 }
 
+/** Per-activity-row user expand choice, keyed by spec.key. Lives OUTSIDE
+ *  the DOM so it survives the virtualizer unmount/remount — the row's
+ *  element (and any dataset.expanded on it) is destroyed when it scrolls
+ *  out of the window, so DOM-stored state was lost on scroll-away-and-back
+ *  (field 2026-05-27 nit 3: collapse a tool list, scroll away + back, it
+ *  re-expanded). Reset on session switch (resetActivityExpandState) so a
+ *  session's tool lists default collapsed when you switch back to it. */
+const activityExpandByKey = new Map<string, boolean>();
+export function resetActivityExpandState(): void { activityExpandByKey.clear(); }
+
+/** A tool list is "actively streaming" while the turn isn't complete and a
+ *  tool result is still pending. That's the only state that auto-expands. */
+function isActivityStreaming(spec: ActivityRowSpec): boolean {
+  return !spec.complete && spec.tools.some(t => t.result === undefined);
+}
+
 function createActivityRow(spec: ActivityRowSpec): HTMLElement {
   const row = document.createElement('div');
   row.className = 'activity-row';
@@ -232,11 +248,16 @@ function createActivityRow(spec: ActivityRowSpec): HTMLElement {
   row.appendChild(summary);
   row.appendChild(full);
 
-  // Click summary to toggle expansion. Track expansion as a data attr
-  // so a re-render re-reads it instead of resetting on every reconcile.
+  // One-click toggle on the summary line. Previously this read
+  // dataset.expanded (unset by default) and flipped it, so the FIRST click
+  // just re-asserted the already-shown state → it took TWO clicks to
+  // collapse (field 2026-05-27 nit 1). Flip the CURRENT effective state
+  // instead, and persist per-key so the choice survives virt remount/scroll.
   summary.addEventListener('click', () => {
-    const expanded = row.dataset.expanded === 'true';
-    row.dataset.expanded = expanded ? 'false' : 'true';
+    const current = activityExpandByKey.has(spec.key)
+      ? activityExpandByKey.get(spec.key)!
+      : isActivityStreaming(spec);   // matches the default in applyActivityRowView
+    activityExpandByKey.set(spec.key, !current);
     applyActivityRowView(row, spec);
   });
 
@@ -395,17 +416,21 @@ function renderActivityRowBody(row: HTMLElement, spec: ActivityRowSpec): void {
   applyActivityRowView(row, spec);
 }
 
-function applyActivityRowView(row: HTMLElement, _spec: ActivityRowSpec): void {
+function applyActivityRowView(row: HTMLElement, spec: ActivityRowSpec): void {
   const full = row.querySelector('.activity-row-full') as HTMLElement | null;
   const summary = row.querySelector('.activity-row-summary') as HTMLElement | null;
   if (!full || !summary) return;
   const mode = settings.get().agentActivity;
   if (mode === 'off') { row.style.display = 'none'; return; }
   row.style.display = '';
-  const userLocked = row.dataset.expanded;
-  const showFull = userLocked === 'true' ? true
-    : userLocked === 'false' ? false
-    : mode === 'full';
+  // Default COLLAPSED; auto-expand ONLY while the turn is actively streaming
+  // (field 2026-05-27 nit 2 — old tool lists are long and rarely interesting,
+  // so they should be tucked away on load/switch). A user's explicit toggle
+  // (persisted per-key, reset on session switch) overrides. Note: this no
+  // longer keys off agentActivity='full' for the default — 'full' vs
+  // 'summary' no longer force-expands historical rows; 'off' still hides.
+  const userChoice = activityExpandByKey.get(spec.key);
+  const showFull = userChoice !== undefined ? userChoice : isActivityStreaming(spec);
   full.style.display = showFull ? '' : 'none';
   summary.setAttribute('aria-expanded', showFull ? 'true' : 'false');
   row.classList.toggle('is-expanded', showFull);

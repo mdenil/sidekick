@@ -105,9 +105,16 @@ function assertPerTurnLocality(structure, label, minTurns) {
     if (structure[i] !== 'ar') continue;
     const before = structure[i - 1] || '';
     const after = structure[i + 1] || '';
-    assert(before.startsWith('u:'),
-      `[${label}] activity row at idx ${i} not preceded by a user bubble (got "${before}"). ` +
-      `Field bug: rows clumped past their turns. structure=${JSON.stringify(structure)}`);
+    // Under virt the window can START mid-turn on the activity row — its
+    // user bubble scrolled just above the window top. That's a viewport
+    // accident, not clumping (symmetric to the idx===last tolerance below).
+    // More common now that tool lists default collapsed (shorter rows →
+    // more turns per viewport, 2026-05-27).
+    if (i > 0) {
+      assert(before.startsWith('u:'),
+        `[${label}] activity row at idx ${i} not preceded by a user bubble (got "${before}"). ` +
+        `Field bug: rows clumped past their turns. structure=${JSON.stringify(structure)}`);
+    }
     // Under virt the visible window may cut off the last turn before
     // its final assistant bubble — that's a viewport accident, not a
     // structural bug. Skip the "followed by a:" check for the last ar

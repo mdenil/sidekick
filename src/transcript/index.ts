@@ -11,7 +11,7 @@
  */
 
 import { project } from './projection.ts';
-import { reconcile } from './reconciler.ts';
+import { reconcile, resetActivityExpandState } from './reconciler.ts';
 import { getState, subscribe } from './store.ts';
 import { scheduleSnapshotPersist, runWithScrollSaveSuppressed } from '../chat.ts';
 import { bindVirtualizer as bindVirt, type VirtualizerHandle } from './virtualizer.ts';
@@ -137,6 +137,11 @@ export function bindTranscriptPipeline(opts: BindOpts): () => void {
 export function showTranscriptLoading(): void {
   const el = getTranscriptEl();
   if (!el) return;
+  // Switching chats: forget per-row tool-list expand choices so the incoming
+  // chat's (and this chat's, on switch-back) tool lists default collapsed —
+  // old tool runs are long + rarely interesting (field 2026-05-27 nit 2).
+  // Cold load starts with an empty map already.
+  resetActivityExpandState();
   // Emptying the transcript collapses its scrollHeight and fires a
   // synthetic scroll-to-0 event while the LEAVING chat is still the
   // viewed one. Suppress the scroll listener's position-save across the
