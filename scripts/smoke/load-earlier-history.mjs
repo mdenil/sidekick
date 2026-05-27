@@ -92,7 +92,10 @@ export default async function run({ page, log }) {
   // has completed before we move the cursor up. Wheel gesture signals
   // scheduleAtBottomRepin this is user-initiated so its RO doesn't
   // snap back on subsequent layout settles.
-  await page.waitForTimeout(200);
+  // Wait out the open-render load-earlier suppression window (800ms in
+  // sessionResume) so this deliberate scroll-to-top is treated as a
+  // genuine user gesture, not the open-render scrollTop≈0 transient.
+  await page.waitForTimeout(1000);
   const box = await page.locator('#transcript').boundingBox();
   if (box) {
     await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);

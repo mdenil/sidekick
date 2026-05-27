@@ -96,6 +96,10 @@ export default async function run({ page, log }) {
   // preserve the user's eye-level anchor (msg-21) at the same viewport y.
   // Instant scroll so the prepend trigger is predictable (no smooth-
   // animation race with the network round-trip).
+  // Wait out the open-render load-earlier suppression (800ms in
+  // sessionResume) so this deliberate scroll-to-top counts as a user
+  // gesture, not the open-render scrollTop≈0 transient.
+  await page.waitForTimeout(900);
   await page.evaluate(() => {
     const t = document.getElementById('transcript');
     t.scrollTo({ top: 0, behavior: 'instant' });

@@ -158,7 +158,9 @@ export default async function run({ page, log }) {
   // 1.5s post-restore window and the scrollTo(0) doesn't stick.
   const beforeRows = initial.filter(t => t === 'ar').length;
   log(`scrolling transcript to top to trigger loadEarlier (have ${beforeRows} rows)`);
-  await page.waitForTimeout(300);
+  // Wait out the open-render load-earlier suppression (800ms in
+  // sessionResume) so this scroll-to-top is treated as a user gesture.
+  await page.waitForTimeout(1000);
   const box = await page.locator('#transcript').boundingBox();
   if (box) {
     await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);

@@ -1460,8 +1460,14 @@
 
   /* ── Transcript ── */
   .transcript {
-    flex: 1; overflow-y: auto; overflow-x: hidden; padding: 18px; scroll-behavior: smooth;
+    flex: 1; overflow-y: auto; overflow-x: hidden; padding: 18px;
     position: relative;
+    /* No `scroll-behavior: smooth`: it only affects PROGRAMMATIC scrolls
+       (restore, follow-tail, jump-to-bottom), which we want instant +
+       deterministic. Wheel/trackpad scrolling is natively smooth
+       regardless. `overflow-anchor` stays at its default (auto) so the
+       browser keeps the viewport stable when off-screen content above
+       changes height (images load, tool rows expand) — our scroll-jump fix. */
   }
   /* Switch-then-load loading state (Jonathan, 2026-05-25). Click handler
      flips the transcript to the target chat synchronously — for an

@@ -228,38 +228,30 @@ export function replaySessionMessages(
   } else if (saved && !targetMessageId) {
     const el = document.getElementById('transcript');
     if (el) {
-      // Phase 3 anchor-restore: when the virtualizer is active AND the
-      // saved record carries an anchorKey, try a key-based restore.
-      // Falls back to atBottom/scrollTop if the anchor key isn't in
-      // current specs (chat was paginated out, message deleted, etc).
-      const virt = getVirtualizer();
-      // Precedence: saved.atBottom WINS over anchor restore. The
-      // anchor key captures whichever spec was first-visible at save
-      // time — for an at-bottom view that's some spec roughly one
-      // viewport above the live edge. Restoring to that anchor pins
-      // the user to that spec, not to the bottom; if new turns arrived
-      // (or post-cache lazy content stretches scrollHeight) the user
-      // ends up visibly ABOVE the bottom and has to manually scroll
-      // back. Field bug 2026-05-25 (Jonathan, [pitch deck]): "scroll
-      // away from the bottom of pitch deck and back — it's somewhere
+      // Anchor restore: when the saved record carries an anchorKey, put
+      // that same bubble back at the same viewport offset via the DOM
+      // (every bubble is in the DOM under full-DOM render). Falls back to
+      // atBottom/scrollTop if the key isn't present (paginated out /
+      // deleted).
+      //
+      // Precedence: saved.atBottom WINS over anchor restore. The anchor
+      // key captures whichever bubble was first-visible at save time —
+      // for an at-bottom view that's some row roughly one viewport above
+      // the live edge. Restoring to that anchor pins the user to that
+      // row, not to the bottom; if new turns arrived the user ends up
+      // visibly ABOVE the bottom. Field bug 2026-05-25 (Jonathan, [pitch
+      // deck]): "scroll away from the bottom and back — it's somewhere
       // higher up." atBottom is the user-intent flag; honor it first.
       const tryAnchor = !saved.atBottom
-        && virt && saved.anchorKey && typeof saved.anchorOffsetPx === 'number'
-        ? virt.restoreAnchor({ key: saved.anchorKey, offsetPx: saved.anchorOffsetPx })
+        && saved.anchorKey && typeof saved.anchorOffsetPx === 'number'
+        ? chat.restoreDomAnchor({ key: saved.anchorKey, offsetPx: saved.anchorOffsetPx })
         : false;
       if (tryAnchor) {
         log(`[chat-resume] restore via anchor key=${saved.anchorKey?.slice(0, 16)} offset=${saved.anchorOffsetPx}`);
-        // Sibling chat's at-bottom repin observer would otherwise see
-        // the virtualizer's slot re-paint, treat that as "scrollHeight
-        // grew, re-snap to bottom," and undo the anchor restore. The
-        // existing mid-chat branch (saved.atBottom=false) handles this
-        // the same way — repin is per-element ResizeObserver, not
-        // per-chat, so any active observer needs cancelling on switch.
-        cancelActiveAtBottomRepin?.();
         // We are NOT at the bottom — assert it so a stray autoScroll (or a
         // false-positive isPinned() at the post-clear scrollTop≈0) can't
-        // snap us to the live edge while the heavy chat finishes rendering
-        // and fight this anchor restore. Field 2026-05-26 (pitch deck).
+        // snap us to the live edge while the chat finishes rendering and
+        // fight this anchor restore. Field 2026-05-26 (pitch deck).
         chat.setPinnedToBottom(false);
         // NO load-earlier suppress here. The anchor restore lands the
         // user back on the SAME bubble they were viewing, with the SAME
@@ -273,6 +265,14 @@ export function replaySessionMessages(
         // second suppress blocked the smoke's immediate scrollTop=0.
       } else if (saved.atBottom) {
         log(`[chat-resume] restore at-edge (atBottom=true savedScrollTop=${saved.scrollTop}) → forceScrollToBottom + repin`);
+        // Suppress lazy-prepend across the open render: the full-DOM
+        // reconcile briefly sits at scrollTop≈0 before forceScrollToBottom
+        // lands, which would trip maybeLoadEarlier and fetch+prepend an
+        // older page on every open — cascading toward the top of a big
+        // chat (the "load everything on open" cost the virtualizer used to
+        // hide). The user is at the live edge here; a genuine scroll-to-top
+        // after the window expires still loads earlier.
+        chat.suppressLoadEarlierFor(800);
         chat.forceScrollToBottom();
         scheduleAtBottomRepin();
       } else {
@@ -297,6 +297,9 @@ export function replaySessionMessages(
     }
   } else if (!targetMessageId) {
     log(`[chat-resume] no saved position for ${id.slice(-12)} → forceScrollToBottom`);
+    // See at-bottom branch: suppress the open-render scrollTop≈0 transient
+    // from triggering a load-earlier prepend cascade on a fresh open.
+    chat.suppressLoadEarlierFor(800);
     chat.forceScrollToBottom();
     scheduleAtBottomRepin();
   }

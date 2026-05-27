@@ -13,7 +13,7 @@
 import { project } from './projection.ts';
 import { reconcile, resetActivityExpandState } from './reconciler.ts';
 import { getState, subscribe } from './store.ts';
-import { scheduleSnapshotPersist, runWithScrollSaveSuppressed } from '../chat.ts';
+import { scheduleSnapshotPersist, runWithScrollSaveSuppressed, autoScroll } from '../chat.ts';
 import { bindVirtualizer as bindVirt, type VirtualizerHandle } from './virtualizer.ts';
 
 export {
@@ -192,17 +192,25 @@ function rerenderInto(chatId: string): void {
   const el = getTranscriptEl();
   if (!el) return;
   const specs = project(getState(chatId));
-  if (isVirtualizerEnabled()) {
-    ensureVirtualizer(el);
-    virtualizer!.setSpecs(specs);
-  } else {
-    reconcile(el, specs);
-  }
+  // Full-DOM render via the reconciler — no JS windowing. Off-screen
+  // render cost is handled by CSS `content-visibility: auto` on `.line`,
+  // and scroll stability by the browser's native scroll anchoring
+  // (`overflow-anchor: auto`). The hand-rolled virtualizer (spacers +
+  // estimate cache + manual scrollTop math) was removed 2026-05-27: it
+  // fought both of those browser mechanisms and made scrolling jumpy.
+  reconcile(el, specs);
   // Switch-then-load: the row-click handler sets .transcript-loading
   // synchronously when flipping focus to a new chat. Clear it as soon
   // as the first non-empty render lands so the spinner disappears
   // when content arrives (whether from cache or server).
   if (specs.length > 0) el.classList.remove('transcript-loading');
+  // Follow the tail while streaming: when a reply_delta grows the last
+  // assistant bubble (an UPDATE, not a create — so per-bubble autoScroll
+  // doesn't fire), keep the live edge in view. autoScroll() is a no-op
+  // unless the user is pinned to the bottom, so a scrolled-up reader is
+  // never yanked, and a mid-chat restore (which sets pinnedToBottom=false
+  // and scrolls last) wins over this.
+  autoScroll();
   scheduleSnapshotPersist();
 }
 

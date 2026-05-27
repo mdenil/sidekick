@@ -106,16 +106,74 @@ export function runWithScrollSaveSuppressed(fn: () => void): void {
   }
 }
 
+/** Capture the first bubble whose top is at/below the viewport top, plus
+ *  its pixel offset from the viewport top. This is the user-meaningful
+ *  scroll anchor: restoring it puts the SAME message back at the SAME
+ *  place, regardless of how off-screen content above re-measures (which
+ *  is what raw scrollTop can't survive once `content-visibility: auto`
+ *  renders off-screen rows from 100px placeholders to their real height).
+ *  Every bubble is in the DOM (full-DOM render), so this is a direct
+ *  query — no spacer math. */
+export function getDomAnchor(): { key: string; offsetPx: number } | null {
+  if (!transcriptEl) return null;
+  const ct = transcriptEl.getBoundingClientRect().top;
+  for (const el of Array.from(transcriptEl.querySelectorAll('.line[data-key]')) as HTMLElement[]) {
+    const r = el.getBoundingClientRect();
+    if (r.bottom > ct + 1) {
+      return { key: el.getAttribute('data-key') || '', offsetPx: Math.round(r.top - ct) };
+    }
+  }
+  return null;
+}
+
+/** Restore a DOM anchor: scroll so the keyed bubble sits at `offsetPx`
+ *  from the viewport top. Re-applies after a layout frame because
+ *  `content-visibility` placeholders above the anchor settle to real
+ *  heights once rendered, nudging the anchor. Returns false if the keyed
+ *  bubble isn't in the DOM (paginated out / deleted) so the caller can
+ *  fall back to a raw scrollTop restore. */
+let _restoreAnchorGen = 0;
+export function restoreDomAnchor(anchor: { key: string; offsetPx: number }): boolean {
+  if (!transcriptEl || !anchor.key) return false;
+  const el = transcriptEl;
+  const target = el.querySelector(`.line[data-key="${CSS.escape(anchor.key)}"]`) as HTMLElement | null;
+  if (!target) return false;
+  // Converge across frames: each frame, re-seat the anchor at offsetPx.
+  // Needed because `content-visibility: auto` rows above the anchor start
+  // as 100px placeholders and settle to real heights as they render into
+  // view — each settle shifts the anchor, so a single scroll undershoots
+  // (field 2026-05-27: switch-back landed ~560px off). Also absorbs a
+  // transient scrollTop reset fired mid-render (render-race). Bails when
+  // stable or after ~20 frames; a newer restore supersedes via the gen.
+  const gen = ++_restoreAnchorGen;
+  let frames = 0;
+  let stable = 0;
+  const step = () => {
+    if (transcriptEl !== el || gen !== _restoreAnchorGen || !target.isConnected) return;
+    const ct = el.getBoundingClientRect().top;
+    const delta = (target.getBoundingClientRect().top - ct) - anchor.offsetPx;
+    if (Math.abs(delta) >= 1) { el.scrollTop += delta; stable = 0; }
+    else stable++;
+    // Don't bail on the first zero-delta: the rows ABOVE the anchor start
+    // as 100px `content-visibility` placeholders and render to real height
+    // over the next several frames, each pushing the anchor down. Keep
+    // re-seating until the anchor holds for a few consecutive frames (or a
+    // ~0.5s cap), so we converge to the settled layout, not the placeholder
+    // one (field 2026-05-27: bailing at frame 1 landed ~750px high).
+    if (stable < 3 && ++frames < 30) requestAnimationFrame(step);
+  };
+  step();
+  return true;
+}
+
 export function saveCurrentScrollPosition(): void {
   if (!transcriptEl || !viewedSessionIdRef) return;
-  // Under virtualization, capture the anchor (key + offset) alongside
-  // raw scrollTop. The anchor is DOM-invariant — if heights elsewhere
-  // shift after restore (image loads, tool rows expand), the anchored
-  // spec stays at the same viewport offset. scrollTop is still saved
-  // for the legacy/dual-read path; restore prefers anchor when present.
-  const virt = getVirtualizer();
-  const anchor = virt ? virt.getAnchor() : null;
-  saveScrollPosition(viewedSessionIdRef, transcriptEl.scrollTop, isPinned(), anchor);
+  // Capture the anchor (first-visible bubble key + offset) alongside raw
+  // scrollTop. The anchor is the user-meaningful position: restore puts
+  // the same message back at the same offset even as off-screen content
+  // above re-measures. scrollTop is the fallback when the anchor key is
+  // gone (paginated out / deleted).
+  saveScrollPosition(viewedSessionIdRef, transcriptEl.scrollTop, isPinned(), getDomAnchor());
 }
 
 

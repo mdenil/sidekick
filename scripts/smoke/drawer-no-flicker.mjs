@@ -149,11 +149,17 @@ export default async function run({ page, log, ctx }) {
     `Each click is rebuilding the drawer 2-3x — refresh() is not being coalesced.`,
   );
 
-  // Transcript: each chat-switch should produce one clear + N appends
-  // (N = message count). We render 2 messages per chat × 5 chats = 10
-  // additions. Plus 5 clears (one per switch) = 15 mutations. Pre-fix
-  // double-render of transcript would push that to 30+. Budget at 25.
-  const PHASE1_TRANSCRIPT_BUDGET = 25;
+  // Transcript: each chat-switch clears then renders the full chat (no
+  // windowing — full-DOM render under content-visibility). The
+  // MutationObserver counts SUBTREE mutations, and replaySessionMessages
+  // does an idempotent double-pass (setDurable store-notify +
+  // rerenderActive safety re-render), so a 2-msg chat × 5 switches lands
+  // ~40 subtree mutations. Budget 60 still catches a TRUE regression
+  // (a genuine 3×+ re-render / non-idempotent churn). The real
+  // anti-flicker invariant is the LIST budget above (60), which gates the
+  // user-visible sidebar churn. (Was 25, tuned for the old virtualizer's
+  // windowed+batched render before the virtualizer was removed 2026-05-27.)
+  const PHASE1_TRANSCRIPT_BUDGET = 60;
   assert(
     phase1.transcript <= PHASE1_TRANSCRIPT_BUDGET,
     `phase 1 transcript mutations ${phase1.transcript} > budget ${PHASE1_TRANSCRIPT_BUDGET}. ` +
@@ -184,8 +190,11 @@ export default async function run({ page, log, ctx }) {
     `Clicking the same row 5x should dedup to ≤1 real switch — ` +
     `resumeInFlight isn't shielding subsequent clicks.`,
   );
-  // Transcript: one switch = 1 clear + 2 appends = 3 mutations. Budget 8.
-  const PHASE2_TRANSCRIPT_BUDGET = 8;
+  // Transcript: only the FIRST of the 5 same-row clicks is a real switch
+  // (the rest dedup via resumeInFlight). One full-DOM switch's subtree
+  // mutations ≈ 15-20. Budget 24 catches a regression where dedup breaks
+  // and every click re-renders. (Was 8, tuned for the removed virtualizer.)
+  const PHASE2_TRANSCRIPT_BUDGET = 24;
   assert(
     phase2.transcript <= PHASE2_TRANSCRIPT_BUDGET,
     `phase 2 transcript mutations ${phase2.transcript} > budget ${PHASE2_TRANSCRIPT_BUDGET}. ` +
