@@ -81,6 +81,9 @@ export function project(state: ChatState): BubbleSpec[] {
   // rendering at 01:00 BST because unix 0 + UTC+1) lose to the row
   // that has a real wall-clock timestamp.
   const durableWinnerKey = pickDurableContentWinners(state.durable);
+  // Near-simultaneous duplicate USER rows to drop (backend double-write
+  // defense — see pickUserDuplicateLosers). Far-apart legit repeats survive.
+  const userDropKeys = pickUserDuplicateLosers(state.durable);
 
   // Track the current turn so tool rows attach to the right activity
   // row. Updated when we walk past a user message in durable OR an
@@ -92,6 +95,9 @@ export function project(state: ChatState): BubbleSpec[] {
   for (const item of state.durable) {
     const ts = normalizeTimestamp(item);
     if (item.role === 'user') {
+      // Drop a near-simultaneous duplicate (double-write twin) — its winner
+      // sibling renders + sets the turn key, so skip entirely.
+      if (userDropKeys.has(identityKey(item))) continue;
       const key = userKey(item);
       if (!userKeys.has(key)) {
         userKeys.add(key);
@@ -573,4 +579,50 @@ function compareDurableForDedup(a: ConversationItem, b: ConversationItem): numbe
   // sidekick_id-string-id shapes; consistent ordering is what we
   // need, not numeric correctness).
   return String(a.id) > String(b.id) ? 1 : -1;
+}
+
+/** Defensive durable-vs-durable dedup for USER rows. `pickDurableContentWinners`
+ *  intentionally skips user rows because identical user content is often
+ *  legitimate (the same short utterance sent again — e.g. voice-test
+ *  "1 2 3 … 20" repeated minutes apart). But a backend double-write can
+ *  store the SAME user message twice within seconds (field 2026-05-27: a
+ *  sidekick message written once natively + once via hermes' platform-ingest
+ *  path, ~4s apart, different ids → both rendered). This collapses ONLY that
+ *  near-simultaneous case: within each identical-content group, rows are
+ *  clustered by time, and any non-winner that falls within
+ *  USER_DEDUP_WINDOW_MS of a sibling is dropped. Far-apart legitimate repeats
+ *  land in separate clusters and each survive. Returns identityKey()s to drop. */
+const USER_DEDUP_WINDOW_MS = 30_000;
+function pickUserDuplicateLosers(items: ConversationItem[]): Set<string> {
+  const byContent = new Map<string, ConversationItem[]>();
+  for (const it of items) {
+    if (it.role !== 'user' || !it.content) continue;
+    let arr = byContent.get(it.content);
+    if (!arr) { arr = []; byContent.set(it.content, arr); }
+    arr.push(it);
+  }
+  const losers = new Set<string>();
+  for (const arr of byContent.values()) {
+    if (arr.length < 2) continue;
+    arr.sort((a, b) => normalizeTimestamp(a) - normalizeTimestamp(b));
+    let start = 0;
+    const flushCluster = (end: number) => {
+      if (end - start < 2) return;  // single row in this time-cluster → keep
+      let winner = arr[start];
+      for (let j = start + 1; j < end; j++) {
+        if (compareDurableForDedup(arr[j], winner) > 0) winner = arr[j];
+      }
+      for (let j = start; j < end; j++) {
+        if (arr[j] !== winner) losers.add(identityKey(arr[j]));
+      }
+    };
+    for (let i = 1; i <= arr.length; i++) {
+      if (i === arr.length
+          || normalizeTimestamp(arr[i]) - normalizeTimestamp(arr[i - 1]) > USER_DEDUP_WINDOW_MS) {
+        flushCluster(i);
+        start = i;
+      }
+    }
+  }
+  return losers;
 }

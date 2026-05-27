@@ -462,3 +462,38 @@ describe('project: ordering across turns', () => {
     ]);
   });
 });
+
+describe('project: user double-write dedup (time-windowed)', () => {
+  it('collapses two identical user rows written seconds apart (the backend double-write)', () => {
+    // Field 2026-05-27: native write (44459) + platform-ingest twin (44461),
+    // same content, ~4s apart, different ids → must render ONE bubble.
+    const s = state({ durable: [
+      u('44459', 'Hey. I migrated you from Cortex to FontBrain.', T0),
+      u('44461', 'Hey. I migrated you from Cortex to FontBrain.', T0 + 4000),
+    ]});
+    const out = project(s);
+    const userSpecs = out.filter(x => x.kind === 'user');
+    assert.equal(userSpecs.length, 1, `expected 1 user bubble, got ${userSpecs.length}`);
+  });
+
+  it('PRESERVES legitimate verbatim repeats far apart (voice-test phrases)', () => {
+    // "1 2 3 ... 20" said again 2 minutes later is a real repeat, NOT a dup.
+    const s = state({ durable: [
+      u('m1', '1 2 3 4 5', T0),
+      u('m2', '1 2 3 4 5', T0 + 120_000),
+    ]});
+    const userSpecs = project(s).filter(x => x.kind === 'user');
+    assert.equal(userSpecs.length, 2, `far-apart repeats must both survive, got ${userSpecs.length}`);
+  });
+
+  it('three rapid duplicates collapse to one; a later legit repeat survives', () => {
+    const s = state({ durable: [
+      u('d1', 'over', T0),
+      u('d2', 'over', T0 + 2000),
+      u('d3', 'over', T0 + 5000),
+      u('later', 'over', T0 + 300_000),  // 5 min later → legit
+    ]});
+    const userSpecs = project(s).filter(x => x.kind === 'user');
+    assert.equal(userSpecs.length, 2, `expected 2 (one cluster + one legit), got ${userSpecs.length}`);
+  });
+});
