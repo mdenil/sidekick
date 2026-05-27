@@ -103,6 +103,46 @@ describe('miniMarkdown', () => {
     assert.ok(result.includes('<li>third</li>'));
   });
 
+  it('keeps a single <ol> when every source item repeats "1."', () => {
+    // Browsers auto-number <li>, so the source numbers do not matter as
+    // long as the items stay in ONE <ol>. The bug was multiple single-item
+    // <ol>s (each restarting at 1).
+    const result = miniMarkdown('1. first\n1. second\n1. third');
+    assert.equal((result.match(/<ol>/g) || []).length, 1, `expected one <ol>, got: ${result}`);
+    assert.ok(result.includes('<li>first</li><li>second</li><li>third</li>'));
+  });
+
+  it('keeps ordered list together across blank-line separators', () => {
+    const result = miniMarkdown('1. first\n\n1. second\n\n1. third');
+    assert.equal((result.match(/<ol>/g) || []).length, 1, `expected one <ol>, got: ${result}`);
+    assert.ok(result.includes('<li>first</li><li>second</li><li>third</li>'));
+  });
+
+  it('keeps ordered list together with indented continuation lines', () => {
+    // The "v13 spine" outline shape: each item has a title plus an indented
+    // description line. Previously each item became its own single-item <ol>.
+    const src = [
+      '1. Title',
+      '   Reimagine Robotics / Interactive robotics for the physical economy.',
+      '1. Where are the robots?',
+      '   Foundation models are making demos impressive.',
+      '1. ARM origin story',
+      '   We got impressive pilots.',
+    ].join('\n');
+    const result = miniMarkdown(src);
+    assert.equal((result.match(/<ol>/g) || []).length, 1, `expected one <ol>, got: ${result}`);
+    assert.equal((result.match(/<li>/g) || []).length, 3, `expected 3 <li>, got: ${result}`);
+    assert.ok(result.includes('<li>Title<br>Reimagine Robotics / Interactive robotics for the physical economy.</li>'));
+    assert.ok(result.includes('<li>Where are the robots?<br>Foundation models are making demos impressive.</li>'));
+  });
+
+  it('keeps bullet list together with indented continuation lines', () => {
+    const result = miniMarkdown('- bullet one\n  more text\n- bullet two');
+    assert.equal((result.match(/<ul>/g) || []).length, 1, `expected one <ul>, got: ${result}`);
+    assert.ok(result.includes('<li>bullet one<br>more text</li>'));
+    assert.ok(result.includes('<li>bullet two</li>'));
+  });
+
   it('renders <br> between adjacent **bold** lines in one paragraph', () => {
     // Field bug 2026-05-17: when a chunk starts with <strong> (or any
     // inline element), the old paragraph step skipped the \n→<br> rewrite
