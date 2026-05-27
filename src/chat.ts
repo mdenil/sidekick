@@ -146,39 +146,59 @@ function updateButton(): void {
  *  smooth` in CSS each call animates separately and the user sees a stutter.
  *  Streaming deltas still go through autoScroll() which keeps smooth so the
  *  follow-along during reply still glides. */
+let _stickBottomGen = 0;
 export function forceScrollToBottom(): void {
   if (!transcriptEl) return;
-  const doScroll = () => {
-    if (!transcriptEl) return;
-    transcriptEl.scrollTo({ top: transcriptEl.scrollHeight, behavior: 'instant' as ScrollBehavior });
-  };
-  // Belt-and-braces: scroll immediately (works in 95% of cases when
-  // layout is already up-to-date), AND again on next animation frame
-  // (covers the cases where bubbles were just appended and the browser
-  // hadn't run layout yet — scrollHeight read returned a stale value
-  // that didn't include the new content). Field repro 2026-05-04
-  // (Jonathan): switching sessions occasionally left the chat scrolled
-  // to top with content below the viewport; manual scroll revealed the
-  // bubbles were rendered correctly, just not scrolled to.
-  doScroll();
-  // iOS PWA fix (Jonathan, 2026-05-05): scrollTop reaches the correct
-  // value (verified via [scroll-debug] traces) but iOS doesn't paint —
-  // user sees black, and the next touch snaps back. WebKit render bug
-  // class. Anchor the scroll on a real DOM child via scrollIntoView so
-  // the renderer has a known target to commit to. Last-element seek
-  // works on every browser; on iOS it's the difference between paint
-  // and not-paint.
-  requestAnimationFrame(() => {
-    if (!transcriptEl) return;
-    doScroll();
-    const last = transcriptEl.lastElementChild as HTMLElement | null;
-    if (last && typeof last.scrollIntoView === 'function') {
-      try { last.scrollIntoView({ block: 'end', inline: 'nearest' }); } catch { /* noop */ }
-    }
-  });
+  const el = transcriptEl;
   pinnedToBottom = true;
   missedWhileScrolled = 0;
   updateButton();
+
+  // CONVERGE to the true bottom across frames. Under virtualization,
+  // scrollHeight is computed from per-kind height ESTIMATES for the rows
+  // that aren't rendered yet (DEFAULT_HEIGHTS) — so a single
+  // scrollTo(scrollHeight) lands at the *estimated* bottom. The jump
+  // reveals the real bottom rows; the virtualizer's ResizeObserver then
+  // measures them, scrollHeight shifts, and the view is left part-way.
+  // Field 2026-05-27 (Jonathan): the jump-to-bottom arrow "takes me down
+  // part way, I have to click + scroll several times to reach bottom",
+  // and switching into a chat "lands at the bottom then jumps up". Both
+  // are the same estimate→measure settle. Re-scroll to scrollHeight every
+  // frame until it stops changing (or a safety cap) so we track the bottom
+  // as the revealed rows are measured.
+  //
+  // Bails the instant the user scrolls up: the scroll listener flips
+  // `pinnedToBottom` false on their gesture, so the loop yields and never
+  // fights an intentional reading position. A newer forceScrollToBottom
+  // (chat switch, new turn) bumps the generation and supersedes us.
+  const gen = ++_stickBottomGen;
+  let lastSh = -1;
+  let stable = 0;
+  let frames = 0;
+  const step = () => {
+    // Element swapped (chat switch tore down + rebuilt), superseded by a
+    // newer call, or the user scrolled up — stop and leave them be.
+    if (transcriptEl !== el || gen !== _stickBottomGen || !pinnedToBottom) return;
+    const sh = el.scrollHeight;
+    el.scrollTo({ top: sh, behavior: 'instant' as ScrollBehavior });
+    // iOS PWA paint anchor (Jonathan, 2026-05-05): scrollTop reaches the
+    // right value but WebKit doesn't paint until a real DOM child is the
+    // scroll target. Last-element seek is the difference between paint and
+    // not-paint; no-op cost on other browsers.
+    const last = el.lastElementChild as HTMLElement | null;
+    if (last && typeof last.scrollIntoView === 'function') {
+      try { last.scrollIntoView({ block: 'end', inline: 'nearest' }); } catch { /* noop */ }
+    }
+    stable = sh === lastSh ? stable + 1 : 0;
+    lastSh = sh;
+    // Settled: scrollHeight unchanged across consecutive frames. Cap at
+    // ~30 frames (~0.5s) so a chat that never stops growing (live images)
+    // can't pin the main thread — the scheduleAtBottomRepin RO + per-delta
+    // autoScroll cover any later growth.
+    if (stable >= 2 || ++frames >= 30) return;
+    requestAnimationFrame(step);
+  };
+  step();
 }
 
 /** Scroll to the live edge ONLY if the user is already pinned. If they've
