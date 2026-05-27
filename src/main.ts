@@ -1301,7 +1301,7 @@ async function boot() {
         firstId: e.firstId ?? null,
         hasMore: !!e.hasMore,
       };
-      replaySessionMessages(e.conversation, messages, pagination);
+      replaySessionMessages(e.conversation, messages, pagination, undefined, undefined, { preserveScrollIfLive: true });
     },
     // Adapter-relayed new-session announcement. The legacy hermes adapter
     // surfaces these from the proxy's drawer-events SSE; other adapters
@@ -4391,6 +4391,7 @@ function schedulePostFinalDurableRefresh(
           { firstId: result.firstId ?? null, hasMore: !!result.hasMore },
           undefined,
           result.inflight,
+          { preserveScrollIfLive: true },
         );
         if (
           messageId &&

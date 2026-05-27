@@ -75,6 +75,7 @@ export function replaySessionMessages(
   pagination?: { firstId: number | null; hasMore: boolean },
   targetMessageId?: string,
   inflight?: any[],
+  opts?: { preserveScrollIfLive?: boolean },
 ): void {
   const viewed = sessionDrawer.getViewed();
   const sameSession = viewed === id;
@@ -206,7 +207,25 @@ export function replaySessionMessages(
   //     12836). Field bug 2026-05-24 (scroll_save_failing2.mov sequel):
   //     [pitch deck] mid-history restored to bottom + repin → drift
   //     5385px as more bubbles + tool rows + images rendered.
-  if (saved && !targetMessageId) {
+  if (opts?.preserveScrollIfLive && sameSession && !targetMessageId) {
+    // BACKGROUND refetch of the chat already on screen — NOT a user
+    // navigation. Callers that pass this flag are reconcile paths: the
+    // post-reply durable refresh (schedulePostFinalDurableRefresh) and the
+    // disconnect reconcile (onResume). The on-screen scroll position is
+    // LIVE truth here; re-applying the SAVED anchor/at-edge position fights
+    // the user. Field 2026-05-27 (Jonathan): sending /agents fired a
+    // post-reply re-resume whose anchor-restore yanked the view UP, away
+    // from the just-arrived reply, and fought manual scrolling. Follow the
+    // live edge only if still pinned (so a reply the user is watching keeps
+    // streaming into view); otherwise leave scroll EXACTLY as-is.
+    //
+    // This is deliberately NOT the broad `sameSession` gate: boot/reload
+    // ALSO re-resumes with sameSession=true (boot setViewed precedes the
+    // restoring resume) and legitimately needs to restore saved scroll —
+    // those paths don't pass preserveScrollIfLive, so their restore below
+    // still runs.
+    if (chat.isPinnedToBottom()) chat.forceScrollToBottom();
+  } else if (saved && !targetMessageId) {
     const el = document.getElementById('transcript');
     if (el) {
       // Phase 3 anchor-restore: when the virtualizer is active AND the
