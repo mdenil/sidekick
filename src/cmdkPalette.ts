@@ -286,6 +286,16 @@ async function runUnifiedSearch(q: string) {
     // 2026-04-29.)
     if (backend.hasSearch()) {
       const topSessions = result.sessions.slice(0, 10);
+      // The user's RENAMED session title lives in sidekick.db
+      // conversation_titles (client-cached), NOT in the hermes FTS index —
+      // so server search results carry the stale/auto title (often empty,
+      // → renderSessionRow falls back to the raw `sidekick:<uuid>` id).
+      // Merge the cached override title by id so the server repaint doesn't
+      // clobber the name the user gave it (field 2026-05-27: search match
+      // flashed the real name, then ~300ms later showed the raw id).
+      const titleById = new Map(
+        sessionDrawer.getCachedSessions().map((c: any) => [c.id, c.title]),
+      );
       sessionsListEl.innerHTML = '';
       if (topSessions.length === 0 && q.trim()) {
         const empty = document.createElement('li');
@@ -293,7 +303,10 @@ async function runUnifiedSearch(q: string) {
         empty.textContent = 'No matching sessions.';
         sessionsListEl.appendChild(empty);
       } else {
-        for (const s of topSessions) sessionsListEl.appendChild(renderSessionRow(s));
+        for (const s of topSessions) {
+          const title = titleById.get(s.id) || s.title || '';
+          sessionsListEl.appendChild(renderSessionRow(title ? { ...s, title } : s));
+        }
       }
     }
     // Messages section: always repaint. Backends without a search
