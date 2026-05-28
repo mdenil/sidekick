@@ -42,9 +42,26 @@ let initialized = false;
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 let getViewedRef: (() => string | null) | null = null;
 
+/** Are we on a mobile runtime? On iOS PWAs and Android, `document.hasFocus()`
+ *  can return false even when the app is actively foregrounded — it's a
+ *  desktop-centric API and not reliable on touch devices (covered by
+ *  visibilityState='hidden' already if the user backgrounds the app).
+ *  Field 2026-05-28 (Jonathan, iOS PWA on a flight): a push for the
+ *  focused chat fired because the heartbeat kept reporting state='hidden'
+ *  (hasFocus()=false) and the proxy's engagement timestamp aged out. */
+function isMobileRuntime(): boolean {
+  if (typeof document !== 'undefined' && document.documentElement.classList.contains('capacitor-app')) return true;
+  if (typeof navigator === 'undefined') return false;
+  return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || '');
+}
+
 function isEngagedNow(): boolean {
   if (typeof document === 'undefined') return true;
-  return document.visibilityState === 'visible' && document.hasFocus() && !!(getViewedRef?.() || '');
+  if (document.visibilityState !== 'visible') return false;
+  // hasFocus() is meaningful on desktop (another app may cover the browser
+  // while the page stays "visible"); on mobile it's a false-negative trap.
+  if (!isMobileRuntime() && !document.hasFocus()) return false;
+  return !!(getViewedRef?.() || '');
 }
 
 function stopHeartbeat(): void {
@@ -110,8 +127,13 @@ export function initVisibilityReporting(getViewed: () => string | null): void {
   getViewedRef = getViewed;
 
   const compute = (): { state: VisibilityState; chatId: string } => {
+    // Same mobile carve-out as isEngagedNow: on iOS/Android, trust
+    // visibilityState alone. hasFocus() is a desktop signal for the
+    // "browser visible but another app on top" case; on mobile, that's
+    // already covered by visibilityState='hidden'.
     const visible = typeof document === 'undefined'
-      || (document.visibilityState !== 'hidden' && document.hasFocus());
+      || (document.visibilityState !== 'hidden'
+          && (isMobileRuntime() || document.hasFocus()));
     const state: VisibilityState = visible ? 'visible' : 'hidden';
     const chatId = getViewed() || '';
     return { state, chatId };
@@ -153,8 +175,10 @@ export function initVisibilityReporting(getViewed: () => string | null): void {
 export function reportChatSwitch(chatId: string | null): void {
   if (!initialized) return;
   const id = chatId || '';
+  // Same mobile carve-out as compute()/isEngagedNow().
   const state: VisibilityState = typeof document === 'undefined'
-    || (document.visibilityState !== 'hidden' && document.hasFocus())
+    || (document.visibilityState !== 'hidden'
+        && (isMobileRuntime() || document.hasFocus()))
       ? 'visible' : 'hidden';
   // Only fire when actually changing chat/state — backbone re-renders
   // (resume() called twice for the same chat) shouldn't burn an HTTP.
