@@ -4414,9 +4414,64 @@ function schedulePostFinalDurableRefresh(
 
 /** Complete reply. `content` (if present) is the raw block array used to
  *  pull out image attachments. */
+/** "⏳ Still working… (N min elapsed — iteration X/60, …)" — the canonical
+ *  heartbeat shape an autonomous agent emits per-iteration. Mirrors the
+ *  push-gate matcher in proxy/sidekick/notifications/dispatch.ts
+ *  (isProgressHeartbeat). Field 2026-05-27: every heartbeat reply_final
+ *  was dismissing pending approvals for the chat — fixed by skipping
+ *  this branch when the text matches. KEEP IN SYNC with the server matcher. */
+function isProgressHeartbeatText(raw: string): boolean {
+  const s = (raw || '').trim();
+  if (!s) return false;
+  return /^⏳\s*Still working\b/i.test(s)
+    || /\bStill working\.{0,3}\s*\(\s*\d+\s*min elapsed\b.*\biteration\s*\d+\s*\/\s*\d+/i.test(s);
+}
+
 function handleReplyFinal({ replyId, text, content = [], conversation, messageId, isReplay = false }: any) {
   sessionDrawer.scheduleRefresh();
-  if (!isReplay && conversation) activityStore.dismissApprovalsForChat(conversation);
+  // Auto-resolve any pending approval for this chat — but ONLY when this
+  // is a REAL reply, not a "⏳ Still working…" heartbeat. Heartbeats fire
+  // every iteration of a long autonomous turn (one per ~3 min); without
+  // the gate, the first heartbeat after an approval landed used to delete
+  // the approval row from the tray (field 2026-05-27). A real reply means
+  // the agent moved past the approval point, so mark 'dismissed'.
+  if (!isReplay && conversation) {
+    // Heartbeat detection: real hermes typically streams the body via
+    // reply_delta and emits reply_final with EMPTY text (final = done
+    // signal, not body carrier). So `text` from this envelope is often
+    // '' — we must look up the accumulated bubble text by messageId to
+    // know whether this turn was a "⏳ Still working…" beat or a real
+    // turn-ending reply. The proxy push gate does the same against its
+    // reply buffer (dispatch.ts:271).
+    let finalTextRaw = typeof text === 'string' ? text : '';
+    if (!finalTextRaw && messageId) {
+      // First try the DOM — fast path for the viewed chat.
+      try {
+        const el = document.querySelector(
+          `#transcript [data-key="${CSS.escape(messageId)}"]`,
+        ) as HTMLElement | null;
+        finalTextRaw = el?.textContent || '';
+      } catch { /* CSS.escape failure or missing DOM — fall through */ }
+      // Fall back to the inflight buffer. Replies on an OFF-screen chat
+      // aren't in the DOM (only the viewed chat renders), so DOM lookup
+      // misses — but the reply_delta envelope IS in the store's inflight
+      // buffer, with the accumulated heartbeat text. Reverse-scan for the
+      // latest delta carrying this messageId.
+      if (!finalTextRaw) {
+        const inflight = transcriptStore.getState(conversation).inflight;
+        for (let i = inflight.length - 1; i >= 0; i--) {
+          const env: any = inflight[i];
+          if (env?.type === 'reply_delta' && env.message_id === messageId && typeof env.text === 'string') {
+            finalTextRaw = env.text;
+            break;
+          }
+        }
+      }
+    }
+    if (!isProgressHeartbeatText(finalTextRaw)) {
+      activityStore.resolveApprovalsForChat(conversation, 'dismissed');
+    }
+  }
 
   // Push the envelope into the store unconditionally — even for
   // background chats. The store is per-chat; the active chat re-renders
@@ -4454,7 +4509,14 @@ function handleReplyFinal({ replyId, text, content = [], conversation, messageId
 
   const viewed = sessionDrawer.getFocused();
   if (viewed && conversation && conversation !== viewed) {
-    if (!isReplay) {
+    // Skip activity + badge for "⏳ Still working…" heartbeats so a long
+    // autonomous turn doesn't spam the Activity tray with N agent_reply
+    // rows per turn — AND, critically, doesn't trigger pruneSuperseded-
+    // Approvals to delete a pending approval for the same chat (each
+    // upserted heartbeat agent_reply has a newer createdAt than the
+    // approval, so the prune would dismiss the approval). Mirrors the
+    // proxy push gate (isProgressHeartbeat, dispatch.ts:271).
+    if (!isReplay && !isProgressHeartbeatText(finalText)) {
       activityStore.upsertNotification({
         chatId: conversation,
         kind: 'agent_reply',

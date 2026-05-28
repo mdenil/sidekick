@@ -48,8 +48,15 @@ function refreshActivityCountBanner(): void {
   const n = urgent || unread;
   const txt = n > 99 ? '99+' : String(n);
   for (const banner of activityCountBanners) {
+    // Always toggle .urgent so it clears when an approval resolves (the
+    // pre-2026-05-28 model deleted the row on action, so urgent dropping
+    // to 0 was always paired with n=0 hiding the banner — the urgent
+    // class never had to be explicitly removed. Now approvals stay in the
+    // tray as resolved, so urgent can fall to 0 while unread is still >0
+    // — and the badge must reflect that.)
+    banner.classList.toggle('urgent', urgent > 0);
     if (n === 0) { banner.hidden = true; banner.textContent = '0'; }
-    else { banner.hidden = false; banner.textContent = txt; banner.classList.toggle('urgent', urgent > 0); }
+    else { banner.hidden = false; banner.textContent = txt; }
   }
 }
 

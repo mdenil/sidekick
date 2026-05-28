@@ -1,7 +1,7 @@
 import { log } from '../util/log.ts';
 
 export type ActivityKind = 'approval' | 'cron' | 'agent_reply' | 'notification';
-export type ActivityResolution = 'approved' | 'approved_session' | 'denied' | 'dismissed';
+export type ActivityResolution = 'approved' | 'approved_session' | 'denied' | 'dismissed' | 'stale';
 
 export interface ActivityItem {
   id: string;
@@ -43,6 +43,18 @@ function persist(): void {
 export function hydrate(): void {
   if (hydrated) return;
   hydrated = true;
+  // Periodic stale-approval check (every 60s). Production threshold is
+  // 30 min; the tick interval is much smaller so a freshly-staled approval
+  // ages out within a minute, not whenever the user next opens the tray.
+  // Smokes don't rely on this — they call the test seam directly — so a
+  // long interval is fine. Safe to start once at hydrate.
+  if (typeof window !== 'undefined' && typeof setInterval === 'function') {
+    setInterval(runApprovalStaleCheck, 60_000);
+    // Test seams: exposed on window so the smoke can drive the check
+    // deterministically (set a small threshold + fire the check now).
+    (window as any).__sidekickSetApprovalStaleMsForTest = setApprovalStaleMsForTest;
+    (window as any).__sidekickRunApprovalStaleCheckForTest = runApprovalStaleCheck;
+  }
   if (typeof localStorage === 'undefined') return;
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -160,6 +172,12 @@ function requestRefresh(): void {
 }
 
 function pruneSupersededApprovals(items: Map<string, ActivityItem>): void {
+  // "Agent moved on" — any unresolved approval that has a newer
+  // non-approval item for the same chat gets resolved as 'dismissed'.
+  // Used to delete the row outright; now marks it resolved so the user
+  // can still see "we asked for approval here, the agent moved past it"
+  // in the tray history with a Dismissed pill (2026-05-28 keep-with-pill
+  // model).
   const newestByChat = new Map<string, number>();
   for (const item of items.values()) {
     if (!item.chatId || item.kind === 'approval') continue;
@@ -169,8 +187,8 @@ function pruneSupersededApprovals(items: Map<string, ActivityItem>): void {
     if (item.kind !== 'approval' || item.resolved || !item.chatId) continue;
     const newer = newestByChat.get(item.chatId) ?? 0;
     if (newer > item.createdAt) {
-      items.delete(id);
-      void fetch('/api/sidekick/activity/' + encodeURIComponent(id), { method: 'DELETE' }).catch(() => {});
+      items.set(id, { ...item, read: true, resolved: 'dismissed' });
+      void postJson('/api/sidekick/activity/resolve', { id, resolution: 'dismissed' });
     }
   }
 }
@@ -181,7 +199,7 @@ function normalizeKind(kind: unknown): ActivityKind {
 }
 
 function normalizeResolution(x: unknown): ActivityResolution | undefined {
-  if (x === 'approved' || x === 'approved_session' || x === 'denied' || x === 'dismissed') return x;
+  if (x === 'approved' || x === 'approved_session' || x === 'denied' || x === 'dismissed' || x === 'stale') return x;
   return undefined;
 }
 
@@ -277,6 +295,63 @@ export function dismissApprovalsForChat(chatId: string): void {
     persist();
     notifyChange();
   }
+}
+
+/** Mark every unresolved approval for `chatId` as resolved with the given
+ *  outcome. Replaces the destructive `dismissApprovalsForChat` on every
+ *  caller that knows the outcome: user-action paths pass 'approved' /
+ *  'approved_session' / 'denied'; the "agent moved on" path passes
+ *  'dismissed'; the stale-check path passes 'stale'. Resolved approvals
+ *  STAY in the tray with their outcome pill — the row is the user-visible
+ *  audit trail of "what I (or the agent) decided, and when." */
+export function resolveApprovalsForChat(chatId: string, resolution: ActivityResolution): void {
+  hydrate();
+  if (!chatId) return;
+  let changed = false;
+  for (const [id, item] of Array.from(itemsById.entries())) {
+    if (item.chatId !== chatId || item.kind !== 'approval' || item.resolved) continue;
+    itemsById.set(id, { ...item, read: true, resolved: resolution });
+    changed = true;
+    void postJson('/api/sidekick/activity/resolve', { id, resolution });
+  }
+  if (changed) {
+    persist();
+    notifyChange();
+  }
+}
+
+/** Stale-approval auto-resolution. Production threshold = 30 minutes;
+ *  smokes override via `setApprovalStaleMsForTest`. Resolves any unresolved
+ *  approval whose `createdAt` is older than the threshold to 'stale' so
+ *  the tray doesn't accumulate forgotten pending approvals. Sticky once
+ *  resolved (won't re-pend on later chat activity — `item.resolved` gate
+ *  in `resolveApprovalsForChat` and elsewhere). */
+const APPROVAL_STALE_MS_DEFAULT = 30 * 60 * 1000;
+let approvalStaleMs = APPROVAL_STALE_MS_DEFAULT;
+
+export function runApprovalStaleCheck(): void {
+  hydrate();
+  const now = Date.now();
+  let changed = false;
+  for (const [id, item] of Array.from(itemsById.entries())) {
+    if (item.kind !== 'approval' || item.resolved) continue;
+    if (now - item.createdAt < approvalStaleMs) continue;
+    itemsById.set(id, { ...item, read: true, resolved: 'stale' });
+    changed = true;
+    void postJson('/api/sidekick/activity/resolve', { id, resolution: 'stale' });
+  }
+  if (changed) {
+    persist();
+    notifyChange();
+  }
+}
+
+/** Test seam: shrink the stale window so smokes finish in seconds, not
+ *  30 minutes. Only callable from debug mode. Pairs with the smoke's
+ *  `window.__sidekickSetApprovalStaleMsForTest`. */
+export function setApprovalStaleMsForTest(ms: number): void {
+  if (typeof ms !== 'number' || !(ms > 0)) return;
+  approvalStaleMs = ms;
 }
 
 export function markChatRead(chatId: string): void {

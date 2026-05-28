@@ -83,10 +83,22 @@ export default async function run({ page, log, mock }) {
   log('activity tray rendered approval item + actions ✓');
 
   await page.locator('#activity-drawer-panel .activity-item-actions button', { hasText: 'Deny' }).click();
+  // Wait for /deny in the transcript AND for the user_message echo's
+  // round-trip to fire resolveApprovalsForChat (the row carries .activity-
+  // resolved). The bare /deny appears instantly from the optimistic
+  // addPendingSend; the resolution only lands after the mock's
+  // user_message echo round-trips back through handleUserMessage.
   await page.waitForFunction(
     () => /\/deny/.test(document.getElementById('transcript')?.textContent || ''),
     null,
     { timeout: 5_000, polling: 100 },
+  );
+  await page.waitForFunction(
+    () => !!document.querySelector(
+      '#activity-drawer-panel .activity-drawer-item.activity-approval.activity-resolved',
+    ),
+    null,
+    { timeout: 5_000, polling: 80 },
   );
   const after = await page.evaluate(() => ({
     transcript: document.getElementById('transcript')?.textContent || '',
@@ -94,13 +106,26 @@ export default async function run({ page, log, mock }) {
     badgeHidden: document.getElementById('activity-drawer-count-rail')?.hidden ?? true,
   }));
   assert(after.transcript.includes('/deny'), 'Deny action did not send /deny into the approval chat');
-  // a3177a3 (2026-05-22) "Tighten Activity read and approval state" flipped
-  // the post-action behavior from resolveActivity → dismissActivity:
-  // approval rows now LEAVE the tray entirely after Approve/Session/Deny
-  // rather than persisting with a "denied" badge. The smoke now asserts
-  // the approval preview is GONE (not that the item shows "denied").
-  assert(!after.activity.includes('activity tray smoke'),
-    'Deny action did not remove the approval item from the Activity tray');
-  assert(after.badgeHidden, 'unresolved approval badge did not clear after Deny');
-  log('Deny action sent /deny and dismissed Activity item ✓');
+  // 2026-05-28: reversed a3177a3's "delete on action" tightening. The
+  // approval row now STAYS in the tray after Approve/Session/Deny with
+  // a clear-at-a-glance outcome pill (✓ Approved / ✗ Denied / etc.) so
+  // the user has an audit trail of "what I decided, and when."
+  assert(after.activity.includes('activity tray smoke'),
+    'Deny must KEEP the approval row in the tray (resolved, with outcome pill) — not delete it');
+  assert(/✗\s*Denied/.test(after.activity),
+    'Deny must surface the "✗ Denied" outcome pill on the resolved row');
+  const noPendingButtons = await page.evaluate(() => {
+    const li = document.querySelector('#activity-drawer-panel .activity-drawer-item.activity-approval.activity-resolved');
+    return li ? li.querySelectorAll('.activity-item-actions button').length === 0 : false;
+  });
+  assert(noPendingButtons, 'resolved approval must have no Approve/Session/Deny buttons (decision is final)');
+  // The unresolved-approval count clears (urgent gone). Total badge
+  // visibility may depend on unread agent_reply etc., so check the
+  // `urgent` class which directly reflects unresolvedApprovalCount.
+  const noUrgent = await page.evaluate(() => {
+    const b = document.getElementById('activity-drawer-count-rail');
+    return !!b && !b.classList.contains('urgent');
+  });
+  assert(noUrgent, 'unresolved-approval urgent state must clear after Deny');
+  log('Deny sent /deny and the row stays resolved with "✗ Denied" pill ✓');
 }

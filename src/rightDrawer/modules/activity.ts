@@ -96,7 +96,12 @@ function renderActivityItem(item: ActivityItem, opts: {
       btn.textContent = label;
       btn.onclick = (e) => {
         e.stopPropagation();
-        dismissActivity(item.id);
+        // Don't locally dismiss — the user_message echo from sending the
+        // slash command flows through backendEvents.handleUserMessage,
+        // which calls resolveApprovalsForChat with the right outcome.
+        // The row STAYS in the tray, just transitions to resolved with
+        // the outcome pill (a3177a3's local-dismiss tightening reversed,
+        // 2026-05-28).
         void opts.onApprovalAction?.(item.chatId!, action, item.messageId || null);
       };
       actions.appendChild(btn);
@@ -105,7 +110,20 @@ function renderActivityItem(item: ActivityItem, opts: {
   } else if (item.resolved) {
     const state = document.createElement('div');
     state.className = 'activity-item-state';
-    state.textContent = item.resolved.replace('_', ' ');
+    state.dataset.resolution = item.resolved;
+    // Clear-at-a-glance pill labels — these are the strings the user
+    // reads in the tray to know "what happened to this approval." The
+    // smokes (activity-approval-resolves-with-outcome,
+    // -auto-dismisses-on-real-reply, -stale-auto-dismiss) assert on the
+    // exact text; if changed, update those too.
+    const LABELS: Record<string, string> = {
+      approved: '✓ Approved',
+      approved_session: '✓ Approved (session)',
+      denied: '✗ Denied',
+      dismissed: 'Dismissed',
+      stale: 'Stale',
+    };
+    state.textContent = LABELS[item.resolved] || item.resolved.replace('_', ' ');
     li.appendChild(state);
   }
 

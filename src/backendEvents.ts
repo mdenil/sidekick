@@ -36,7 +36,12 @@ import * as activityStore from './notifications/activityStore.ts';
  *  chats: bump the badge counter. */
 export function handleNotification({ chatId, kind, content, sidekickId, isReplay }: any): void {
   const replay = isReplay === true;
-  if (!replay && chatId && kind !== 'approval') activityStore.dismissApprovalsForChat(chatId);
+  if (!replay && chatId && kind !== 'approval') {
+    // Agent moved past the approval point with a different kind of
+    // notification — mark resolved with outcome 'dismissed' (kept in
+    // tray with a pill, not deleted).
+    activityStore.resolveApprovalsForChat(chatId, 'dismissed');
+  }
   if (!replay) {
     activityStore.upsertNotification({
       chatId: chatId || null,
@@ -72,6 +77,21 @@ export function handleNotification({ chatId, kind, content, sidekickId, isReplay
     });
     log(`notification (off-screen) chat=${chatId} kind=${kind} — badge++ + banner`);
     return;
+  }
+  // On-screen approvals: the focused chat doesn't get a badge bump (the
+  // user is already looking at the chat) but DOES need the banner — an
+  // approval blocks the agent until the user decides, so it's urgent
+  // regardless of which chat is on screen. The transcript bubble + tray
+  // row are not enough; the banner is the affordance with action buttons
+  // that doesn't require opening the right drawer (field 2026-05-27).
+  if (!replay && chatId && kind === 'approval') {
+    inAppBanner.show({
+      chatId,
+      kind: kind || '',
+      content: content || '',
+      sidekickId: typeof sidekickId === 'string' ? sidekickId : null,
+      chatLabel: sessionDrawer.getTitleForChat?.(chatId) || undefined,
+    });
   }
   // On-screen notification — push into the store. Projection renders
   // it via the reconciler's notification path; same shape as durable
@@ -135,7 +155,18 @@ export function handleUserMessage({ conversation, text, messageId }: any): void 
   // dedups against inflight regardless, but cleaning up keeps the
   // store hygienic.
   transcriptStore.clearPendingSend(conversation, messageId);
-  if (/^\s*\/(approve(?:\s+session|\s+always)?|deny)\b/i.test(text)) {
-    activityStore.dismissApprovalsForChat(conversation);
+  // User-typed approval decision in the chat — mirror the tray button
+  // outcomes so the activity row resolves with the right pill regardless
+  // of which surface the user actioned through.
+  const cmd = /^\s*\/(deny|approve\s+session|approve\s+always|approve)\b/i.exec(text);
+  if (cmd) {
+    const verb = cmd[1].toLowerCase().replace(/\s+/g, ' ');
+    const resolution =
+      verb === 'deny' ? 'denied'
+      : verb === 'approve session' ? 'approved_session'
+      // /approve always carries a scope handled by hermes; for the
+      // activity tray it's still a user "approved" decision.
+      : 'approved';
+    activityStore.resolveApprovalsForChat(conversation, resolution);
   }
 }
