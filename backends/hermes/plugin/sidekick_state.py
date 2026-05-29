@@ -642,6 +642,60 @@ def list_messages_for_chat_with_state_db_source(
             item["tool_calls"] = r["tool_calls"]
         items.append(item)
 
+    # ── Envelope-only rows: surface unlinked msg_links entries.
+    #
+    # State.db is hermes' POST-TURN flush; the envelope path (Phase-1
+    # write-through) lands rows on sidekick.db at SSE-emit time, often
+    # seconds-to-minutes ahead of state.db. Without this union, a brand-
+    # new chat (state.db has no session yet) or a streaming mid-turn
+    # chat (state.db row not yet flushed) would surface as ZERO messages
+    # via v2 read — breaking activity-row drill ("no longer has a
+    # session"), pinned-message open, and any other path that addresses
+    # a freshly-arrived message. Field 2026-05-29 (Jonathan, immediately
+    # after the B2 default flip).
+    #
+    # Pull msg_links rows with NULL agent_row_id (unmatched to any
+    # state.db row) for this chat and project them into the same wire
+    # shape as state.db rows. Their `id` is the created_at millis cursor
+    # (same convention v1 used so pagination semantics stay sane); the
+    # sidekick_id (msg_xxx/umsg_xxx/notif_xxx/tc:*/tr:*) drives the PWA
+    # bubble's data-key.
+    try:
+        unlinked = sidekick_db.fetchall(
+            "SELECT id, role, content, kind, tool_name, tool_call_id, "
+            "       tool_calls, created_at "
+            "FROM msg_links "
+            "WHERE chat_id = ? AND agent_row_id IS NULL AND status = 'final' "
+            "ORDER BY created_at ASC, rowid ASC",
+            (chat_id,),
+        )
+    except Exception:
+        unlinked = []
+    for r in unlinked:
+        ts = float(r["created_at"]) if r["created_at"] is not None else 0.0
+        item = {
+            "id": int(ts * 1000) if ts else 0,
+            "object": "message",
+            "role": r["role"],
+            "content": r["content"] or "",
+            "created_at": int(ts) if ts else 0,
+            "sidekick_id": r["id"],
+        }
+        if r["kind"]:
+            item["kind"] = r["kind"]
+        if r["tool_name"]:
+            item["tool_name"] = r["tool_name"]
+        if r["tool_call_id"]:
+            item["tool_call_id"] = r["tool_call_id"]
+        if r["tool_calls"]:
+            item["tool_calls"] = r["tool_calls"]
+        items.append(item)
+
+    # Re-sort the merged set — state.db rows came back timestamp ASC
+    # from the CTE, unlinked rows are appended at the end; chronological
+    # interleave is the wire contract callers depend on.
+    items.sort(key=lambda it: (it["created_at"], it["id"]))
+
     # Pagination semantics:
     #  * before_id=None → most-recent `limit` items, has_more=True when we
     #    truncated older history off the head.

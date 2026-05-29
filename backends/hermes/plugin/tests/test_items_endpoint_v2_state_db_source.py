@@ -333,6 +333,49 @@ def test_v2_returns_empty_for_unknown_chat(db, state_db):
     assert result == {"items": [], "first_id": None, "has_more": False}
 
 
+def test_v2_envelope_only_chat_still_surfaces_msg_links_rows(db, state_db):
+    """**The 2026-05-29 field bug** Jonathan hit right after the B2 default
+    flip:  brand-new chats and mid-turn streaming chats have envelope-
+    written rows in msg_links but NO state.db rows yet (hermes flushes
+    state.db at end of turn). v2's pure state.db read returned ZERO
+    messages for these chats → activity-row drill said "no longer has a
+    session," pinned messages couldn't open, all live-edge interactions
+    on fresh chats broke.
+
+    Contract: when state.db has nothing for a chat but msg_links has
+    envelope-written rows, the read path must SURFACE THOSE ROWS — the
+    union of state.db + unlinked envelope writes is what the user
+    actually has. Otherwise the items endpoint is a strict subset of
+    reality and breaks any consumer that addresses messages within the
+    envelope-to-flush window."""
+    # Envelope wrote three rows to sidekick.db (Phase-1 write-through).
+    # State.db has nothing — agent hasn't post-turn-flushed yet.
+    state.record_envelope(db, {
+        "type": "user_message", "chat_id": CHAT_ID,
+        "message_id": "umsg_fresh", "text": "kick off",
+    })
+    state.record_envelope(db, {
+        "type": "reply_final", "chat_id": CHAT_ID,
+        "message_id": "msg_fresh_1", "text": "Checking.",
+    })
+    state.record_envelope(db, {
+        "type": "reply_final", "chat_id": CHAT_ID,
+        "message_id": "msg_fresh_2", "text": "Done — answer is 42.",
+    })
+    result = state.list_messages_for_chat_with_state_db_source(
+        db, state_db, CHAT_ID, "sidekick",
+    )
+    contents = [it["content"] for it in result["items"]]
+    sks = [it.get("sidekick_id") for it in result["items"]]
+    assert "kick off" in contents, \
+        "envelope-only user message must surface even when state.db has nothing"
+    assert "Checking." in contents
+    assert "Done — answer is 42." in contents
+    assert "umsg_fresh" in sks
+    assert "msg_fresh_1" in sks
+    assert "msg_fresh_2" in sks
+
+
 def test_v2_returns_empty_when_state_db_missing(db, tmp_path):
     """state.db path doesn't exist on disk (fresh install, never used).
     Must return empty without raising."""
