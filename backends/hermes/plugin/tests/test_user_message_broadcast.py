@@ -302,9 +302,9 @@ def test_response_route_reuses_same_assistant_message_id_for_sidekick_envelopes(
     Regression for the 2026-05-20 duplicate-bubble class: the route
     minted ``msg_*`` for SSE frames, but ``SidekickAdapter.send()``
     independently minted ``sk-<unix>-<seq>`` for the Sidekick envelope
-    and sidekick.db write-through row. B2 then replayed durable rows
-    with the ``sk-*`` sidekick_id while the live/inflight bubble was
-    keyed by ``msg_*``.
+    and sidekick.db write-through row. History replay then surfaced
+    durable rows with the ``sk-*`` sidekick_id while the live/inflight
+    bubble was keyed by ``msg_*``.
     """
     route_resp = plugin.sidekick_route_responses
     adapter = _make_adapter(plugin)

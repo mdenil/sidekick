@@ -31,9 +31,22 @@ function emptyChatState(): ChatState {
     durable: [],
     inflight: [],
     pendingSends: [],
-    pagination: { firstId: null, hasMore: false },
+    pagination: { firstId: null, hasMore: false, lastId: null, hasMoreNewer: false },
   };
 }
+
+/** Pagination as the items endpoint surfaces it. Callers may pass only
+ *  the older-cursor half (`firstId`/`hasMore`) — the newer-cursor half
+ *  defaults to "tail-anchored" (lastId null, hasMoreNewer false), which
+ *  is correct for a normal resume / load-earlier where the loaded run
+ *  already reaches the live tail. Only a deep `around` window passes the
+ *  newer half explicitly. */
+type PaginationInput = {
+  firstId: number | null;
+  hasMore: boolean;
+  lastId?: number | null;
+  hasMoreNewer?: boolean;
+};
 
 /** Get (and lazily create) the ChatState for `chatId`. Returns a live
  *  reference — callers should NOT mutate it directly; go through the
@@ -65,11 +78,16 @@ export function getState(chatId: string): ChatState {
 export function setDurable(
   chatId: string,
   items: ConversationItem[],
-  pagination: { firstId: number | null; hasMore: boolean },
+  pagination: PaginationInput,
 ): void {
   const s = getState(chatId);
   s.durable = items.slice();
-  s.pagination = { ...pagination };
+  s.pagination = {
+    firstId: pagination.firstId,
+    hasMore: pagination.hasMore,
+    lastId: pagination.lastId ?? null,
+    hasMoreNewer: pagination.hasMoreNewer ?? false,
+  };
   s.inflight = dropCompletedTurnEnvelopes(s.inflight, s.durable);
   notify(chatId);
 }
@@ -120,22 +138,35 @@ function dropCompletedTurnEnvelopes(
   return envs.slice(lastSafeIdx + 1);
 }
 
-/** Prepend older rows from a load-earlier fetch. `pagination` reflects
- *  the new earliest cursor. */
+/** Prepend older rows from a load-earlier fetch. Only the older-cursor
+ *  half (`firstId`/`hasMore`) moves; the newer cursor (lastId/
+ *  hasMoreNewer) is untouched — prepending head rows can't change where
+ *  the tail of the loaded run sits. */
 export function prependDurable(
   chatId: string,
   items: ConversationItem[],
   pagination: { firstId: number | null; hasMore: boolean },
 ): void {
-  if (!items.length) {
-    const s = getState(chatId);
-    s.pagination = { ...pagination };
-    notify(chatId);
-    return;
-  }
   const s = getState(chatId);
-  s.durable = items.concat(s.durable);
-  s.pagination = { ...pagination };
+  if (items.length) s.durable = items.concat(s.durable);
+  s.pagination = { ...s.pagination, firstId: pagination.firstId, hasMore: pagination.hasMore };
+  notify(chatId);
+}
+
+/** Append newer rows from a load-later fetch — the symmetric counterpart
+ *  to prependDurable. Only the newer-cursor half (`lastId`/
+ *  `hasMoreNewer`) moves; the older cursor is untouched. When
+ *  `hasMoreNewer` becomes false the loaded run has reached the live tail,
+ *  which is the signal the caller uses to (re)enable IDB persistence for
+ *  the now-contiguous-to-tail transcript. */
+export function appendDurable(
+  chatId: string,
+  items: ConversationItem[],
+  pagination: { lastId: number | null; hasMoreNewer: boolean },
+): void {
+  const s = getState(chatId);
+  if (items.length) s.durable = s.durable.concat(items);
+  s.pagination = { ...s.pagination, lastId: pagination.lastId, hasMoreNewer: pagination.hasMoreNewer };
   notify(chatId);
 }
 

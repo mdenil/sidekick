@@ -112,10 +112,11 @@ function apiBase(): string {
   return `${location.origin}/api/sidekick`;
 }
 
-async function fetchSessionMessages(id: string, logPrefix = 'proxy-client.fetchSessionMessages') {
+async function fetchSessionMessages(id: string, logPrefix = 'proxy-client.fetchSessionMessages', limit?: number) {
   try {
+    const q = limit != null ? `?limit=${encodeURIComponent(String(limit))}` : '';
     const r = await fetch(
-      `${apiBase()}/sessions/${encodeURIComponent(id)}/messages`,
+      `${apiBase()}/sessions/${encodeURIComponent(id)}/messages${q}`,
     );
     if (!r.ok) {
       diag(`${logPrefix}: HTTP ${r.status} for ${id}`);
@@ -1134,6 +1135,16 @@ export const proxyClientAdapter = {
     return fetchSessionMessages(id);
   },
 
+  /** Tiny newest-page fetch used ONLY to warm the IDB cache at boot
+   *  (sessionDrawer.warmPrefetch). A full page is ~750KB-1MB; over a
+   *  high-latency link 8 of those serially saturate the pipe and starve
+   *  the user's actual drill. A handful of rows warms the cache (resume()
+   *  renders it instantly, then grows it from the server) for ~12KB, so
+   *  the speculative prefetch barely touches the link (Jonathan 2026-05-29). */
+  async prefetchSessionMessages(id: string) {
+    return fetchSessionMessages(id, 'proxy-client.prefetch', 12);
+  },
+
   /** Replay inflight envelopes through the live-SSE router. Called
    *  by the shell AFTER replaySessionMessages has finished rendering
    *  state.db messages (otherwise the clear path inside it would
@@ -1174,6 +1185,51 @@ export const proxyClientAdapter = {
       messages: d.messages || [],
       firstId: d.firstId ?? null,
       hasMore: !!d.hasMore,
+    };
+  },
+
+  /** GET /sessions/<id>/messages?after=<cursor> → the next page of NEWER
+   *  messages (load-newer), the symmetric counterpart to loadEarlier.
+   *  Used to connect a floating deep `around` window back to the live
+   *  tail. `hasMoreNewer===false` means this page reached the tail. */
+  async loadLater(id: string, afterId: number) {
+    if (id.startsWith('__sidekick:hint:')) {
+      return { messages: [], lastId: null, hasMoreNewer: false };
+    }
+    const q = new URLSearchParams({ after: String(afterId) });
+    const r = await fetch(`${apiBase()}/sessions/${encodeURIComponent(id)}/messages?${q}`);
+    if (!r.ok) throw new Error(`loadLater HTTP ${r.status}`);
+    const d = await r.json();
+    return {
+      messages: d.messages || [],
+      lastId: d.lastId ?? null,
+      hasMoreNewer: !!d.hasMoreNewer,
+    };
+  },
+
+  /** GET /sessions/<id>/messages?around=<target> → a bounded window
+   *  centered on the deep-drill target (context above + below) in ONE
+   *  round trip instead of N serial loadEarlier pages. `targetFound===false`
+   *  (with an empty list) means the target is missing; the caller falls
+   *  back to its serial drill. `hasMore`/`hasMoreNewer` + `firstId`/`lastId`
+   *  describe the bidirectional pagination cursors for the loaded window. */
+  async fetchMessagesAround(id: string, target: string, limit?: number) {
+    if (id.startsWith('__sidekick:hint:')) {
+      return { messages: [], firstId: null, hasMore: false, lastId: null, hasMoreNewer: false, targetFound: false };
+    }
+    const q = new URLSearchParams({ around: String(target) });
+    if (limit != null) q.set('limit', String(limit));
+    const r = await fetch(`${apiBase()}/sessions/${encodeURIComponent(id)}/messages?${q}`);
+    if (!r.ok) throw new Error(`fetchMessagesAround HTTP ${r.status}`);
+    const d = await r.json();
+    return {
+      messages: d.messages || [],
+      firstId: d.firstId ?? null,
+      hasMore: !!d.hasMore,
+      lastId: d.lastId ?? null,
+      hasMoreNewer: !!d.hasMoreNewer,
+      targetFound: !!d.targetFound,
+      ...(Array.isArray(d.inflight) ? { inflight: d.inflight } : {}),
     };
   },
 

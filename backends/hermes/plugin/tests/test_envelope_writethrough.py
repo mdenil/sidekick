@@ -1,4 +1,4 @@
-"""Phase 1 smoke for the sidekick.db-as-message-store migration.
+"""Envelope write-through to the sidekick.db message store.
 
 Asserts every persisted envelope type (`user_message`, `reply_delta`,
 `reply_final`, `tool_call`, `tool_result`, `notification`) lands as a
@@ -6,12 +6,9 @@ row in sidekick.db's message store at envelope-emit time, with the
 right id / role / content / status. Non-persisted types (`typing`,
 `session_changed`, etc.) must NOT produce a row.
 
-These tests pin down the **write contract** before Phase 2 makes the
-items endpoint read from sidekick.db. If a future commit breaks the
-write path, items will silently lose rows; the smokes here catch that
-class deterministically.
-
-Design block: see top of `sidekick_db.py` for the full migration plan.
+These tests pin down the **write contract** the items endpoint relies
+on. If a future commit breaks the write path, items will silently lose
+rows; the smokes here catch that class deterministically.
 """
 
 from __future__ import annotations

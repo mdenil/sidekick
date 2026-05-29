@@ -282,6 +282,26 @@ async def handle_get_items(adapter, request: "web.Request") -> "web.Response":
         except ValueError:
             return web.Response(status=400, text="invalid before cursor")
 
+    # `around=<sidekick_id|int id>` — deep-target drill. Returns a single
+    # BOUNDED window centered on the target (context above + below, capped
+    # at `limit`) instead of making the PWA page backward N times to reach
+    # it. Mutually exclusive with `before` (a cursor page); if both are
+    # sent, `around` wins.
+    around = request.query.get("around")
+
+    # `after=<int id>` — load-newer cursor, symmetric counterpart of
+    # `before`. Used when the user scrolls DOWN past the bottom of a
+    # bounded deep-jump window toward the live tail.
+    after = request.query.get("after")
+    after_id: Optional[int]
+    if after is None:
+        after_id = None
+    else:
+        try:
+            after_id = int(after)
+        except ValueError:
+            return web.Response(status=400, text="invalid after cursor")
+
     # Source resolution still hits state.db — it's the canonical
     # mapping of chat_id → source (sidekick / telegram / slack /…).
     # Track whether state.db has ANY session for this chat so the
@@ -319,8 +339,34 @@ async def handle_get_items(adapter, request: "web.Request") -> "web.Response":
     # SIDEKICK_ITEMS_READ_FROM_STATE_DB=0 to fall back to the legacy v1
     # path (mirrors bodies in sidekick.db; dupes on link miss).
     _b2_enabled = os.environ.get("SIDEKICK_ITEMS_READ_FROM_STATE_DB", "1").lower() in ("1", "true", "yes")
-    _trace("query-start", f"limit={limit} before={before_id} b2={_b2_enabled}")
-    if _b2_enabled:
+    _trace("query-start", f"limit={limit} before={before_id} after={after_id} around={around or ''} b2={_b2_enabled}")
+    target_found = None
+    last_id = None
+    has_more_newer = None
+    if around is not None and _b2_enabled:
+        # Deep-target drill: one BOUNDED window centered on the target.
+        # Only on the B2 path (the v1 fallback's millis cursor doesn't map
+        # cleanly to an "around" window; the PWA falls back to its serial
+        # load-earlier drill when target_found is False / the field is
+        # absent).
+        result = await asyncio.to_thread(
+            _sstate.list_messages_around_for_chat_with_state_db_source,
+            adapter._sidekick_db, adapter._state_db_path, chat_id, source,
+            target=around, limit=limit,
+        )
+        target_found = bool(result.get("target_found"))
+        last_id = result.get("last_id")
+        has_more_newer = bool(result.get("has_more_newer"))
+    elif after_id is not None and _b2_enabled:
+        # Load-newer page (symmetric counterpart of before paging).
+        result = await asyncio.to_thread(
+            _sstate.list_messages_after_for_chat_with_state_db_source,
+            adapter._sidekick_db, adapter._state_db_path, chat_id, source,
+            after_id=after_id, limit=limit,
+        )
+        last_id = result.get("last_id")
+        has_more_newer = bool(result.get("has_more_newer"))
+    elif _b2_enabled:
         result = await asyncio.to_thread(
             _sstate.list_messages_for_chat_with_state_db_source,
             adapter._sidekick_db, adapter._state_db_path, chat_id, source,
@@ -335,7 +381,7 @@ async def handle_get_items(adapter, request: "web.Request") -> "web.Response":
     items = result["items"]
     first_id = result["first_id"]
     has_more = result["has_more"]
-    _trace("query-end", f"rows={len(items)}")
+    _trace("query-end", f"rows={len(items)} target_found={target_found}")
 
     inflight_entry = None
     inflight_envelopes: list = []
@@ -356,6 +402,17 @@ async def handle_get_items(adapter, request: "web.Request") -> "web.Response":
         "first_id": first_id,
         "has_more": has_more,
     }
+    # Echo whether the around-target was located so the PWA can fall back
+    # to its serial load-earlier drill on a stale pin (target_found=False).
+    if target_found is not None:
+        body["target_found"] = target_found
+    # Load-newer boundary — set on the bounded around-window + the after
+    # cursor paths so the PWA knows whether scroll-down can fetch more
+    # toward the live tail (and where to resume from).
+    if last_id is not None:
+        body["last_id"] = last_id
+    if has_more_newer is not None:
+        body["has_more_newer"] = has_more_newer
     if inflight_envelopes:
         body["inflight"] = inflight_envelopes
     response = web.json_response(body)

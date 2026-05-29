@@ -24,6 +24,9 @@ import {
   initSessionResume,
   replaySessionMessages,
   loadEarlierHistory,
+  loadLaterHistory,
+  jumpToLatest,
+  drillToMessageInViewedSession,
   NO_REPLY_RE,
 } from './sessionResume.ts';
 import { initNotifications } from './notifications/index.ts';
@@ -640,11 +643,11 @@ async function boot() {
 
   // Session list inside the sidebar — renders when backend supports browsing.
   sessionDrawer.init({
-    // sessionDrawer's onResumeCb shape passes inflight as the 4th arg
-    // (no targetMessageId concept here); replaySessionMessages's slot
-    // for targetMessageId is between pagination and inflight, so adapt.
-    onResume: (id: string, messages: any[], pagination?: any, inflight?: any[]) =>
-      replaySessionMessages(id, messages, pagination, undefined, inflight),
+    // sessionDrawer's onResumeCb passes inflight as the 4th arg and (for
+    // drill navigations) targetMessageId as the 5th; replaySessionMessages
+    // orders targetMessageId before inflight, so adapt the slots here.
+    onResume: (id: string, messages: any[], pagination?: any, inflight?: any[], targetMessageId?: string) =>
+      replaySessionMessages(id, messages, pagination, targetMessageId, inflight),
     onBeforeSwitch: cleanupAbandonedChat,
     onMultiSelectChange: (ids: string[]) => multiSelect.update(ids),
     // Stale-foreground recovery: if the session the user is currently
@@ -696,33 +699,64 @@ async function boot() {
     opts: { validateExists?: boolean } = {},
   ): Promise<boolean> => {
     if (opts.validateExists) {
-      try {
-        const probe: any = await backend.fetchSessionMessages(chatId);
-        const hasContent = (probe.messages || []).length > 0 || (probe.inflight || []).length > 0;
-        if (!hasContent) {
-          diag(`drill: ${chatId} has no durable/inflight messages; dropping stale activity link`);
-          status.setStatus('That activity item no longer has a session.', 'err');
+      // Stale-link guard for activity items. The cheap path: the session
+      // is in the drawer's already-loaded list — then it exists, skip the
+      // server probe entirely so the drill stays instant (drillTo blanks
+      // the transcript + spins synchronously). Only when the chat is NOT
+      // in the cached list (rare — stale link to a deleted session, or a
+      // brand-new chat the list hasn't picked up yet) do we pay a server
+      // round-trip to distinguish "deleted" from "not-yet-listed". This
+      // removes the ~1MB blocking fetchSessionMessages that used to gate
+      // EVERY activity jump with no feedback (field 2026-05-29).
+      const bare = (x: string) => String(x || '').replace(/^sidekick:/, '');
+      const known = sessionDrawer.getCachedSessions()
+        .some((s: any) => bare(s.id) === bare(chatId));
+      if (!known) {
+        try {
+          const probe: any = await backend.fetchSessionMessages(chatId);
+          const hasContent = (probe.messages || []).length > 0 || (probe.inflight || []).length > 0;
+          if (!hasContent) {
+            diag(`drill: ${chatId} has no durable/inflight messages; dropping stale activity link`);
+            status.setStatus('That activity item no longer has a session.', 'err');
+            return false;
+          }
+        } catch (e: any) {
+          diag(`drill: validation fetch ${chatId} failed: ${e?.message ?? e}`);
+          status.setStatus('Could not open that activity item.', 'err');
           return false;
         }
+      }
+    }
+    // Route through the drawer's cache-first resume() — same path a
+    // sidebar row click uses — so the drill is atomic + cacheable: the
+    // target row highlights synchronously, the transcript paints from IDB
+    // cache first, and the server reconcile follows. drillTo also fires
+    // onBeforeSwitch (cleanupAbandonedChat) internally, so we don't call
+    // it here. Replaces the old fully-server-gated resumeSession + replay
+    // that left the highlight flickering for 3-13s over a high-latency
+    // link (field 2026-05-29, Jonathan in Philadelphia → fontbrain/London).
+    // Same-session jump (the chat is ALREADY on screen): do NOT re-resume.
+    // resume() double-renders + its in-flight dedup keys only on chat id,
+    // so a rapid second jump to a different target in the same session was
+    // dropped (bubble never appeared) and deep jumps fired redundant
+    // concurrent ~1MB fetches (Jonathan 2026-05-29, jumping between pins
+    // inside the pitch deck). Route straight to a single bounded around
+    // fetch (or an in-DOM scroll when the bubble is already rendered).
+    const bare = (x: string) => String(x || '').replace(/^sidekick:/, '');
+    if (msgId && bare(sessionDrawer.getViewed() || '') === bare(chatId)) {
+      try {
+        await drillToMessageInViewedSession(chatId, msgId);
+        return true;
       } catch (e: any) {
-        diag(`drill: validation fetch ${chatId} failed: ${e?.message ?? e}`);
-        status.setStatus('Could not open that activity item.', 'err');
+        diag(`drill: same-session drill ${chatId} failed: ${e?.message ?? e}`);
         return false;
       }
     }
-    const leaving = backend.getCurrentSessionId?.() ?? null;
-    if (leaving !== chatId) {
-      try { cleanupAbandonedChat(leaving); }
-      catch (e: any) { diag(`drill: cleanupAbandonedChat threw: ${e?.message ?? e}`); }
-    }
     try {
-      const result: any = await backend.resumeSession(chatId);
-      const messages = result.messages || [];
-      const pagination = { firstId: result.firstId ?? null, hasMore: !!result.hasMore };
-      replaySessionMessages(chatId, messages, pagination, msgId ?? undefined);
+      await sessionDrawer.drillTo(chatId, msgId ?? undefined);
       return true;
     } catch (e: any) {
-      diag(`drill: resume ${chatId} failed: ${e?.message ?? e}`);
+      diag(`drill: drillTo ${chatId} failed: ${e?.message ?? e}`);
       return false;
     }
   };
@@ -877,6 +911,8 @@ async function boot() {
   const transcriptEl = document.getElementById('transcript');
   const chatRestored = await chat.init(transcriptEl);
   chat.onLoadEarlier(loadEarlierHistory);
+  chat.onLoadLater(loadLaterHistory);
+  chat.onJumpToLatest(jumpToLatest);
   // Backfill ALWAYS runs on connect — dedup by text handles duplicates.
   // The snapshot lives in IndexedDB (survives tab close, PWA kills, and
   // cross-SW-version reloads); backfill plugs any residual gap on connect.

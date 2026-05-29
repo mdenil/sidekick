@@ -241,6 +241,18 @@ export async function installMockBackend(page) {
     let limit = Math.max(1, Math.min(500, parseInt(url.searchParams.get('limit') || '200', 10)));
     const beforeRaw = url.searchParams.get('before');
     const before = beforeRaw && /^\d+$/.test(beforeRaw) ? parseInt(beforeRaw, 10) : null;
+    // `around=<sidekick_id|integer id>` — one-shot deep-drill BOUNDED
+    // window. Mirrors the plugin (list_messages_around_for_chat_with_
+    // state_db_source): a slice CENTERED on the target (context above +
+    // below), capped at ~limit rows — payload is O(limit), independent of
+    // how deep the target sits. targetFound=false (empty list) when the
+    // target is missing.
+    const aroundRaw = url.searchParams.get('around');
+    const around = aroundRaw && /^[A-Za-z0-9._:-]{1,128}$/.test(aroundRaw) ? aroundRaw : null;
+    // `after=<integer id>` — load-newer page (symmetric to `before`).
+    // Walks a floating deep `around` window forward toward the live tail.
+    const afterRaw = url.searchParams.get('after');
+    const after = afterRaw && /^\d+$/.test(afterRaw) ? parseInt(afterRaw, 10) : null;
     // Test-controlled cap on the first page (no `before`) so smokes
     // can force pagination with a small fixture (see
     // load-earlier-history.mjs). Subsequent loadEarlier requests
@@ -282,6 +294,65 @@ export async function installMockBackend(page) {
       if (m.kind) out.kind = m.kind;
       return out;
     }) : [];
+    // Around (deep-drill) window takes precedence over before-paging.
+    // BOUNDED CENTERED window: context above the target (~2/3 of limit)
+    // + context below (~1/3), so payload is O(limit) regardless of how
+    // deep the target sits. firstId/hasMore expose the older edge (toward
+    // head); lastId/hasMoreNewer expose the newer edge (toward the live
+    // tail). A deep window is "floating" — it reaches the tail only once
+    // hasMoreNewer flips false (loaded the last row), at which point the
+    // PWA may persist it. Mirrors the plugin's
+    // list_messages_around_for_chat_with_state_db_source.
+    if (around !== null) {
+      const idx = allMessages.findIndex(
+        (m) => String(m.sidekick_id || '') === around || String(m.id) === around,
+      );
+      let body;
+      if (idx < 0) {
+        body = {
+          messages: [], firstId: null, hasMore: false,
+          lastId: null, hasMoreNewer: false, targetFound: false,
+        };
+      } else {
+        const ctxBefore = Math.max(20, Math.floor((limit * 2) / 3));
+        const ctxAfter = Math.max(10, Math.floor(limit / 3));
+        const start = Math.max(0, idx - ctxBefore);
+        const end = Math.min(allMessages.length, idx + ctxAfter + 1);
+        const window = allMessages.slice(start, end);
+        body = {
+          messages: window,
+          firstId: window.length > 0 ? window[0].id : null,
+          hasMore: start > 0,
+          lastId: window.length > 0 ? window[window.length - 1].id : null,
+          hasMoreNewer: end < allMessages.length,
+          targetFound: true,
+        };
+      }
+      await route.fulfill({
+        status: 200, contentType: 'application/json', body: JSON.stringify(body),
+      });
+      return;
+    }
+    // `after=<integer id>` — load-newer page (exclusive: id > after),
+    // bounded by limit, walking a floating deep window forward toward the
+    // live tail. lastId/hasMoreNewer expose the newer edge so the PWA
+    // knows when it has connected the window to the tail.
+    if (after !== null) {
+      const newer = allMessages.filter((m) => typeof m.id === 'number' && m.id > after);
+      const page = newer.slice(0, limit);
+      const lastId = page.length > 0 ? page[page.length - 1].id : null;
+      const hasMoreNewer = page.length < newer.length;
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          messages: page,
+          lastId: typeof lastId === 'number' ? lastId : null,
+          hasMoreNewer,
+        }),
+      });
+      return;
+    }
     // Apply pagination. `before` is exclusive (return messages with
     // id < before); no `before` means "newest page". Slice tail-side.
     const upTo = before != null

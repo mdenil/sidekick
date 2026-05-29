@@ -1,19 +1,20 @@
-"""B2 tests: items endpoint reads state.db as canonical body store,
-joins sidekick.db.msg_links for sidekick_id / kind annotations.
+"""Items endpoint read path: state.db is the canonical body store,
+sidekick.db.msg_links supplies sidekick_id / kind annotations.
 
-This is the staged-behind-env-flag read path: when
-``SIDEKICK_ITEMS_READ_FROM_STATE_DB=true`` is set, the items endpoint
-calls ``list_messages_for_chat_with_state_db_source`` instead of the
-v1 ``list_messages_for_chat`` (which reads sidekick.db.msg_links as
-the body store).
+Exercises ``list_messages_for_chat_with_state_db_source`` — the
+default read path (``SIDEKICK_ITEMS_READ_FROM_STATE_DB`` defaults to
+on). The fallback reader ``list_messages_for_chat`` (sidekick.db.
+msg_links as the body store, used when the env flag is off) is
+covered in test_items_endpoint_sidekick_db.py.
 
-Why v2 exists: v1's dual-body model (envelope write-through to
-sidekick.db PLUS state.db backfill via reconcile) can leave the same
-logical message stored twice when reconcile's content-match fails.
-Surfaces as duplicate bubbles in the PWA (Jonathan field bug
-2026-05-19, two "Hey — received." bubbles with mismatched timestamps).
-v2 eliminates the dupe class structurally — state.db is the single
-source of truth for bodies; sidekick.db's role narrows to linkage.
+Why state.db is canonical for bodies: the older dual-body model
+(envelope write-through to sidekick.db PLUS state.db backfill via
+reconcile) could leave the same logical message stored twice when
+reconcile's content-match failed — surfaced as duplicate bubbles in
+the PWA (Jonathan field bug 2026-05-19, two "Hey — received." bubbles
+with mismatched timestamps). Reading bodies from state.db only
+eliminates the dupe class structurally; sidekick.db's role narrows to
+linkage.
 """
 
 from __future__ import annotations
@@ -102,8 +103,8 @@ def _add_msg(state_db, sid, role, content, ts=None, tool_calls=None,
 # ── core wire shape ──────────────────────────────────────────────────
 
 
-def test_v2_reads_state_db_messages_in_chronological_order(db, state_db):
-    """state.db is the canonical body store. v2's recursive CTE + sort
+def test_reads_state_db_messages_in_chronological_order(db, state_db):
+    """state.db is the canonical body store. The recursive CTE + sort
     must return messages in timestamp-ascending order."""
     _add_session(state_db, "s1")
     _add_msg(state_db, "s1", "user", "first", ts=1000.0)
@@ -118,7 +119,7 @@ def test_v2_reads_state_db_messages_in_chronological_order(db, state_db):
     assert result["has_more"] is False
 
 
-def test_v2_surfaces_sidekick_id_when_link_exists(db, state_db):
+def test_surfaces_sidekick_id_when_link_exists(db, state_db):
     """sidekick.db.msg_links provides the sidekick_id annotation via
     its ``agent_row_id`` linkage to state.db.messages.id."""
     _add_session(state_db, "s1")
@@ -136,7 +137,7 @@ def test_v2_surfaces_sidekick_id_when_link_exists(db, state_db):
     assert items[0]["content"] == "linked reply"
 
 
-def test_v2_handles_legacy_rows_with_no_link(db, state_db):
+def test_handles_legacy_rows_with_no_link(db, state_db):
     """state.db rows without a sidekick.db.msg_links twin still surface
     — they just don't carry a sidekick_id. PWA falls back to integer-id
     keying for these (cross-channel / pre-write-through legacy rows)."""
@@ -153,11 +154,12 @@ def test_v2_handles_legacy_rows_with_no_link(db, state_db):
     assert items[1]["content"] == "legacy a"
 
 
-def test_v2_no_duplicate_rows_even_when_msg_links_has_extra_entries(db, state_db):
-    """v2 is structurally immune to the 2026-05-19 dupe bug. Even if
-    sidekick.db.msg_links has a row that doesn't correspond to a real
-    state.db message (e.g. a stale row from a turn that got /retry'd
-    out), v2 only returns one row per state.db.messages entry."""
+def test_no_duplicate_rows_even_when_msg_links_has_extra_entries(db, state_db):
+    """Reading bodies from state.db is structurally immune to the
+    2026-05-19 dupe bug. Even if sidekick.db.msg_links has a row that
+    doesn't correspond to a real state.db message (e.g. a stale row
+    from a turn that got /retry'd out), the read path only returns one
+    row per state.db.messages entry."""
     _add_session(state_db, "s1")
     state_msg_id = _add_msg(state_db, "s1", "assistant", "Hey — received.", ts=3000.0)
     # The "real" link.
@@ -166,7 +168,8 @@ def test_v2_no_duplicate_rows_even_when_msg_links_has_extra_entries(db, state_db
         content="Hey — received.", agent_row_id=str(state_msg_id),
     )
     # A stale or duplicate link with same content but no corresponding
-    # state.db row (mimics what would have caused v1 to render twice).
+    # state.db row (mimics what would have made the sidekick.db-body
+    # reader render the message twice).
     state.upsert_msg_link(
         db, id="legacy:999", chat_id=CHAT_ID, role="assistant",
         content="Hey — received.", agent_row_id="999",
@@ -176,7 +179,7 @@ def test_v2_no_duplicate_rows_even_when_msg_links_has_extra_entries(db, state_db
         db, state_db, CHAT_ID, "sidekick"
     )["items"]
     assert len(items) == 1, (
-        "v2 reads from state.db so it returns one row per logical "
+        "reading from state.db returns one row per logical "
         f"message; got {len(items)} items: {items}"
     )
     assert items[0]["sidekick_id"] == "msg_real_xyz"
@@ -185,9 +188,10 @@ def test_v2_no_duplicate_rows_even_when_msg_links_has_extra_entries(db, state_db
 # ── tool calls (must surface from state.db side) ─────────────────────
 
 
-def test_v2_surfaces_tool_calls_from_state_db(db, state_db):
-    """tool_calls JSON lives on state.db.messages. v2 surfaces it
-    directly — PWA's parseToolCalls reads this for activity rows."""
+def test_surfaces_tool_calls_from_state_db(db, state_db):
+    """tool_calls JSON lives on state.db.messages. The read path
+    surfaces it directly — PWA's parseToolCalls reads this for
+    activity rows."""
     _add_session(state_db, "s1")
     tcalls = json.dumps(
         [{"id": "call_x", "function": {"name": "web_search", "arguments": "{}"}}]
@@ -209,7 +213,7 @@ def test_v2_surfaces_tool_calls_from_state_db(db, state_db):
 # ── kind annotation (notifications) ──────────────────────────────────
 
 
-def test_v2_surfaces_kind_from_msg_links(db, state_db):
+def test_surfaces_kind_from_msg_links(db, state_db):
     """msg_links.kind annotates notification-shaped rows so PWA
     renders them as notifications vs regular replies."""
     _add_session(state_db, "s1")
@@ -232,7 +236,7 @@ def test_v2_surfaces_kind_from_msg_links(db, state_db):
 # ── pagination ──────────────────────────────────────────────────────
 
 
-def test_v2_pagination_limit_returns_recent_window_with_has_more(db, state_db):
+def test_pagination_limit_returns_recent_window_with_has_more(db, state_db):
     """No `before_id`, lots of rows → return the latest `limit` items
     with has_more=True. Cursor for the next page is the smallest id
     in the returned window."""
@@ -249,7 +253,7 @@ def test_v2_pagination_limit_returns_recent_window_with_has_more(db, state_db):
     assert [i["content"] for i in result["items"]] == [f"msg-{n}" for n in range(15, 20)]
 
 
-def test_v2_pagination_before_cursor_returns_older_window(db, state_db):
+def test_pagination_before_cursor_returns_older_window(db, state_db):
     """before_id is a state.db.messages.id cursor — older page."""
     _add_session(state_db, "s1")
     msg_ids = [_add_msg(state_db, "s1", "user", f"msg-{i}", ts=1000.0 + i)
@@ -269,9 +273,9 @@ def test_v2_pagination_before_cursor_returns_older_window(db, state_db):
 # ── compaction CTE (parent_session_id rollup) ────────────────────────
 
 
-def test_v2_rolls_up_compacted_child_session_messages(db, state_db):
+def test_rolls_up_compacted_child_session_messages(db, state_db):
     """state.db compaction creates child sessions with user_id=NULL but
-    parent_session_id pointing to the original. v2's recursive CTE
+    parent_session_id pointing to the original. The recursive CTE
     walks the chain so child messages still surface under the chat_id."""
     parent_prompt = "x" * 250  # CTE requires >= 200 chars
     _add_session(state_db, "parent_s", system_prompt=parent_prompt)
@@ -293,7 +297,7 @@ def test_v2_rolls_up_compacted_child_session_messages(db, state_db):
     ]
 
 
-def test_v2_drops_compaction_seed_block(db, state_db):
+def test_drops_compaction_seed_block(db, state_db):
     """The `[CONTEXT COMPACTION — REFERENCE ONLY]` marker + everything
     before it within a child session is the hermes-injected seed block.
     Must not surface to the PWA (verbatim user-prompt dupe avoidance,
@@ -323,7 +327,7 @@ def test_v2_drops_compaction_seed_block(db, state_db):
 # ── 404-ish empty case ──────────────────────────────────────────────
 
 
-def test_v2_returns_empty_for_unknown_chat(db, state_db):
+def test_returns_empty_for_unknown_chat(db, state_db):
     """No session exists for the chat_id → empty result, has_more=False.
     Caller (route handler) turns this into a 404 when combined with
     no inflight envelopes."""
@@ -333,14 +337,14 @@ def test_v2_returns_empty_for_unknown_chat(db, state_db):
     assert result == {"items": [], "first_id": None, "has_more": False}
 
 
-def test_v2_envelope_only_chat_still_surfaces_msg_links_rows(db, state_db):
-    """**The 2026-05-29 field bug** Jonathan hit right after the B2 default
-    flip:  brand-new chats and mid-turn streaming chats have envelope-
-    written rows in msg_links but NO state.db rows yet (hermes flushes
-    state.db at end of turn). v2's pure state.db read returned ZERO
-    messages for these chats → activity-row drill said "no longer has a
-    session," pinned messages couldn't open, all live-edge interactions
-    on fresh chats broke.
+def test_envelope_only_chat_still_surfaces_msg_links_rows(db, state_db):
+    """**The 2026-05-29 field bug** Jonathan hit right after state.db
+    became the default body source: brand-new chats and mid-turn
+    streaming chats have envelope-written rows in msg_links but NO
+    state.db rows yet (hermes flushes state.db at end of turn). A pure
+    state.db read returned ZERO messages for these chats → activity-row
+    drill said "no longer has a session," pinned messages couldn't open,
+    all live-edge interactions on fresh chats broke.
 
     Contract: when state.db has nothing for a chat but msg_links has
     envelope-written rows, the read path must SURFACE THOSE ROWS — the
@@ -348,7 +352,7 @@ def test_v2_envelope_only_chat_still_surfaces_msg_links_rows(db, state_db):
     actually has. Otherwise the items endpoint is a strict subset of
     reality and breaks any consumer that addresses messages within the
     envelope-to-flush window."""
-    # Envelope wrote three rows to sidekick.db (Phase-1 write-through).
+    # Envelope wrote three rows to sidekick.db (envelope write-through).
     # State.db has nothing — agent hasn't post-turn-flushed yet.
     state.record_envelope(db, {
         "type": "user_message", "chat_id": CHAT_ID,
@@ -376,7 +380,7 @@ def test_v2_envelope_only_chat_still_surfaces_msg_links_rows(db, state_db):
     assert "msg_fresh_2" in sks
 
 
-def test_v2_returns_empty_when_state_db_missing(db, tmp_path):
+def test_returns_empty_when_state_db_missing(db, tmp_path):
     """state.db path doesn't exist on disk (fresh install, never used).
     Must return empty without raising."""
     missing = tmp_path / "does-not-exist.db"
@@ -384,3 +388,151 @@ def test_v2_returns_empty_when_state_db_missing(db, tmp_path):
         db, missing, CHAT_ID, "sidekick"
     )
     assert result == {"items": [], "first_id": None, "has_more": False}
+
+
+# ── around-target deep drill (bounded window) ────────────────────────
+
+
+def test_around_returns_bounded_window_centered_on_target(db, state_db):
+    """The deep-drill window is BOUNDED on both sides (context above AND
+    below the target) and does NOT run to the live tail — so the payload
+    stays O(limit) for any depth. has_more / has_more_newer report the
+    open boundaries the PWA bridges via scroll-up / scroll-down."""
+    _add_session(state_db, "s1")
+    msg_ids = [_add_msg(state_db, "s1", "user", f"m{i}", ts=1000.0 + i)
+               for i in range(300)]
+
+    # Target idx 150, limit=60 → ctx_before=max(20,40)=40,
+    # ctx_after=max(10,20)=20 → window=[110:171] = m110..m170.
+    result = state.list_messages_around_for_chat_with_state_db_source(
+        db, state_db, CHAT_ID, "sidekick", target=str(msg_ids[150]), limit=60
+    )
+    assert result["target_found"] is True
+    contents = [i["content"] for i in result["items"]]
+    assert "m150" in contents             # target present
+    assert contents[0] == "m110"          # 40 rows of above-context
+    assert contents[-1] == "m170"         # 20 rows below — NOT the tail
+    assert result["has_more"] is True     # older history above the window
+    assert result["has_more_newer"] is True   # newer history below it
+    assert result["first_id"] == msg_ids[110]
+    assert result["last_id"] == msg_ids[170]
+
+
+def test_around_deep_target_payload_is_bounded_not_tail_contiguous(db, state_db):
+    """The regression this rewrite fixes: a pin near the TOP of a long
+    session must NOT pull back everything from the target to the tail
+    (835 rows / 4.27 MB for [pitch deck] over the London link). The
+    window is capped at ~limit rows regardless of how far the target is
+    from the live tail."""
+    _add_session(state_db, "s1")
+    n = 3000
+    msg_ids = [_add_msg(state_db, "s1", "user", f"m{i}", ts=1000.0 + i)
+               for i in range(n)]
+
+    # Target idx 1500 (deep middle), limit=60 → window ~61 rows, NOT ~1500.
+    result = state.list_messages_around_for_chat_with_state_db_source(
+        db, state_db, CHAT_ID, "sidekick", target=str(msg_ids[1500]), limit=60
+    )
+    assert result["target_found"] is True
+    assert len(result["items"]) <= 61     # bounded, not O(distance-to-tail)
+    contents = [i["content"] for i in result["items"]]
+    assert "m1500" in contents
+    assert result["has_more"] is True
+    assert result["has_more_newer"] is True
+
+
+def test_around_matches_target_by_sidekick_id(db, state_db):
+    """Pins/activity address messages by sidekick_id (msg_xxx), not the
+    integer state.db id — the around lookup must match either."""
+    _add_session(state_db, "s1")
+    msg_ids = [_add_msg(state_db, "s1", "user", f"msg-{i}", ts=1000.0 + i)
+               for i in range(30)]
+    state.upsert_msg_link(
+        db, id="msg_target_abc", chat_id=CHAT_ID, role="user",
+        content="msg-7", agent_row_id=str(msg_ids[7]),
+    )
+
+    # limit=50 → ctx_before=max(20,33)=33, ctx_after=max(10,16)=16.
+    # start=max(0,7-33)=0, end=min(30,7+16+1)=24 → window=[0:24].
+    result = state.list_messages_around_for_chat_with_state_db_source(
+        db, state_db, CHAT_ID, "sidekick", target="msg_target_abc", limit=50
+    )
+    assert result["target_found"] is True
+    contents = [i["content"] for i in result["items"]]
+    assert "msg-7" in contents
+    assert contents[0] == "msg-0"          # reached the head → no older
+    assert result["has_more"] is False
+    assert contents[-1] == "msg-23"        # bounded below — NOT the tail
+    assert result["has_more_newer"] is True
+    assert result["last_id"] == msg_ids[23]
+
+
+def test_around_small_chat_fits_whole_window(db, state_db):
+    """A chat smaller than the budget returns the whole transcript with
+    both boundaries closed (has_more / has_more_newer both False)."""
+    _add_session(state_db, "s1")
+    msg_ids = [_add_msg(state_db, "s1", "user", f"m{i}", ts=1000.0 + i)
+               for i in range(10)]
+    result = state.list_messages_around_for_chat_with_state_db_source(
+        db, state_db, CHAT_ID, "sidekick", target=str(msg_ids[5]), limit=50
+    )
+    assert result["target_found"] is True
+    assert [i["content"] for i in result["items"]] == [f"m{i}" for i in range(10)]
+    assert result["has_more"] is False
+    assert result["has_more_newer"] is False
+    assert result["first_id"] == msg_ids[0]
+    assert result["last_id"] == msg_ids[9]
+
+
+def test_around_target_not_found_returns_flag_false(db, state_db):
+    """Stale pin / wrong chat → target_found=False + empty list so the
+    PWA falls back to its serial load-earlier drill."""
+    _add_session(state_db, "s1")
+    for i in range(10):
+        _add_msg(state_db, "s1", "user", f"msg-{i}", ts=1000.0 + i)
+
+    result = state.list_messages_around_for_chat_with_state_db_source(
+        db, state_db, CHAT_ID, "sidekick", target="msg_does_not_exist", limit=20
+    )
+    assert result["target_found"] is False
+    assert result["items"] == []
+    assert result["has_more"] is False
+    assert result["has_more_newer"] is False
+
+
+# ── load-newer (after cursor) ────────────────────────────────────────
+
+
+def test_after_returns_newer_page_bounded(db, state_db):
+    """The after cursor returns the OLDEST `limit` items newer than the
+    cursor, with has_more_newer True when more remain before the tail."""
+    _add_session(state_db, "s1")
+    msg_ids = [_add_msg(state_db, "s1", "user", f"m{i}", ts=1000.0 + i)
+               for i in range(100)]
+
+    # After idx 40, limit=20 → m41..m60, more remain (m61..m99).
+    result = state.list_messages_after_for_chat_with_state_db_source(
+        db, state_db, CHAT_ID, "sidekick", after_id=msg_ids[40], limit=20
+    )
+    contents = [i["content"] for i in result["items"]]
+    assert contents[0] == "m41"
+    assert contents[-1] == "m60"
+    assert result["has_more_newer"] is True
+    assert result["first_id"] == msg_ids[41]
+    assert result["last_id"] == msg_ids[60]
+
+
+def test_after_reaching_tail_closes_boundary(db, state_db):
+    """When the after page reaches the live tail, has_more_newer is False
+    so the PWA knows it's back at the live edge."""
+    _add_session(state_db, "s1")
+    msg_ids = [_add_msg(state_db, "s1", "user", f"m{i}", ts=1000.0 + i)
+               for i in range(50)]
+    result = state.list_messages_after_for_chat_with_state_db_source(
+        db, state_db, CHAT_ID, "sidekick", after_id=msg_ids[40], limit=20
+    )
+    contents = [i["content"] for i in result["items"]]
+    assert contents[0] == "m41"
+    assert contents[-1] == "m49"          # reached the tail
+    assert result["has_more_newer"] is False
+    assert result["last_id"] == msg_ids[49]

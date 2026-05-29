@@ -179,6 +179,10 @@ export function saveCurrentScrollPosition(): void {
 
 function isPinned(): boolean {
   if (!transcriptEl) return true;
+  // A floating deep window is never "at the live tail" — there's more
+  // content below than what's loaded, so live deltas must NOT stick to
+  // the window's bottom and the jump-to-bottom affordance stays visible.
+  if (paginationHasMoreNewer) return false;
   const distance = transcriptEl.scrollHeight - transcriptEl.scrollTop - transcriptEl.clientHeight;
   return distance <= PINNED_THRESHOLD_PX;
 }
@@ -447,11 +451,19 @@ export async function init(el: HTMLElement | null): Promise<boolean> {
   // the transcript scrolls.
   scrollToBottomBtn = document.getElementById('scroll-to-bottom');
   if (scrollToBottomBtn) {
-    scrollToBottomBtn.addEventListener('click', () => forceScrollToBottom());
+    scrollToBottomBtn.addEventListener('click', () => {
+      // With a floating deep window open, "jump to bottom" means jump to
+      // the LIVE TAIL — re-resume the session — not scroll to the bottom
+      // of the partially-loaded window. Falls back to a plain scroll when
+      // no jump-to-latest handler is registered.
+      if (paginationHasMoreNewer && jumpToLatestCb) jumpToLatestCb();
+      else forceScrollToBottom();
+    });
   }
   if (transcriptEl) {
     transcriptEl.addEventListener('scroll', () => {
       maybeLoadEarlier();
+      maybeLoadLater();
       // Save the current scroll position on every scroll event — both
       // user-driven and JS-driven (autoScroll, restore). Last write
       // wins, which is the actual user-visible position. No user-vs-JS
@@ -1009,14 +1021,39 @@ let paginationCb: ((beforeId: number) => Promise<void>) | null = null;
 /** Pixels from the top that trigger a background "load earlier" fetch. */
 const LOAD_EARLIER_THRESHOLD_PX = 150;
 
+// Symmetric "load later" (load-newer) state. Non-trivial only while a
+// floating deep `around` window is open — i.e. the loaded run does NOT
+// reach the live tail. On a normal tail-anchored resume newestId is null
+// and hasMoreNewer is false, so this machinery stays inert.
+let paginationNewestId: number | null = null;
+let paginationHasMoreNewer = false;
+let paginationLoadingNewer = false;
+let paginationLaterCb: ((afterId: number) => Promise<void>) | null = null;
+let jumpToLatestCb: (() => void) | null = null;
+/** Pixels from the bottom that trigger a background "load later" fetch. */
+const LOAD_LATER_THRESHOLD_PX = 150;
+
 /** Called by main.ts after replaying a page of session history so chat
  *  knows whether there's older content to fetch and what cursor to use.
  *  Pass oldestId=null, hasMore=false to disable pagination (e.g. for
- *  fresh sessions or cached replays with the full transcript). */
-export function setPaginationState(oldestId: number | null, hasMore: boolean) {
+ *  fresh sessions or cached replays with the full transcript).
+ *
+ *  `newestId`/`hasMoreNewer` describe the symmetric load-later cursor —
+ *  non-default only for a floating deep `around` window that hasn't been
+ *  connected to the live tail. They default to "tail-anchored" (null /
+ *  false), which is correct for a normal resume / load-earlier. */
+export function setPaginationState(
+  oldestId: number | null,
+  hasMore: boolean,
+  newestId: number | null = null,
+  hasMoreNewer = false,
+) {
   paginationOldestId = oldestId;
   paginationHasMore = hasMore;
   paginationLoading = false;
+  paginationNewestId = newestId;
+  paginationHasMoreNewer = hasMoreNewer;
+  paginationLoadingNewer = false;
 }
 
 /** Register the cursor-to-messages callback. Called once on boot; the cb
@@ -1024,6 +1061,20 @@ export function setPaginationState(oldestId: number | null, hasMore: boolean) {
  *  setPaginationState with the new cursor. */
 export function onLoadEarlier(cb: (beforeId: number) => Promise<void>) {
   paginationCb = cb;
+}
+
+/** Register the load-newer callback — symmetric to onLoadEarlier. The cb
+ *  fetches the page after the cursor, appends via appendHistory(), and
+ *  re-calls setPaginationState with the new newer cursor. */
+export function onLoadLater(cb: (afterId: number) => Promise<void>) {
+  paginationLaterCb = cb;
+}
+
+/** Register the "jump to live tail" callback. When a floating deep window
+ *  is open (hasMoreNewer), the jump-to-bottom button re-resumes to the
+ *  tail via this callback instead of scrolling to the window's bottom. */
+export function onJumpToLatest(cb: () => void) {
+  jumpToLatestCb = cb;
 }
 
 /** Batch-prepend historical messages while preserving the user's scroll
@@ -1058,22 +1109,25 @@ export function prependHistory(renderFn: () => void) {
 }
 
 /** Drill-scroll guard: while a pin-drawer / cmdk drill is scrolling
- *  the target message into view, suppress lazy-load. Without this,
- *  scrolling near the top of the transcript triggers maybeLoadEarlier
- *  mid-flight; the resulting prepend shifts the target's y-coordinate
- *  but the smooth-scroll keeps animating to the *old* coordinate,
- *  landing the user on an "earlier" message. Each successive click
- *  triggers another page until pagination exhausts — the field bug
- *  Jonathan called "takes 3 tries to land on the right message"
- *  (2026-05-13). suppressLoadEarlierFor sets a deadline; maybeLoadEarlier
- *  bails until it passes. */
-let suppressLoadEarlierUntil = 0;
-export function suppressLoadEarlierFor(ms: number): void {
-  suppressLoadEarlierUntil = Math.max(suppressLoadEarlierUntil, Date.now() + ms);
+ *  the target message into view, suppress lazy-load in BOTH directions.
+ *  Without this, scrolling near an edge of the transcript triggers
+ *  maybeLoadEarlier / maybeLoadLater mid-flight; the resulting prepend or
+ *  append shifts the target's y-coordinate but the smooth-scroll keeps
+ *  animating to the *old* coordinate, landing the user on the wrong
+ *  message. Each successive click triggers another page until pagination
+ *  exhausts — the field bug Jonathan called "takes 3 tries to land on the
+ *  right message" (2026-05-13). The load-LATER direction matters since the
+ *  bounded drill window lands the target near the window's bottom edge
+ *  (within the loadLater threshold); unsuppressed, a deep jump would walk
+ *  all the way to the live tail (2026-05-29). Sets a deadline; both
+ *  maybeLoadEarlier and maybeLoadLater bail until it passes. */
+let suppressLazyLoadUntil = 0;
+export function suppressLazyLoadFor(ms: number): void {
+  suppressLazyLoadUntil = Math.max(suppressLazyLoadUntil, Date.now() + ms);
 }
 
 async function maybeLoadEarlier() {
-  if (Date.now() < suppressLoadEarlierUntil) return;
+  if (Date.now() < suppressLazyLoadUntil) return;
   if (!paginationHasMore || paginationLoading || !paginationCb || paginationOldestId == null) return;
   if (!transcriptEl) return;
   if (transcriptEl.scrollTop > LOAD_EARLIER_THRESHOLD_PX) return;
@@ -1085,6 +1139,44 @@ async function maybeLoadEarlier() {
     diag(`chat.loadEarlier failed: ${e?.message || e}`);
   } finally {
     paginationLoading = false;
+  }
+}
+
+/** Batch-append newer messages while preserving the user's scroll
+ *  position — symmetric to prependHistory. renderFn should call
+ *  addLine(..., {batch: true}) per message oldest→newest so the new rows
+ *  land at the bottom in chronological order. Appending below the
+ *  viewport doesn't move on-screen content, so (non-virt) scrollTop stays
+ *  valid as-is; under virt we re-anchor to the first-visible bubble to
+ *  absorb estimate→measure drift, same as prependHistory. */
+export function appendHistory(renderFn: () => void) {
+  if (!transcriptEl) { renderFn(); return; }
+  const virt = getVirtualizer();
+  if (virt) {
+    const anchor = virt.getAnchor();
+    renderFn();
+    if (anchor) virt.restoreAnchor(anchor);
+    persist();
+    return;
+  }
+  renderFn();
+  persist();
+}
+
+async function maybeLoadLater() {
+  if (Date.now() < suppressLazyLoadUntil) return;
+  if (!paginationHasMoreNewer || paginationLoadingNewer || !paginationLaterCb || paginationNewestId == null) return;
+  if (!transcriptEl) return;
+  const distance = transcriptEl.scrollHeight - transcriptEl.scrollTop - transcriptEl.clientHeight;
+  if (distance > LOAD_LATER_THRESHOLD_PX) return;
+  paginationLoadingNewer = true;
+  const cursor = paginationNewestId;
+  try {
+    await paginationLaterCb(cursor);
+  } catch (e: any) {
+    diag(`chat.loadLater failed: ${e?.message || e}`);
+  } finally {
+    paginationLoadingNewer = false;
   }
 }
 

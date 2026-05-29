@@ -319,9 +319,26 @@ export interface SearchOpts {
  *   Fetch a session transcript without making that session active. Used for
  *   post-final durable refresh so completed inflight envelopes can drain
  *   without stealing focus if the user switches chats mid-request.
+ * @property {(id: string) => Promise<{ messages: SessionMessage[], firstId?: number|null, hasMore?: boolean, inflight?: any[] }>} [prefetchSessionMessages]
+ *   Tiny newest-page fetch used only to warm the IDB cache at boot. Keeps the
+ *   speculative top-N prefetch from saturating a high-latency link.
  * @property {(id: string, beforeId: number) => Promise<{ messages: SessionMessage[], firstId?: number|null, hasMore?: boolean }>} [loadEarlier]
  *   Fetch the next older page of a session's transcript. Called by the
  *   chat pane when the user scrolls near the top and `hasMore` was true.
+ * @property {(id: string, afterId: number) => Promise<{ messages: SessionMessage[], lastId?: number|null, hasMoreNewer?: boolean }>} [loadLater]
+ *   Load-newer paging — the symmetric counterpart to loadEarlier. Fetch
+ *   the next newer page when the user scrolls near the bottom of a
+ *   floating deep window and `hasMoreNewer` was true. Connects the
+ *   window back to the live tail (hasMoreNewer===false) so the
+ *   contiguous run can persist + grow the IDB cache.
+ * @property {(id: string, target: string, limit?: number) => Promise<{ messages: SessionMessage[], firstId?: number|null, hasMore?: boolean, lastId?: number|null, hasMoreNewer?: boolean, targetFound: boolean, inflight?: any[] }>} [fetchMessagesAround]
+ *   One-shot deep-drill: return a bounded window (context above + below)
+ *   of transcript centered on `target` (a sidekick_id or state.db id) in
+ *   a single round trip instead of N serial loadEarlier pages. The window
+ *   payload is O(limit), independent of how deep the target is.
+ *   `targetFound===false` (empty list) when the target is missing — caller
+ *   falls back to serial paging. `firstId`/`hasMore` + `lastId`/`hasMoreNewer`
+ *   are the bidirectional pagination cursors for the loaded window.
  * @property {(q: string, kind: 'sessions'|'messages'|'both', opts?: SearchOpts) => Promise<SearchResult>} [search]
  *   Server-authoritative search across the backend's session + message
  *   index. Powers the drawer's debounced server-filter reconcile and

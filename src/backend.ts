@@ -105,6 +105,39 @@ export function capabilities() {
 
 export function name() { return adapter?.name || '(unloaded)'; }
 
+// ─── Foreground-fetch gate ──────────────────────────────────────────────────
+// Background warm-prefetch (sessionDrawer.warmPrefetch) walks the top-N
+// sessions fetching a full ~1MB newest page each. Over a high-latency link
+// (Jonathan: Philadelphia → London) that serial storm saturates the pipe for
+// ~20s after a hard refresh and starves the user's actual pin/activity drill —
+// the bounded `?around=` fetch shares the link with the prefetch, so a deep
+// jump that should be one round trip stretched to 5-20s (field 2026-05-29).
+// User-initiated reads register as foreground here; warmPrefetch awaits
+// whenForegroundFetchIdle() before each item so it never competes with an
+// in-flight drill.
+let foregroundFetchDepth = 0;
+let foregroundIdleResolvers: Array<() => void> = [];
+async function foreground<T>(fn: () => Promise<T>): Promise<T> {
+  foregroundFetchDepth++;
+  try {
+    return await fn();
+  } finally {
+    if (foregroundFetchDepth > 0) foregroundFetchDepth--;
+    if (foregroundFetchDepth === 0 && foregroundIdleResolvers.length) {
+      const rs = foregroundIdleResolvers;
+      foregroundIdleResolvers = [];
+      for (const r of rs) r();
+    }
+  }
+}
+
+/** Resolves once no user-initiated read fetch is in flight. Background
+ *  prefetch awaits this before each item so foreground drills win the link. */
+export function whenForegroundFetchIdle(): Promise<void> {
+  if (foregroundFetchDepth === 0) return Promise.resolve();
+  return new Promise((r) => foregroundIdleResolvers.push(r));
+}
+
 // ─── Session browser (optional per backend) ────────────────────────────────
 
 export function getCurrentSessionId() {
@@ -118,11 +151,24 @@ export async function listSessions(limit) {
 export async function resumeSession(id) {
   const a = await loadAdapter();
   if (!a.resumeSession) throw new Error(`backend ${a.name} does not support session resume`);
-  return a.resumeSession(id);
+  return foreground(() => a.resumeSession(id));
 }
 
 export async function fetchSessionMessages(id) {
   const a = await loadAdapter();
+  if (!a.fetchSessionMessages) return { messages: [], firstId: null, hasMore: false, inflight: [] };
+  return foreground(() => a.fetchSessionMessages(id));
+}
+
+/** Background, link-yielding variant of fetchSessionMessages — does NOT
+ *  count as foreground and waits for foreground idle first. Used only by
+ *  warmPrefetch so the boot prefetch storm never starves a user drill. */
+export async function fetchSessionMessagesBackground(id) {
+  await whenForegroundFetchIdle();
+  const a = await loadAdapter();
+  // Prefer the tiny prefetch (warms IDB for ~12KB); fall back to the full
+  // page only if the adapter doesn't implement it.
+  if (a.prefetchSessionMessages) return a.prefetchSessionMessages(id);
   if (!a.fetchSessionMessages) return { messages: [], firstId: null, hasMore: false, inflight: [] };
   return a.fetchSessionMessages(id);
 }
@@ -130,7 +176,26 @@ export async function fetchSessionMessages(id) {
 export async function loadEarlier(id, beforeId) {
   const a = await loadAdapter();
   if (!a.loadEarlier) return { messages: [], firstId: null, hasMore: false };
-  return a.loadEarlier(id, beforeId);
+  return foreground(() => a.loadEarlier(id, beforeId));
+}
+
+// Load-newer paging — the symmetric counterpart to loadEarlier. Pages
+// forward from `afterId` so a floating deep `around` window can be
+// connected back to the live tail. hasMoreNewer=false means the tail
+// was reached.
+export async function loadLater(id, afterId) {
+  const a = await loadAdapter();
+  if (!a.loadLater) return { messages: [], lastId: null, hasMoreNewer: false };
+  return foreground(() => a.loadLater(id, afterId));
+}
+
+// One-shot deep-drill bounded window around `target`. Returns
+// targetFound=false when the adapter can't satisfy it (unsupported or
+// missing) so the caller falls back to serial loadEarlier paging.
+export async function fetchMessagesAround(id, target, limit?) {
+  const a = await loadAdapter();
+  if (!a.fetchMessagesAround) return { messages: [], firstId: null, hasMore: false, lastId: null, hasMoreNewer: false, targetFound: false };
+  return foreground(() => a.fetchMessagesAround(id, target, limit));
 }
 
 // Replay inflight envelopes through the live-SSE router. Called from

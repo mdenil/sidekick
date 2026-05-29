@@ -35,8 +35,31 @@ import * as replyNavigator from './audio/turn-based/replyNavigator.ts';
 import * as sessionDrawer from './sessionDrawer.ts';
 import * as backend from './backend.ts';
 import * as transcriptStore from './transcript/store.ts';
+import * as sessionCache from './sessionCache.ts';
 import { rerenderActive, getVirtualizer } from './transcript/index.ts';
 import { getScrollPosition } from './chatScrollPositions.ts';
+
+/** Persist the chat's now-grown in-memory transcript back to IDB so a
+ *  later resume/drill reads the deeper history from cache instead of
+ *  re-crawling the server page by page. Called after each loadEarlier
+ *  prepend (scroll-back AND deep-pin drill). Fire-and-forget; the cap
+ *  keeps a pathological session from eating disk. This is what makes
+ *  deep pins "get faster warm" — without it IDB only ever holds the
+ *  newest page (Jonathan 2026-05-29). */
+function persistGrownTranscript(id: string): void {
+  const s = transcriptStore.getState(id);
+  // Caching invariant (Jonathan 2026-05-29): only persist a run that
+  // reaches the live tail. A floating deep `around` window
+  // (hasMoreNewer=true) is a disjoint slice from the middle of the
+  // session — writing it would clobber the tail-anchored IDB cache with
+  // content that doesn't connect to the newest page. Once loadLater
+  // walks the window forward to the tail (hasMoreNewer flips false) the
+  // run is contiguous-to-tail and safe to persist; it then grows the
+  // cache so subsequent warm jumps within it hit IDB.
+  if (s.pagination.hasMoreNewer) return;
+  const capped = sessionCache.capTranscript(s.durable, s.pagination);
+  void sessionCache.putMessagesCache(id, capped.messages, capped.pagination);
+}
 
 /** Pattern for assistant replies the plugin signals as "no reply" (the
  *  agent chose to stay silent). We drop them from the rendered
@@ -163,7 +186,7 @@ export function replaySessionMessages(
     const target: HTMLElement | null =
       transcriptEl?.querySelector(`[data-key="${CSS.escape(targetMessageId)}"]`) as HTMLElement | null;
     if (target) {
-      chat.suppressLoadEarlierFor(1200);
+      chat.suppressLazyLoadFor(1200);
       drillScrollTo(target);
       target.classList.add('search-target-flash');
       const flashTarget = target;
@@ -182,7 +205,7 @@ export function replaySessionMessages(
           `[data-key="${CSS.escape(targetMessageId)}"]`,
         ) as HTMLElement | null;
         if (found) {
-          chat.suppressLoadEarlierFor(1200);
+          chat.suppressLazyLoadFor(1200);
           found.classList.add('search-target-flash');
           drillScrollTo(found);
           setTimeout(() => found.classList.remove('search-target-flash'), 1500);
@@ -276,7 +299,7 @@ export function replaySessionMessages(
         // chat (the "load everything on open" cost the virtualizer used to
         // hide). The user is at the live edge here; a genuine scroll-to-top
         // after the window expires still loads earlier.
-        chat.suppressLoadEarlierFor(800);
+        chat.suppressLazyLoadFor(800);
         chat.forceScrollToBottom();
         scheduleAtBottomRepin();
       } else {
@@ -290,7 +313,7 @@ export function replaySessionMessages(
         // LOAD_EARLIER_THRESHOLD_PX of 0 fires lazy-load), and
         // prependHistory would shift scrollTop by the height of the
         // prepended content — dragging the user off `saved`.
-        chat.suppressLoadEarlierFor(1500);
+        chat.suppressLazyLoadFor(1500);
         chat.setPinnedToBottom(false);
         el.scrollTo({ top: saved.scrollTop, behavior: 'instant' as ScrollBehavior });
         // The scrollTo fires a scroll event synchronously; the listener
@@ -303,7 +326,7 @@ export function replaySessionMessages(
     log(`[chat-resume] no saved position for ${id.slice(-12)} → forceScrollToBottom`);
     // See at-bottom branch: suppress the open-render scrollTop≈0 transient
     // from triggering a load-earlier prepend cascade on a fresh open.
-    chat.suppressLoadEarlierFor(800);
+    chat.suppressLazyLoadFor(800);
     chat.forceScrollToBottom();
     scheduleAtBottomRepin();
   }
@@ -436,10 +459,141 @@ async function drillToOlderMessage(
   initialFirstId: number | null,
   initialHasMore: boolean,
 ): Promise<void> {
-  let cursor = initialFirstId;
-  let hasMore = initialHasMore;
+  // One bounded around-window fetch first (the 5–20s deep-pin lag fix);
+  // fall through to the serial loadEarlier loop only when the target is
+  // missing from the around result.
+  if (await drillViaAroundWindow(chatId, targetMessageId)) return;
+  await drillViaSerialOlderPages(chatId, targetMessageId, initialFirstId, initialHasMore);
+}
+
+/** Same-session jump to a message bubble — the chat is ALREADY rendered.
+ *  Must NOT route through sessionDrawer.resume(): that re-resumes the
+ *  session (cache render + server reconcile, EACH driving its own drill =
+ *  redundant ~1MB ?around= round trips that saturate a high-latency link)
+ *  AND its in-flight dedup keys only on chat id, so a rapid second jump to
+ *  a DIFFERENT target in the same session gets swallowed and the bubble
+ *  never appears (Jonathan 2026-05-29: jumping between pins inside the
+ *  pitch deck — one jump hung forever, the next fired 3 concurrent big
+ *  fetches and took 8.6s). Instead: scroll+flash if the bubble is already
+ *  in the DOM (instant), else ONE bounded around fetch, else serial
+ *  older-page paging. */
+export async function drillToMessageInViewedSession(
+  chatId: string,
+  targetMessageId: string,
+): Promise<void> {
+  const transcriptEl = document.getElementById('transcript');
+  const existing = transcriptEl?.querySelector(
+    `[data-key="${CSS.escape(targetMessageId)}"]`,
+  ) as HTMLElement | null;
+  if (existing) {
+    chat.suppressLazyLoadFor(1200);
+    existing.classList.add('search-target-flash');
+    drillScrollTo(existing);
+    setTimeout(() => existing.classList.remove('search-target-flash'), 1500);
+    return;
+  }
+  if (await drillViaAroundWindow(chatId, targetMessageId)) return;
+  const s = transcriptStore.getState(chatId);
+  await drillViaSerialOlderPages(
+    chatId, targetMessageId, s.pagination.firstId, s.pagination.hasMore,
+  );
+}
+
+/** Single-flight bounded "items around target" drill. Returns true once
+ *  the target rendered + scrolled. Keyed by chat+target so the cache-render
+ *  and server-render passes of one resume() collapse to a SINGLE ?around=
+ *  fetch instead of two concurrent ~1MB round trips. The plugin returns a
+ *  window centered on the target (context above + below), capped at ~limit
+ *  rows — payload O(limit), independent of how deep the target sits. We
+ *  REPLACE the transcript with this floating window and arm BIDIRECTIONAL
+ *  pagination: scroll-up walks older via loadEarlierHistory, scroll-down
+ *  walks newer via loadLaterHistory back toward the live tail. */
+// Keep the initial drill window TIGHT — just enough rows to render the
+// target centered with a screenful of scrollback. A row can carry a large
+// tool result, so a full 200-row page is ~830KB; over a high-latency link
+// (Jonathan: Philadelphia → London) that's the bulk of a deep jump's wait.
+// A ~40-row window is ~290KB (~1/3) and still fills the viewport; the user
+// pulls more in by scrolling (gated loadEarlier/loadLater).
+const DRILL_AROUND_LIMIT = 40;
+let aroundDrillInFlight: { key: string; promise: Promise<boolean> } | null = null;
+function drillViaAroundWindow(chatId: string, targetMessageId: string): Promise<boolean> {
+  const key = `${chatId}::${targetMessageId}`;
+  if (aroundDrillInFlight?.key === key) return aroundDrillInFlight.promise;
+  const promise = (async (): Promise<boolean> => {
+    const transcriptEl = document.getElementById('transcript');
+    if (!transcriptEl) return false;
+    try {
+      const around: any = await backend.fetchMessagesAround(chatId, targetMessageId, DRILL_AROUND_LIMIT);
+      if (sessionDrawer.getViewed() !== chatId) {
+        log(`[cmdk] drill aborted — session changed during around fetch`);
+        return false;
+      }
+      if (!(around?.targetFound && Array.isArray(around.messages) && around.messages.length)) {
+        return false;
+      }
+      // Arm the lazy-load suppress window BEFORE any render/scroll. The
+      // bounded window lands the target mid-transcript, so the render +
+      // scrollToKey below can fire a scroll that would otherwise trip
+      // maybeLoadEarlier/maybeLoadLater into a wasteful ?before=/?after=
+      // page right after the drill. Setting it here (not after the scroll)
+      // closes that leak.
+      chat.suppressLazyLoadFor(1200);
+      // We are jumping into the MIDDLE of the session — not at the live
+      // tail. Assert un-pinned BEFORE the render so autoScroll can't snap
+      // us to the window's bottom while it settles.
+      chat.setPinnedToBottom(false);
+      transcriptStore.setDurable(chatId, around.messages, {
+        firstId: around.firstId ?? null,
+        hasMore: !!around.hasMore,
+        lastId: around.lastId ?? null,
+        hasMoreNewer: !!around.hasMoreNewer,
+      });
+      chat.setPaginationState(
+        around.firstId ?? null, !!around.hasMore,
+        around.lastId ?? null, !!around.hasMoreNewer,
+      );
+      rerenderActive();
+      // Persist is a no-op while the window floats (hasMoreNewer); it
+      // only writes once loadLater connects the run to the tail.
+      persistGrownTranscript(chatId);
+      // Scroll the target into view. Under virt the spec may be outside
+      // the rendered window — scrollToKey expands to it first.
+      const virt = getVirtualizer();
+      if (virt) virt.scrollToKey(targetMessageId, { block: 'center' });
+      await new Promise<void>(r => requestAnimationFrame(() => requestAnimationFrame(() => r())));
+      const found = transcriptEl.querySelector(
+        `[data-key="${CSS.escape(targetMessageId)}"]`,
+      ) as HTMLElement | null;
+      if (!found) {
+        log(`[cmdk] around window returned but ${targetMessageId} not in DOM — serial fallback`);
+        return false;
+      }
+      log(`[cmdk] drill found ${targetMessageId} via bounded around window (1 round trip)`);
+      found.classList.add('search-target-flash');
+      drillScrollTo(found);
+      setTimeout(() => found.classList.remove('search-target-flash'), 1500);
+      return true;
+    } catch (e: any) {
+      diag(`[cmdk] around-window drill failed: ${e?.message || e} — serial fallback`);
+      return false;
+    }
+  })();
+  aroundDrillInFlight = { key, promise };
+  return promise.finally(() => {
+    if (aroundDrillInFlight?.key === key) aroundDrillInFlight = null;
+  });
+}
+
+async function drillViaSerialOlderPages(
+  chatId: string,
+  targetMessageId: string,
+  initialFirstId: number | null,
+  initialHasMore: boolean,
+): Promise<void> {
   const transcriptEl = document.getElementById('transcript');
   if (!transcriptEl) return;
+  let cursor = initialFirstId;
+  let hasMore = initialHasMore;
   for (let i = 0; i < DRILL_PAGE_CAP && hasMore && cursor != null; i++) {
     if (sessionDrawer.getViewed() !== chatId) {
       log(`[cmdk] drill aborted — session changed mid-fetch`);
@@ -463,6 +617,7 @@ async function drillToOlderMessage(
       cursor = result.firstId ?? null;
       hasMore = !!result.hasMore;
       chat.setPaginationState(cursor, hasMore);
+      persistGrownTranscript(chatId);
     } catch (e: any) {
       diag(`[cmdk] drill page ${i + 1} fetch failed: ${e?.message || e}`);
       return;
@@ -484,7 +639,7 @@ async function drillToOlderMessage(
         ) as HTMLElement | null;
         if (found) {
           log(`[cmdk] drill found ${targetMessageId} under virt after ${i + 1} page(s)`);
-          chat.suppressLoadEarlierFor(1200);
+          chat.suppressLazyLoadFor(1200);
           found.classList.add('search-target-flash');
           drillScrollTo(found);
           setTimeout(() => found.classList.remove('search-target-flash'), 1500);
@@ -498,7 +653,7 @@ async function drillToOlderMessage(
     ) as HTMLElement | null;
     if (target) {
       log(`[cmdk] drill found ${targetMessageId} after ${i + 1} page(s)`);
-      chat.suppressLoadEarlierFor(1200);
+      chat.suppressLazyLoadFor(1200);
       drillScrollTo(target);
       setTimeout(() => target.classList.remove('search-target-flash'), 1500);
       return;
@@ -536,5 +691,63 @@ export async function loadEarlierHistory(beforeId: number): Promise<void> {
       hasMore: !!result.hasMore,
     });
   });
-  chat.setPaginationState(result.firstId ?? null, !!result.hasMore);
+  // prependDurable preserves the newer cursor; re-publish BOTH halves so
+  // chat's load-later state survives a load-earlier on a floating window.
+  const sEarlier = transcriptStore.getState(id);
+  chat.setPaginationState(
+    result.firstId ?? null, !!result.hasMore,
+    sEarlier.pagination.lastId, sEarlier.pagination.hasMoreNewer,
+  );
+  persistGrownTranscript(id);
+}
+
+/** Scroll-to-bottom lazy-load — the symmetric counterpart to
+ *  loadEarlierHistory. Fetches messages newer than `afterId` via
+ *  backend.loadLater and appends them, walking a floating deep `around`
+ *  window forward toward the live tail. When the fetch reaches the tail
+ *  (hasMoreNewer=false) the now-contiguous run becomes eligible for IDB
+ *  persistence (persistGrownTranscript's guard lifts). No-op if no chat
+ *  is currently being viewed. */
+export async function loadLaterHistory(afterId: number): Promise<void> {
+  const id = viewedSessionForLoadEarlier;
+  if (!id) return;
+  const result: any = await backend.loadLater(id, afterId);
+  const newer = result.messages || [];
+  chat.appendHistory(() => {
+    transcriptStore.appendDurable(id, newer, {
+      lastId: result.lastId ?? null,
+      hasMoreNewer: !!result.hasMoreNewer,
+    });
+  });
+  const s = transcriptStore.getState(id);
+  chat.setPaginationState(
+    s.pagination.firstId, s.pagination.hasMore,
+    s.pagination.lastId, s.pagination.hasMoreNewer,
+  );
+  persistGrownTranscript(id);
+}
+
+/** Jump to the live tail from a floating deep window. Re-resumes the
+ *  viewed session (fetches the newest page), replaces the floating
+ *  window with the tail-anchored transcript, and scrolls to the bottom.
+ *  Wired as chat's jump-to-bottom handler while hasMoreNewer is true. */
+export async function jumpToLatest(): Promise<void> {
+  const id = viewedSessionForLoadEarlier;
+  if (!id) { chat.forceScrollToBottom(); return; }
+  try {
+    const result: any = await backend.resumeSession(id);
+    if (sessionDrawer.getViewed() !== id) return;
+    transcriptStore.setDurable(id, result.messages || [], {
+      firstId: result.firstId ?? null,
+      hasMore: !!result.hasMore,
+    });
+    if (Array.isArray(result.inflight)) transcriptStore.setInflight(id, result.inflight);
+    rerenderActive();
+    chat.setPaginationState(result.firstId ?? null, !!result.hasMore);
+    persistGrownTranscript(id);
+    await new Promise<void>(r => requestAnimationFrame(() => requestAnimationFrame(() => r())));
+    chat.forceScrollToBottom();
+  } catch (e: any) {
+    diag(`[jump-to-latest] failed: ${e?.message || e}`);
+  }
 }

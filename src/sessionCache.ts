@@ -149,6 +149,68 @@ export async function putMessagesCache(
   } catch {}
 }
 
+// Generous per-session cache ceiling. A session's full transcript is
+// persisted as the user loads it (resume + scroll-up + drill); beyond
+// this many rows we keep the most-recent slice and re-fetch older pages
+// from the server on demand. Big enough that real sessions cache whole
+// (the heaviest, [pitch deck], is ~900 rows); a guard against a
+// pathological 10k+-row session eating disk. Users can clear site data
+// to reset (Jonathan, 2026-05-29: "very generous for now").
+export const MAX_CACHED_MESSAGES = 5000;
+
+/** Merge a freshly-fetched newest page into a (possibly fuller) cached
+ *  transcript WITHOUT shrinking it. `cached` is the full loaded history
+ *  (oldest→newest); `page` is the server's newest window. Rows present in
+ *  both are replaced by the server copy (catches edits); rows only in the
+ *  page (new turns since the cache was written) are appended. The older
+ *  cached history the page doesn't cover is preserved — this is what stops
+ *  the resume reconcile from truncating loaded history back down to the
+ *  newest ~200 rows every time (the deep-pin "never gets faster warm"
+ *  bug, Jonathan 2026-05-29). */
+export function mergeNewestPage(cached: any[], page: any[]): any[] {
+  if (!cached.length) return page.slice();
+  if (!page.length) return cached.slice();
+  const idxById = new Map<string, number>();
+  cached.forEach((r, i) => { if (r && r.id != null) idxById.set(String(r.id), i); });
+  const merged = cached.slice();
+  for (const row of page) {
+    if (!row || row.id == null) { merged.push(row); continue; }
+    const i = idxById.get(String(row.id));
+    if (i == null) { idxById.set(String(row.id), merged.length); merged.push(row); }
+    else merged[i] = row;
+  }
+  return merged;
+}
+
+/** Apply the cache ceiling: keep the newest MAX_CACHED_MESSAGES rows. When
+ *  trimming, the kept-oldest row's numeric id becomes the new load-earlier
+ *  cursor (firstId) with hasMore=true so pagination from the cache resumes
+ *  correctly past the trim boundary. No-op below the ceiling. */
+export function capTranscript(
+  messages: any[],
+  pagination: { firstId: number | null; hasMore: boolean },
+): { messages: any[]; pagination: { firstId: number | null; hasMore: boolean } } {
+  if (messages.length <= MAX_CACHED_MESSAGES) return { messages, pagination };
+  const kept = messages.slice(messages.length - MAX_CACHED_MESSAGES);
+  const oldest = kept[0];
+  const firstId = oldest && typeof oldest.id === 'number' ? oldest.id : pagination.firstId;
+  return { messages: kept, pagination: { firstId, hasMore: true } };
+}
+
+/** True when two transcripts have the same rows in the same order (by id).
+ *  Used by the resume reconcile to skip a redundant re-render when the
+ *  merged server page added no new rows. Id-sequence only (not content) —
+ *  matches the prior length-only skip's spirit and avoids re-render churn
+ *  from incidental serialization diffs; live SSE / session_changed / the
+ *  periodic refresh carry through genuine content edits. */
+export function sameTranscript(a: any[], b: any[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (String(a[i]?.id) !== String(b[i]?.id)) return false;
+  }
+  return true;
+}
+
 /** Drop a cached transcript — called after rename/delete so stale previews
  *  don't linger. The list cache is always refetched after those ops too. */
 export async function removeMessagesCache(id: string): Promise<void> {

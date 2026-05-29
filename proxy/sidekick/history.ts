@@ -36,7 +36,20 @@ export async function handleSidekickSessionMessages(req, res, chatId: string) {
   const limit = Math.max(1, Math.min(500, parseInt(url.searchParams.get('limit') || '200', 10)));
   const beforeRaw = url.searchParams.get('before');
   const before = beforeRaw && /^\d+$/.test(beforeRaw) ? parseInt(beforeRaw, 10) : null;
-  return handleSessionMessagesViaUpstream(upstream, res, chatId, limit, before);
+  // `around=<sidekick_id|state.db id>` requests the deep-target window in
+  // one round trip (the tail-contiguous slice containing the target),
+  // instead of N serial `before=` pages. The plugin returns target_found
+  // false (empty list) when the target is missing or too deep for the
+  // wire ceiling — the PWA then falls back to its serial drill.
+  const aroundRaw = url.searchParams.get('around');
+  const around = aroundRaw && /^[A-Za-z0-9._:-]{1,128}$/.test(aroundRaw) ? aroundRaw : null;
+  // `after=<state.db id>` pages FORWARD (load-newer) from a cursor — the
+  // symmetric counterpart to `before=`. Used by the PWA's loadLater path
+  // to connect a floating deep `around` window back to the live tail, so
+  // the contiguous run can persist + grow the IDB cache.
+  const afterRaw = url.searchParams.get('after');
+  const after = afterRaw && /^\d+$/.test(afterRaw) ? parseInt(afterRaw, 10) : null;
+  return handleSessionMessagesViaUpstream(upstream, res, chatId, limit, before, around, after);
 }
 
 async function handleSessionMessagesViaUpstream(
@@ -45,6 +58,8 @@ async function handleSessionMessagesViaUpstream(
   chatId: string,
   limit: number,
   before: number | null,
+  around: string | null = null,
+  after: number | null = null,
 ): Promise<void> {
   // [/messages-trace] instrumentation (Jonathan, 2026-05-04 overnight) —
   // diagnose where the 4-20s server-side latency lives. Three phase
@@ -54,12 +69,14 @@ async function handleSessionMessagesViaUpstream(
   const t0 = Date.now();
   const trace = (event: string, extra: string = '') =>
     console.log(`[messages-trace ${traceId}] +${Date.now() - t0}ms ${event} chat=${chatId}${extra ? ' ' + extra : ''}`);
-  trace('enter', `limit=${limit}${before !== null ? ` before=${before}` : ''}`);
+  trace('enter', `limit=${limit}${before !== null ? ` before=${before}` : ''}${around !== null ? ` around=${around}` : ''}${after !== null ? ` after=${after}` : ''}`);
   try {
     trace('upstream-call-start');
     const r = await upstream.getMessages(chatId, {
       limit,
       ...(before !== null ? { before } : {}),
+      ...(around !== null ? { around } : {}),
+      ...(after !== null ? { after } : {}),
     });
     trace('upstream-call-end', `n=${r.items?.length ?? 0}`);
     const messages = r.items.map((it) => ({
@@ -100,14 +117,18 @@ async function handleSessionMessagesViaUpstream(
     // finalized-items merge (which dropped message_id on the in-flight
     // assistant, causing visible double-renders on reload).
     //
-    // Skip on `before`-cursor paging (older pages can't contain in-flight
-    // by definition). Empty array when no turn is active.
-    const inflightEnvelopes = before === null ? r.inflight : [];
+    // Skip on `before`/`after`-cursor paging (a cursor page can't be the
+    // resume snapshot that carries in-flight). Empty array when no turn
+    // is active.
+    const inflightEnvelopes = before === null && after === null ? r.inflight : [];
     trace('serialize-start');
     const body = JSON.stringify({
       messages,
       firstId: r.first_id,
       hasMore: r.has_more,
+      ...(typeof r.target_found === 'boolean' ? { targetFound: r.target_found } : {}),
+      ...(r.last_id != null ? { lastId: r.last_id } : {}),
+      ...(typeof r.has_more_newer === 'boolean' ? { hasMoreNewer: r.has_more_newer } : {}),
       ...(inflightEnvelopes.length > 0 ? { inflight: inflightEnvelopes } : {}),
     });
     trace('serialize-end', `bytes=${body.length}${inflightEnvelopes.length ? ` inflight=${inflightEnvelopes.length}` : ''}`);

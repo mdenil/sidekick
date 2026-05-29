@@ -34,7 +34,7 @@ import { unreadFor, markUnread as markChatUnread, unmarkUnread as unmarkChatUnre
 import * as activityStore from './notifications/activityStore.ts';
 import { showTranscriptLoading } from './transcript/index.ts';
 
-let onResumeCb: ((id: string, messages: any[], pagination?: { firstId: number | null; hasMore: boolean }, inflight?: any[]) => void) | null = null;
+let onResumeCb: ((id: string, messages: any[], pagination?: { firstId: number | null; hasMore: boolean }, inflight?: any[], targetMessageId?: string) => void) | null = null;
 
 /** Sidebar multi-selection — chat_ids the user has selected via
  *  shift-click (range) or ctrl/cmd-click (toggle). When `size >= 2`
@@ -299,6 +299,24 @@ export function navigateSibling(direction: -1 | 1): boolean {
   return navigateByKey(direction);
 }
 
+/** Synchronously paint a sidebar row as `.active` (clearing any prior
+ *  active row) — instant highlight feedback that doesn't wait for the
+ *  async scheduleRefresh repaint. Used by keyboard-nav AND the drill
+ *  path so "Open in chat" highlights the target the moment it's clicked,
+ *  not after the server transcript fetch returns. No-op if the row isn't
+ *  in the (possibly filtered/paginated) list yet — scheduleRefresh will
+ *  paint it from optimisticActiveId once it appears. */
+function paintActiveRowSync(id: string, opts: { scrollIntoView?: boolean } = {}): void {
+  const listEl = document.getElementById('sessions-list');
+  if (!listEl) return;
+  listEl.querySelectorAll('li.active').forEach(el => el.classList.remove('active'));
+  const li = listEl.querySelector(`li[data-chat-id="${CSS.escape(id)}"]`);
+  if (li) {
+    li.classList.add('active');
+    if (opts.scrollIntoView) (li as HTMLElement).scrollIntoView({ block: 'nearest' });
+  }
+}
+
 function navigateByKey(direction: -1 | 1): boolean {
   if (visibleRowIds.length === 0) return false;
   const anchor = optimisticActiveId || viewedSessionId;
@@ -319,18 +337,7 @@ function navigateByKey(direction: -1 | 1): boolean {
   const targetId = visibleRowIds[next];
   // Synchronous .active flip + optimistic-claim — instant feedback that
   // any scheduleRefresh racing the async resume() can't undo.
-  const listEl = document.getElementById('sessions-list');
-  if (listEl) {
-    listEl.querySelectorAll('li.active').forEach(el => el.classList.remove('active'));
-    const targetLi = listEl.querySelector(`li[data-chat-id="${CSS.escape(targetId)}"]`);
-    if (targetLi) {
-      targetLi.classList.add('active');
-      // Keep the keyboard focus visible — scrollIntoView with
-      // block:'nearest' no-ops when the row is already in the viewport
-      // and otherwise nudges just enough to bring it back in.
-      (targetLi as HTMLElement).scrollIntoView({ block: 'nearest' });
-    }
-  }
+  paintActiveRowSync(targetId, { scrollIntoView: true });
   optimisticActiveId = targetId;
   // Async resume — fetch transcript + render. Same path the click
   // handler uses, so behavior (scroll-save + switch-then-load clear +
@@ -340,6 +347,40 @@ function navigateByKey(direction: -1 | 1): boolean {
     diag(`sessionDrawer: arrow-nav resume failed: ${e?.message || e}`);
   });
   return true;
+}
+
+/** Drill into a chat from an OUT-of-chat surface (pin drawer "Open in
+ *  chat", activity tray, in-app notification banner) and scroll/flash a
+ *  specific message bubble. Routes through the SAME cache-first resume()
+ *  the sidebar rows use, so the drill is atomic + instant:
+ *
+ *   - Synchronously paints the target row `.active` AND claims
+ *     optimisticActiveId — the highlight flips on click, not after the
+ *     server transcript fetch returns (the field bug: 3-13s server-gated
+ *     highlight that flickered back to the origin chat over the high-
+ *     latency London link).
+ *   - resume() renders from the IDB transcript cache first (instant for a
+ *     cached chat — the user's "should be instant if cached" ask), then
+ *     reconciles against the server.
+ *   - The targetMessageId threads into replaySessionMessages so the
+ *     scroll-and-flash fires on the cache render (and again on the server
+ *     reconcile if the cache was stale).
+ *   - resume()'s generation guard makes this the live navigation: any
+ *     background reconcile/post-final-refresh for the chat we're LEAVING
+ *     bails at its `getViewed() !== chatId` guard the moment viewed flips,
+ *     so it no longer re-fetches the origin transcript or flickers the
+ *     highlight back.
+ *
+ *  Returns the resume promise (resolves once the render settles). */
+export function drillTo(id: string, targetMessageId?: string): Promise<void> {
+  // Instant highlight — don't wait for the async scheduleRefresh repaint
+  // or the server fetch. optimisticActiveId is also set inside resume()
+  // synchronously, but painting the row here closes the visible gap.
+  paintActiveRowSync(id);
+  optimisticActiveId = id;
+  return resume(id, targetMessageId).catch((e: any) => {
+    diag(`sessionDrawer: drillTo resume failed: ${e?.message || e}`);
+  });
 }
 
 /** Fired with the leaving chat id at the moment a row click triggers a
@@ -580,19 +621,30 @@ async function warmPrefetch(top: any[]): Promise<void> {
   for (const s of top) {
     if (!s?.id) continue;
     // Skip if a fresh cache entry already exists (resume() may have
-    // populated it just now). Cheap probe: 60s freshness window.
+    // populated it just now). Cheap probe: 60s freshness window. Keep a
+    // reference to a stale-but-possibly-fuller entry so we MERGE the
+    // fetched newest page into it rather than overwrite — a stale cache
+    // can hold deep scroll-back history the newest page doesn't cover,
+    // and clobbering it would re-truncate that loaded history.
+    let existing: sessionCache.CachedMessages | null = null;
     try {
-      const existing = await sessionCache.getMessagesCache(s.id);
+      existing = await sessionCache.getMessagesCache(s.id);
       if (existing && Date.now() - existing.updatedAt < 60_000) continue;
     } catch { /* keep going on errors */ }
     try {
-      const r: any = await backend.fetchSessionMessages(s.id);
-      const messages = Array.isArray(r?.messages) ? r.messages : [];
-      if (messages.length > 0) {
-        await sessionCache.putMessagesCache(s.id, messages, {
-          firstId: r.firstId ?? null,
-          hasMore: !!r.hasMore,
-        });
+      // Yields to any in-flight user drill before each fetch (and does not
+      // itself count as foreground) so this serial prefetch never saturates
+      // a high-latency link out from under an active pin/activity jump.
+      const r: any = await backend.fetchSessionMessagesBackground(s.id);
+      const page = Array.isArray(r?.messages) ? r.messages : [];
+      if (page.length > 0) {
+        const cacheFuller = !!existing && existing.messages.length > page.length;
+        const merged = cacheFuller ? sessionCache.mergeNewestPage(existing!.messages, page) : page;
+        const pagination = cacheFuller
+          ? existing!.pagination
+          : { firstId: r.firstId ?? null, hasMore: !!r.hasMore };
+        const capped = sessionCache.capTranscript(merged, pagination);
+        await sessionCache.putMessagesCache(s.id, capped.messages, capped.pagination);
       }
     } catch { /* silent — cache miss path still works on click */ }
   }
@@ -1270,7 +1322,7 @@ let resumeGen = 0;
  *  silently drop the user's click). */
 let resumeInFlight: { id: string; gen: number; promise: Promise<void> } | null = null;
 
-async function resume(id: string) {
+async function resume(id: string, targetMessageId?: string) {
   // Adopt the trace from the click handler if present.
   const t = pendingTrace;
   pendingTrace = null;
@@ -1352,7 +1404,7 @@ async function resume(id: string) {
         // that accumulated in transcriptStore while another chat was
         // viewed — passing [] would wipe in-flight bubbles for the
         // chat we're returning to.
-        onResumeCb?.(id, cached.messages, cached.pagination, undefined);
+        onResumeCb?.(id, cached.messages, cached.pagination, undefined, targetMessageId);
         t?.trace('cache-render-end');
         scheduleRefresh();
         cacheRendered = true;
@@ -1379,24 +1431,36 @@ async function resume(id: string) {
         scheduleRefresh();
         return;
       }
-      await sessionCache.putMessagesCache(id, messages, pagination);
+      // Merge the server's newest page into the (possibly fuller) cached
+      // transcript so the reconcile doesn't truncate already-loaded history
+      // down to the newest ~200 rows. When the cache holds MORE than the
+      // page (the user scrolled/drilled older pages, now persisted), keep
+      // the full set + the deeper load-earlier cursor; otherwise this is
+      // just the page (cold load / equal-length). The full merged set is
+      // what we persist, so the cache GROWS to the whole transcript instead
+      // of churning the newest page (Jonathan 2026-05-29: cache all loaded
+      // content so deep pins are instant on revisit).
+      const cacheFuller = cacheRendered && !!cached && cached.messages.length > messages.length;
+      const merged = cacheFuller ? sessionCache.mergeNewestPage(cached!.messages, messages) : messages;
+      const mergedPagination = cacheFuller ? cached!.pagination : pagination;
+      const capped = sessionCache.capTranscript(merged, mergedPagination);
+      await sessionCache.putMessagesCache(id, capped.messages, capped.pagination);
       // Stale-generation guard — see above. Bail BEFORE logging so the
       // log line accurately reflects which fetches actually rendered.
       if (myGen !== resumeGen) return;
-      // Cache-matched optimization: if the cache cb ALREADY rendered
-      // the same N messages and the server returned the same N, skip
-      // the re-render to avoid a 500ms-later blank-flicker. Critical:
-      // gate on cacheRendered, not just `cached`. For a chat with 0
-      // cached messages, the cache cb's render path was skipped (it
-      // requires length > 0), so the server cb is the FIRST render
-      // — must run, otherwise chat.clear() never fires when the user
-      // clicks an empty chat for the SECOND time and the previous
-      // chat's transcript leaks through (2026-04-29 Jonathan repro).
-      if (cacheRendered && cached && cached.messages.length === messages.length) {
+      // Cache-matched optimization: if the cache cb ALREADY rendered the
+      // same rows the merge produced (no new tail turns / edits), skip the
+      // re-render to avoid a 500ms-later blank-flicker. Critical: gate on
+      // cacheRendered, not just `cached`. For a chat with 0 cached messages,
+      // the cache cb's render path was skipped (it requires length > 0), so
+      // the server cb is the FIRST render — must run, otherwise chat.clear()
+      // never fires when the user clicks an empty chat for the SECOND time
+      // and the previous chat's transcript leaks through (2026-04-29).
+      if (cacheRendered && cached && sessionCache.sameTranscript(cached.messages, capped.messages)) {
         // Inflight envelopes are independent of state.db rows — they
         // represent in-flight turn state the proxy holds in memory.
-        // Even if message counts match, mid-turn bubbles (user_message
-        // echo + reply_deltas) live ONLY in `inflight` until reply_final
+        // Even if rows match, mid-turn bubbles (user_message echo +
+        // reply_deltas) live ONLY in `inflight` until reply_final
         // promotes them. Skipping replay drops them on the floor.
         // Field bug 2026-05-12 (chat 99298465): switch-back hits the
         // cache-match path; without this replay the turn-3 user bubble
@@ -1412,8 +1476,8 @@ async function resume(id: string) {
       }
       t?.trace('server-render-start');
       const inflight = Array.isArray(result.inflight) ? result.inflight : [];
-      log(`sessionDrawer: resumed ${id} (${messages.length} messages, ${inflight.length} inflight, hasMore=${pagination.hasMore})`);
-      onResumeCb?.(id, messages, pagination, inflight);
+      log(`sessionDrawer: resumed ${id} (${capped.messages.length} messages, ${inflight.length} inflight, hasMore=${capped.pagination.hasMore})`);
+      onResumeCb?.(id, capped.messages, capped.pagination, inflight, targetMessageId);
       t?.trace('server-render-end');
       scheduleRefresh();
     } catch (e: any) {

@@ -15,7 +15,7 @@ function state(partial: Partial<ChatState>): ChatState {
     durable: [],
     inflight: [],
     pendingSends: [],
-    pagination: { firstId: null, hasMore: false },
+    pagination: { firstId: null, hasMore: false, lastId: null, hasMoreNewer: false },
     ...partial,
   };
 }

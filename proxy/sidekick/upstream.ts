@@ -204,11 +204,16 @@ export interface UpstreamAgent {
 
   /** Transcript replay. `inflight` carries live-SSE-shape envelopes
    *  from the plugin's TurnBuffer (only on the first page; empty
-   *  array when no turn is active). */
+   *  array when no turn is active).
+   *
+   *  `around` returns a bounded window centered on the target (context
+   *  above + below), and `after` pages forward (load-newer) from a
+   *  cursor — both surface `last_id`/`has_more_newer` so the PWA knows
+   *  whether the loaded run reaches the live tail. */
   getMessages(
     chatId: string,
-    opts?: { limit?: number; before?: number },
-  ): Promise<{ items: ConversationItem[]; first_id: number | null; has_more: boolean; inflight: SidekickEnvelope[] }>;
+    opts?: { limit?: number; before?: number; around?: string; after?: number },
+  ): Promise<{ items: ConversationItem[]; first_id: number | null; has_more: boolean; inflight: SidekickEnvelope[]; target_found?: boolean; last_id?: number | null; has_more_newer?: boolean }>;
 
   /** Drawer delete. Cascades upstream (transcript + memory store). */
   deleteConversation(chatId: string): Promise<void>;
@@ -345,11 +350,13 @@ export class HTTPAgentUpstream implements UpstreamAgent {
 
   async getMessages(
     chatId: string,
-    opts: { limit?: number; before?: number } = {},
-  ): Promise<{ items: ConversationItem[]; first_id: number | null; has_more: boolean; inflight: SidekickEnvelope[] }> {
+    opts: { limit?: number; before?: number; around?: string; after?: number } = {},
+  ): Promise<{ items: ConversationItem[]; first_id: number | null; has_more: boolean; inflight: SidekickEnvelope[]; target_found?: boolean; last_id?: number | null; has_more_newer?: boolean }> {
     const params = new URLSearchParams();
     if (opts.limit != null) params.set('limit', String(opts.limit));
     if (opts.before != null) params.set('before', String(opts.before));
+    if (opts.around != null) params.set('around', String(opts.around));
+    if (opts.after != null) params.set('after', String(opts.after));
     const qs = params.toString();
     const r = await fetch(
       `${this.url}/v1/conversations/${encodeURIComponent(chatId)}/items${qs ? `?${qs}` : ''}`,
@@ -371,6 +378,9 @@ export class HTTPAgentUpstream implements UpstreamAgent {
       first_id: j?.first_id ?? null,
       has_more: !!j?.has_more,
       inflight: Array.isArray(j?.inflight) ? j.inflight : [],
+      ...(typeof j?.target_found === 'boolean' ? { target_found: j.target_found } : {}),
+      ...(j?.last_id != null ? { last_id: j.last_id } : {}),
+      ...(typeof j?.has_more_newer === 'boolean' ? { has_more_newer: j.has_more_newer } : {}),
     };
   }
 

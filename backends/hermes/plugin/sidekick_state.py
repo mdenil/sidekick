@@ -530,11 +530,162 @@ def list_messages_for_chat_with_state_db_source(
     on its 404 logic. (The legacy v1 returned an empty list in the
     same shape, so callers tolerate this.)
     """
+    items = _build_chronological_items(
+        sidekick_db, state_db_path, chat_id, source
+    )
+
+    # Pagination semantics:
+    #  * before_id=None → most-recent `limit` items, has_more=True when we
+    #    truncated older history off the head.
+    #  * before_id set → user is paging backward; return the limit items
+    #    nearest to (but older than) the cursor. v1/legacy mistakenly
+    #    returned the OLDEST limit items instead (items[:limit]) — that
+    #    bug surfaced as "load-earlier on a long chat keeps showing the
+    #    same earliest page forever" because the cursor's neighborhood
+    #    was never reached. v2 fixes by slicing tail-side in both cases.
+    if before_id is not None:
+        items = [it for it in items if it["id"] < before_id]
+    if len(items) > limit:
+        items = items[-limit:]
+        has_more = True
+    else:
+        has_more = False
+    first_id = items[0]["id"] if items else None
+
+    return {"items": items, "first_id": first_id, "has_more": has_more}
+
+
+def list_messages_around_for_chat_with_state_db_source(
+    sidekick_db,
+    state_db_path,
+    chat_id: str,
+    source: str,
+    *,
+    target: str,
+    limit: int = 200,
+    context_before: Optional[int] = None,
+    context_after: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Deep-target read: return a BOUNDED window of the transcript
+    *centered* on ``target`` (matched by sidekick_id or by the integer
+    state.db id) — context above AND below it — that does NOT run to the
+    live tail.
+
+    Why: the PWA's pin/activity "open in chat" drill used to reach a deep
+    message by paging backward N times from the newest page — N serial
+    ~1 MB round trips over Jonathan's Philadelphia→London link (5–20 s).
+    The first fix made the drill one round trip but tail-contiguous: a pin
+    near the TOP of a long session pulled back everything from the target
+    to the tail — 835 rows / 4.27 MB for [pitch deck], still 5–20 s over
+    the link. This bounds the payload to ``limit`` rows regardless of how
+    deep/old the target is, at the cost of leaving a gap between the
+    window's newest row and the live tail.
+
+    The gap is the PWA's job to bridge: the window REPLACES the rendered
+    transcript (it isn't prepended onto the loaded tail), scroll-up loads
+    older via ``has_more``/``first_id``, and scroll-down loads newer via
+    ``has_more_newer``/``last_id`` (the ``after=`` cursor). A "jump to
+    latest" affordance re-resumes the chat to the tail.
+
+    Returns ``{items, first_id, has_more, last_id, has_more_newer,
+    target_found}``. When the target isn't in the transcript at all (stale
+    pin / wrong chat), returns ``target_found=False`` with an empty list so
+    the caller can fall back to its standard pagination drill.
+    """
+    items = _build_chronological_items(
+        sidekick_db, state_db_path, chat_id, source
+    )
+    empty = {
+        "items": [], "first_id": None, "has_more": False,
+        "last_id": None, "has_more_newer": False, "target_found": False,
+    }
+    if not items:
+        return dict(empty)
+
+    target_str = str(target)
+    idx = None
+    for i, it in enumerate(items):
+        if str(it.get("sidekick_id") or "") == target_str or str(it["id"]) == target_str:
+            idx = i
+            break
+    if idx is None:
+        return dict(empty)
+
+    # Split the budget above/below the target — a bit more above so the
+    # user lands with reading context leading INTO the target. The window
+    # is bounded by the budget, never the distance to the tail, so the
+    # payload stays O(limit) for any depth.
+    ctx_before = context_before if context_before is not None else max(20, (limit * 2) // 3)
+    ctx_after = context_after if context_after is not None else max(10, limit // 3)
+    start = max(0, idx - ctx_before)
+    end = min(len(items), idx + ctx_after + 1)
+    window = items[start:end]
+
+    return {
+        "items": window,
+        "first_id": window[0]["id"] if window else None,
+        "has_more": start > 0,
+        "last_id": window[-1]["id"] if window else None,
+        "has_more_newer": end < len(items),
+        "target_found": True,
+    }
+
+
+def list_messages_after_for_chat_with_state_db_source(
+    sidekick_db,
+    state_db_path,
+    chat_id: str,
+    source: str,
+    *,
+    after_id: int,
+    limit: int = 200,
+) -> Dict[str, Any]:
+    """Load-newer read: return up to ``limit`` items NEWER than ``after_id``
+    (the symmetric counterpart of ``before_id`` paging).
+
+    Used when the user scrolls DOWN past the bottom of a bounded deep-jump
+    window (see ``list_messages_around_*``) toward the live tail. Returns
+    the OLDEST ``limit`` items above the cursor so the prepend-side stays
+    contiguous with what's already loaded; ``has_more_newer`` is True when
+    more remain between this page and the tail.
+
+    Returns ``{items, first_id, last_id, has_more_newer}``.
+    """
+    items = _build_chronological_items(
+        sidekick_db, state_db_path, chat_id, source
+    )
+    items = [it for it in items if it["id"] > after_id]
+    if len(items) > limit:
+        items = items[:limit]
+        has_more_newer = True
+    else:
+        has_more_newer = False
+    return {
+        "items": items,
+        "first_id": items[0]["id"] if items else None,
+        "last_id": items[-1]["id"] if items else None,
+        "has_more_newer": has_more_newer,
+    }
+
+
+def _build_chronological_items(
+    sidekick_db,
+    state_db_path,
+    chat_id: str,
+    source: str,
+) -> list:
+    """Build the FULL chronological item list for a chat from state.db
+    (canonical bodies) merged with sidekick.db.msg_links (sidekick_id +
+    kind annotations + envelope-only rows). Shared by the paginated read
+    and the around-target read so both see the exact same transcript.
+
+    Returns ``[]`` when state.db is unreachable (callers fall back to
+    their 404 logic). Does NOT paginate — that's the caller's job."""
     import contextlib
     import sqlite3
 
     if state_db_path is None or not state_db_path.exists():
-        return {"items": [], "first_id": None, "has_more": False}
+        return []
 
     # Same recursive CTE as the legacy ``_items_by_user_id``: roll up
     # any messages that landed in compaction-rotated child sessions
@@ -559,10 +710,10 @@ def list_messages_for_chat_with_state_db_source(
         FROM messages m
         JOIN session_root sr ON m.session_id = sr.id
     """
+    # No before-cursor filtering here: the helper returns the WHOLE
+    # transcript; the paginated + around callers slice it in Python so
+    # they share one identical chronological view.
     params: list = [chat_id, source]
-    if before_id is not None:
-        sql += " WHERE m.id < ?"
-        params.append(before_id)
     sql += " ORDER BY m.timestamp ASC, m.id ASC"
 
     uri = f"file:{state_db_path}?mode=ro"
@@ -573,7 +724,7 @@ def list_messages_for_chat_with_state_db_source(
             conn.row_factory = sqlite3.Row
             rows = list(conn.execute(sql, params).fetchall())
     except Exception:
-        return {"items": [], "first_id": None, "has_more": False}
+        return []
 
     # Drop compaction-injected seed rows (same logic as v1, see
     # ``_items_by_user_id`` in sidekick_route_items.py for the full
@@ -696,26 +847,7 @@ def list_messages_for_chat_with_state_db_source(
     # interleave is the wire contract callers depend on.
     items.sort(key=lambda it: (it["created_at"], it["id"]))
 
-    # Pagination semantics:
-    #  * before_id=None → most-recent `limit` items, has_more=True when we
-    #    truncated older history off the head.
-    #  * before_id set → user is paging backward; return the limit items
-    #    nearest to (but older than) the cursor. v1/legacy mistakenly
-    #    returned the OLDEST limit items instead (items[:limit]) — that
-    #    bug surfaced as "load-earlier on a long chat keeps showing the
-    #    same earliest page forever" because the cursor's neighborhood
-    #    was never reached. v2 fixes by slicing tail-side in both cases.
-    if before_id is None and len(items) > limit:
-        items = items[-limit:]
-        has_more = True
-    elif before_id is not None and len(items) > limit:
-        items = items[-limit:]
-        has_more = True
-    else:
-        has_more = False
-    first_id = items[0]["id"] if items else None
-
-    return {"items": items, "first_id": first_id, "has_more": has_more}
+    return items
 
 
 def reconcile_from_state_db(

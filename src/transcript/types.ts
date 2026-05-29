@@ -49,9 +49,14 @@ export interface ChatState {
    *  `user_message` envelope to land in `inflight` (which dedups by
    *  message_id). On reply_final or timeout, the row clears. */
   pendingSends: PendingSend[];
-  /** Most-recent firstId/hasMore from the items endpoint. Used by the
-   *  load-earlier path; not consumed by the projection itself. */
-  pagination: { firstId: number | null; hasMore: boolean };
+  /** Most-recent pagination cursors from the items endpoint. Used by the
+   *  load-earlier / load-later paths; not consumed by the projection
+   *  itself. `firstId`/`hasMore` page OLDER (toward the head); `lastId`/
+   *  `hasMoreNewer` page NEWER (toward the tail). `hasMoreNewer` is true
+   *  only for a floating deep `around` window that hasn't yet been
+   *  connected to the live tail; on a normal tail-anchored resume it's
+   *  false (the loaded run already reaches the tail). */
+  pagination: { firstId: number | null; hasMore: boolean; lastId: number | null; hasMoreNewer: boolean };
 }
 
 export interface PendingSend {

@@ -1,5 +1,10 @@
-"""Phase 2 smokes: items endpoint reads from sidekick.db, reconciles
-state.db rows on first read.
+"""sidekick.db-backed items reader + state.db reconciliation.
+
+Covers ``list_messages_for_chat`` (the body-store reader used when
+``SIDEKICK_ITEMS_READ_FROM_STATE_DB`` is off) and the
+``reconcile_from_state_db`` linker, which runs on every read
+regardless of which body source is active. The state.db-canonical
+reader is covered in test_items_endpoint_state_db_source.py.
 
 Pins down:
   - list_messages_for_chat returns the wire shape (id, role, content,
@@ -7,14 +12,15 @@ Pins down:
   - Pagination by rowid (before cursor + first_id)
   - reconcile_from_state_db pulls state.db rows missing from
     sidekick.db, idempotent on second call
+  - The content-fingerprint + order-fallback linker attaches
+    agent_row_id to envelope-written rows
+  - Orphan-drop self-heal when state.db rows disappear (delete/retry)
   - Empty-everywhere → returns empty (and the route turns that into
     404 when no session existed; tested separately at the route layer)
 
-Doesn't exercise the route handler directly — those tests live in
-test_user_id_queries.py and will be updated in a follow-up commit
-once the route's source-resolution path is also flipped. This file
-covers the *storage + reconciliation* contract that the route
-delegates to.
+Doesn't exercise the route handler directly — that lives in
+test_user_id_queries.py. This file covers the *storage +
+reconciliation* contract that the route delegates to.
 """
 
 from __future__ import annotations
@@ -310,7 +316,7 @@ def test_reconcile_skips_rows_already_linked(db, state_db):
     """Rows envelope-written with agent_row_id set don't get duplicated."""
     _add_session(state_db, "s1")
     _add_msg(state_db, "s1", "user", "hello", 1000.0)
-    # Pretend the linker (Phase 3) already attached this row.
+    # Pretend the linker already attached this row.
     state.upsert_msg_link(
         db, id="umsg_real", chat_id=CHAT_ID, role="user",
         content="hello", agent_row_id="1",
@@ -344,7 +350,7 @@ def test_reconcile_when_state_db_missing_is_noop(db, tmp_path):
     assert n == 0
 
 
-# ── Phase 3: content-fingerprint linker ───────────────────────────────
+# ── content-fingerprint linker ────────────────────────────────────────
 
 
 def test_linker_attaches_agent_row_id_by_content_match(db, state_db):
@@ -353,7 +359,7 @@ def test_linker_attaches_agent_row_id_by_content_match(db, state_db):
     _add_session(state_db, "s1")
     _add_msg(state_db, "s1", "user", "Hey there", 1000.0)
     _add_msg(state_db, "s1", "assistant", "Hello back", 1001.0)
-    # Pre-existing envelope-written rows from Phase 1 write-through.
+    # Pre-existing envelope-written rows from envelope write-through.
     state.record_envelope(db, {
         "type": "user_message", "chat_id": CHAT_ID,
         "message_id": "umsg_link1", "text": "Hey there",
@@ -436,7 +442,7 @@ def test_linker_order_fallback_under_content_drift(db, state_db):
     """When content fingerprint match fails (whitespace drift, hermes-
     side post-edit, empty-final-reply path), order-fallback within
     (chat, role) pairs envelope rows with state.db rows in append-only
-    sequence. The v2 shim (2026-05-29) — closes the class where
+    sequence. Added 2026-05-29 — closes the class where
     Pass 2 would otherwise insert a parallel `legacy:<state_id>` row.
     """
     _add_session(state_db, "s1")
@@ -549,7 +555,7 @@ def test_linker_skips_state_db_row_already_claimed(db, state_db):
     assert rows["umsg_dup"] is None
 
 
-# ── Phase 4: bidirectional self-heal (orphan-drop) ────────────────────
+# ── bidirectional self-heal (orphan-drop) ─────────────────────────────
 
 
 def test_orphan_drop_when_state_db_session_deleted(db, state_db):

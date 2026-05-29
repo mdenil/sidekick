@@ -93,7 +93,7 @@ def test_unread_counts_envelope_only_reply_before_state_db_flush(db, state_db):
     Contract: a final-status envelope assistant row (msg_links row with
     status='final', non-NULL tool_calls excluded) must count toward
     unread regardless of whether state.db has caught up yet. msg_links
-    is the v2-canonical source of truth for "what messages exist."
+    is the canonical source of truth for "what messages exist."
     """
     # No state.db session for this chat yet — agent hasn't flushed.
     # Envelope path has written the reply to msg_links.
