@@ -274,6 +274,12 @@ export async function installMockBackend(page) {
       // reconstruct the "N tools · done" surface on history replay.
       if (m.tool_call_id) out.tool_call_id = m.tool_call_id;
       if (m.tool_calls) out.tool_calls = m.tool_calls;
+      // Notification kind annotation (approval, cron, reminder). The
+      // projection's `isNotificationLikeItem` keys off `kind`; without
+      // it, a seeded notification row gets projected as a normal
+      // assistant bubble and the drill won't find the `notif:${sk}`
+      // key. Pass through so smokes can seed durable approvals/crons.
+      if (m.kind) out.kind = m.kind;
       return out;
     }) : [];
     // Apply pagination. `before` is exclusive (return messages with
