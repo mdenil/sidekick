@@ -113,7 +113,12 @@ export function project(state: ChatState): BubbleSpec[] {
       // both as notification bubbles so history replay matches live
       // (handleNotification → store envelope) rendering exactly.
       if (isNotificationLikeItem(item)) {
-        const key = `notif:${item.sidekick_id || item.id}`;
+        // Bare sidekick_id (no `notif:` prefix) so the activity tray's
+        // stored `messageId = item.sidekick_id` matches the bubble's
+        // data-key 1:1, and the drill (sessionResume.ts) finds it
+        // with a plain querySelector. Pre-v2 (2026-05-29) we prefixed
+        // and the drill had to dual-lookup or text-fallback to recover.
+        const key = String(item.sidekick_id || item.id);
         if (notificationKeys.has(key)) continue;
         notificationKeys.add(key);
         pushDurableSpec({
@@ -169,7 +174,7 @@ export function project(state: ChatState): BubbleSpec[] {
         row.tools.push({ callId, name: item.tool_name || inferToolNameFromResult(item.content), args: {}, result: item.content });
       }
     } else if (item.role === 'notification') {
-      const key = `notif:${item.sidekick_id || item.id}`;
+      const key = String(item.sidekick_id || item.id);
       if (notificationKeys.has(key)) continue;
       notificationKeys.add(key);
       pushDurableSpec({
@@ -293,7 +298,7 @@ export function project(state: ChatState): BubbleSpec[] {
         break;
       }
       case 'notification': {
-        const key = `notif:${env.sidekick_id || `inflight:${inflightTs}`}`;
+        const key = String(env.sidekick_id || `inflight:${inflightTs}`);
         if (notificationKeys.has(key)) break;
         notificationKeys.add(key);
         specs.push({

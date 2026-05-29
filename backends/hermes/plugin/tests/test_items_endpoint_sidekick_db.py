@@ -432,6 +432,101 @@ def test_linker_leaves_unmatched_row_null(db, state_db):
     assert rows[0]["id"] == "umsg_orphan"
 
 
+def test_linker_order_fallback_under_content_drift(db, state_db):
+    """When content fingerprint match fails (whitespace drift, hermes-
+    side post-edit, empty-final-reply path), order-fallback within
+    (chat, role) pairs envelope rows with state.db rows in append-only
+    sequence. The v2 shim (2026-05-29) — closes the class where
+    Pass 2 would otherwise insert a parallel `legacy:<state_id>` row.
+    """
+    _add_session(state_db, "s1")
+    # State.db has hermes' normalized content (trailing newline stripped
+    # vs envelope's accumulated streaming text + a literal whitespace
+    # divergence). Each envelope still has a unique sidekick_id.
+    _add_msg(state_db, "s1", "user", "kick off the job", 1000.0)
+    _add_msg(state_db, "s1", "assistant", "On it.\nWill report back.", 1001.0)
+    _add_msg(state_db, "s1", "user", "great", 1002.0)
+    _add_msg(state_db, "s1", "assistant", "Done.", 1003.0)
+    # Envelope rows have drift: assistant 1 has an extra trailing space,
+    # user 2 has an em-dash variant. Direct (role, content) match fails.
+    state.record_envelope(db, {
+        "type": "user_message", "chat_id": CHAT_ID,
+        "message_id": "umsg_drift_1", "text": "kick off the job ",
+    })
+    state.record_envelope(db, {
+        "type": "reply_final", "chat_id": CHAT_ID,
+        "message_id": "msg_drift_1", "text": "On it.\nWill report back. ",
+    })
+    state.record_envelope(db, {
+        "type": "user_message", "chat_id": CHAT_ID,
+        "message_id": "umsg_drift_2", "text": "great!",
+    })
+    state.record_envelope(db, {
+        "type": "reply_final", "chat_id": CHAT_ID,
+        "message_id": "msg_drift_2", "text": "Done!",
+    })
+    state.reconcile_from_state_db(db, state_db, CHAT_ID, "sidekick")
+    by_id = {r["id"]: r["agentRowId"] for r in state.list_msg_links_for_chat(db, CHAT_ID)}
+    # All four envelopes link via order-fallback (append-only sequence
+    # within role). No parallel `legacy:` rows.
+    assert by_id["umsg_drift_1"] == "1"
+    assert by_id["msg_drift_1"] == "2"
+    assert by_id["umsg_drift_2"] == "3"
+    assert by_id["msg_drift_2"] == "4"
+    sks = list(by_id.keys())
+    assert not any(s.startswith("legacy:") for s in sks), \
+        f"order-fallback should have linked all rows; got `legacy:` insertions: {sks}"
+
+
+def test_linker_order_fallback_preserves_role_separation(db, state_db):
+    """Order-fallback pairs strictly within (chat, role). A user
+    envelope cannot accidentally link to an assistant state.db row
+    even if their relative ordering aligns."""
+    _add_session(state_db, "s1")
+    _add_msg(state_db, "s1", "user", "X", 1000.0)        # state.db id=1
+    _add_msg(state_db, "s1", "assistant", "Y", 1001.0)   # state.db id=2
+    # Both envelope contents drift; only one of each role; order-
+    # fallback must pair u→user-row and a→assistant-row, not swap.
+    state.record_envelope(db, {
+        "type": "user_message", "chat_id": CHAT_ID,
+        "message_id": "umsg_role", "text": "X-drift",
+    })
+    state.record_envelope(db, {
+        "type": "reply_final", "chat_id": CHAT_ID,
+        "message_id": "msg_role", "text": "Y-drift",
+    })
+    state.reconcile_from_state_db(db, state_db, CHAT_ID, "sidekick")
+    by_id = {r["id"]: r["agentRowId"] for r in state.list_msg_links_for_chat(db, CHAT_ID)}
+    assert by_id["umsg_role"] == "1"     # user envelope → user state.db row
+    assert by_id["msg_role"] == "2"      # assistant envelope → assistant state.db row
+
+
+def test_linker_order_fallback_skips_tool_rows(db, state_db):
+    """role='tool' is intentionally NOT covered by order-fallback:
+    sidekick writes two tool msg_links rows per call (tc:* + tr:*) but
+    state.db has only one (the result). Order-fallback on tool would
+    mis-pair the call envelope to the result row."""
+    _add_session(state_db, "s1")
+    _add_msg(
+        state_db, "s1", "tool", "result payload", 1000.0,
+        tool_name="t", tool_call_id="call_zz",
+    )
+    # Pre-record the tool_call envelope WITHOUT recording the tool_result
+    # (so content-match doesn't claim the state.db row first).
+    state.record_envelope(db, {
+        "type": "tool_call", "chat_id": CHAT_ID,
+        "call_id": "call_zz", "tool_name": "t", "args": {},
+    })
+    state.reconcile_from_state_db(db, state_db, CHAT_ID, "sidekick")
+    by_id = {r["id"]: r["agentRowId"] for r in state.list_msg_links_for_chat(db, CHAT_ID)}
+    # tc:* row must NOT be linked by order-fallback (would be wrong;
+    # state.db row is the tool RESULT, not the call). Pass 2 inserts
+    # `legacy:1` for the orphaned state.db tool row.
+    assert by_id.get("tc:call_zz") is None
+    legacy_keys = [k for k in by_id if k.startswith("legacy:")]
+    assert legacy_keys == ["legacy:1"]
+
+
 def test_linker_skips_state_db_row_already_claimed(db, state_db):
     """A state.db row that's the target of a prior link doesn't get
     re-claimed for a second unlinked sidekick.db row with the same

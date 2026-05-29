@@ -754,22 +754,39 @@ def reconcile_from_state_db(
     )
     claimed_state_ids = {str(r["agent_row_id"]) for r in linked_rows}
 
-    # ── Pass 1: link unlinked sidekick.db rows by content fingerprint.
-    # Match envelope-written rows (umsg_*/msg_*/tc:*/tr:*/notif_*) to
-    # their state.db twins so Phase 4 self-heal can identify orphans
-    # vs in-flight rows correctly.
+    # ── Pass 1: link unlinked sidekick.db rows.
+    #
+    # Two-pronged: (1.a) exact (role, content) fingerprint claims the
+    # easy cases — same string both sides means same logical message.
+    # (1.b) Order-fallback within (chat, role) for role in {user,
+    # assistant}: walk remaining unlinked envelope rows and unclaimed
+    # state.db rows in append-only order and pair 1:1.
+    #
+    # Why order-fallback is the right primitive: hermes' state.db
+    # writes for a session are append-only in turn order; sidekick's
+    # envelope writes are append-only in stream order. The two
+    # sequences correspond. Content fingerprint fails on whitespace
+    # drift / hermes-side post-edit / empty-final-reply paths even
+    # though the underlying message is the same — order linking
+    # catches those. (Skipped for role='tool' because both tc:* and
+    # tr:* envelope rows share role='tool' but state.db only ever
+    # has a single tool row per call; the content fingerprint claims
+    # the tr:* row correctly and tc:* legitimately has no twin.)
+    #
+    # Old behavior — content match only — left envelope rows
+    # unlinked under drift, which made Pass 2 insert a parallel
+    # `legacy:<state_id>` row and downstream consumers (activity drill,
+    # push tag, projection key) had to deal with two id shapes for
+    # one logical message. The shim closes that class.
     unlinked = db.fetchall(
         "SELECT id, role, content FROM msg_links "
         "WHERE chat_id = ? AND agent_row_id IS NULL "
-        "ORDER BY created_at ASC",
+        "ORDER BY created_at ASC, rowid ASC",
         (chat_id,),
     )
     links = 0
     if unlinked:
-        # Build a (role, content) → list-of-state.db-ids index of
-        # unclaimed candidates, in id-ASC order. Matching pops from
-        # the front so duplicate-content rows (e.g. user typed "ok"
-        # twice) link to state.db rows in chronological order.
+        # Pass 1.a — exact (role, content) match.
         candidates: Dict[tuple, List[str]] = {}
         for r in state_rows:
             sid = str(r["id"])
@@ -777,10 +794,12 @@ def reconcile_from_state_db(
                 continue
             key = (r["role"], r["content"] or "")
             candidates.setdefault(key, []).append(sid)
+        still_unlinked: List[Dict[str, Any]] = []
         for sk in unlinked:
             key = (sk["role"], sk["content"] or "")
             queue = candidates.get(key)
             if not queue:
+                still_unlinked.append(dict(sk))
                 continue
             state_id = queue.pop(0)
             try:
@@ -792,7 +811,30 @@ def reconcile_from_state_db(
                 claimed_state_ids.add(state_id)
                 links += 1
             except Exception:
-                continue
+                still_unlinked.append(dict(sk))
+
+        # Pass 1.b — order-fallback within (chat, role) for the two
+        # roles where envelope and state.db are 1:1 by construction.
+        # state_rows came back ORDER BY id ASC (see the CTE query);
+        # still_unlinked is in created_at ASC, rowid ASC (the SELECT
+        # above). Both append-only sequences, so per-role zip pairs them.
+        for role_to_fallback in ("user", "assistant"):
+            env_queue = [sk for sk in still_unlinked if sk["role"] == role_to_fallback]
+            state_queue = [
+                str(r["id"]) for r in state_rows
+                if r["role"] == role_to_fallback and str(r["id"]) not in claimed_state_ids
+            ]
+            for sk, state_id in zip(env_queue, state_queue):
+                try:
+                    db.exec(
+                        "UPDATE msg_links SET agent_row_id = ?, updated_at = ? "
+                        "WHERE id = ?",
+                        (state_id, time.time(), sk["id"]),
+                    )
+                    claimed_state_ids.add(state_id)
+                    links += 1
+                except Exception:
+                    continue
 
     # ── Pass 2: insert state.db rows that still have no sidekick.db
     # twin. These are legacy chats from before Phase 1's write-through,

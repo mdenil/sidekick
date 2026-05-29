@@ -157,20 +157,17 @@ export function replaySessionMessages(
   // a separate backlog item — see backlog.md.
   if (targetMessageId) {
     const transcriptEl = document.getElementById('transcript');
-    // Notification rows (approval, cron, reminder) are keyed
-    // `notif:${sidekick_id}` by projection.ts, but activity-tray items
-    // store `messageId = sidekick_id` (bare). Try both forms so a drill
-    // from an approval/cron activity row finds the in-chat bubble.
-    // Field 2026-05-29 (Jonathan): activity row clicks landed in the
-    // chat but never scrolled to / flashed the originating bubble.
-    const findTarget = (key: string): HTMLElement | null =>
-      transcriptEl?.querySelector(`[data-key="${CSS.escape(key)}"]`) as HTMLElement | null;
-    const target = findTarget(targetMessageId)
-      ?? (!targetMessageId.startsWith('notif:') ? findTarget(`notif:${targetMessageId}`) : null);
+    // Bubble data-key is the bare sidekick_id post-v2 (2026-05-29);
+    // matches activity-tray's stored messageId 1:1 with no prefix
+    // gymnastics. Plain querySelector lookup.
+    const target: HTMLElement | null =
+      transcriptEl?.querySelector(`[data-key="${CSS.escape(targetMessageId)}"]`) as HTMLElement | null;
     if (target) {
       chat.suppressLoadEarlierFor(1200);
       drillScrollTo(target);
-      setTimeout(() => target.classList.remove('search-target-flash'), 1500);
+      target.classList.add('search-target-flash');
+      const flashTarget = target;
+      setTimeout(() => flashTarget.classList.remove('search-target-flash'), 1500);
       return;
     }
     // Under virtualization, the target spec may be in the store but
@@ -395,6 +392,13 @@ function drillScrollTo(target: HTMLElement): void {
   // race against repin and the user lands at the wrong position.
   // Field bug 2026-05-25 (pin-drawer-cycle-scrollback · mobile flake).
   cancelActiveAtBottomRepin?.();
+  // De-pin so autoScroll() in rerenderInto (the follow-tail hook we
+  // added with the virtualizer gut) doesn't snap us back to the bottom
+  // on the next render — the user explicitly asked to be at THIS
+  // bubble, not the live edge. Field 2026-05-29 (Jonathan, traveling):
+  // drill from activity tray fired, drillScrollTo landed, then
+  // autoScroll yanked back to scrollHeight on a duplicate-resume render.
+  chat.setPinnedToBottom(false);
   const apply = () => {
     const tr = transcriptEl.getBoundingClientRect();
     const tg = target.getBoundingClientRect();
@@ -489,12 +493,9 @@ async function drillToOlderMessage(
       }
       continue;
     }
-    // Mirror the dual-key lookup at line ~165: notification bubbles are
-    // keyed `notif:${sidekick_id}` while activity messageIds are bare.
-    const findTarget = (key: string): HTMLElement | null =>
-      transcriptEl.querySelector(`[data-key="${CSS.escape(key)}"]`) as HTMLElement | null;
-    const target = findTarget(targetMessageId)
-      ?? (!targetMessageId.startsWith('notif:') ? findTarget(`notif:${targetMessageId}`) : null);
+    const target = transcriptEl.querySelector(
+      `[data-key="${CSS.escape(targetMessageId)}"]`,
+    ) as HTMLElement | null;
     if (target) {
       log(`[cmdk] drill found ${targetMessageId} after ${i + 1} page(s)`);
       chat.suppressLoadEarlierFor(1200);

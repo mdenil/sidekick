@@ -412,7 +412,7 @@ describe('project: dedup keys', () => {
     const out = project(s);
     const notifications = out.filter(o => o.kind === 'notification');
     assert.equal(notifications.length, 1);
-    assert.equal(notifications[0].key, 'notif:notif_1');
+    assert.equal(notifications[0].key, 'notif_1');
   });
 });
 

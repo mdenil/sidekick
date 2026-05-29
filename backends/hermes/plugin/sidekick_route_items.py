@@ -312,12 +312,13 @@ async def handle_get_items(adapter, request: "web.Request") -> "web.Response":
     if inserted:
         _trace("reconcile", f"inserted={inserted}")
 
-    # B2 staged behind env flag: state.db is the canonical body store;
+    # B2 / v2 read path: state.db is the canonical body store;
     # sidekick.db.msg_links surfaces sidekick_id + kind as annotations.
-    # Default (flag unset / false): legacy v1 read path that mirrors
-    # bodies into sidekick.db and can dupe on reconcile content-match
-    # failure. Flip SIDEKICK_ITEMS_READ_FROM_STATE_DB=true to opt in.
-    _b2_enabled = os.environ.get("SIDEKICK_ITEMS_READ_FROM_STATE_DB", "").lower() in ("1", "true", "yes")
+    # ON by default 2026-05-29 (v2 ship — paired with the deterministic
+    # link shim in reconcile_from_state_db Pass 1.b). Set
+    # SIDEKICK_ITEMS_READ_FROM_STATE_DB=0 to fall back to the legacy v1
+    # path (mirrors bodies in sidekick.db; dupes on link miss).
+    _b2_enabled = os.environ.get("SIDEKICK_ITEMS_READ_FROM_STATE_DB", "1").lower() in ("1", "true", "yes")
     _trace("query-start", f"limit={limit} before={before_id} b2={_b2_enabled}")
     if _b2_enabled:
         result = await asyncio.to_thread(
