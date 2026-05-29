@@ -7,6 +7,7 @@ import time
 import pytest
 
 from ..sidekick_db import SidekickDB
+from .. import sidekick_state as state
 from ..sidekick_unread import compute_unread
 
 
@@ -74,6 +75,40 @@ def _add_msg(state_db, sid, role, content, ts, tool_calls=None,
     )
     conn.commit()
     conn.close()
+
+
+def test_unread_counts_envelope_only_reply_before_state_db_flush(db, state_db):
+    """**The 2026-05-29 field bug** Jonathan reported: agent emits a
+    short "Checking." quick-ack reply on an off-screen chat. PWA
+    upserts the activity row + bumps badge.incrementUnread, then
+    refreshes from server via /api/sidekick/notifications/unread. The
+    server-side compute_unread used to count state.db assistant rows
+    ONLY — but the envelope just arrived; hermes hasn't post-turn-
+    flushed yet, so state.db has nothing for this chat. compute_unread
+    returned 0; badge.ts:109's auto-markAllRead fired and nuked the
+    activity row as "stale." Full reply arrived later → state.db was
+    flushed by then → badge bumped correctly. Hence the asymmetry
+    Jonathan observed: short reply silent, full reply badges.
+
+    Contract: a final-status envelope assistant row (msg_links row with
+    status='final', non-NULL tool_calls excluded) must count toward
+    unread regardless of whether state.db has caught up yet. msg_links
+    is the v2-canonical source of truth for "what messages exist."
+    """
+    # No state.db session for this chat yet — agent hasn't flushed.
+    # Envelope path has written the reply to msg_links.
+    state.record_envelope(db, {
+        "type": "reply_final", "chat_id": CHAT_ID,
+        "message_id": "msg_pre_flush", "text": "Checking.",
+    })
+    unread = compute_unread(db=db, state_db_path=state_db, source="sidekick")
+    chat_ids = [c["chat_id"] for c in unread["chats"]]
+    assert f"sidekick:{CHAT_ID}" in chat_ids, \
+        f"envelope-only chat must surface in unread set; got {chat_ids}"
+    target = next(c for c in unread["chats"] if c["chat_id"] == f"sidekick:{CHAT_ID}")
+    assert target["unread_count"] >= 1, \
+        f"unread_count should be ≥1 for envelope-only reply, got {target['unread_count']}"
+    assert unread["total"] >= 1
 
 
 def test_unread_counts_final_replies_not_tool_call_activity(db, state_db):

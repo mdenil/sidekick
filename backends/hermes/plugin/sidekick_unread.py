@@ -43,31 +43,64 @@ def compute_unread(
     ``total`` is the SUM of per-chat counts (Jonathan picked the sum
     over a chat-count aggregate for higher-fidelity feedback).
 
-    Counts assistant rows per chat (user_id) with timestamp >
-    last_read_at. The query joins via the recursive CTE pattern that
-    ``_items_by_user_id`` uses (so compaction-rotated child sessions
-    still get rolled up under their root user_id). For sticky
-    ``marked_unread=1``, returns a count of at least 1 regardless of
+    Counts assistant rows (tool-call orchestrators excluded) with
+    timestamp > last_read_at, from TWO sources:
+      * state.db ``messages`` — canonical post-turn-flush body store
+      * sidekick.db ``msg_links`` unlinked entries — envelope-time
+        writes that haven't been flushed to state.db yet
+
+    The union is essential because hermes flushes state.db only at
+    end-of-turn. A short "Checking." reply lands in msg_links seconds
+    before its state.db twin; counting state.db only made the unread
+    count return 0 for that brief window → PWA badge.ts:109's
+    auto-markAllRead nuked the activity row as "stale" (Jonathan field
+    bug 2026-05-29: agent's quick-ack reply got no badge while the
+    full reply minutes later badged correctly).
+
+    For sticky ``marked_unread=1``, returns at least 1 regardless of
     the timestamp comparison.
     """
-    if not state_db_path or not state_db_path.exists():
-        return {"chats": [], "total": 0}
-
     pointer = _read_state_unread_state(db)
 
-    uri = f"file:{state_db_path}?mode=ro"
-    with contextlib.closing(sqlite3.connect(uri, uri=True, timeout=2.0)) as conn:
-        # All chats for this source, with their assistant message
-        # counts and the most-recent message timestamp. We compute
-        # the per-chat count using a per-chat WHERE on timestamp,
-        # bound by last_read_at — done in Python over the rolled-up
-        # rows because each chat may have a different pointer.
-        chats_sql = "SELECT DISTINCT user_id FROM sessions WHERE source = ? AND user_id IS NOT NULL"
-        chat_ids = [row[0] for row in conn.execute(chats_sql, (source,))]
+    # Chat set: union of state.db user_ids (existing behavior) + msg_links
+    # chat_ids (catches envelope-only chats not yet in state.db).
+    chat_ids_set: set = set()
+    state_reachable = state_db_path is not None and state_db_path.exists()
+    if state_reachable:
+        try:
+            uri = f"file:{state_db_path}?mode=ro"
+            with contextlib.closing(sqlite3.connect(uri, uri=True, timeout=2.0)) as conn:
+                rows = conn.execute(
+                    "SELECT DISTINCT user_id FROM sessions WHERE source = ? AND user_id IS NOT NULL",
+                    (source,),
+                ).fetchall()
+                for r in rows:
+                    chat_ids_set.add(r[0])
+        except Exception:
+            state_reachable = False
+    try:
+        msg_chat_rows = db.fetchall(
+            "SELECT DISTINCT chat_id FROM msg_links WHERE chat_id IS NOT NULL",
+        )
+        for r in msg_chat_rows:
+            cid = r["chat_id"]
+            if cid:
+                chat_ids_set.add(cid)
+    except Exception:
+        pass
 
-        out: List[Dict] = []
-        total = 0
-        for chat_id in chat_ids:
+    out: List[Dict] = []
+    total = 0
+    # Open state.db once (read-only) so per-chat queries don't re-connect.
+    state_conn = None
+    if state_reachable:
+        try:
+            uri = f"file:{state_db_path}?mode=ro"
+            state_conn = sqlite3.connect(uri, uri=True, timeout=2.0)
+        except Exception:
+            state_conn = None
+    try:
+        for chat_id in chat_ids_set:
             # unread_state is keyed by the PWA-facing prefixed form
             # (`{source}:{chat_id}`) since /v1/unread/seen POSTs use
             # whatever chat_id the PWA sends — matches the sidebar
@@ -76,8 +109,8 @@ def compute_unread(
             prefixed = f"{source}:{chat_id}"
             last_read_at, marked = pointer.get(prefixed) or pointer.get(chat_id) or (None, False)
             if marked:
-                # Sticky-unread: count at least 1. Don't bother
-                # walking the messages — sticky overrides regardless.
+                # Sticky-unread: count at least 1. Don't bother walking
+                # the messages — sticky overrides regardless.
                 out.append({
                     "chat_id": f"{source}:{chat_id}",
                     "unread_count": 1,
@@ -87,44 +120,72 @@ def compute_unread(
                 total += 1
                 continue
 
-            # Recursive CTE: same as _items_by_user_id so compaction
-            # children are folded under the root user_id. Count only
-            # user-facing assistant replies/notifications. Hermes stores
-            # tool-call starts as role='assistant' rows with tool_calls
-            # JSON; those are activity, not unread replies for the
-            # sidebar/app badge count.
-            count_sql = """
-                WITH RECURSIVE session_root(id, root_system_prompt) AS (
-                  SELECT id, system_prompt FROM sessions
-                   WHERE user_id = ? AND source = ?
-                  UNION ALL
-                  SELECT s.id, sr.root_system_prompt
-                    FROM sessions s
-                    JOIN session_root sr ON s.parent_session_id = sr.id
-                   WHERE s.user_id IS NULL
-                     AND LENGTH(COALESCE(sr.root_system_prompt, '')) >= 200
-                     AND SUBSTR(COALESCE(s.system_prompt, ''), 1, 200)
-                         = SUBSTR(sr.root_system_prompt, 1, 200)
-                )
-                SELECT COUNT(*) FROM messages m
-                 JOIN session_root sr ON m.session_id = sr.id
-                 WHERE m.role = 'assistant'
-                   AND (m.tool_calls IS NULL OR m.tool_calls = '' OR m.tool_calls = '[]')
-                   AND m.timestamp > ?
-            """
             threshold = last_read_at if last_read_at is not None else 0
-            row = conn.execute(count_sql, (chat_id, source, threshold)).fetchone()
-            count = int(row[0]) if row else 0
+
+            # state.db count — flushed (post-turn) assistant rows.
+            # Recursive CTE folds compaction-rotated child sessions.
+            state_count = 0
+            if state_conn is not None:
+                try:
+                    state_count_sql = """
+                        WITH RECURSIVE session_root(id, root_system_prompt) AS (
+                          SELECT id, system_prompt FROM sessions
+                           WHERE user_id = ? AND source = ?
+                          UNION ALL
+                          SELECT s.id, sr.root_system_prompt
+                            FROM sessions s
+                            JOIN session_root sr ON s.parent_session_id = sr.id
+                           WHERE s.user_id IS NULL
+                             AND LENGTH(COALESCE(sr.root_system_prompt, '')) >= 200
+                             AND SUBSTR(COALESCE(s.system_prompt, ''), 1, 200)
+                                 = SUBSTR(sr.root_system_prompt, 1, 200)
+                        )
+                        SELECT COUNT(*) FROM messages m
+                         JOIN session_root sr ON m.session_id = sr.id
+                         WHERE m.role = 'assistant'
+                           AND (m.tool_calls IS NULL OR m.tool_calls = '' OR m.tool_calls = '[]')
+                           AND m.timestamp > ?
+                    """
+                    row = state_conn.execute(state_count_sql, (chat_id, source, threshold)).fetchone()
+                    state_count = int(row[0]) if row else 0
+                except Exception:
+                    state_count = 0
+
+            # Envelope-only count — msg_links rows that haven't been
+            # linked to a state.db twin yet. Counted SEPARATELY from
+            # state_count so linked rows (agent_row_id non-null) don't
+            # get double-counted — linked rows are already in state_count
+            # via the join above.
+            envelope_count = 0
+            try:
+                row = db.fetchone(
+                    "SELECT COUNT(*) AS n FROM msg_links "
+                    "WHERE chat_id = ? "
+                    "  AND role = 'assistant' "
+                    "  AND status = 'final' "
+                    "  AND agent_row_id IS NULL "
+                    "  AND (tool_calls IS NULL OR tool_calls = '' OR tool_calls = '[]') "
+                    "  AND created_at > ?",
+                    (chat_id, threshold),
+                )
+                envelope_count = int(row["n"]) if row else 0
+            except Exception:
+                envelope_count = 0
+
+            count = state_count + envelope_count
             if count > 0:
                 out.append({
-                    # Sidebar uses prefixed `{source}:{chat_id}` ids
-                    # (see _format_gateway_id). Match so badge.ts can
-                    # look up by the same key the drawer rows carry.
                     "chat_id": f"{source}:{chat_id}",
                     "unread_count": count,
                     "marked_unread": False,
                     "last_read_at": last_read_at,
                 })
                 total += count
+    finally:
+        if state_conn is not None:
+            try:
+                state_conn.close()
+            except Exception:
+                pass
 
     return {"chats": out, "total": total}
