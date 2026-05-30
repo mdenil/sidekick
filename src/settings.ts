@@ -178,7 +178,7 @@ function startModelPoll() {
 // fall through to DEFAULTS on parse failure). Schema version bumps do
 // NOT reset — we read the old shape and migrate in-place.
 //
-// ## Server-side (sidekick.config.yaml) — everything else
+// ## Synced (sidekick.db `user_settings`) — everything else
 //
 // Settings whose right value is the user's account-level preference,
 // independent of which device they're on:
@@ -189,11 +189,15 @@ function startModelPoll() {
 //   * **Workflow defaults**: model selection, attach-image vision
 //     gate, realtime call mode.
 //
-// Persists in `~/.hermes/config.yaml` under `frontend.<category>.<key>`.
-// Served by GET /api/sidekick/config, written by POST
-// /api/sidekick/config/<key>. **Reset triggers**: only an explicit
-// edit to the yaml (CLI or another PWA tab via cross-tab broadcast).
-// Survives all device-level state clears.
+// Persists in `~/.hermes/sidekick.db` (table `user_settings`, one row
+// per key). Read via GET /api/sidekick/prefs, written via PUT
+// /api/sidekick/prefs/<key>. YAML (`sidekick.config.yaml`, GET
+// /api/sidekick/config) survives ONLY as a one-time read-only seed: a
+// synced key absent from the DB is backfilled from the YAML value on
+// first load, then the DB wins. **Reset triggers**: an explicit DB edit
+// (CLI or another device). Survives all device-level state clears, syncs
+// across devices, and rides the sidekick.db snapshot for backup +
+// host migration.
 //
 // ## The DEFAULTS object below
 //
@@ -313,6 +317,13 @@ const PER_DEVICE_KEYS = new Set<string>([
   'contentSize',
 ]);
 
+/** The synced settings — every DEFAULTS key that isn't per-device. These
+ *  live in sidekick.db (`user_settings`) and sync across devices. The set
+ *  matches proxy/sidekick/frontend-config.ts FRONTEND_SETTINGS. */
+function syncedKeys(): string[] {
+  return Object.keys(DEFAULTS).filter(k => !PER_DEVICE_KEYS.has(k));
+}
+
 let current = { ...DEFAULTS };
 
 // Barge sensitivity slider ↔ Silero positiveSpeechThreshold mapping.
@@ -412,10 +423,11 @@ function migrateMicCallToButtonSplit(snapshot: Record<string, any>): void {
   delete (current as any).hotkeyAutoSend;
 }
 
-/** Pull the current snapshot from the server (yaml-backed values)
- *  and merge with localStorage (per-device values). Synchronous
- *  fallback if the fetch fails. Idempotent — call again on Refresh
- *  or after the user closes the panel. */
+/** Pull the current snapshot from the server (sidekick.db-backed
+ *  synced values, seeded once from YAML) and merge with localStorage
+ *  (per-device values). Synchronous fallback if the fetch fails.
+ *  Idempotent — call again on Refresh or after the user closes the
+ *  panel. */
 export async function load() {
   // Per-device first — these are guaranteed available even if the
   // proxy is unreachable.
@@ -438,25 +450,59 @@ export async function load() {
     (current as any).listenSttEngine = 'local';
     save();
   }
-  // Yaml-backed: fetch flat snapshot from the proxy. The proxy
-  // returns built-in defaults for any key the yaml doesn't define
-  // yet, so partial yamls work.
+  // Synced settings: sidekick.db `user_settings` (GET /api/sidekick/prefs)
+  // is the source of truth. We apply every synced key the DB carries.
+  let dbOk = false;
+  const dbSettings: Record<string, any> = {};
   try {
-    const r = await fetch('/api/sidekick/config', { cache: 'no-store' });
+    const r = await fetch('/api/sidekick/prefs', { cache: 'no-store' });
     if (r.ok) {
+      dbOk = true;
       const j = await r.json() as { settings?: Record<string, any> };
-      if (j?.settings) {
-        for (const [k, v] of Object.entries(j.settings)) {
-          if (PER_DEVICE_KEYS.has(k)) continue;
-          (current as any)[k] = v;
+      const s = j?.settings || {};
+      for (const k of syncedKeys()) {
+        if (Object.prototype.hasOwnProperty.call(s, k)) {
+          dbSettings[k] = s[k];
+          (current as any)[k] = s[k];
         }
-        migrateLegacyHandsfreeKeys(j.settings);
-        migrateMicCallToButtonSplit(j.settings);
       }
     }
   } catch {
-    // Offline / proxy down — `current` keeps the DEFAULTS or last
-    // server snapshot. The Refresh button will retry.
+    // DB unreachable — fall through to the YAML read below so the UI
+    // still renders, but DON'T seed: a transient /prefs failure must
+    // not clobber DB-resident settings with stale YAML defaults.
+  }
+
+  // YAML (sidekick.config.yaml, GET /api/sidekick/config) survives ONLY
+  // as a one-time read-only seed. Any synced key absent from the DB is
+  // backfilled from the YAML value, then the DB wins forever after. Once
+  // every synced key has a DB row, YAML is never read again.
+  const missing = syncedKeys().filter(
+    k => !Object.prototype.hasOwnProperty.call(dbSettings, k),
+  );
+  if (missing.length) {
+    try {
+      const r = await fetch('/api/sidekick/config', { cache: 'no-store' });
+      if (r.ok) {
+        const j = await r.json() as { settings?: Record<string, any> };
+        const cfg = j?.settings || {};
+        for (const k of missing) {
+          if (!Object.prototype.hasOwnProperty.call(cfg, k)) continue;
+          (current as any)[k] = cfg[k];
+          // Backfill the DB once — but only when we KNOW the DB genuinely
+          // lacked the key (successful /prefs read). On a failed DB read
+          // we apply the YAML value to the UI but leave the DB untouched.
+          if (dbOk) putServerSetting(k, cfg[k]);
+        }
+        // Legacy-key migrations read the YAML snapshot directly (those
+        // keys never move into the DB). Idempotent — no-ops once migrated.
+        migrateLegacyHandsfreeKeys(cfg);
+        migrateMicCallToButtonSplit(cfg);
+      }
+    } catch {
+      // Offline / proxy down — `current` keeps DEFAULTS or DB values.
+      // The Refresh button will retry.
+    }
   }
   return current;
 }
@@ -480,8 +526,8 @@ if (typeof window !== 'undefined') {
   });
 }
 
-/** Persist per-device values to localStorage. Yaml-backed values
- *  ride through set() → POST and don't touch localStorage. */
+/** Persist per-device values to localStorage. Synced values
+ *  ride through set() → PUT /api/sidekick/prefs and don't touch localStorage. */
 export function save() {
   try {
     const slice: Record<string, any> = {};
@@ -497,9 +543,27 @@ export function save() {
 /** @returns {Readonly<typeof DEFAULTS>} */
 export function get() { return current; }
 
+/** Persist one synced setting to sidekick.db via the prefs endpoint
+ *  (one row per key in the `user_settings` table). Fire-and-forget; on
+ *  failure the local cache keeps the user's value and the next load()
+ *  resyncs from the DB. */
+function putServerSetting(key: string, value: any): void {
+  void fetch(`/api/sidekick/prefs/${encodeURIComponent(key)}`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ value }),
+  }).then((r) => {
+    if (!r.ok) {
+      console.warn(`[settings] PUT /api/sidekick/prefs/${key} failed: ${r.status}`);
+    }
+  }).catch((e) => {
+    console.warn(`[settings] PUT /api/sidekick/prefs/${key} threw:`, e);
+  });
+}
+
 /** Update one setting. Per-device keys land in localStorage; all
- *  others POST to the proxy (which writes the yaml). The local
- *  cache updates synchronously regardless so call sites that read
+ *  others write to sidekick.db (PUT /api/sidekick/prefs/<key>). The
+ *  local cache updates synchronously regardless so call sites that read
  *  settings.get() right after set() see the new value. */
 export function set(key: string, value: any) {
   (current as any)[key] = value;
@@ -507,19 +571,7 @@ export function set(key: string, value: any) {
     save();
     return;
   }
-  // Fire-and-forget POST. On failure, leave the local cache as-is
-  // (user sees their value); next reload() resyncs from yaml.
-  void fetch(`/api/sidekick/config/${encodeURIComponent(key)}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ value }),
-  }).then((r) => {
-    if (!r.ok) {
-      console.warn(`[settings] POST /api/sidekick/config/${key} failed: ${r.status}`);
-    }
-  }).catch((e) => {
-    console.warn(`[settings] POST /api/sidekick/config/${key} threw:`, e);
-  });
+  putServerSetting(key, value);
 }
 
 /** Apply visual settings that need immediate DOM effects. */
@@ -669,11 +721,12 @@ export function hydrate(handlers: {
     if (handlers.onStreamingEngineChange) handlers.onStreamingEngineChange();
   };
   if (setAutoFallback) setAutoFallback.onchange = () => { set('autoFallback', setAutoFallback.checked); };
-  // Keyterms: chip-based input, persisted PER USER in IndexedDB
-  // (src/keyterms.ts). On first boot the list seeds from
-  // /api/keyterms (default_stt_keyterms.txt on the server); after
-  // that, all reads/writes are local. Each chip is one keyterm —
-  // Enter or comma commits, × on a chip removes.
+  // Keyterms: chip-based input, persisted PER USER server-side
+  // (sidekick.db user_settings, via src/keyterms.ts) so the list syncs
+  // across devices; IDB is a write-through offline mirror. On first boot
+  // the list seeds from /api/keyterms (default_stt_keyterms.txt on the
+  // server). Each chip is one keyterm — Enter or comma commits, × on a
+  // chip removes.
   if (setSttKeyterms && keytermsChips) {
     let terms: string[] = [];
     const renderChips = () => {

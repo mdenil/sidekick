@@ -197,6 +197,18 @@ CREATE TABLE IF NOT EXISTS vapid_keys (
   subject      TEXT NOT NULL,
   created_at   REAL NOT NULL
 );
+
+-- Synced user settings (cross-device). Distinct from push_prefs (which
+-- is the push dispatcher's own key/value store): this is the PWA's
+-- user-facing settings surface — STT key-terms today, the YAML-backed
+-- settings (theme, agentActivity, voice, …) as the migration proceeds.
+-- One row per setting; `value` is a JSON blob so a key can hold a
+-- scalar, an object, or a list (key-terms = a JSON array under one key).
+CREATE TABLE IF NOT EXISTS user_settings (
+  key         TEXT PRIMARY KEY,
+  value       TEXT NOT NULL,
+  updated_at  REAL NOT NULL
+);
 """
 
 

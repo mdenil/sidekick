@@ -121,6 +121,17 @@ async def handle_prefs(ctx, request: web.Request) -> web.Response:
     return _json({"ok": True, "key": key, "value": state.get_pref(ctx.db, key)})
 
 
+async def handle_user_settings(ctx, request: web.Request) -> web.Response:
+    if request.method == "GET":
+        return _json({"settings": state.list_user_settings(ctx.db)})
+    body = await _read_json(request)
+    key = body.get("key")
+    if not key:
+        return _json({"error": "invalid_request", "message": "key required"}, status=400)
+    state.set_user_setting(ctx.db, key, body.get("value"))
+    return _json({"ok": True, "key": key, "value": state.get_user_setting(ctx.db, key)})
+
+
 async def handle_visibility(ctx, request: web.Request) -> web.Response:
     body = await _read_json(request)
     raw_chat_id = body.get("chat_id") or body.get("chatId")
@@ -342,6 +353,9 @@ def register_routes(app: web.Application, ctx) -> None:
     app.router.add_post("/v1/push/prefs", lambda r: handle_prefs(ctx, r))
     app.router.add_post("/v1/push/visibility", lambda r: handle_visibility(ctx, r))
     app.router.add_post("/v1/push/test", lambda r: handle_test(ctx, r))
+
+    app.router.add_get("/v1/user-settings", lambda r: handle_user_settings(ctx, r))
+    app.router.add_post("/v1/user-settings", lambda r: handle_user_settings(ctx, r))
 
     app.router.add_get("/v1/unread", lambda r: handle_unread(ctx, r))
     app.router.add_post("/v1/unread/seen", lambda r: handle_unread_seen(ctx, r))

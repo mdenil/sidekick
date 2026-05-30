@@ -1136,6 +1136,22 @@ const server = createHttpServer(async (req, res) => {
       if (activityDelete) {
         return delegate.delegateActivityDelete(req, res, decodeURIComponent(activityDelete[1]));
       }
+      // Synced user settings (sidekick.db user_settings): STT key-terms
+      // today, more as the YAML→DB migration proceeds. Distinct from
+      // /api/sidekick/config (YAML) and /api/sidekick/settings (agent).
+      if (req.method === 'GET' && /^\/api\/sidekick\/prefs(?:\?.*)?$/.test(req.url)) {
+        return delegate.delegateUserSettingsList(req, res);
+      }
+      const prefGet = req.method === 'GET'
+        && req.url.match(/^\/api\/sidekick\/prefs\/([A-Za-z0-9_]+)(?:\?.*)?$/);
+      if (prefGet) {
+        return delegate.delegateUserSettingGet(req, res, prefGet[1]);
+      }
+      const prefSet = req.method === 'PUT'
+        && req.url.match(/^\/api\/sidekick\/prefs\/([A-Za-z0-9_]+)(?:\?.*)?$/);
+      if (prefSet) {
+        return delegate.delegateUserSettingSet(req, res, prefSet[1]);
+      }
     }
     const sidekickSettingsUpdate = req.method === 'POST'
       && req.url.match(/^\/api\/sidekick\/settings\/([^/?]+)(?:\?.*)?$/);
