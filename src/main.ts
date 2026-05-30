@@ -4631,7 +4631,11 @@ function handleReplyFinal({ replyId, text, content = [], conversation, messageId
       // safety timeout.
       if (settings.get().tts) {
         listenReplyTtsOwned = true;
-        void playReplyTts(finalText, settings.get().voice, replyId).catch(() => {
+        // stream:true → progressive playback off GET /tts (first audio at
+        // TTFB ~0.3s) rather than buffering the full mp3. This is the
+        // latency-critical autoplay; per-bubble replay keeps the cached
+        // blob path.
+        void playReplyTts(finalText, settings.get().voice, replyId, { stream: true }).catch(() => {
           listenReplyTtsOwned = false;
           try { turnbased.notifyReplyPlayback(false); } catch {}
         });
