@@ -2903,6 +2903,14 @@ async function boot() {
     if (!listenActive) return;
     listenActive = false;
     turnbased.stop();
+    // Cancel any reply TTS this Listen session owns — the user is
+    // leaving the loop, so a reply that's mid-fetch or mid-playback
+    // shouldn't keep talking after the mic is gone. turnbased.stop()
+    // tears down the state machine but doesn't touch the text-TTS
+    // pipeline; do it here. Clearing the owned flag first prevents the
+    // resulting 'stopped' event from re-driving turnbased (now idle).
+    listenReplyTtsOwned = false;
+    cancelReplyTts('listen-exit');
     // Clear ALL voice-state classes — .active is added synchronously
     // on pointerdown (line ~2235) for immediate red-circle feedback,
     // but Listen's path doesn't go through the call/dictate cleanup
