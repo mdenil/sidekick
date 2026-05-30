@@ -206,7 +206,12 @@ export async function resetServerSettings(page, overrides = {}) {
   const results = await Promise.all(
     Object.entries(target).map(async ([key, value]) => {
       try {
-        const r = await fetch(`http://127.0.0.1:3001/api/sidekick/config/${key}`, {
+        // Target the SAME origin the page-under-test loads from
+        // (DEFAULT_URL honors SMOKE_URL). Hardcoding :3001 meant a
+        // worktree run on an alt port wrote settings to the wrong server
+        // while the page read config from its own — e.g. streamingEngine
+        // stayed 'server' and listen-local-engine spuriously failed.
+        const r = await fetch(`${DEFAULT_URL}/api/sidekick/config/${key}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ value }),

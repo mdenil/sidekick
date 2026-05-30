@@ -136,10 +136,13 @@ export default async function run({ page, log }) {
     (aRestored.firstVisible.topOffset ?? 0) - (aMid.firstVisible.topOffset ?? 0));
   assert(offsetDrift <= 50,
     `chat A anchor offset drifted ${offsetDrift}px after new-chat round-trip`);
-  // Legacy scrollTop check kept loose (~300) for diagnostic logging
-  // when the message-identity check fires.
+  // Raw scrollTop is NOT the source of truth here: restore is anchored to
+  // message identity, and above-viewport rows legitimately recompose to
+  // different cumulative heights between save and restore (height-cache
+  // divergence). The anchor key + ≤50px offset checks above are the
+  // authoritative correctness guarantee — they verify the user sees the
+  // SAME bubble at the SAME screen position. scrollTop drift is logged for
+  // diagnostics only; a hard bound here would fight the anchor-based design.
   const drift = Math.abs(aRestored.scrollTop - aMid.scrollTop);
-  assert(drift <= 500,
-    `chat A scrollTop drifted unreasonably after new-chat round-trip. ` +
-    `saved=${aMid.scrollTop} restored=${aRestored.scrollTop} drift=${drift} maxTop=${aRestored.maxTop}`);
+  log(`scrollTop drift (diagnostic, not asserted): saved=${aMid.scrollTop} restored=${aRestored.scrollTop} drift=${drift} maxTop=${aRestored.maxTop}`);
 }

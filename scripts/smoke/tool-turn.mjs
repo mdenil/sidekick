@@ -11,7 +11,18 @@ import { waitForReady, clickNewChat, send, deleteChat, captureNextChatId, SEL, a
 
 export const NAME = 'tool-turn';
 export const DESCRIPTION = 'Tool-using prompt → activity row + finalized reply';
-export const STATUS = 'implemented';
+// install-only, alongside the other real-tool-event smokes
+// (tool-turn-web-search, real-live-tool-events, scroll-real-tool-chats-diag,
+// background-session-isolation). The outcome is live-model nondeterministic:
+// the model may answer via web_search (no approval) OR via a shell command
+// (e.g. `curl … | python`) that trips the approval gate and blocks the turn
+// on a human decision an unattended dev-loop never gives. Plus the
+// finalized-reply assertion races the short "On it." preamble bubble. The
+// deterministic real-backend coverage in the default suite is text-turn
+// (greeting round-trip) + pdf-upload-roundtrip (vision path); this runs at
+// install / weekly cadence where approval + Tavily can be observed.
+// Trigger explicitly: `npm run smoke -- tool-turn` or `--include-install`.
+export const STATUS = 'install-only';
 // Tool turn requires a real model to decide to call a tool. Mock can't
 // simulate Phase 3's tool_call/tool_result envelopes faithfully (that's
 // the thing we're testing).
@@ -38,11 +49,17 @@ export default async function run({ page, log }) {
     // Eventually a finalized agent bubble lands (the reply post-tool).
     // Count baseline first since the home-channel nudge from earlier
     // chats may already be present.
+    //
+    // 90s, not 60s: a real multi-tool turn against live hermes finalizes
+    // around 55-60s on its own, but bumps the deadline when it runs after
+    // another heavy real-backend smoke (resource contention) — observed
+    // flake 2026-05-29, finalized at 57.5s alone vs timeout in the
+    // combined suite. Matches the tool-turn-web-search cousin's 90s gate.
     const baselineCount = await page.locator(SEL.agentFinal).count();
     await page.waitForFunction(
       ({ sel, baseline }) => document.querySelectorAll(sel).length > baseline,
       { sel: SEL.agentFinal, baseline: baselineCount },
-      { timeout: 60_000, polling: 250 },
+      { timeout: 90_000, polling: 250 },
     );
     const tReply = Date.now();
     log(`reply finalized in ${tReply - t0} ms`);

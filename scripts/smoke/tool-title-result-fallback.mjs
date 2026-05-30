@@ -38,7 +38,13 @@ export default async function run({ page, log }) {
   await waitForReady(page);
   await openSidebar(page);
   await clickRow(page, CHAT_ID);
-  await page.waitForSelector('.tool-row-summary', { timeout: 4_000 });
+  // Completed tool lists default COLLAPSED (2026-05-27 nit): the tool
+  // rows live inside .activity-row-full (display:none until expanded), so
+  // the inner .tool-row-summary is hidden on load. Expand the activity row
+  // first — one click on its summary toggles it open.
+  await page.waitForSelector('#transcript .activity-row .activity-row-summary', { timeout: 5_000 });
+  await page.click('#transcript .activity-row .activity-row-summary');
+  await page.waitForSelector('.tool-row-summary', { state: 'visible', timeout: 4_000 });
   const title = await page.evaluate(() => document.querySelector('.tool-row-summary')?.textContent || '');
   assert(title.includes('gog'), `expected fallback tool name gog, got ${JSON.stringify(title)}`);
   assert(title.includes('Google Workspace'), `expected fallback description, got ${JSON.stringify(title)}`);
