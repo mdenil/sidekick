@@ -185,6 +185,40 @@ def list_prefs(db) -> Dict[str, Any]:
     return out
 
 
+# ── User settings (synced, cross-device) ──────────────────────────────
+# Distinct from push_prefs above: this is the PWA's user-facing settings
+# surface (STT key-terms today; theme/voice/etc. as the migration lands).
+# `value` is a JSON blob, so a key can hold a scalar, object, or list.
+
+def get_user_setting(db, key: str, fallback=None):
+    row = db.fetchone("SELECT value FROM user_settings WHERE key = ?", (key,))
+    if not row:
+        return fallback
+    try:
+        return json.loads(row["value"])
+    except Exception:
+        return fallback
+
+
+def set_user_setting(db, key: str, value) -> None:
+    db.exec(
+        "INSERT INTO user_settings (key, value, updated_at) VALUES (?, ?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value, "
+        "updated_at = excluded.updated_at",
+        (key, json.dumps(value), time.time()),
+    )
+
+
+def list_user_settings(db) -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
+    for row in db.fetchall("SELECT key, value FROM user_settings"):
+        try:
+            out[row["key"]] = json.loads(row["value"])
+        except Exception:
+            out[row["key"]] = None
+    return out
+
+
 # ── Pins ──────────────────────────────────────────────────────────────
 
 def list_pins(db, chat_id: Optional[str] = None) -> List[Dict[str, Any]]:

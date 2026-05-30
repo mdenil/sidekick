@@ -217,7 +217,7 @@ async function main() {
   ];
   const settingsSnapshot = {};
   try {
-    const r = await fetch('http://127.0.0.1:3001/api/sidekick/config');
+    const r = await fetch(`${DEFAULT_URL}/api/sidekick/config`);
     if (r.ok) {
       const j = await r.json();
       const live = j?.settings || {};
@@ -255,7 +255,7 @@ async function main() {
     // Best-effort — log+continue on individual failures.
     for (const [key, value] of Object.entries(settingsSnapshot)) {
       try {
-        await fetch(`http://127.0.0.1:3001/api/sidekick/config/${key}`, {
+        await fetch(`${DEFAULT_URL}/api/sidekick/config/${key}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ value }),

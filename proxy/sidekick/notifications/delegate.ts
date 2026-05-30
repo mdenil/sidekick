@@ -333,3 +333,38 @@ export async function delegateActivityDelete(
     sendJson(res, r.status, r.body ?? {});
   } catch (e: any) { sendUpstreamUnavailable(res, e); }
 }
+
+// ── User settings (synced cross-device prefs: STT key-terms, …) ───────
+// Plugin stores one JSON value per key in sidekick.db's user_settings.
+// GET returns the whole map; a single-key read/write is one row.
+
+export async function delegateUserSettingsList(
+  _req: http.IncomingMessage, res: http.ServerResponse,
+) {
+  try {
+    const r = await forwardRaw('/v1/user-settings', 'GET', null);
+    sendJson(res, r.status, r.body ?? {});
+  } catch (e: any) { sendUpstreamUnavailable(res, e); }
+}
+
+export async function delegateUserSettingGet(
+  _req: http.IncomingMessage, res: http.ServerResponse, key: string,
+) {
+  try {
+    const r = await forwardRaw('/v1/user-settings', 'GET', null);
+    const settings = (r.body && (r.body as any).settings) || {};
+    sendJson(res, r.status, { key, value: settings[key] ?? null });
+  } catch (e: any) { sendUpstreamUnavailable(res, e); }
+}
+
+export async function delegateUserSettingSet(
+  req: http.IncomingMessage, res: http.ServerResponse, key: string,
+) {
+  let body: any;
+  try { body = await readBody(req); }
+  catch (e: any) { return sendJson(res, 400, { error: 'bad_body', detail: e?.message }); }
+  try {
+    const r = await forwardRaw('/v1/user-settings', 'POST', { key, value: body?.value });
+    sendJson(res, r.status, r.body ?? {});
+  } catch (e: any) { sendUpstreamUnavailable(res, e); }
+}

@@ -730,6 +730,55 @@ export async function installMockBackend(page) {
     await route.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"removed":true}' });
   });
 
+  // ── Synced user settings (sidekick.db user_settings) ──
+  //
+  // Real plugin owns the `user_settings` table; the proxy forwards
+  // GET/PUT /api/sidekick/prefs/<key> to /v1/user-settings. Mock keys
+  // a Map by setting name so cross-device sync tests (e.g. STT
+  // key-terms) drive the same server-roundtrip path the PWA uses.
+  // A missing key returns value:null (distinct from an explicit [],
+  // which the key-terms migration relies on).
+  const userSettingsByKey = new Map();
+  await page.route(/.*\/api\/sidekick\/prefs\/[^/]+$/, async (route) => {
+    const method = route.request().method();
+    const url = new URL(route.request().url());
+    const m = url.pathname.match(/\/prefs\/([^/]+)$/);
+    const key = m ? decodeURIComponent(m[1]) : '';
+    if (method === 'GET') {
+      const value = userSettingsByKey.has(key) ? userSettingsByKey.get(key) : null;
+      await route.fulfill({
+        status: 200, contentType: 'application/json',
+        body: JSON.stringify({ key, value }),
+      });
+      return;
+    }
+    if (method === 'PUT') {
+      let body; try { body = JSON.parse(route.request().postData() || '{}'); }
+      catch { body = {}; }
+      userSettingsByKey.set(key, body?.value ?? null);
+      await route.fulfill({
+        status: 200, contentType: 'application/json',
+        body: JSON.stringify({ ok: true, key, value: userSettingsByKey.get(key) }),
+      });
+      return;
+    }
+    return route.fallback();
+  });
+
+  // Bare list: GET /api/sidekick/prefs → {settings:{key:value,…}} for every
+  // key the PWA has written this session. settings.ts load() reads this first
+  // (DB-as-source-of-truth) and only seeds-forward from /config for keys it
+  // doesn't find here. Disjoint from the per-key regex above (no trailing
+  // /<key> segment). The Map is fresh-empty per scenario, so absent a seed
+  // the PWA naturally backfills synced values from the real-server YAML.
+  await page.route(/.*\/api\/sidekick\/prefs(?:\?.*)?$/, async (route) => {
+    if (route.request().method() !== 'GET') return route.fallback();
+    await route.fulfill({
+      status: 200, contentType: 'application/json',
+      body: JSON.stringify({ settings: Object.fromEntries(userSettingsByKey) }),
+    });
+  });
+
   // ── Server-driven Activity state (SSOT after the right-drawer tray) ──
   const activityById = new Map();
   const normalizeActivity = (item) => ({
@@ -909,6 +958,14 @@ export async function installMockBackend(page) {
       });
     },
     getPinState() { return new Map(pinsByKey); },
+    /** Test escape hatch: seed a synced user setting directly in the
+     *  mock's server store (simulates a value saved on another device).
+     *  Use for cross-device sync scenarios like STT key-terms. */
+    seedUserSetting(key, value) { userSettingsByKey.set(key, value); },
+    getUserSetting(key) {
+      return userSettingsByKey.has(key) ? userSettingsByKey.get(key) : null;
+    },
+    getUserSettingsState() { return new Map(userSettingsByKey); },
     seedActivity(item) {
       if (item?.id) activityById.set(item.id, normalizeActivity(item));
     },
