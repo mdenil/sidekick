@@ -112,6 +112,48 @@ let active:
   | { kind: 'local'; utterance: SpeechSynthesisUtterance }
   | null = null;
 
+// When the Listen autoplay streams a reply (stream:true), JS never sees
+// the bytes (the <audio> element owns the request), so the in-memory
+// replyCache stays empty and a later per-bubble replay would re-synthesize.
+// This records the streamed reply's (text, voice, url) so that on 'ended'
+// we can OPPORTUNISTICALLY backfill the blob cache — see
+// backfillStreamToCache(). Cleared on cancel/supersede so a torn-down
+// stream doesn't backfill.
+let pendingStreamBackfill:
+  | { replyId: string | null; text: string; voice: string; url: string }
+  | null = null;
+
+/** Opportunistically populate the in-memory replyCache from a reply we
+ *  just STREAMED (stream:true autoplay), so a later per-bubble replay is
+ *  instant instead of re-synthesizing.
+ *
+ *  The streamed GET response is browser-HTTP-cacheable (Cache-Control on
+ *  GET /tts). We re-`fetch()` the SAME url with `cache: 'only-if-cached'`
+ *  — which returns the cached body WITHOUT touching the network, or fails
+ *  if it isn't cached. So this is strictly opportunistic: a cache hit
+ *  gives us a Blob to memoize for free; a miss (evicted, or the browser
+ *  stashed the media response somewhere a fetch can't reach) just no-ops
+ *  — we NEVER trigger a second Deepgram synthesis. `only-if-cached`
+ *  requires same-origin mode and isn't supported everywhere (Safari may
+ *  throw); the catch swallows that and replay falls back to its usual
+ *  lazy synth-on-tap. Fires on 'ended', when the full response is cached. */
+function backfillStreamToCache(endedReplyId: string | null): void {
+  const pending = pendingStreamBackfill;
+  pendingStreamBackfill = null;
+  if (!pending || pending.replyId !== endedReplyId) return;
+  void fetch(pending.url, { cache: 'only-if-cached', mode: 'same-origin' })
+    .then((r) => {
+      if (!r.ok) return;
+      return r.blob().then((b) => {
+        if (b && b.size > 0) {
+          replyCache.set(pending.text, pending.voice, b);
+          diag(`[reply-tts] backfilled cache from stream (${b.size}b)`);
+        }
+      });
+    })
+    .catch(() => { /* only-if-cached unsupported or miss — best-effort */ });
+}
+
 /** Player-element listeners are attached ONCE for the lifetime of the
  *  page. Each event re-emits as a typed event with the active replyId
  *  baked in, so subscribers (replyPlayer) don't have to chase the
@@ -174,6 +216,9 @@ function ensurePlayerListenersAttached(player: HTMLAudioElement): void {
     }
     emit('ended', { replyId: id });
     setState('idle');
+    // If this was a streamed autoplay, grab the now-cached audio into the
+    // blob cache so per-bubble replay is instant. No-op for the blob path.
+    backfillStreamToCache(id);
   });
   player.addEventListener('timeupdate', () => {
     if (!activeReplyId) return;
@@ -330,6 +375,9 @@ export function cancelReplyTts(reason: string = 'cancel'): void {
   }
   active = null;
   activeReplyId = null;
+  // A cancelled/superseded stream never reaches 'ended' — drop its
+  // pending backfill so it can't fire against a future reply.
+  pendingStreamBackfill = null;
   setState('idle');
   if (id) emit('stopped', { replyId: id, reason });
 }
@@ -397,6 +445,10 @@ export async function playReplyTts(
     active = { kind: 'server', audio: player };
     try {
       const url = `/tts?text=${encodeURIComponent(text)}&model=${encodeURIComponent(voice)}`;
+      // Record for the on-'ended' opportunistic blob-cache backfill so a
+      // later per-bubble replay doesn't re-synthesize. See
+      // backfillStreamToCache().
+      pendingStreamBackfill = { replyId: activeReplyId, text, voice, url };
       // Drop any prior peer-track binding so the URL src takes over.
       player.srcObject = null;
       player.src = url;
