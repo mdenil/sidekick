@@ -43,7 +43,13 @@ const DB_VERSION = 1;
 //        correctly. Without it, load-earlier silently no-ops because
 //        the cache-match optimization skips the server re-render that
 //        used to be the only source of pagination state.
-export const CACHE_SCHEMA_VERSION = 3;
+//   v4 — bumped 2026-05-30. B2 read path (SIDEKICK_ITEMS_READ_FROM_STATE_DB=1,
+//        default-on as of 2026-05-29) uses state.db integer ids; V1 path
+//        used ms-timestamp ids from msg_links.created_at. Any cache written
+//        under V1 is id-space-incompatible with B2: mergeNewestPage finds no
+//        id matches → appends all B2 rows to V1 cache → hybrid transcript →
+//        pickUserDuplicateLosers / userKeys dedup drops message bubbles.
+export const CACHE_SCHEMA_VERSION = 4;
 
 /** True when a stored cache record's shape is current. A missing or
  *  mismatched `schemaVersion` means the record was written by an older
