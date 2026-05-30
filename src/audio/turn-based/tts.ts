@@ -323,6 +323,10 @@ export async function playReplyTts(
   diag(`[reply-tts] enter replyId=${replyId} rawLen=${(rawText || '').length} cleanLen=${text.length} voice=${voice} engine=${engine}`);
   if (!text) {
     diag('[reply-tts] skip (clean text empty)');
+    // Emit a terminal event even though nothing plays, so listeners that
+    // gate on reply playback (Listen's turn-based re-arm) don't wait out
+    // a timeout for a reply that produced no speakable audio.
+    if (replyId) emit('stopped', { replyId, reason: 'empty' });
     return;
   }
 

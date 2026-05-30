@@ -1006,12 +1006,19 @@ async function boot() {
   ttsModule.on('ended',      () => {
     if (listenReplyTtsOwned) {
       try { turnbased.notifyReplyPlayback(false); } catch {}
+      // Fallback for a reply that finalized without ever reaching
+      // 'playing' (e.g. TTS unsupported/errored, or empty after clean):
+      // notifyReplyPlayback(false) no-ops while still 'committing', so
+      // re-arm the Listen loop here instead of waiting out the reply-wait
+      // safety timeout. No-op once playback already moved us to cooldown.
+      try { turnbased.notifyReplyFinalized(); } catch {}
       listenReplyTtsOwned = false;
     }
   });
   ttsModule.on('stopped',    () => {
     if (listenReplyTtsOwned) {
       try { turnbased.notifyReplyPlayback(false); } catch {}
+      try { turnbased.notifyReplyFinalized(); } catch {}
       listenReplyTtsOwned = false;
     }
   });
@@ -4593,24 +4600,36 @@ function handleReplyFinal({ replyId, text, content = [], conversation, messageId
   if (finalText) {
     if (!isReplay) playFeedback('receive');
 
-    // Speak-replies (CALL-ONLY): turnbased-tts when in Listen and not
-    // in a WebRTC call (where the peer track owns audio). Outside a
-    // call, the user reads replies; per-bubble play handles on-demand
-    // replay.
+    // Speak-replies (CALL-ONLY): turnbased-tts when in Listen, not in a
+    // WebRTC call (where the peer track owns audio), and Speak-replies
+    // (settings.tts) is on. Outside a call, the user reads replies;
+    // per-bubble play handles on-demand replay.
     const inListen = turnbased.getState() !== 'idle';
     const webrtcOpen = webrtcControls.isOpen();
     const route = isReplay ? 'no-audio (replay)'
       : !inListen ? 'no-audio (call idle)'
       : webrtcOpen ? 'webrtc-peer'
-      : 'turnbased-tts';
+      : settings.get().tts ? 'turnbased-tts'
+      : 'turnbased-silent (speak-replies off)';
     diag(`[reply-route] ${route} replyId=${replyId} len=${finalText.length} turnbased=${turnbased.getState()} webrtcOpen=${webrtcOpen} isReplay=${isReplay}`);
     if (!isReplay && inListen && !webrtcOpen && shouldAutoPlayForListen(conversation)) {
       consumeListenReply(conversation as string);
-      listenReplyTtsOwned = true;
-      void playReplyTts(finalText, settings.get().voice, replyId).catch(() => {
-        listenReplyTtsOwned = false;
-        try { turnbased.notifyReplyPlayback(false); } catch {}
-      });
+      // Speak-replies toggle (settings.tts) is the on/off control for the
+      // turn-based path, mirroring its talk/stream role on the realtime
+      // path. ON → speak the reply; the tts events drive Listen back to
+      // 'armed' once playback ends. OFF → reply stays text-only, but the
+      // Listen loop still needs to advance: tell turnbased the reply
+      // finalized so it re-arms now instead of waiting out its reply-wait
+      // safety timeout.
+      if (settings.get().tts) {
+        listenReplyTtsOwned = true;
+        void playReplyTts(finalText, settings.get().voice, replyId).catch(() => {
+          listenReplyTtsOwned = false;
+          try { turnbased.notifyReplyPlayback(false); } catch {}
+        });
+      } else {
+        try { turnbased.notifyReplyFinalized(); } catch {}
+      }
     }
 
     if (bubble) {
