@@ -16,8 +16,8 @@ import {
   SPEAKER_BARGE_THRESHOLD_FLOOR,
 } from '../src/audio/shared/vadRouting.ts';
 import {
-  BridgeVadSource,
   ClientSideVadSource,
+  FallbackVadSource,
 } from '../src/audio/shared/vadSource.ts';
 
 const IOS_UA =
@@ -198,21 +198,21 @@ describe('vadRouting', () => {
       assert.ok(src instanceof ClientSideVadSource, 'expected ClientSideVadSource');
     });
 
-    it('returns BridgeVadSource for "bridge"', () => {
+    it('returns FallbackVadSource for "bridge" (bridge-preferred, client fallback)', () => {
       const src = makeVadSource('bridge');
-      assert.ok(src instanceof BridgeVadSource, 'expected BridgeVadSource');
+      assert.ok(src instanceof FallbackVadSource, 'expected FallbackVadSource');
     });
 
     it('uses chooseVadStrategy() when no arg passed (iOS → bridge, post-2026-05-09)', () => {
       setEnv(IOS_UA, '');
       const src = makeVadSource();
-      assert.ok(src instanceof BridgeVadSource);
+      assert.ok(src instanceof FallbackVadSource);
     });
 
     it('uses chooseVadStrategy() when no arg passed (Mac → bridge)', () => {
       setEnv(MAC_UA, '');
       const src = makeVadSource();
-      assert.ok(src instanceof BridgeVadSource);
+      assert.ok(src instanceof FallbackVadSource);
     });
   });
 

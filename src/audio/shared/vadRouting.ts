@@ -21,7 +21,7 @@
  */
 
 import { detectDeviceClass } from '../../voiceTuning.ts';
-import { BridgeVadSource, ClientSideVadSource, type VadSource } from './vadSource.ts';
+import { ClientSideVadSource, FallbackVadSource, type VadSource } from './vadSource.ts';
 
 /** Floor applied to the user's barge threshold on the built-in
  *  speaker route. CURRENTLY DISABLED (=0) — full slider range needs
@@ -100,10 +100,16 @@ export function chooseVadStrategy(): VadStrategy {
 }
 
 /** Construct a VadSource for the active strategy. Optionally pass an
- *  explicit strategy (used by tests + future per-call overrides). */
+ *  explicit strategy (used by tests + future per-call overrides).
+ *
+ *  'bridge' returns a FallbackVadSource: it prefers bridge VAD but falls
+ *  back to client-side Silero when the bridge reports no server-side VAD
+ *  (fresh install with no torch). 'client' forces pure client-side. The
+ *  fallback is harmless for a provisioned bridge — it stays on bridge once
+ *  the capability handshake confirms availability. */
 export function makeVadSource(strategy?: VadStrategy): VadSource {
   const s = strategy ?? chooseVadStrategy();
-  return s === 'bridge' ? new BridgeVadSource() : new ClientSideVadSource();
+  return s === 'bridge' ? new FallbackVadSource() : new ClientSideVadSource();
 }
 
 /** Compute the effective barge VAD threshold given the user's setting

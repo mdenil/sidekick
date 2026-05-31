@@ -129,7 +129,24 @@ interface SpeechActiveEvent {
   type: 'speech-active';
   active: boolean;
 }
-type DataChannelEvent = TranscriptEvent | BargeEvent | ListeningEvent | SpeechActiveEvent;
+/**
+ * Capability reply: whether the bridge has server-side VAD live for this
+ * peer (silero-vad/torch loaded, barge_policy attached). Sent in response
+ * to a client {type:'barge-vad-query'}. The client's FallbackVadSource
+ * uses it to decide between bridge VAD and client-side Silero — when the
+ * bridge reports unavailable (e.g. a fresh install with no torch), the
+ * client falls back to client-side detection so barge still fires.
+ */
+interface BargeVadEvent {
+  type: 'barge-vad';
+  available: boolean;
+}
+type DataChannelEvent =
+  | TranscriptEvent
+  | BargeEvent
+  | ListeningEvent
+  | SpeechActiveEvent
+  | BargeVadEvent;
 
 let onDataChannelEvent: ((ev: DataChannelEvent) => void) | null = null;
 
@@ -405,6 +422,23 @@ export function sendBarge(): boolean {
     return true;
   } catch (e: any) {
     diag('[webrtc] barge send failed', e?.message);
+    return false;
+  }
+}
+
+/** Ask the bridge whether server-side VAD is live for this peer. The
+ *  bridge replies with a {type:'barge-vad', available} envelope, consumed
+ *  by FallbackVadSource to choose bridge vs client-side detection.
+ *  Returns true on successful enqueue, false if no channel is open yet —
+ *  the caller retries until the channel opens or a deadline passes. */
+export function queryBargeVad(): boolean {
+  if (!active || !active.dataChannel) return false;
+  if (active.dataChannel.readyState !== 'open') return false;
+  try {
+    active.dataChannel.send(JSON.stringify({ type: 'barge-vad-query' }));
+    return true;
+  } catch (e: any) {
+    diag('[webrtc] barge-vad-query send failed', e?.message);
     return false;
   }
 }

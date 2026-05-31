@@ -22,6 +22,14 @@ outbound transcripts.  Schema:
         frame).  Mirrors the previous bridge-side VAD path; the client
         is now the single source of truth for barge detection.
 
+    {type: 'barge-vad-query'}
+
+        Capability probe from the PWA's FallbackVadSource.  Bridge replies
+        {type: 'barge-vad', available} where available is True iff
+        barge_policy.attach() loaded server-side silero-vad for this peer.
+        When False (fresh install with no torch), the client falls back to
+        client-side Silero so realtime barge still fires.
+
 Signaling.handle_offer wires this listener via attach(peer) right after
 the data channel is opened by the browser.
 """
@@ -116,6 +124,27 @@ def _handle_inbound(peer, raw) -> None:
             stt_bridge.dispatch_to_agent(peer, text, user_message_id=user_message_id),
             name=f"dispatch-listener-{peer.peer_id[:8]}",
         )
+    elif msg_type == "barge-vad-query":
+        # Capability probe — reply whether server-side VAD is live for this
+        # peer. barge_policy.attach() sets peer.extra['barge_policy'] to the
+        # policy when silero-vad/torch loaded, or None when it didn't; the
+        # key is absent entirely in stream mode (no TTS to barge against).
+        # Either non-policy case → available False, and the client falls
+        # back to client-side Silero.
+        available = peer.extra.get("barge_policy") is not None
+        try:
+            stt_bridge._send_data_channel(
+                peer, {"type": "barge-vad", "available": available}
+            )
+            logger.info(
+                "[dispatch-listener] peer %s barge-vad-query -> available=%s",
+                peer.peer_id, available,
+            )
+        except Exception as e:  # pragma: no cover
+            logger.warning(
+                "[dispatch-listener] peer %s barge-vad reply failed: %s",
+                peer.peer_id, e,
+            )
     elif msg_type == "interrupt":
         # Reserved for future barge-in support.
         logger.info("[dispatch-listener] peer %s interrupt (ignored in V1)", peer.peer_id)

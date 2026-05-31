@@ -26,7 +26,7 @@
 
 import * as speechVad from './speechVad/index.ts';
 import * as audioPlatform from './platform.ts';
-import { tapEnvelopes } from '../realtime/realtime.ts';
+import { tapEnvelopes, queryBargeVad } from '../realtime/realtime.ts';
 import { log } from '../../util/log.ts';
 
 export interface VadSourceOpts {
@@ -231,6 +231,133 @@ export class BridgeVadSource implements VadSource {
     this.peakBuf = null;
     this.recentPeak = 0;
   }
+}
+
+/**
+ * Capability-driven source that PREFERS bridge VAD but falls back to
+ * client-side Silero when the bridge has no server-side VAD for this peer.
+ *
+ * WHY: bridge VAD only fires {type:'speech-active'} envelopes when the
+ * audio-bridge has silero-vad/torch installed and barge_policy.attach()
+ * returned a live policy. On a fresh install with no torch (Misha's box,
+ * field bug 2026-05-26) the bridge stays silent, BridgeVadSource never
+ * sees speech, and realtime barge is dead — even though client-side Silero
+ * would have worked (and does, in turn-based mode, which defaults to it).
+ * This source closes that gap without regressing a provisioned bridge.
+ *
+ * HANDSHAKE (deterministic, NOT timer-on-silence): at start() we begin on
+ * the bridge source and ask the bridge {type:'barge-vad-query'}; the bridge
+ * replies {type:'barge-vad', available}. The query is re-sent each poll
+ * tick until the data channel opens (it isn't open yet during call setup).
+ *   - available=true  → stay on bridge (Jonathan's provisioned path is
+ *                       untouched; his being silent never triggers fallback).
+ *   - available=false → swap to a lazily-started ClientSideVadSource.
+ *   - no reply by deadline (old bridge build that ignores the query, or a
+ *                       dead channel) → assume unavailable, swap to client.
+ *
+ * Client-side Silero is only loaded on the fallback path, so the provisioned
+ * bridge case pays nothing for it.
+ */
+export interface FallbackVadOpts {
+  bridge?: VadSource;
+  client?: VadSource;
+  /** Envelope subscriber (injected for tests). Production = tapEnvelopes. */
+  subscribe?: EnvelopeSubscriber;
+  /** Capability probe sender (injected for tests). Production = queryBargeVad. */
+  query?: () => boolean;
+  /** Overall handshake budget before assuming bridge VAD is unavailable. */
+  deadlineMs?: number;
+  /** Poll cadence for (re)sending the query until the channel opens. */
+  pollMs?: number;
+}
+
+export class FallbackVadSource implements VadSource {
+  private bridge: VadSource;
+  private client: VadSource;
+  // Reads route here. Starts as bridge; swaps to client on fallback.
+  private active: VadSource;
+  private subscribe: EnvelopeSubscriber;
+  private query: () => boolean;
+  private deadlineMs: number;
+  private pollMs: number;
+
+  private micStream: MediaStream | null = null;
+  private startOpts: VadSourceOpts | null = null;
+  private unsubscribe: (() => void) | null = null;
+  private timer: ReturnType<typeof setInterval> | null = null;
+  private elapsed = 0;
+  private decided = false;
+
+  constructor(opts?: FallbackVadOpts) {
+    this.bridge = opts?.bridge ?? new BridgeVadSource();
+    this.client = opts?.client ?? new ClientSideVadSource();
+    this.active = this.bridge;
+    this.subscribe = opts?.subscribe ?? tapEnvelopes;
+    this.query = opts?.query ?? queryBargeVad;
+    this.deadlineMs = opts?.deadlineMs ?? 4000;
+    this.pollMs = opts?.pollMs ?? 200;
+  }
+
+  async start(micStream: MediaStream, opts: VadSourceOpts): Promise<boolean> {
+    this.micStream = micStream;
+    this.startOpts = opts;
+    const ok = await this.bridge.start(micStream, opts);
+
+    this.unsubscribe = this.subscribe((ev) => {
+      if (!ev || ev.type !== 'barge-vad') return;
+      this.resolve(!!ev.available);
+    });
+
+    // Kick the handshake. The channel usually isn't open yet at call
+    // setup, so query() returns false; the poll re-sends until it lands
+    // or the deadline elapses.
+    this.query();
+    this.timer = setInterval(() => {
+      this.elapsed += this.pollMs;
+      this.query();
+      if (this.elapsed >= this.deadlineMs) this.resolve(false);
+    }, this.pollMs);
+
+    return ok;
+  }
+
+  private resolve(available: boolean): void {
+    if (this.decided) return;
+    this.decided = true;
+    if (this.timer) { clearInterval(this.timer); this.timer = null; }
+    if (this.unsubscribe) { this.unsubscribe(); this.unsubscribe = null; }
+    if (available) {
+      log('[fallback-vad] bridge VAD available — staying on bridge');
+      return;
+    }
+    log('[fallback-vad] bridge VAD unavailable — falling back to client-side Silero');
+    void this.switchToClient();
+  }
+
+  private async switchToClient(): Promise<void> {
+    this.active = this.client;
+    if (this.micStream && this.startOpts) {
+      try { await this.client.start(this.micStream, this.startOpts); }
+      catch (e: any) { log('[fallback-vad] client-side start failed:', e?.message); }
+    }
+    // Release the bridge source we no longer read from (its peak meter).
+    try { await this.bridge.stop(); } catch { /* noop */ }
+  }
+
+  async stop(): Promise<void> {
+    if (this.timer) { clearInterval(this.timer); this.timer = null; }
+    if (this.unsubscribe) { this.unsubscribe(); this.unsubscribe = null; }
+    await Promise.allSettled([this.bridge.stop(), this.client.stop()]);
+    this.active = this.bridge;
+    this.decided = false;
+    this.elapsed = 0;
+    this.micStream = null;
+    this.startOpts = null;
+  }
+
+  isSpeechActive(): boolean { return this.active.isSpeechActive(); }
+  getRecentPeak(): number { return this.active.getRecentPeak(); }
+  appliesPeakGate(): boolean { return this.active.appliesPeakGate(); }
 }
 
 /** In-process fake — for unit tests. The detector reads isSpeechActive()
