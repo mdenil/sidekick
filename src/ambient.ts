@@ -16,6 +16,22 @@ import { log } from './util/log.ts';
 
 const WEATHER_TTL_MS = 15 * 60 * 1000;
 
+/** Browser IANA timezone (e.g. "Europe/London"). Sent to /weather so the
+ *  gateway geocodes it to coords — same auto-detection the clock already
+ *  relies on, no geolocation permission prompt. */
+const BROWSER_TZ = (() => {
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || ''; } catch { return ''; }
+})();
+
+/** Short timezone label for the clock (e.g. "BST", "EDT", "GMT+1").
+ *  Recomputed per render so DST transitions are reflected. */
+function tzAbbrev(now: Date): string {
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', { timeZoneName: 'short' }).formatToParts(now);
+    return parts.find((p) => p.type === 'timeZoneName')?.value || '';
+  } catch { return ''; }
+}
+
 /** WMO → [emoji, description]. Used in both compact + expanded states. */
 const WMO = {
   0: ['☀️', 'clear'],
@@ -64,7 +80,8 @@ async function loadWeather() {
   if (weatherCache && (now - weatherFetchedAt) < WEATHER_TTL_MS) return weatherCache;
   try {
     const { fetchWithTimeout } = await import('./util/fetchWithTimeout.ts');
-    const r = await fetchWithTimeout('/weather', { timeoutMs: 10_000 });
+    const qs = BROWSER_TZ ? `?tz=${encodeURIComponent(BROWSER_TZ)}` : '';
+    const r = await fetchWithTimeout(`/weather${qs}`, { timeoutMs: 10_000 });
     weatherCache = await r.json();
     weatherFetchedAt = now;
   } catch (e) {
@@ -154,10 +171,10 @@ async function render() {
   if (!rootEl) return;  // disposed during fetch
   rootEl.innerHTML = exp
     ? renderExpanded(hh, mm, now, w)
-    : renderCompact(hh, mm, w);
+    : renderCompact(hh, mm, now, w);
 }
 
-function renderCompact(hh, mm, w) {
+function renderCompact(hh, mm, now, w) {
   const code = w?.current?.weather_code;
   const [icon] = code != null ? (WMO[code] || ['', '']) : ['', ''];
   const temp = w?.current?.temperature_2m;
@@ -165,7 +182,9 @@ function renderCompact(hh, mm, w) {
   const weatherHtml = icon || tempStr
     ? `<span class="ambient-weather">${icon}<span class="ambient-temp">${escapeHtml(tempStr)}</span></span>`
     : '';
-  return `<span class="ambient-time">${hh}:${mm}</span>${weatherHtml}`;
+  const tz = tzAbbrev(now);
+  const tzHtml = tz ? `<span class="ambient-tz">${escapeHtml(tz)}</span>` : '';
+  return `<span class="ambient-time">${hh}:${mm}</span>${tzHtml}${weatherHtml}`;
 }
 
 function renderExpanded(hh, mm, dateObj, w) {

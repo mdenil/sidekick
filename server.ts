@@ -396,16 +396,59 @@ async function handleLinkPreview(req, res) {
   }
 }
 
-// Weather fallback coords. Override via SIDEKICK_WEATHER_LAT / _LON env
-// vars. London is a safe fallback — users see a real city's weather
-// until they set their own rather than a broken card on Null Island.
-const DEFAULT_WEATHER_LAT = parseFloat(String(cfgVal('SIDEKICK_WEATHER_LAT', 'weather.lat', '51.5074')));
-const DEFAULT_WEATHER_LON = parseFloat(String(cfgVal('SIDEKICK_WEATHER_LON', 'weather.lon', '-0.1278')));
+// Weather fallback coords. London is the last-resort fallback — users
+// see a real city's weather rather than a broken card on Null Island.
+// Resolution order (handleWeather): explicit ?lat/?lon → explicit config
+// coords → ?tz-derived coords (browser timezone) → London.
+const CONFIG_WEATHER_LAT = cfgVal('SIDEKICK_WEATHER_LAT', 'weather.lat', '') as string;
+const CONFIG_WEATHER_LON = cfgVal('SIDEKICK_WEATHER_LON', 'weather.lon', '') as string;
+const FALLBACK_WEATHER_LAT = 51.5074;
+const FALLBACK_WEATHER_LON = -0.1278;
+
+// Geocode an IANA timezone to approximate coords by its representative
+// city (the last path segment: "America/New_York" → "New York"). The
+// browser already hands us its timezone for the clock, so weather can
+// piggyback on it with no geolocation permission prompt. Cached per tz.
+const tzGeocodeCache = new Map<string, { lat: number; lon: number } | null>();
+async function geocodeTimezone(tz: string): Promise<{ lat: number; lon: number } | null> {
+  if (tzGeocodeCache.has(tz)) return tzGeocodeCache.get(tz)!;
+  const city = tz.split('/').pop()?.replace(/_/g, ' ').trim();
+  if (!city) { tzGeocodeCache.set(tz, null); return null; }
+  try {
+    const r = await fetch(
+      `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(city)}&count=1&language=en&format=json`,
+      { signal: AbortSignal.timeout(5000) },
+    );
+    const data = await r.json();
+    const hit = data?.results?.[0];
+    const coords = hit ? { lat: hit.latitude, lon: hit.longitude } : null;
+    tzGeocodeCache.set(tz, coords);
+    return coords;
+  } catch {
+    tzGeocodeCache.set(tz, null);
+    return null;
+  }
+}
 
 async function handleWeather(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
-  const lat = parseFloat(url.searchParams.get('lat') || String(DEFAULT_WEATHER_LAT));
-  const lon = parseFloat(url.searchParams.get('lon') || String(DEFAULT_WEATHER_LON));
+  const qLat = url.searchParams.get('lat');
+  const qLon = url.searchParams.get('lon');
+  const tz = url.searchParams.get('tz');
+
+  let lat: number, lon: number;
+  if (qLat && qLon) {
+    lat = parseFloat(qLat); lon = parseFloat(qLon);
+  } else if (CONFIG_WEATHER_LAT && CONFIG_WEATHER_LON) {
+    lat = parseFloat(CONFIG_WEATHER_LAT); lon = parseFloat(CONFIG_WEATHER_LON);
+  } else if (tz) {
+    const geo = await geocodeTimezone(tz);
+    lat = geo ? geo.lat : FALLBACK_WEATHER_LAT;
+    lon = geo ? geo.lon : FALLBACK_WEATHER_LON;
+  } else {
+    lat = FALLBACK_WEATHER_LAT; lon = FALLBACK_WEATHER_LON;
+  }
+
   const omUrl = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,weather_code,wind_speed_10m,is_day&daily=temperature_2m_max,temperature_2m_min,weather_code&timezone=auto&forecast_days=5`;
   try {
     const r = await fetch(omUrl);
