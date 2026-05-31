@@ -31,6 +31,9 @@ test('blur reports hidden after heartbeat refreshed visible engagement', async (
       get visibilityState() { return visibilityState; },
       hasFocus: () => focused,
       addEventListener: addDocumentListener,
+      // isMobileRuntime() reads documentElement.classList to detect the
+      // Capacitor shell; a real browser always has it. Non-capacitor here.
+      documentElement: { classList: { contains: () => false } },
     },
   });
   Object.defineProperty(globalThis, 'window', {

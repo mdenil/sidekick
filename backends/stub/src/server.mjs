@@ -72,10 +72,14 @@ export function createServer({ conversations, llm, bearerToken }) {
 
   const server = http.createServer(async (req, res) => {
     try {
-      // Both /health and /healthz are common conventions; accept both
-      // so existing UpstreamAgent clients (which probe /health to match
-      // the backends/hermes/plugin) work unchanged.
-      if (req.method === 'GET' && (req.url === '/healthz' || req.url === '/health')) {
+      // Health: /health + /healthz are common conventions, and the
+      // sidekick proxy actually probes the plugin-served `/v1/health`
+      // (upstream.ts healthcheck — it deliberately avoids the bare
+      // /health which on openclaw is the gateway's own route). Serve
+      // all three from the same handler so the stub passes the proxy's
+      // healthcheck and matches the hermes plugin (which also aliases
+      // /health → /v1/health). The proxy gates on `status === 'ok'`.
+      if (req.method === 'GET' && (req.url === '/healthz' || req.url === '/health' || req.url === '/v1/health')) {
         return json(res, 200, { status: 'ok', llm: llm.name });
       }
       // Conversation surface — drawer / replay / delete.
