@@ -132,7 +132,7 @@ both sides). Differences:
 
 ## Roadmap
 
-See `~/code/hermes-agent-private/hosts/cortex/openclaw-backend-plan.md`
+See [`docs/openclaw-backend-plan.md`](docs/openclaw-backend-plan.md)
 for the full work breakdown + decision register.
 
 Done (this branch):
@@ -151,4 +151,4 @@ Open:
   different from hermes's; needs adapter design)
 - `/v1/commands`, `/v1/conversations/search` (optional)
 - Realtime voice mode lift (Phase 2 — see
-  `hosts/cortex/realtime-integration-design.md`)
+  [`docs/realtime-integration-design.md`](docs/realtime-integration-design.md))

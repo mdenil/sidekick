@@ -1,7 +1,7 @@
 -- Sidekick supplemental store schema.
 --
 -- Implements the design signed off 2026-05-15 in
--- ~/code/hermes-agent-private/hosts/cortex/sidekick-supplemental-store-schema.md.
+-- ../docs/sidekick-supplemental-store-schema.md.
 -- Read that doc for rationale on each table + column.
 --
 -- This file is loaded at plugin startup; CREATE IF NOT EXISTS makes

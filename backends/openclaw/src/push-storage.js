@@ -10,7 +10,7 @@
  * The proxy used to keep these as JSON files under
  * ~/.sidekick/notifications/; for openclaw the plugin owns them so
  * each backend's sidekick-shaped state is self-contained. See
- * `~/code/hermes-agent-private/hosts/cortex/sidekick-supplemental-store-schema.md`
+ * `../docs/sidekick-supplemental-store-schema.md`
  * for the design discussion.
  */
 import webpush from 'web-push';
