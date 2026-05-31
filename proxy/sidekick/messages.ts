@@ -40,8 +40,9 @@ import type { UpstreamAgent } from './upstream.ts';
 // Phone photos easily blow past 1 MB once base64-encoded inside the
 // JSON envelope (a 4 MB JPEG → ~5.4 MB base64 → +~10% JSON quoting).
 // Bumped to 50 MB to cover any reasonable single-image attachment;
-// matches client_max_size on the hermes plugin's aiohttp app so the
-// limits don't disagree silently end-to-end.
+// should match the upstream plugin's body-size limit (e.g. aiohttp
+// client_max_size in backends/hermes/plugin) so the limits don't
+// disagree silently end-to-end.
 const MAX_BODY_BYTES = 50 * 1024 * 1024;
 
 function newMessageId(): string {
@@ -80,7 +81,7 @@ export async function handleSidekickMessage(req, res) {
     console.warn(
       `[sidekick] /api/sidekick/messages aborted: body > ${MAX_BODY_BYTES} bytes ` +
       `(saw ${raw.length}). If this is a legitimate large attachment, raise MAX_BODY_BYTES ` +
-      `here AND client_max_size on the hermes plugin's aiohttp app.`
+      `here AND the upstream plugin's body-size limit.`
     );
     if (!res.headersSent) {
       res.writeHead(413, { 'content-type': 'application/json' });
@@ -117,8 +118,8 @@ export async function handleSidekickMessage(req, res) {
   // (additive `attachments` field on the request body — see plugin's
   // `_handle_responses`). The plugin materializes the data:URL
   // payloads to tempfiles and populates MessageEvent.media_urls so
-  // hermes' vision tools can read them; raw OAI third-party upstreams
-  // ignore the unknown field.
+  // the upstream's vision tools can read them; raw OAI third-party
+  // upstreams ignore the unknown field.
   const messageId = newMessageId();
   // Field-bug diagnostic (Jonathan 2026-05-11): user reported that
   // messages typed into the PWA never reach state.db despite the

@@ -1,15 +1,15 @@
 // /api/sidekick/sessions handlers — drawer list + per-chat delete.
 // Both go through the agent contract (HTTP+SSE), which means the
-// proxy doesn't reach into hermes's filesystem (state.db,
-// sessions.json, jsonl) anymore — the plugin owns that read.
+// proxy doesn't reach into the upstream's filesystem (e.g. hermes's
+// state.db / sessions.json / jsonl) anymore — the plugin owns that read.
 //
 //   GET    /api/sidekick/sessions          → drawer list
 //   DELETE /api/sidekick/sessions/<chatId> → cascade delete
 //   PATCH  /api/sidekick/sessions/<chatId> → rename (sets title server-side)
 //
 // Drawer-list behavior:
-//   1. Probe `/v1/gateway/conversations` (gateway extension). Hermes
-//      and any other multi-platform agent implements it and returns
+//   1. Probe `/v1/gateway/conversations` (gateway extension). A
+//      multi-platform agent (e.g. hermes) implements it and returns
 //      cross-source rows with `source` + `chat_type` in metadata.
 //   2. On 404 (single-channel agent — stub, raw OAI third-party),
 //      fall back to `/v1/conversations` and stamp `source: 'sidekick'`

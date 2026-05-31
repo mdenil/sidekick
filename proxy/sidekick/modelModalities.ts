@@ -1,13 +1,15 @@
 // Sidekick proxy — model capability + auxiliary-vision advertisement
-// endpoints. Both are thin pass-throughs to the hermes plugin. No
-// catalog cache, no regex fallback, no OpenRouter dependency — hermes
-// owns the ground truth (models.dev registry + live config).
+// endpoints. Both are thin pass-throughs to the upstream plugin. No
+// catalog cache, no regex fallback, no OpenRouter dependency — the
+// upstream owns the ground truth (e.g. hermes's models.dev registry +
+// live config).
 //
 // Two endpoints exposed:
 //   GET /api/sidekick/model-capabilities?model=Y[&provider=X]
-//     Returns the full ModelCapabilities shape from
-//     agent.models_dev.get_model_capabilities — the same data hermes
-//     consults at request time for native-vs-text image routing.
+//     Returns the full ModelCapabilities shape from the upstream's
+//     capability lookup (e.g. hermes's agent.models_dev
+//     .get_model_capabilities) — the same data it consults at request
+//     time for native-vs-text image routing.
 //   GET /api/sidekick/auxiliary-models
 //     Returns {vision: <model_id> | null} reflecting the configured
 //     auxiliary.vision.model. PWA reads this to show the "will route
@@ -15,7 +17,7 @@
 //
 // History note: this module previously cached an OpenRouter-derived
 // modality map and a regex fallback for non-cataloged models. Both
-// were dropped (May 2026) in favor of asking hermes directly.
+// were dropped (May 2026) in favor of asking the upstream directly.
 
 import http from 'node:http';
 
@@ -25,8 +27,8 @@ const UPSTREAM_TOKEN = (process.env.UPSTREAM_TOKEN || process.env.SIDEKICK_PLATF
 // ── Auxiliary vision advertisement ────────────────────────────────────
 // Short server-side memo so rapid PWA polls (visibility-change retries,
 // settings-changed handlers) don't hammer the plugin. 30s is enough to
-// recover from a config-edit-then-/restart on hermes; a stale value just
-// makes the +button briefly mis-labeled, never broken.
+// recover from a config-edit-then-/restart on the upstream; a stale
+// value just makes the +button briefly mis-labeled, never broken.
 
 const VISION_MEMO_MS = 30 * 1000;
 let visionMemo: { value: string | null; at: number } | null = null;
@@ -71,10 +73,11 @@ export async function handleSidekickAuxiliaryModels(
 }
 
 // ── Model capabilities ────────────────────────────────────────────────
-// Per-model fetch from hermes's models.dev registry. Per-(provider,
-// model) memo so rapid model-switching in the PWA doesn't hammer the
-// plugin. 60s TTL is short enough that capability updates land quickly
-// after a hermes-agent upgrade refreshes models.dev.
+// Per-model fetch from the upstream's capability registry (e.g.
+// hermes's models.dev). Per-(provider, model) memo so rapid
+// model-switching in the PWA doesn't hammer the plugin. 60s TTL is
+// short enough that capability updates land quickly after an upstream
+// upgrade refreshes its registry.
 
 type CapabilitiesResponse = {
   provider: string | null;
