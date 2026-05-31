@@ -28,6 +28,8 @@
 	<string>Sidekick uses the camera for image attachments.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Sidekick uses your microphone for voice messages and dictation.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Sidekick uses speech recognition to detect the hands-free send word during voice calls.</string>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	<key>UIMainStoryboardFile</key>
