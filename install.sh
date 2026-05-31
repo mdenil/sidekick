@@ -19,7 +19,9 @@
 #      checkout, uses it in place — no pull, no branch surprises).
 #   3. Runs `npm install` at root + under `backends/stub/`.
 #   4. Copies `.env.example` to `.env` (idempotent).
-#   5. Starts the proxy + the in-tree stub agent (echo LLM) — no API
+#   5. Provisions audio-bridge/.venv for server-side voice barge VAD
+#      (optional, gated on python3; onnxruntime-only, no torch/CUDA).
+#   6. Starts the proxy + the in-tree stub agent (echo LLM) — no API
 #      keys required. Open the printed URL.
 #
 # After it boots, point at a real backend by editing `./sidekick/.env`
@@ -90,7 +92,37 @@ else
   echo "==> .env already exists (preserved)"
 fi
 
-# 5. Start
+# 5. Audio-bridge venv (optional — gated on python3).
+#    Provisions server-side voice barge VAD. onnxruntime-only now (no
+#    torch/CUDA, see audio-bridge/requirements.txt), so this is a small
+#    download. Non-fatal: if python3 is missing or pip fails, the PWA's
+#    FallbackVadSource just uses client-side VAD instead.
+if command -v python3 >/dev/null 2>&1 && [ -f "audio-bridge/requirements.txt" ]; then
+  echo "==> provisioning audio-bridge venv (server-side voice barge VAD)"
+  bridge_ok=1
+  if [ ! -d "audio-bridge/.venv" ]; then
+    python3 -m venv audio-bridge/.venv || bridge_ok=0
+  fi
+  if [ "$bridge_ok" = "1" ]; then
+    audio-bridge/.venv/bin/python -m pip install --quiet --upgrade pip || true
+    if audio-bridge/.venv/bin/python -m pip install --quiet -r audio-bridge/requirements.txt; then
+      echo "==> audio-bridge venv ready ✓"
+    else
+      bridge_ok=0
+    fi
+  fi
+  if [ "$bridge_ok" = "0" ]; then
+    echo "==> WARNING: audio-bridge venv setup failed — voice barge will use"
+    echo "    client-side VAD. Rerun later:"
+    echo "    python3 -m venv audio-bridge/.venv && \\"
+    echo "    audio-bridge/.venv/bin/pip install -r audio-bridge/requirements.txt"
+  fi
+else
+  echo "==> python3 not found — skipping audio-bridge venv (voice barge uses"
+  echo "    client-side VAD; install python3 + rerun to enable server VAD)"
+fi
+
+# 6. Start
 echo ""
 echo "================================================================"
 echo "  Sidekick is starting up."
