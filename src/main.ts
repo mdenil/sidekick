@@ -57,7 +57,7 @@ import * as remoteControl from './remoteControl.ts';
 import * as multiSelect from './multiSelect.ts';
 import * as agentSettingsMod from './agentSettings.ts';
 import { primeAudio, getSharedAudioCtx } from './audio/shared/platform.ts';
-import { playReplyTts, cancelReplyTts } from './audio/turn-based/tts.ts';
+import { cancelReplyTts } from './audio/turn-based/tts.ts';
 import * as ttsModule from './audio/turn-based/tts.ts';
 import * as replyNavigator from './audio/turn-based/replyNavigator.ts';
 import * as replyPlayer from './audio/turn-based/replyPlayer.ts';
@@ -67,7 +67,6 @@ import * as fakeLock from './ios/fakeLock.ts';
 import { setMicPeakListener } from './audio/shared/micMeter.ts';
 import { attachCard } from './cards/attach.ts';
 import { registerCard } from './cards/registry.ts';
-import { parseCardsFromText, extractImageBlocks } from './cards/fallback.ts';
 import * as ambient from './ambient.ts';
 import { playFeedback } from './audio/shared/feedback.ts';
 import * as memo from './audio/shared/memo.ts';
@@ -92,6 +91,7 @@ import { bindTranscriptPipeline, isVirtualizerEnabled } from './transcript/index
 import { flushScrollPosition } from './chatScrollPositions.ts';
 import { setStayAliveHint as setProxyStayAliveHint } from './proxyClient.ts';
 import * as listenReply from './listenReplyState.ts';
+import * as handlers from './backendEventHandlers.ts';
 
 // Card kind modules
 import imageCard from './cards/kinds/image.ts';
@@ -1268,10 +1268,10 @@ async function boot() {
         status.setStatus('Gateway: disconnected');
       }
     },
-    onDelta: handleReplyDelta,
-    onFinal: handleReplyFinal,
-    onToolEvent: handleToolEvent,
-    onActivity: handleActivity,
+    onDelta: handlers.handleReplyDelta,
+    onFinal: handlers.handleReplyFinal,
+    onToolEvent: handlers.handleToolEvent,
+    onActivity: handlers.handleActivity,
     onNotification: handleNotification,
     onUserMessage: handleUserMessage,
     onSessionChanged: () => {
@@ -4266,348 +4266,6 @@ async function backfillHistory() {
   })();
   try { await backfillInFlight; }
   finally { backfillInFlight = null; }
-}
-
-// ─── Activity handler ───────────────────────────────────────────────────────
-
-/** Activity signal — only kept around for the diag log + the future
- *  drawer-side "agent typing" indicator. Rendering itself is now
- *  driven by the projection's BubbleSpec.streaming flag, so this
- *  handler no longer touches the DOM. */
-function handleActivity({ working, detail, conversation }: any) {
-  void working; void detail; void conversation;
-}
-
-/** Find the most-recent non-streaming agent bubble and attach a card.
- *  Falls back to the active streaming bubble if there's no finalized
- *  agent reply yet. */
-function attachCardToLatestAgentBubble(card) {
-  const el = document.getElementById('transcript');
-  if (!el) return;
-  const bubbles = Array.from(
-    el.querySelectorAll('.line.agent[data-reply-id]:not(.streaming)')
-  ) as HTMLElement[];
-  const streaming = el.querySelector('.line.agent.streaming') as HTMLElement | null;
-  const target = bubbles[bubbles.length - 1] || streaming;
-  if (!target) {
-    log('attachCard: no agent bubble to attach to — dropping card', card.kind);
-    return;
-  }
-  attachCard(target, card);
-}
-
-// ─── Backend event handlers ─────────────────────────────────────────────────
-// Normalized per-event handlers. Shell logic only — the backend adapter
-// handles wire-format parsing. Events not surfaced by the adapter (agent
-// lifecycle, heartbeat, etc.) don't reach us by design.
-
-/** Streaming partial reply. `cumulativeText` is the full text so far.
- *  Adapter already drops user-echo prefix variants so we don't need to
- *  defensively filter them here. With per-turn replay machinery gutted,
- *  the bubble is purely a text surface: TTS is owned by the WebRTC
- *  talk-mode track on the server side and arrives as audio independently. */
-function handleReplyDelta({ replyId, cumulativeText, conversation, messageId, isReplay = false }: any) {
-  if (!cumulativeText) return;
-  // Always store the envelope — even for background chats, so a
-  // future switch-back finds the streamed text already there.
-  if (conversation && messageId) {
-    transcriptStore.appendInflight(conversation, {
-      type: 'reply_delta',
-      chat_id: conversation,
-      message_id: messageId,
-      text: cumulativeText,
-      edit: true,
-    });
-  }
-  // Audio + feedback side effects are scoped to the on-screen chat.
-  const viewed = sessionDrawer.getViewed();
-  if (viewed && conversation && conversation !== viewed) return;
-  // First-delta-of-turn signal: chime + suppress envelope. With the
-  // store the "first delta" predicate is "no prior reply_delta with
-  // this message_id" — checked via the store before appendInflight
-  // would have added it. Since we already appended above, query the
-  // pre-append state by looking for a duplicate message_id in the
-  // already-stored envelopes; cheap enough.
-  if (!isReplay && messageId && conversation) {
-    const envs = transcriptStore.getState(conversation).inflight;
-    const isFirstDelta = envs.filter(e =>
-      e.type === 'reply_delta' && (e as any).message_id === messageId,
-    ).length === 1;  // exactly 1 = the one we just pushed
-    if (isFirstDelta) {
-      try { playFeedback('send'); } catch { /* best-effort */ }
-    }
-  }
-  webrtcSuppress.onAssistantDelta();
-  if (ttsModule.isPaused()) {
-    cancelReplyTts('new-turn');
-  }
-  void replyId;  // retained in signature for adapter contract; unused now
-}
-
-const postFinalRefreshTimers = new Map<string, ReturnType<typeof setTimeout>>();
-const postFinalRefreshSeq = new Map<string, number>();
-
-function durableIdentity(row: any): string {
-  return `${row?.sidekick_id || ''}:${String(row?.id ?? '')}`;
-}
-
-function durableHasReply(
-  rows: any[],
-  beforeIds: Set<string>,
-  messageId?: string | null,
-  finalText?: string | null,
-): boolean {
-  for (const row of rows) {
-    if (row?.role !== 'assistant') continue;
-    if (messageId && row.sidekick_id === messageId) return true;
-    if (
-      finalText &&
-      row.content === finalText &&
-      !beforeIds.has(durableIdentity(row))
-    ) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function schedulePostFinalDurableRefresh(
-  chatId: string,
-  messageId?: string | null,
-  finalText?: string | null,
-): void {
-  if (!chatId || !backend.capabilities().sessionBrowsing) return;
-  if (sessionDrawer.getViewed() !== chatId) return;
-  const prev = postFinalRefreshTimers.get(chatId);
-  if (prev) clearTimeout(prev);
-  const seq = (postFinalRefreshSeq.get(chatId) ?? 0) + 1;
-  postFinalRefreshSeq.set(chatId, seq);
-  const beforeDurableIds = new Set(
-    transcriptStore.getState(chatId).durable.map((row) => durableIdentity(row)),
-  );
-  const timer = setTimeout(() => {
-    postFinalRefreshTimers.delete(chatId);
-    void (async () => {
-      if (postFinalRefreshSeq.get(chatId) !== seq) return;
-      if (sessionDrawer.getViewed() !== chatId) return;
-      try {
-        const result: any = await backend.fetchSessionMessages(chatId);
-        if (postFinalRefreshSeq.get(chatId) !== seq) return;
-        if (sessionDrawer.getViewed() !== chatId) return;
-        replaySessionMessages(
-          chatId,
-          result.messages || [],
-          { firstId: result.firstId ?? null, hasMore: !!result.hasMore },
-          undefined,
-          result.inflight,
-          { preserveScrollIfLive: true },
-        );
-        if (
-          messageId &&
-          durableHasReply(result.messages || [], beforeDurableIds, messageId, finalText || null)
-        ) {
-          transcriptStore.clearInflightThroughReplyFinal(chatId, messageId);
-        }
-        log(
-          `post-final durable refresh chat=${chatId} msg=${messageId ?? '∅'} ` +
-          `messages=${(result.messages || []).length} ` +
-          `inflight=${Array.isArray(result.inflight) ? result.inflight.length : 0}`,
-        );
-      } catch (e: any) {
-        diag(`post-final durable refresh failed chat=${chatId}: ${e?.message || String(e)}`);
-      }
-    })();
-  }, 900);
-  postFinalRefreshTimers.set(chatId, timer);
-}
-
-/** Complete reply. `content` (if present) is the raw block array used to
- *  pull out image attachments. */
-/** "⏳ Still working… (N min elapsed — iteration X/60, …)" — the canonical
- *  heartbeat shape an autonomous agent emits per-iteration. Mirrors the
- *  push-gate matcher in proxy/sidekick/notifications/dispatch.ts
- *  (isProgressHeartbeat). Field 2026-05-27: every heartbeat reply_final
- *  was dismissing pending approvals for the chat — fixed by skipping
- *  this branch when the text matches. KEEP IN SYNC with the server matcher. */
-function isProgressHeartbeatText(raw: string): boolean {
-  const s = (raw || '').trim();
-  if (!s) return false;
-  return /^⏳\s*Still working\b/i.test(s)
-    || /\bStill working\.{0,3}\s*\(\s*\d+\s*min elapsed\b.*\biteration\s*\d+\s*\/\s*\d+/i.test(s);
-}
-
-function handleReplyFinal({ replyId, text, content = [], conversation, messageId, isReplay = false }: any) {
-  sessionDrawer.scheduleRefresh();
-  // Auto-resolve any pending approval for this chat — but ONLY when this
-  // is a REAL reply, not a "⏳ Still working…" heartbeat. Heartbeats fire
-  // every iteration of a long autonomous turn (one per ~3 min); without
-  // the gate, the first heartbeat after an approval landed used to delete
-  // the approval row from the tray (field 2026-05-27). A real reply means
-  // the agent moved past the approval point, so mark 'dismissed'.
-  if (!isReplay && conversation) {
-    // Heartbeat detection: real hermes typically streams the body via
-    // reply_delta and emits reply_final with EMPTY text (final = done
-    // signal, not body carrier). So `text` from this envelope is often
-    // '' — we must look up the accumulated bubble text by messageId to
-    // know whether this turn was a "⏳ Still working…" beat or a real
-    // turn-ending reply. The proxy push gate does the same against its
-    // reply buffer (dispatch.ts:271).
-    let finalTextRaw = typeof text === 'string' ? text : '';
-    if (!finalTextRaw && messageId) {
-      // First try the DOM — fast path for the viewed chat.
-      try {
-        const el = document.querySelector(
-          `#transcript [data-key="${CSS.escape(messageId)}"]`,
-        ) as HTMLElement | null;
-        finalTextRaw = el?.textContent || '';
-      } catch { /* CSS.escape failure or missing DOM — fall through */ }
-      // Fall back to the inflight buffer. Replies on an OFF-screen chat
-      // aren't in the DOM (only the viewed chat renders), so DOM lookup
-      // misses — but the reply_delta envelope IS in the store's inflight
-      // buffer, with the accumulated heartbeat text. Reverse-scan for the
-      // latest delta carrying this messageId.
-      if (!finalTextRaw) {
-        const inflight = transcriptStore.getState(conversation).inflight;
-        for (let i = inflight.length - 1; i >= 0; i--) {
-          const env: any = inflight[i];
-          if (env?.type === 'reply_delta' && env.message_id === messageId && typeof env.text === 'string') {
-            finalTextRaw = env.text;
-            break;
-          }
-        }
-      }
-    }
-    if (!isProgressHeartbeatText(finalTextRaw)) {
-      activityStore.resolveApprovalsForChat(conversation, 'dismissed');
-    }
-  }
-
-  // Push the envelope into the store unconditionally — even for
-  // background chats. The store is per-chat; the active chat re-renders
-  // and finalizes the bubble; background chats stay correct for the
-  // next switch-back.
-  if (conversation && messageId) {
-    transcriptStore.appendInflight(conversation, {
-      type: 'reply_final',
-      chat_id: conversation,
-      message_id: messageId,
-      text: text || undefined,
-    });
-    // Reply_final = whole turn ack'd; drop any remaining optimistic
-    // pending sends for this chat (defensive — user_message echo
-    // normally clears them earlier).
-    const state = transcriptStore.getState(conversation);
-    for (const p of state.pendingSends.slice()) {
-      transcriptStore.clearPendingSend(conversation, p.messageId);
-    }
-  }
-
-  // Fall back to the accumulated reply_delta text when the adapter
-  // sends an empty reply_final. Hermes does this on some real runs:
-  // the transcript can still render from delta state, and Activity
-  // should show the same useful text instead of an empty notification.
-  let finalText = text || '';
-  if (!finalText && conversation && messageId) {
-    const envs = transcriptStore.getState(conversation).inflight;
-    for (const env of envs) {
-      if (env.type === 'reply_delta' && env.message_id === messageId) {
-        finalText = env.text;
-      }
-    }
-  }
-
-  const viewed = sessionDrawer.getFocused();
-  if (viewed && conversation && conversation !== viewed) {
-    // Skip activity + badge for "⏳ Still working…" heartbeats so a long
-    // autonomous turn doesn't spam the Activity tray with N agent_reply
-    // rows per turn — AND, critically, doesn't trigger pruneSuperseded-
-    // Approvals to delete a pending approval for the same chat (each
-    // upserted heartbeat agent_reply has a newer createdAt than the
-    // approval, so the prune would dismiss the approval). Mirrors the
-    // proxy push gate (isProgressHeartbeat, dispatch.ts:271).
-    if (!isReplay && !isProgressHeartbeatText(finalText)) {
-      activityStore.upsertNotification({
-        chatId: conversation,
-        kind: 'agent_reply',
-        content: finalText || '',
-        sidekickId: typeof messageId === 'string' ? messageId : null,
-        chatLabel: sessionDrawer.getTitleForChat?.(conversation) || null,
-      });
-      badge.incrementUnread(conversation);
-    }
-    return;
-  }
-
-  if (!isReplay && viewed && conversation) {
-    void badge.clearUnread(conversation);
-  }
-
-  webrtcSuppress.onAssistantFinal();
-
-  const imageBlocks = extractImageBlocks(content);
-
-
-  if (!isReplay && viewed && conversation === viewed) {
-    schedulePostFinalDurableRefresh(conversation, messageId, finalText || null);
-  }
-
-  if (NO_REPLY_RE.test(finalText)) {
-    log('suppressed NO_REPLY from agent');
-    return;
-  }
-
-  // Resolve the freshly-finalized bubble via data-key — the
-  // reply_final envelope above already triggered a reconcile pass, so
-  // the bubble is in the DOM with .text/markdown applied.
-  const bubble = messageId
-    ? document.querySelector(`#transcript [data-key="${CSS.escape(messageId)}"]`) as HTMLElement | null
-    : null;
-
-  if (finalText) {
-    if (!isReplay) playFeedback('receive');
-
-    // Speak-replies (CALL-ONLY): turnbased-tts when in Listen and not
-    // in a WebRTC call (where the peer track owns audio). Outside a
-    // call, the user reads replies; per-bubble play handles on-demand
-    // replay.
-    const inListen = turnbased.getState() !== 'idle';
-    const webrtcOpen = webrtcControls.isOpen();
-    const route = isReplay ? 'no-audio (replay)'
-      : !inListen ? 'no-audio (call idle)'
-      : webrtcOpen ? 'webrtc-peer'
-      : 'turnbased-tts';
-    diag(`[reply-route] ${route} replyId=${replyId} len=${finalText.length} turnbased=${turnbased.getState()} webrtcOpen=${webrtcOpen} isReplay=${isReplay}`);
-    if (!isReplay && inListen && !webrtcOpen && listenReply.shouldAutoPlay(conversation)) {
-      listenReply.consumeReply(conversation as string);
-      listenReply.claimOwnership(replyId);
-      void playReplyTts(finalText, settings.get().voice, replyId).catch(() => {
-        listenReply.releaseOwnership();
-        try { turnbased.notifyReplyPlayback(false); } catch {}
-      });
-    }
-
-    if (bubble) {
-      try {
-        const cards = parseCardsFromText(finalText);
-        for (const c of cards) attachCard(bubble, c);
-      } catch (e) { log('card parse err:', e.message); }
-      for (const b of imageBlocks) attachCard(bubble, b);
-    }
-  } else if (imageBlocks.length) {
-    for (const b of imageBlocks) attachCardToLatestAgentBubble(b);
-  }
-}
-
-/** Tool-events — cards and similar side-channel data the agent emits.
- *  Currently just canvas.show; grows as backends add more. */
-function handleToolEvent({ kind, payload, conversation }: any) {
-  // Drop only for an explicitly DIFFERENT viewed session.
-  const viewed = sessionDrawer.getViewed();
-  if (viewed && conversation && conversation !== viewed) return;
-  if (kind === 'canvas.show' && payload) {
-    log('canvas.show event from agent');
-    attachCardToLatestAgentBubble(payload);
-  }
 }
 
 // ─── Go ─────────────────────────────────────────────────────────────────────
