@@ -4,4 +4,14 @@ aiohttp>=3.9
 websockets>=12
 numpy>=1.26
 
-silero-vad>=6.0
+# Server-side barge VAD. onnxruntime (CPU) runs the vendored
+# assets/silero_vad.onnx model — a few MB, no torch, no CUDA. This is the
+# default backend (barge_policy._make_onnx_infer).
+onnxruntime>=1.16
+
+# Optional torch backend. NOT installed by default: silero-vad pulls
+# torch (~750MB, and CUDA wheels on some indexes). barge_policy prefers
+# torch when it's already present so existing venvs stay byte-identical;
+# fresh installs use the onnxruntime path above and skip this entirely.
+# To use the torch backend instead:
+#   pip install silero-vad>=6.0

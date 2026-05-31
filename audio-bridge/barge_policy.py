@@ -185,15 +185,27 @@ class BargePolicy:
 
 # ── Production model loading ──────────────────────────────────────────
 #
-# Lazy: the bridge can run without silero-vad installed (e.g. in CI
-# without torch); attach() falls back to a no-op policy that never
-# fires envelopes. When silero-vad IS installed and the policy is
-# enabled, we load once at module level (across all peers) — Silero
-# is small (~1.8MB) and the torch JIT model is fully thread-safe via
-# a per-call reset_states().
+# Two interchangeable inference backends, tried in this order:
+#
+#   1. torch + silero-vad  — used when already installed. Keeps existing
+#      deployments (e.g. Jonathan's provisioned venv) byte-for-byte
+#      unchanged: same model, same numbers, zero new behavior.
+#
+#   2. onnxruntime + vendored assets/silero_vad.onnx — the default for
+#      fresh installs. onnxruntime-CPU is a few MB; torch+silero pulls
+#      ~750MB (and, depending on the index, CUDA wheels) which Misha hit
+#      on first install 2026-05-26. requirements.txt now ships only
+#      onnxruntime so a clean `pip install -r` never drags in torch.
+#
+# Either way the bridge can run with NEITHER installed: _make_infer()
+# returns None and attach() falls back to a no-op policy that never fires
+# envelopes (the PWA then uses client-side VAD via FallbackVadSource).
 
 _SILERO_MODEL: Any = None
 _SILERO_LOAD_TRIED = False
+
+_ONNX_SESSION: Any = None
+_ONNX_LOAD_TRIED = False
 
 
 def _load_silero() -> Optional[Any]:
@@ -210,7 +222,7 @@ def _load_silero() -> Optional[Any]:
         _SILERO_MODEL.eval()
         logger.info("[barge-policy] silero-vad model loaded")
     except Exception as e:
-        logger.warning("[barge-policy] silero-vad unavailable: %s — barge disabled", e)
+        logger.info("[barge-policy] torch silero-vad not installed (%s) — using onnxruntime", e)
         _SILERO_MODEL = None
     return _SILERO_MODEL
 
@@ -240,19 +252,92 @@ def _make_torch_infer() -> Optional[SileroInfer]:
     return infer
 
 
+def _onnx_model_path() -> str:
+    """Path to the vendored silero v5 onnx model (bridge-relative)."""
+    return os.path.join(os.path.dirname(__file__), "assets", "silero_vad.onnx")
+
+
+def _load_onnx() -> Optional[Any]:
+    """Lazy-load an onnxruntime session over the vendored silero model.
+    Returns None if onnxruntime isn't installed or the model is missing."""
+    global _ONNX_SESSION, _ONNX_LOAD_TRIED
+    if _ONNX_LOAD_TRIED:
+        return _ONNX_SESSION
+    _ONNX_LOAD_TRIED = True
+    try:
+        import onnxruntime as ort
+
+        path = _onnx_model_path()
+        if not os.path.exists(path):
+            logger.warning("[barge-policy] onnx model missing at %s — barge disabled", path)
+            _ONNX_SESSION = None
+            return None
+        opts = ort.SessionOptions()
+        # Single-threaded: one 512-sample inference per ~32ms is trivial,
+        # and the bridge runs other peers' frames on the same loop — we
+        # don't want onnxruntime spawning a thread pool per session.
+        opts.inter_op_num_threads = 1
+        opts.intra_op_num_threads = 1
+        _ONNX_SESSION = ort.InferenceSession(
+            path, sess_options=opts, providers=["CPUExecutionProvider"],
+        )
+        logger.info("[barge-policy] onnxruntime silero model loaded (%s)", path)
+    except Exception as e:
+        logger.warning("[barge-policy] onnxruntime silero unavailable: %s — barge disabled", e)
+        _ONNX_SESSION = None
+    return _ONNX_SESSION
+
+
+def _make_onnx_infer() -> Optional[SileroInfer]:
+    """Build a SileroInfer callable backed by the vendored onnx model.
+    Returns None when onnxruntime / the model isn't available.
+
+    Each call to this factory closes over its own LSTM state array, so the
+    per-peer infer built in attach() keeps that peer's recurrent context
+    across frames (the shared session itself is stateless w.r.t. run()).
+    Unlike the torch path's per-call reset, this preserves context — which
+    only helps barge discrimination; BargePolicy's frame hysteresis is the
+    actual jitter guard either way."""
+    session = _load_onnx()
+    if session is None:
+        return None
+
+    sr = np.array(SAMPLE_RATE, dtype=np.int64)
+    state = np.zeros((2, 1, 128), dtype=np.float32)
+
+    def infer(frame: np.ndarray) -> float:
+        nonlocal state
+        x = frame.reshape(1, -1).astype(np.float32)
+        out, state = session.run(None, {"input": x, "state": state, "sr": sr})
+        return float(out[0][0])
+    return infer
+
+
+def _make_infer() -> Optional[SileroInfer]:
+    """Pick an inference backend: torch if already installed (existing
+    deployments stay identical), else the vendored onnxruntime model
+    (fresh installs avoid the torch/CUDA download). None when neither
+    is available — caller degrades to a no-op policy."""
+    infer = _make_torch_infer()
+    if infer is not None:
+        return infer
+    return _make_onnx_infer()
+
+
 def attach(peer, *, voice_config: Any = None) -> Optional[BargePolicy]:
     """Wire a per-peer BargePolicy onto peer.extra['barge_policy'].
 
-    Production: builds an infer fn against the lazy-loaded silero-vad
-    torch model and an emit fn that sends data-channel envelopes via
+    Production: builds an infer fn (torch if installed, else the vendored
+    onnxruntime model) and an emit fn that sends data-channel envelopes via
     stt_bridge._send_data_channel. Tests can call BargePolicy(...)
     directly with stubbed deps and skip attach().
 
-    Returns the BargePolicy (None when silero-vad is unavailable, in
-    which case the bridge degrades to client-side-only barge — same
-    as today's behavior).
+    Returns the BargePolicy (None when no VAD backend is available, in
+    which case the bridge degrades to client-side-only barge — the PWA's
+    FallbackVadSource detects this via the barge-vad-query handshake and
+    switches to client-side Silero).
     """
-    infer = _make_torch_infer()
+    infer = _make_infer()
     if infer is None:
         peer.extra["barge_policy"] = None
         return None

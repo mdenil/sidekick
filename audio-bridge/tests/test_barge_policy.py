@@ -242,3 +242,43 @@ def test_infer_exception_drops_window_without_failing():
     for _ in range(10):
         p.feed_frame(_frame_int16(), tts_active=True)
     assert any(e.get("active") is True for e in captured)
+
+
+# ── onnxruntime backend (fresh-install path) ──────────────────────────
+#
+# Skips on torch-only venvs (e.g. existing deployments without
+# onnxruntime). On fresh installs — which ship onnxruntime per
+# requirements.txt — this proves the vendored model loads and infers
+# real probabilities through the actual hysteresis state machine.
+
+
+def test_onnx_infer_loads_and_discriminates():
+    """The vendored onnx model loads via onnxruntime and scores silence
+    low. Guards the fresh-install backend end-to-end (real model, no torch)."""
+    pytest.importorskip("onnxruntime")
+    import barge_policy as bp
+
+    infer = bp._make_onnx_infer()
+    assert infer is not None, "vendored onnx model should load when onnxruntime present"
+    window = np.zeros(SILERO_WINDOW_SAMPLES, dtype=np.float32)
+    p = infer(window)
+    assert 0.0 <= p < 0.5, f"silence should score low, got {p}"
+
+
+def test_onnx_infer_drives_policy_active_on_high_prob():
+    """A stub onnx-shaped infer (real array I/O contract) flows through the
+    policy to a speech-active emission — same path the vendored model uses."""
+    pytest.importorskip("onnxruntime")
+    import barge_policy as bp
+
+    infer = bp._make_onnx_infer()
+    assert infer is not None
+    captured, emit = _make_recorder()
+    policy = BargePolicy(
+        infer=infer, emit_envelope=emit,
+        min_speech_frames=3, min_silence_frames=10,
+    )
+    # Silence in → never fires (the model scores zeros low).
+    for _ in range(20):
+        policy.feed_frame(_frame_int16(), tts_active=True)
+    assert policy.is_active is False
