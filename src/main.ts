@@ -91,6 +91,7 @@ import * as transcriptStore from './transcript/store.ts';
 import { bindTranscriptPipeline, isVirtualizerEnabled } from './transcript/index.ts';
 import { flushScrollPosition } from './chatScrollPositions.ts';
 import { setStayAliveHint as setProxyStayAliveHint } from './proxyClient.ts';
+import * as listenReply from './listenReplyState.ts';
 
 // Card kind modules
 import imageCard from './cards/kinds/image.ts';
@@ -117,39 +118,6 @@ async function restoreMemoCards() {
 }
 
 let memoActive = false;  // true while voice-memo recording bar is shown
-
-let listenAwaitingReplyChatId: string | null = null;
-let listenAwaitingReplyAt = 0;
-let listenReplyTtsOwned = false;
-// The replyId of the autoplayed reply Listen currently owns. The TTS→Listen
-// bridge handlers are scoped to THIS id: a stale TTS event for a superseded
-// reply (e.g. the 'stopped' emitted when playReplyTts cancels a paused-by-
-// barge prior reply) must NOT drop ownership of the new reply. Without this
-// scoping a barge-pause of reply #1 followed by reply #2's autoplay muted
-// TTS for the rest of a Listen call (the superseded-'stopped' for #1 flipped
-// the old single boolean false after #2 had claimed ownership).
-let listenOwnedReplyId: string | null = null;
-const LISTEN_REPLY_AUTOPLAY_WINDOW_MS = 2 * 60 * 1000;
-
-function markListenAwaitingReply(chatId: string | null): void {
-  if (!chatId) return;
-  listenAwaitingReplyChatId = chatId;
-  listenAwaitingReplyAt = Date.now();
-}
-
-function shouldAutoPlayForListen(conversation: string | undefined | null): boolean {
-  if (!conversation || conversation !== listenAwaitingReplyChatId) return false;
-  if (Date.now() - listenAwaitingReplyAt > LISTEN_REPLY_AUTOPLAY_WINDOW_MS) return false;
-  const st = turnbased.getState();
-  return st === 'committing' || st === 'cooldown';
-}
-
-function consumeListenReply(chatId: string): void {
-  if (listenAwaitingReplyChatId === chatId) {
-    listenAwaitingReplyChatId = null;
-    listenAwaitingReplyAt = 0;
-  }
-}
 
 // releaseCaptureIfActive is defined as a closure inside boot() so it can
 // close the WebRTC peer connection cleanly when slash-commands or other
@@ -1006,29 +974,25 @@ async function boot() {
   // Each handler is scoped to the owned replyId — a stale event for a
   // superseded reply (different replyId) is ignored so it can't steal or
   // drop ownership of the reply Listen actually owns.
-  const ownsReply = (p: any): boolean =>
-    listenReplyTtsOwned && !!p?.replyId && p.replyId === listenOwnedReplyId;
+  const ownsReply = (p: any): boolean => listenReply.ownsReply(p);
   ttsModule.on('play-start', (p: any) => { if (ownsReply(p)) { try { turnbased.notifyReplyPlayback(true);  } catch {} } });
   ttsModule.on('resumed',    (p: any) => { if (ownsReply(p)) { try { turnbased.notifyReplyPlayback(true);  } catch {} } });
   ttsModule.on('paused',     (p: any) => {
     if (ownsReply(p)) {
       try { turnbased.notifyReplyPlayback(false); } catch {}
-      listenReplyTtsOwned = false;
-      listenOwnedReplyId = null;
+      listenReply.releaseOwnership();
     }
   });
   ttsModule.on('ended',      (p: any) => {
     if (ownsReply(p)) {
       try { turnbased.notifyReplyPlayback(false); } catch {}
-      listenReplyTtsOwned = false;
-      listenOwnedReplyId = null;
+      listenReply.releaseOwnership();
     }
   });
   ttsModule.on('stopped',    (p: any) => {
     if (ownsReply(p)) {
       try { turnbased.notifyReplyPlayback(false); } catch {}
-      listenReplyTtsOwned = false;
-      listenOwnedReplyId = null;
+      listenReply.releaseOwnership();
     }
   });
   draft.init({
@@ -2828,7 +2792,7 @@ async function boot() {
             return;
           }
           const chatId = resolveOrMintSendChatId();
-          markListenAwaitingReply(chatId);
+          listenReply.markAwaitingReply(chatId);
           composer.appendText(text);
           composer.submit();
         } catch (e: any) {
@@ -2852,7 +2816,7 @@ async function boot() {
           return;
         }
         const chatId = resolveOrMintSendChatId();
-        markListenAwaitingReply(chatId);
+        listenReply.markAwaitingReply(chatId);
         composer.appendText(body);
         composer.submit();
       },
@@ -4613,13 +4577,11 @@ function handleReplyFinal({ replyId, text, content = [], conversation, messageId
       : webrtcOpen ? 'webrtc-peer'
       : 'turnbased-tts';
     diag(`[reply-route] ${route} replyId=${replyId} len=${finalText.length} turnbased=${turnbased.getState()} webrtcOpen=${webrtcOpen} isReplay=${isReplay}`);
-    if (!isReplay && inListen && !webrtcOpen && shouldAutoPlayForListen(conversation)) {
-      consumeListenReply(conversation as string);
-      listenReplyTtsOwned = true;
-      listenOwnedReplyId = replyId;
+    if (!isReplay && inListen && !webrtcOpen && listenReply.shouldAutoPlay(conversation)) {
+      listenReply.consumeReply(conversation as string);
+      listenReply.claimOwnership(replyId);
       void playReplyTts(finalText, settings.get().voice, replyId).catch(() => {
-        listenReplyTtsOwned = false;
-        listenOwnedReplyId = null;
+        listenReply.releaseOwnership();
         try { turnbased.notifyReplyPlayback(false); } catch {}
       });
     }
