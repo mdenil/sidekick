@@ -58,19 +58,18 @@ export function reconcile(transcriptEl: HTMLElement, specs: BubbleSpec[], opts: 
   // don't ghost alongside the projection output.
   //
   // EXCEPTION: keyless `.line.system` rows are orthogonal markers (e.g.
-  // the "— context reset, agent forgot prior turns —" delimiter that
-  // chat.addLine drops on /clear, "New chat started" lines, model-switch
-  // system lines) — they're appended directly to #transcript by code
-  // that bypasses the projection model and lack a data-key, but
-  // shouldn't be removed when a sibling bubble reconciles. chat.clear()
-  // still wipes them on chat switch via innerHTML='', so they don't
-  // leak between chats. NOTE: notification bubbles ALSO carry class
-  // `system` (plus `notification`) but ARE owned by the projection
-  // — they have a data-key — so they continue through the normal
-  // existing/stale path. Field bug 2026-05-24: smoke `slash-commands`
-  // flagged the regression where the delimiter landed in DOM and was
-  // immediately stripped by the next reconcile triggered by the
-  // optimistic /clear pending-send upsert.
+  // the "Use the New Chat button…" hint dropped when the user types
+  // /new, "New chat started" lines, model-switch system lines) — they're
+  // appended directly to #transcript by code that bypasses the
+  // projection model and lack a data-key, but shouldn't be removed when
+  // a sibling bubble reconciles. chat.clear() still wipes them on chat
+  // switch via innerHTML='', so they don't leak between chats. NOTE:
+  // notification bubbles ALSO carry class `system` (plus `notification`)
+  // but ARE owned by the projection — they have a data-key — so they
+  // continue through the normal existing/stale path. Field bug
+  // 2026-05-24: smoke `slash-commands` flagged the regression where a
+  // keyless system line landed in DOM and was immediately stripped by
+  // the next reconcile triggered by an optimistic pending-send upsert.
   const existing = new Map<string, HTMLElement>();
   const stale: HTMLElement[] = [];
   for (const child of Array.from(transcriptEl.children) as HTMLElement[]) {

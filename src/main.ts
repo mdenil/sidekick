@@ -1775,12 +1775,43 @@ async function boot() {
         releaseCaptureIfActive();
         return;
       }
+      // Typed session-boundary commands. These are hidden from the slash
+      // catalog (server-side), and gateway vocabulary collides with
+      // Sidekick's: gateway /new is an IN-PLACE session reset (same thread,
+      // fresh agent), not a new thread. So we map on the Sidekick side:
+      //   /new   → New Chat button codepath (mint a fresh thread — matches
+      //            the word + the button the user already knows).
+      //   /clear → no gateway behavior (cli_only terminal screen wipe);
+      //            new threads already start vanilla, so just nudge to
+      //            New Chat instead of round-tripping an "Unknown command".
+      //   /reset → NOT intercepted here. It's surfaced as a synthetic
+      //            slash-catalog entry (see slashCommands.ts), so it routes
+      //            through slashCommands.dispatch → upstream as a command,
+      //            which resets the session in place (history stays
+      //            scrollable, agent re-reads SOUL). The gateway gates it
+      //            behind a destructive-confirm prompt.
+      if (text[0] === '/') {
+        const head = text.slice(1).split(/\s+/, 1)[0]?.toLowerCase();
+        if (head === 'new') {
+          composerInput.value = '';
+          composerInput.dispatchEvent(new Event('input'));
+          document.getElementById('sb-new-chat')?.click();
+          return;
+        }
+        if (head === 'clear') {
+          chat.addSystemLine(
+            `Use the New Chat button (${formatHotkey('Cmd+Shift+O')}) to start a fresh chat.`,
+          );
+          composerInput.value = '';
+          composerInput.dispatchEvent(new Event('input'));
+          return;
+        }
+      }
       // Slash commands: route through slashCommands so the popover's
       // dispatch path AND the manually-typed-then-Enter path share one
-      // codepath. slashCommands.dispatch fires onResetSignal (if the
-      // command is /new, /reset, /clear) and then calls onDispatch
-      // — which here is the bare-bones backend.sendMessage (no
-      // optimistic bubble; the agent's reply IS the response).
+      // codepath. slashCommands.dispatch calls onDispatch — which here is
+      // the bare-bones backend.sendMessage (no optimistic bubble; the
+      // agent's reply IS the response).
       if (slashCommands.isCommand(text)) {
         slashCommands.dispatch(text);
         return;
@@ -1902,9 +1933,8 @@ async function boot() {
     }
   });
   // Slash-command popover. Backend-declared registry, frontend-rendered
-  // — see src/slashCommands.ts. The onResetSignal callback is the only
-  // sidekick-side state callback (per design): main.ts owns the local
-  // wipe, slashCommands owns the dispatch + popover.
+  // — see src/slashCommands.ts. slashCommands owns the dispatch +
+  // popover; main.ts supplies onDispatch.
   //
   // onDispatch renders an OPTIMISTIC user bubble before POSTing, same
   // as sendTypedMessage's regular-text path. Field bug 2026-05-17:
@@ -1948,33 +1978,6 @@ async function boot() {
       composerInput.value = '';
       autoResize();
       updateSendButtonState();
-    },
-    onResetSignal: () => {
-      // /new (and /reset, /clear aliases) trigger a SERVER-SIDE
-      // session_reset: hermes mints a fresh session_id (agent forgets
-      // prior context) but keeps the SAME chat_id (visible thread +
-      // history preserved). The PWA used to wipe renderedMessages on
-      // the slash, making history LOOK gone for the brief window
-      // before the server fetch refilled the DOM (Jonathan, 2026-05-04
-      // panicked "lost history!" then it reappeared).
-      //
-      // Right behavior: leave the rendered scroll alone. Drop a system
-      // marker line that visually delimits the boundary between
-      // "agent saw this above" and "agent forgot, fresh context below."
-      // History scroll-back stays useful; user gets clear UX signal.
-      diag('reset history: slash command');
-      releaseCaptureIfActive();
-      // NOT clearing renderedMessages / activityRow / historyLoaded —
-      // those are about transcript identity, which doesn't change on
-      // session_reset (chat_id stays the same).
-      draft.dismiss();
-      voiceMemos.clearAll().catch(() => {});
-      chat.addLine(
-        '',
-        '— context reset, agent forgot prior turns —',
-        'system',
-        { source: 'sent' },
-      );
     },
   });
   // Enter-key handling. Desktop: Enter sends, Shift+Enter newline (chat

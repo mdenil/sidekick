@@ -13,9 +13,8 @@
  *   1. All command logic stays in hermes (this module is rendering +
  *      dispatch, NOT validation or execution).
  *   2. Core sidekick machinery (main.ts/settings.ts/chat.ts) gets only
- *      a small `init({input, onDispatch, onResetSignal})` hook; the
- *      composer textarea is the only DOM element this module attaches
- *      to.
+ *      a small `init({input, onDispatch})` hook; the composer textarea
+ *      is the only DOM element this module attaches to.
  *
  * Architecture:
  *   - Catalog fetch: one-shot GET /api/sidekick/commands on first
@@ -30,17 +29,11 @@
  *     cursor at index 0). Subsequent typing filters; Tab inserts the
  *     highlighted command's canonical name; Enter dispatches; Escape
  *     closes.
- *   - Reset signal: dispatch of `/new`, `/reset`, `/clear` ALSO fires
- *     `onResetSignal()` so main.ts can wipe local UI state. This is
- *     the v1 path; backlog: switch to a backend-driven `session_reset`
- *     envelope so other surfaces (telegram, the gateway itself) can
- *     trigger the same local-clear behavior.
- *
  * Public API:
- *   init({input, onDispatch, onResetSignal}) — wire the textarea + callbacks.
+ *   init({input, onDispatch}) — wire the textarea + dispatch callback.
  *   refresh() — re-fetch the catalog (call from backend reconnect handler).
  *   isCommand(text) — boolean: would dispatch(text) be handled by this module?
- *   dispatch(text) — fire the command's canonical text + any reset signal.
+ *   dispatch(text) — fire the command's canonical text upstream.
  */
 
 import { diag } from './util/log.ts';
@@ -56,18 +49,51 @@ interface CommandDef {
 
 let inputEl: HTMLTextAreaElement | null = null;
 let onDispatchCb: ((text: string) => void) | null = null;
-let onResetSignalCb: (() => void) | null = null;
 
-/** Catalog cache. Empty list = either not-yet-fetched or upstream
- *  unavailable. `isCommand` early-outs in both cases — degrading
- *  gracefully to send-as-text. */
-let catalog: CommandDef[] = [];
+/** Sidekick-only popover entry injected client-side. The gateway hides
+ *  "reset" from its catalog (it's an alias of "new", which collides with
+ *  TUI-only semantics) — but Sidekick wants /reset surfaced as a
+ *  browsable action: an in-place context reset that keeps this thread
+ *  (sent upstream; see the gateway's _handle_reset_command). /new is
+ *  deliberately NOT surfaced — the New Chat button already covers it.
+ *  Injected here rather than server-side to keep this
+ *  Sidekick-frontend-only (no gateway restart). */
+const SIDEKICK_SYNTHETIC_COMMANDS: CommandDef[] = [
+  {
+    name: 'reset',
+    description: "Reset the agent's context — keeps this thread",
+    category: 'Session',
+    aliases: [],
+    args_hint: '',
+    subcommands: [],
+  },
+];
 
-/** Names ∪ aliases that, when dispatched, should fire onResetSignal()
- *  so main.ts can wipe local UI (rendered messages, activity rows,
- *  draft, voice memos). Hard-coded for v1; backend-driven envelope
- *  is the next iteration. */
-const RESET_COMMANDS = new Set(['new', 'reset', 'clear']);
+/** Merge synthetic Sidekick entries onto the fetched catalog: synthetic
+ *  rows come first, and any fetched row sharing a synthetic name/alias is
+ *  dropped so the Sidekick-specific description/routing wins. */
+function withSyntheticCommands(fetched: CommandDef[]): CommandDef[] {
+  const synthNames = new Set<string>();
+  for (const c of SIDEKICK_SYNTHETIC_COMMANDS) {
+    synthNames.add(c.name.toLowerCase());
+    for (const a of c.aliases) synthNames.add(a.toLowerCase());
+  }
+  const deduped = fetched.filter((c) => {
+    if (synthNames.has(c.name.toLowerCase())) return false;
+    return !c.aliases.some((a) => synthNames.has(a.toLowerCase()));
+  });
+  return [...SIDEKICK_SYNTHETIC_COMMANDS, ...deduped];
+}
+
+/** Last successfully-fetched (or 404-cleared) upstream catalog, before
+ *  synthetic injection. Kept separate so transient fetch failures don't
+ *  wipe it. */
+let fetchedCatalog: CommandDef[] = [];
+
+/** Catalog cache (synthetic entries + fetched upstream commands). Empty
+ *  fetched list still leaves the synthetic rows, so the popover offers
+ *  /new + /reset even before/without an upstream catalog. */
+let catalog: CommandDef[] = withSyntheticCommands(fetchedCatalog);
 
 // ── Popover DOM ───────────────────────────────────────────────────────
 
@@ -232,14 +258,9 @@ function acceptCurrent(): void {
 export function init(opts: {
   input: HTMLTextAreaElement | null;
   onDispatch: (text: string) => void;
-  /** Fired BEFORE dispatch when the command is one of /new, /reset,
-   *  /clear — gives main.ts a hook to wipe local UI synchronously
-   *  so the agent's reply lands in a clean transcript. */
-  onResetSignal?: () => void;
 }): void {
   inputEl = opts.input;
   onDispatchCb = opts.onDispatch;
-  onResetSignalCb = opts.onResetSignal || null;
   if (!inputEl) {
     diag('slashCommands.init: no input element provided — disabled');
     return;
@@ -274,21 +295,26 @@ export async function refresh(): Promise<void> {
       credentials: 'same-origin',
     });
     if (r.status === 404) {
-      // Upstream agent doesn't implement /v1/commands. Stay silent —
-      // the popover never opens, isCommand always returns false.
-      catalog = [];
+      // Upstream agent doesn't implement /v1/commands. Drop the fetched
+      // catalog but keep synthetic entries so /reset still surfaces.
+      fetchedCatalog = [];
       diag('slashCommands: backend does not implement /v1/commands');
       return;
     }
     if (!r.ok) {
+      // Transient failure — keep the prior fetched catalog rather than
+      // wiping the popover.
       diag(`slashCommands: catalog fetch HTTP ${r.status}`);
       return;
     }
     const j: any = await r.json();
-    catalog = Array.isArray(j?.data) ? j.data : [];
-    diag(`slashCommands: catalog loaded (${catalog.length} commands)`);
+    fetchedCatalog = Array.isArray(j?.data) ? j.data : [];
+    diag(`slashCommands: catalog loaded (${fetchedCatalog.length} commands)`);
   } catch (e: any) {
+    // Transient failure — keep the prior fetched catalog.
     diag(`slashCommands: catalog fetch failed: ${e?.message || e}`);
+  } finally {
+    catalog = withSyntheticCommands(fetchedCatalog);
   }
 }
 
@@ -308,28 +334,12 @@ export function isCommand(text: string): boolean {
   return false;
 }
 
-/** Dispatch a command. Fires the reset-signal (if applicable), then
- *  calls onDispatch with the verbatim text — the backend is the
- *  authoritative handler. Idempotent on close (popover may or may
- *  not be open). */
+/** Dispatch a command — calls onDispatch with the verbatim text; the
+ *  backend is the authoritative handler. Idempotent on close (popover
+ *  may or may not be open). */
 export function dispatch(text: string): void {
   close();
   if (!text) return;
-  const head = text.slice(1).split(/\s+/, 1)[0]?.toLowerCase() || '';
-  // Resolve alias → canonical so the reset-set check works on /reset
-  // (alias for /new) as well as /new.
-  let canonical = head;
-  for (const c of catalog) {
-    if (c.name === head) { canonical = c.name; break; }
-    if (c.aliases.some((a) => a.toLowerCase() === head)) {
-      canonical = c.name;
-      break;
-    }
-  }
-  if (RESET_COMMANDS.has(canonical) || RESET_COMMANDS.has(head)) {
-    try { onResetSignalCb?.(); }
-    catch (e: any) { diag(`slashCommands: onResetSignal threw: ${e?.message || e}`); }
-  }
   try { onDispatchCb?.(text); }
   catch (e: any) { diag(`slashCommands: onDispatch threw: ${e?.message || e}`); }
 }
