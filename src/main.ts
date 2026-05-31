@@ -121,6 +121,14 @@ let memoActive = false;  // true while voice-memo recording bar is shown
 let listenAwaitingReplyChatId: string | null = null;
 let listenAwaitingReplyAt = 0;
 let listenReplyTtsOwned = false;
+// The replyId of the autoplayed reply Listen currently owns. The TTS→Listen
+// bridge handlers are scoped to THIS id: a stale TTS event for a superseded
+// reply (e.g. the 'stopped' emitted when playReplyTts cancels a paused-by-
+// barge prior reply) must NOT drop ownership of the new reply. Without this
+// scoping a barge-pause of reply #1 followed by reply #2's autoplay muted
+// TTS for the rest of a Listen call (the superseded-'stopped' for #1 flipped
+// the old single boolean false after #2 had claimed ownership).
+let listenOwnedReplyId: string | null = null;
 const LISTEN_REPLY_AUTOPLAY_WINDOW_MS = 2 * 60 * 1000;
 
 function markListenAwaitingReply(chatId: string | null): void {
@@ -995,24 +1003,32 @@ async function boot() {
   // Bridge TTS state → Listen state only for auto-playbacks that Listen
   // explicitly owns. Manual per-bubble replay and unrelated incoming
   // replies must not transition Listen out of an active capture state.
-  ttsModule.on('play-start', () => { if (listenReplyTtsOwned) { try { turnbased.notifyReplyPlayback(true);  } catch {} } });
-  ttsModule.on('resumed',    () => { if (listenReplyTtsOwned) { try { turnbased.notifyReplyPlayback(true);  } catch {} } });
-  ttsModule.on('paused',     () => {
-    if (listenReplyTtsOwned) {
+  // Each handler is scoped to the owned replyId — a stale event for a
+  // superseded reply (different replyId) is ignored so it can't steal or
+  // drop ownership of the reply Listen actually owns.
+  const ownsReply = (p: any): boolean =>
+    listenReplyTtsOwned && !!p?.replyId && p.replyId === listenOwnedReplyId;
+  ttsModule.on('play-start', (p: any) => { if (ownsReply(p)) { try { turnbased.notifyReplyPlayback(true);  } catch {} } });
+  ttsModule.on('resumed',    (p: any) => { if (ownsReply(p)) { try { turnbased.notifyReplyPlayback(true);  } catch {} } });
+  ttsModule.on('paused',     (p: any) => {
+    if (ownsReply(p)) {
       try { turnbased.notifyReplyPlayback(false); } catch {}
       listenReplyTtsOwned = false;
+      listenOwnedReplyId = null;
     }
   });
-  ttsModule.on('ended',      () => {
-    if (listenReplyTtsOwned) {
+  ttsModule.on('ended',      (p: any) => {
+    if (ownsReply(p)) {
       try { turnbased.notifyReplyPlayback(false); } catch {}
       listenReplyTtsOwned = false;
+      listenOwnedReplyId = null;
     }
   });
-  ttsModule.on('stopped',    () => {
-    if (listenReplyTtsOwned) {
+  ttsModule.on('stopped',    (p: any) => {
+    if (ownsReply(p)) {
       try { turnbased.notifyReplyPlayback(false); } catch {}
       listenReplyTtsOwned = false;
+      listenOwnedReplyId = null;
     }
   });
   draft.init({
@@ -4607,8 +4623,10 @@ function handleReplyFinal({ replyId, text, content = [], conversation, messageId
     if (!isReplay && inListen && !webrtcOpen && shouldAutoPlayForListen(conversation)) {
       consumeListenReply(conversation as string);
       listenReplyTtsOwned = true;
+      listenOwnedReplyId = replyId;
       void playReplyTts(finalText, settings.get().voice, replyId).catch(() => {
         listenReplyTtsOwned = false;
+        listenOwnedReplyId = null;
         try { turnbased.notifyReplyPlayback(false); } catch {}
       });
     }
