@@ -1542,16 +1542,6 @@ async function boot() {
   });
   webrtcDictation.setUserMessageIdProvider(getOrMintUserMessageId);
   webrtcConnection.setDataChannelListener((ev) => {
-    if (ev.type === 'barge') {
-      // Server-side VAD detected user voice during TTS. Cancel local
-      // playback and clear the user-transcript suppression so the
-      // user's words flow through the rest of the data-channel
-      // pipeline. See docs/SIDEKICK_AUDIO_PROTOCOL.md.
-      log('[webrtc] server-side barge fired — cancelling TTS playback');
-      webrtcConnection.cancelRemotePlayback();
-      webrtcSuppress.onBarge();
-      return;
-    }
     if (ev.type === 'listening') {
       // Bridge announced "STT pipe is hot" — fires at call-start AND
       // after every TTS-end transition (i.e. it's the user's turn

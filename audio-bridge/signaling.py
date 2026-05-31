@@ -181,13 +181,15 @@ async def handle_offer(request: "web.Request") -> "web.Response":
         f"first={peer.extra['keyterms'][0]!r}" if peer.extra["keyterms"] else "(empty)",
     )
 
-    # Barge detection is owned entirely by the PWA's client-side
-    # BargeWindow (mic AnalyserNode → {type:'barge'} envelope on the
-    # data channel). The legacy server-side RMS VAD was removed in
-    # 2026-05-03 once all live PWA builds had been on the client-owned
-    # path for a few weeks. Older offer fields (`barge_enabled`,
-    # `barge_threshold`, `client_owns_barge`) are silently ignored if
-    # a stale build still sends them.
+    # Barge is a split design: the bridge may run server-side Silero VAD
+    # (barge_policy, onnxruntime by default) and stream {type:'speech-active'}
+    # envelopes, but the *halt decision* stays client-side — the PWA's
+    # BargeDetector fires and sends {type:'barge'} on the data channel.
+    # The client picks its VAD source via a capability handshake
+    # ({type:'barge-vad-query'} → {type:'barge-vad', available}); if this
+    # bridge has no VAD, the PWA falls back to client-side Silero. The
+    # legacy server-side RMS VAD (and the old offer fields `barge_enabled`,
+    # `barge_threshold`, `client_owns_barge`) are gone / silently ignored.
 
     # Defer to bridge modules to install ontrack / outbound track wiring.
     # The dispatch listener handles inbound DataChannel control messages

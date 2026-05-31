@@ -4,10 +4,13 @@
  * in `audio/shared/bargeDetector.ts`; this module owns nothing but the
  * detector instance and the lifecycle wiring to the WebRTC peer's mic.
  *
- * KEEP THIS FILE BYTE-EQUIVALENT TO `turn-based/turnbased.ts`'s
- * `startBargeLoop`/`stopBargeLoop` (modulo the mic-stream and
- * isPlaying source). Any divergence is a smell — the whole point of
- * BargeDetector is that both modes invoke it identically.
+ * This closely mirrors `turn-based/turnbased.ts`'s barge wiring — both
+ * drive the same `BargeDetector` — but the two intentionally diverge in
+ * their `VadSource`: turn-based always runs client-side Silero, while
+ * realtime routes through `makeVadSource(chooseVadStrategy())`, which
+ * yields a bridge-preferred `FallbackVadSource` (server VAD with a
+ * client-side fallback when the bridge has no VAD). See `vadRouting.ts`
+ * and docs/BARGE.md.
  */
 
 import { log } from '../../util/log.ts';

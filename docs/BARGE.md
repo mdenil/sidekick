@@ -45,9 +45,17 @@ The detector reads from the live mic stream every 50 ms and asks one question:
 
 > Is the user speaking *right now*?
 
-Answered by **Silero VAD** (a small ONNX neural net wrapped via [@ricky0123/vad-web](https://github.com/ricky0123/vad-web)). Silero outputs per-frame "speech probability" and emits an `onSpeechStart` callback when probability exceeds a threshold for a minimum duration. The detector fires when Silero says "speech started" AND every gate above passes.
+Answered by **Silero VAD** (a small ONNX neural net). The same model can run in two places, abstracted behind a pluggable `VadSource` (see `src/audio/shared/vadSource.ts`):
 
-Detection runs **client-side** in both modes. Bridge-side VAD is bypassed via the `client_owns_barge: true` flag in the WebRTC offer.
+- **`ClientSideVadSource`** — Silero runs in the browser via [@ricky0123/vad-web](https://github.com/ricky0123/vad-web), reading the local mic stream.
+- **`BridgeVadSource`** — Silero runs on the audio-bridge (`audio-bridge/barge_policy.py`, onnxruntime by default), which streams `{type:'speech-active', active}` envelopes over the data channel; the client reads those instead of running its own model.
+
+Either way the *decision* stays client-side: the `BargeDetector` fires when the active `VadSource` reports speech AND every gate above passes, then the client sends `{type:'barge'}` upstream to halt TTS. The bridge's role (when bridge VAD is active) is only to supply the speech signal, not to halt playback.
+
+**Which source runs where** (`src/audio/shared/vadRouting.ts`):
+
+- **Turn-based** uses `ClientSideVadSource` — there's no live WebRTC peer to stream server envelopes.
+- **Realtime** uses `FallbackVadSource`: it prefers the bridge (offloads Silero from the phone, ~couple-hundred-ms cost) but performs a capability handshake at call start — the client sends `{type:'barge-vad-query'}` and the bridge replies `{type:'barge-vad', available}`. If the bridge reports VAD unavailable (no onnxruntime/torch in its venv) or doesn't answer by the deadline, the source transparently falls back to `ClientSideVadSource`. This is why realtime barge keeps working even against a bridge with no server-side VAD installed.
 
 ## Knobs
 
@@ -76,6 +84,8 @@ The detector itself is initialised via `BargeDetector.start({ micStream, isPlayi
 |---|---|
 | [`src/audio/shared/bargeDetector.ts`](../src/audio/shared/bargeDetector.ts) | Unified detector — fire condition, warmup/cooldown, lifecycle, fire chime. |
 | [`src/audio/shared/speechVad/index.ts`](../src/audio/shared/speechVad/index.ts) | Silero VAD wrapper — MicVAD lifecycle, `isSpeechActive()` readout, refcount. |
+| [`src/audio/shared/vadSource.ts`](../src/audio/shared/vadSource.ts) | `VadSource` abstraction — `ClientSideVadSource`, `BridgeVadSource`, `FallbackVadSource` (bridge-preferred with client fallback), `FakeVadSource` (tests). |
+| [`src/audio/shared/vadRouting.ts`](../src/audio/shared/vadRouting.ts) | Picks the `VadSource` per mode/strategy (`makeVadSource`) + effective-threshold helpers. |
 | [`src/audio/shared/headphones.ts`](../src/audio/shared/headphones.ts) | SSOT for "is barge physically possible" — checks audio routing on iOS via `navigator.audioSession.type`. |
 | [`src/audio/realtime/realtime.ts`](../src/audio/realtime/realtime.ts) | WebRTC offer body, `client_owns_barge` flag, upstream `{type:'barge'}` envelope. |
 | [`src/audio/realtime/realtimeBarge.ts`](../src/audio/realtime/realtimeBarge.ts) | Realtime-mode wiring of `BargeDetector` — `isPlayingCb` reads `suppress.isTtsPlaying()`. |
@@ -121,7 +131,9 @@ This table is updated as we ship fixes. The dates are when each value last chang
 | Silero `positiveSpeechThreshold` | 0.5 default; user slider drives `settings.bargeVadThreshold`, mapped 0..100% → 1.0..0.0 inversely | `settings.ts:sensitivityToVadThreshold` | 2026-05-06 |
 | Silero `minSpeechMs` | 400 ms | `DEFAULT_MIN_SPEECH_MS` | 2026-05-05 (was 150) |
 | Silero MicVAD warmup watchdog | 15 s | `speechVad/index.ts` | 2026-05-04 (was 10) |
-| Realtime barge ownership | client (offer carries `client_owns_barge: true`) | `realtime.ts` | 2026-05-03 |
+| Realtime VAD source | bridge-preferred via `FallbackVadSource` (capability handshake; falls back to client-side Silero if bridge VAD unavailable). Halt decision stays client-side (`{type:'barge'}`). | `vadRouting.ts` / `vadSource.ts` | 2026-05-31 |
+| Turn-based VAD source | client-side Silero (`ClientSideVadSource`) | `vadRouting.ts` | 2026-05-31 |
+| Server-side VAD backend | onnxruntime (CPU, vendored `silero_vad.onnx`) by default; torch/silero-vad optional | `barge_policy.py` | 2026-05-31 |
 | Turn-based + speaker | Barge **disabled** entirely | `headphones.ts` | original |
 | Turn-based + headphones | Barge enabled | `headphones.ts` | original |
 | Realtime + speaker | Barge enabled (relies on WebRTC AEC) | `realtime.ts` | original |
