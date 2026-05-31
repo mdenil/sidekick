@@ -19,7 +19,8 @@
     "test": "node --test --experimental-strip-types --disable-warning=ExperimentalWarning 'test/**/*.test.ts' 'src/**/*.test.ts' 'proxy/**/*.test.ts'",
     "typecheck": "tsc --noEmit",
     "smoke": "node scripts/run-smoke.mjs",
-    "smoke:barge": "node scripts/run-smoke-barge.mjs"
+    "smoke:barge": "node scripts/run-smoke-barge.mjs",
+    "smoke:live": "node scripts/smoke-live.mjs"
   },
   "dependencies": {
     "@capacitor/android": "^8.3.1",
