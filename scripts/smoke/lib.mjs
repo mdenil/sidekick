@@ -146,6 +146,69 @@ export async function launchBrowser(browser, { headed: _headed = false, mobile =
   return { ctx, page, cleanup };
 }
 
+/** Launch a DEDICATED Chromium that feeds a real WAV into getUserMedia
+ *  instead of the silent default fake device. This is the linchpin for
+ *  real-speech browser E2E: `--use-file-for-fake-audio-capture` makes
+ *  the mic track play `fixtureAbsPath` so MediaRecorder captures actual
+ *  audio (turn-based) and the WebRTC mic track carries real speech
+ *  (realtime barge) — the silent shared-browser fake device exercises
+ *  only the getUserMedia/MediaRecorder plumbing, never the audio itself.
+ *
+ *  WAV must be 16-bit PCM (linear16); Chromium rejects float/compressed.
+ *
+ *  Unlike launchSharedBrowser this is per-scenario: the flag binds ONE
+ *  file at launch, and each audio scenario wants its own fixture. The
+ *  runner tears it down after the scenario (vs. the shared browser that
+ *  lives for the whole run). Returns the same { ctx, page, cleanup }
+ *  shape as launchBrowser PLUS the owning browser so cleanup can close
+ *  both. `noLoop` appends %noloop so the file plays once then goes
+ *  silent (needed for silence-based turn commit); default loops it
+ *  (needed to sustain speech for barge). */
+export async function launchAudioBrowser(fixtureAbsPath, { headed = false, noLoop = false } = {}) {
+  if (!existsSync(fixtureAbsPath)) {
+    throw new Error(`launchAudioBrowser: fixture not found: ${fixtureAbsPath}`);
+  }
+  const fileArg = noLoop ? `${fixtureAbsPath}%noloop` : fixtureAbsPath;
+  const browser = await chromium.launch({
+    executablePath: CHROMIUM,
+    headless: !headed,
+    args: [
+      '--no-sandbox',
+      '--use-fake-ui-for-media-stream',
+      '--use-fake-device-for-media-stream',
+      `--use-file-for-fake-audio-capture=${fileArg}`,
+    ],
+  });
+  const { ctx, page, cleanup: closeCtx } = await launchBrowser(browser, { headed });
+  const cleanup = async () => {
+    try { await closeCtx(); } catch {}
+    try { await browser.close(); } catch {}
+  };
+  return { browser, ctx, page, cleanup };
+}
+
+/** CDP network throttling. Emulates a constrained link (latency +
+ *  bandwidth caps) on the page's renderer so the HTTP audio paths
+ *  (/transcribe, /tts, SSE turn stream) are exercised under the kind of
+ *  flaky/slow connection a phone hits in the field — where loading-state
+ *  wedges and tap-dead-during-fetch bugs actually surface. Profiles:
+ *    'slow3g'  ~400ms RTT, 400/400 kbps  (worst realistic mobile)
+ *    'fast3g'  ~150ms RTT, 1.5/0.75 Mbps (typical degraded mobile)
+ *  WebRTC media (realtime peer track) rides a separate transport CDP
+ *  doesn't fully shape, so this most faithfully throttles the turn-based
+ *  HTTP path; for realtime it still adds signaling latency (offer/ice). */
+export async function throttleNetwork(page, profile = 'fast3g') {
+  const PROFILES = {
+    slow3g: { latency: 400, downloadThroughput: 400 * 1024 / 8, uploadThroughput: 400 * 1024 / 8 },
+    fast3g: { latency: 150, downloadThroughput: 1.5 * 1024 * 1024 / 8, uploadThroughput: 750 * 1024 / 8 },
+  };
+  const cond = PROFILES[profile] || PROFILES.fast3g;
+  const client = await page.context().newCDPSession(page);
+  await client.send('Network.enable');
+  await client.send('Network.emulateNetworkConditions', { offline: false, ...cond });
+  return client;
+}
+
 /** Attach console-line capture to a Playwright page. Returns a function
  *  that returns the last N lines (for diagnostic dump on failure). */
 export function attachConsoleCapture(page, cap = 200) {
