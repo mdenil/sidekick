@@ -2318,8 +2318,11 @@
   .pin-drawer-hint { font-size: 11px; opacity: 0.7; }
 
   /* Toggle button banner — small count chip overlapping the icon's
-   * upper-right corner, like an app icon badge. Hidden when count=0. */
-  #btn-pin-drawer { position: relative; }
+   * upper-right corner, like an app icon badge. Hidden when count=0.
+   * Both mobile toolbar toggles host a .pin-count-banner child, so both
+   * need to be the badge's positioned ancestor — without it on the
+   * activity button the badge escaped to the viewport's top-right on iOS. */
+  #btn-pin-drawer, #btn-activity-drawer { position: relative; }
   .pin-count-banner {
     position: absolute; top: -2px; right: -2px;
     min-width: 16px; height: 16px; padding: 0 4px;
