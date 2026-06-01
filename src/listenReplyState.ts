@@ -37,8 +37,13 @@ export function markAwaitingReply(chatId: string | null): void {
 export function shouldAutoPlay(conversation: string | undefined | null): boolean {
   if (!conversation || conversation !== awaitingReplyChatId) return false;
   if (Date.now() - awaitingReplyAt > AUTOPLAY_WINDOW_MS) return false;
-  const st = turnbased.getState();
-  return st === 'committing' || st === 'cooldown';
+  // The awaiting-chat-id + window + consume-once guard above already scopes
+  // autoplay to exactly the reply this turn is waiting for. Do NOT additionally
+  // gate on a transient turn state (committing/cooldown): on a slow link the
+  // reply lands after the turn machine has re-armed ('armed'), and an extra
+  // state check silently drops TTS — the "turn mode doesn't speak" field bug
+  // (regression from 2e82220, which over-narrowed the gate).
+  return turnbased.getState() !== 'idle';
 }
 
 export function consumeReply(chatId: string): void {
