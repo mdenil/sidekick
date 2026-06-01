@@ -33,7 +33,6 @@ import { initNotifications } from './notifications/index.ts';
 import * as badge from './notifications/badge.ts';
 import { loadMutes } from './notifications/mutes.ts';
 import { initVisibilityReporting } from './notifications/visibility.ts';
-import { fetchWithTimeout, TimeoutError } from './util/fetchWithTimeout.ts';
 import * as status from './status.ts';
 import * as settings from './settings.ts';
 import * as headphones from './audio/shared/headphones.ts';
@@ -92,6 +91,7 @@ import { flushScrollPosition } from './chatScrollPositions.ts';
 import { setStayAliveHint as setProxyStayAliveHint } from './proxyClient.ts';
 import * as listenReply from './listenReplyState.ts';
 import * as handlers from './backendEventHandlers.ts';
+import * as memoOutbox from './memoOutbox.ts';
 
 // Card kind modules
 import imageCard from './cards/kinds/image.ts';
@@ -1247,7 +1247,7 @@ async function boot() {
         } else {
           await backfillHistory();
         }
-        await flushOutbox();
+        await memoOutbox.flushOutbox();
         if (settings.refreshModels) settings.refreshModels().catch(() => {});
         // Eager schema fetch so consumers depending on agent settings
         // (currently the composer attach-button vision-gate) have data
@@ -1345,7 +1345,7 @@ async function boot() {
   // without this the queue just sits (reconnect-only retries don't
   // fire when the WS never dropped). Mutex in queue.flush keeps this
   // idempotent if two triggers overlap.
-  backend.onSend(() => { flushOutbox().catch(() => {}); });
+  backend.onSend(() => { memoOutbox.flushOutbox().catch(() => {}); });
 
   // Hide settings rows whose feature isn't supported by the active backend.
   // E.g. openai-compat doesn't expose a model catalog → hide the model row.
@@ -2231,288 +2231,7 @@ async function boot() {
     updateSendButtonState();
   }
 
-  // Tracks the in-flight /transcribe upload size (bytes) so the periodic
-  // status refresher can surface "Uploading audio (NKB)…" while the
-  // request is on the wire. Field bug 2026-05-02: 14-22s queue→flush
-  // window was completely silent, leaving the user wondering if anything
-  // was happening between "queued" and the eventual transcript landing
-  // in the composer. null = no upload in flight; the refresher falls
-  // back to its normal connected/stalled narrative.
-  let uploadInFlightBytes: number | null = null;
-
-  /** Flush queued audio items — update the corresponding memo cards with transcripts. */
-  async function flushOutbox() {
-    const result = await queue.flush(
-      async (text) => { backend.sendMessage(text); },
-      async (blob, mimeType, id, autoSend) => {
-        // Timeout scales with blob size: small memos under 1MB ≈ minute or
-        // less of audio (Deepgram batch returns in 1-3s) get the snappy
-        // 15s budget. Larger blobs get 60s — the upload alone for a 5MB
-        // webm over Tailscale can take 5-10s, plus Deepgram batch latency
-        // grows roughly with audio length. Earlier 15s flat ceiling
-        // wedged 3-minute memos in permanent-retry: each attempt timed
-        // out before Deepgram could respond, queue never drained.
-        const timeoutMs = blob.size > 1_000_000 ? 60_000 : 15_000;
-        // Per-user keyterm biasing for batch transcribe. Same IDB list the
-        // WebRTC offer ships; bridge accepts repeated `?keyterms=…&keyterms=…`
-        // and merges into the Deepgram spec like the streaming path does.
-        // Without this, memo-mode transcription runs un-biased even if the
-        // user has chips configured (was the case for "clawdian" miss).
-        let kt: string[] = [];
-        try {
-          const { readList } = await import('./keyterms.ts');
-          kt = (await readList()) || [];
-        } catch {}
-        const url = kt.length
-          ? `/transcribe?${kt.map(t => 'keyterms=' + encodeURIComponent(t)).join('&')}`
-          : '/transcribe';
-        let res;
-        // Surface "Uploading audio (NKB)…" immediately + via the
-        // periodic refresher (which prefers uploadInFlightBytes when
-        // set). Cleared in finally so success/timeout/error all reset
-        // the indicator. fetchWithTimeout doesn't expose progress
-        // events, so this is indeterminate by design — just enough
-        // to tell the user "stop tapping, it's working."
-        uploadInFlightBytes = blob.size;
-        const kb = Math.round(blob.size / 1024);
-        status.setStatus(`Uploading audio (${kb} KB)…`, 'live');
-        try {
-          try {
-            res = await fetchWithTimeout(url, {
-              method: 'POST', headers: { 'Content-Type': mimeType }, body: blob,
-              timeoutMs,
-            });
-          } catch (e) {
-            if (e instanceof TimeoutError) {
-              // Surface + chime; blob stays in queue for retry on next
-              // reconnect. The card moves to queued(⏳) so the user sees
-              // something is pending.
-              log('transcribe timeout — blob stays queued for retry');
-              const transcriptEl = document.getElementById('transcript');
-              const card = id && transcriptEl ? memoCard.find(transcriptEl, id) : null;
-              if (card) memoCard.update(card, { status: 'queued' });
-              playFeedback('error');
-            }
-            throw e;  // re-throw so queue.flush keeps the item
-          }
-        } finally {
-          uploadInFlightBytes = null;
-        }
-        const data = await res.json();
-        if (!data.ok) {
-          // Distinguish PERMANENT failures (corrupt blob, unsupported
-          // format, Deepgram 400) from TRANSIENT (network, 5xx, timeout).
-          // Permanent: drop from queue so we don't retry forever.
-          // Transient: throw, queue.flush keeps the item for next round.
-          //
-          // Symptom: queued audio memos all fail with "deepgram 400
-          // corrupt or unsupported data" on each retry — typically
-          // blobs recorded while the iOS mic-perm dialog was up
-          // (silent / partial). Without this guard the outbox grows
-          // unbounded.
-          const err = String(data.error || 'transcription failed');
-          const isPermanent = /\b4\d\d\b|corrupt|unsupported|empty body/i.test(err);
-          if (isPermanent) {
-            log('transcribe: permanent failure, dropping blob:', err);
-            const transcriptEl = document.getElementById('transcript');
-            const card = id && transcriptEl ? memoCard.find(transcriptEl, id) : null;
-            const note = '(audio unprocessable)';
-            if (card) memoCard.update(card, { transcript: note, status: 'failed' });
-            try { await voiceMemos.update(id, { transcript: note, status: 'failed' }); } catch {}
-            playFeedback('error');
-            return;  // don't throw — queue.flush will drop the item
-          }
-          throw new Error(err);  // transient → keep in queue
-        }
-        const text = (data.transcript || '').trim();
-        const transcriptEl = document.getElementById('transcript');
-        const card = id && transcriptEl ? memoCard.find(transcriptEl, id) : null;
-
-        // Empty transcript — /transcribe succeeded but heard nothing
-        // (silent clip / inaudible). Surface that on the card so the user
-        // isn't left staring at an orphan row. Persist the status so a
-        // reload doesn't restore it as pending again.
-        if (!text) {
-          const note = '(no speech detected)';
-          if (card) memoCard.update(card, { transcript: note, status: 'failed' });
-          await voiceMemos.update(id, { transcript: note, status: 'failed' });
-          return;
-        }
-
-        // Routing depends on the per-memo autoSend flag captured at
-        // record time (settings.micAutoSend at the moment startMemo()
-        // was called). autoSend=true → append to composer (so any
-        // already-typed text is preserved) and immediately submit;
-        // autoSend=false → just append, leaving the user to review +
-        // send manually. Both paths converge through composer.appendText
-        // → composer.submit, which is the same codepath as clicking Send.
-        if (card) card.remove();
-        await voiceMemos.remove(id);
-        composer.appendText(text);
-        if (autoSend) {
-          composer.submit();
-        }
-      }
-    );
-    if (result.skipped) diag('outbox: flush skipped (already flushing)');
-    else if (result.sent > 0) log('outbox: flushed', result.sent, 'queued messages');
-    return result;
-  }
-
-  // Periodic background retry. Covers the scenario where /transcribe
-  // fails mid-memo (blob queued) but the gateway WS stays connected —
-  // no reconnect event fires, no user send happens. Without this, a
-  // queued blob sits until the next reload or user action. Poll is
-  // cheap (IDB read + early-out if empty); only flushes when there's
-  // pending work AND the gateway is reachable.
-  setInterval(async () => {
-    if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
-    try {
-      const pending = await queue.pending();
-      if (pending > 0 && backend.isConnected()) {
-        diag(`outbox: periodic retry (${pending} pending)`);
-        flushOutbox().catch(() => {});
-      }
-    } catch {}
-  }, 30_000);
-
-  // Periodic network-status refresh. Surfaces queued count + weak-signal
-  // detection in the header. Only writes when there's no active WebRTC
-  // call (controls.ts owns the call-status narrative).
-  const WEAK_SIGNAL_MS = 8_000;
-  setInterval(async () => {
-    if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
-    if (webrtcControls.isOpen()) return;
-    try {
-      const gwConnected = backend.isConnected();
-      const summary = await queue.summary();
-      // Idle cursor — wall-clock ms since /api/sidekick/stream last
-      // delivered ANY envelope. EventSource can stay "connected" while
-      // the underlying TCP connection is dead (cellular handoff,
-      // suspended radio). Combined with queued outbound, a long idle
-      // window is the signal that we're stalled. msSinceLastEnvelope()
-      // returns 0 on fresh connect → treated as "no signal yet."
-      //
-      // The pre-refactor openclaw path also surfaced a `weakSignal`
-      // state (idle stream, no queue, ambiguously-iffy network). We
-      // intentionally don't recreate that here: the SSE channel is
-      // sparse by design — an idle drawer browse can go minutes
-      // without an envelope and that's normal — so a `weakSignal`
-      // fire on idle would be a constant false positive. Stalled
-      // (idle + queued outbound) IS unambiguous and stays.
-      const msIdle = backend.msSinceLastEnvelope();
-      // Upload-in-flight wins over the connectivity narrative — the
-      // user wants to see "uploading" until the request lands, even
-      // if the gateway briefly looks idle. Without this the 2s
-      // refresher would clobber the "Uploading…" pill back to
-      // "Connected" within a tick.
-      if (uploadInFlightBytes != null) {
-        const kb = Math.round(uploadInFlightBytes / 1024);
-        status.setStatus(`Uploading audio (${kb} KB)…`, 'live');
-      } else if (!gwConnected) {
-        status.setState('reconnecting', { queuedCount: summary.count, queuedAudioMs: summary.totalAudioMs });
-      } else if (msIdle > WEAK_SIGNAL_MS && summary.count > 0) {
-        status.setState('stalled', { queuedCount: summary.count, queuedAudioMs: summary.totalAudioMs });
-      } else {
-        status.setState('connected', {
-          queuedCount: summary.count,
-          queuedAudioMs: summary.totalAudioMs,
-        });
-      }
-    } catch {}
-  }, 2_000);
-
-  /** Save blob to IDB + enqueue for retry + render a placeholder memo card
-   *  in chat. Always runs on record stop, regardless of online/offline —
-   *  gives the user immediate visual feedback during the quiet
-   *  transcription window. Returns {id, card, rec}. autoSend is stored
-   *  on the queue item so flushOutbox can route correctly even when the
-   *  flush happens minutes later (periodic retry / reconnect). */
-  async function renderMemoCard(audioBlob, durationMs, autoSend = false) {
-    // Hard ceiling: the bridge accepts up to 25MB at /v1/transcribe and
-    // the proxy mirrors that. webm voice is ~30KB/s so 25MB ≈ 14 min.
-    // Anything larger gets DROPPED here with a status warning rather
-    // than queued — a too-big blob in the outbox just retries forever
-    // and blocks the channel for smaller subsequent memos. User can
-    // re-record in shorter chunks. Threshold is intentionally a few
-    // hundred KB below the 25MB limit so an upload-time encoding bump
-    // doesn't push a borderline blob over.
-    const MEMO_MAX_BYTES = 24 * 1024 * 1024;
-    if (audioBlob.size > MEMO_MAX_BYTES) {
-      const mb = (audioBlob.size / (1024 * 1024)).toFixed(1);
-      const mins = Math.round((durationMs ?? 0) / 60000);
-      log(`memo: too big (${mb}MB ≈ ${mins}min) — dropped, would block the queue`);
-      status.setStatus(
-        `Memo too long (${mins}m) — dropped. Try shorter chunks.`,
-        'err',
-      );
-      try { playFeedback('error'); } catch {}
-      return { id: null, card: null, rec: null };
-    }
-
-    const id = crypto.randomUUID();
-    const transcriptEl = document.getElementById('transcript');
-
-    const rec = {
-      id, blob: audioBlob, mimeType: audioBlob.type, durationMs,
-      waveform: new Float32Array(40),
-      transcript: null, status: 'pending', timestamp: Date.now(),
-    };
-
-    let card = null;
-    if (transcriptEl) {
-      card = memoCard.render(transcriptEl, rec);
-      chat.autoScroll();
-    }
-
-    await voiceMemos.save(rec);
-    await queue.enqueue({ id, type: 'audio', blob: audioBlob, mimeType: audioBlob.type, durationMs, autoSend });
-    log('memo: queued audio blob (' + Math.round(audioBlob.size / 1024) + 'KB) autoSend=' + autoSend);
-
-    // Background waveform extraction
-    voiceMemos.extractWaveform(audioBlob).then(bars => {
-      if (card) {
-        const anyCard = card as any;
-        if (anyCard._setWaveform) anyCard._setWaveform(bars);
-      }
-      voiceMemos.update(id, { waveform: Array.from(bars) }).catch(() => {});
-    }).catch(e => log('memo: waveform extract failed:', e.message));
-
-    return { id, card };
-  }
-
-  async function handleMemoResult(audioBlob: Blob, durationMs?: number, autoSend = false, path = 'unknown') {
-    // Diagnostic for the iOS PTT auto-send bug — echoes the captured
-    // autoSend flag + which release path triggered this finish, so
-    // future regressions are debuggable from the JS console without
-    // having to instrument startMemo from scratch.
-    log(`memo finish: path=${path} autoSend=${autoSend} blob=${audioBlob ? Math.round(audioBlob.size/1024)+'KB' : 'null'}`);
-    if (!audioBlob) return;
-    // Always render the placeholder card + enqueue the blob, regardless
-    // of connectivity. Matches the "user gets immediate visual feedback"
-    // UX spec and keeps ONE processing path (flushOutbox) whether we're
-    // online or offline.
-    const { card } = await renderMemoCard(audioBlob, durationMs, autoSend);
-
-    const offline = navigator.onLine === false || !backend.isConnected();
-    if (offline) {
-      if (card) memoCard.update(card, { status: 'queued' });
-      status.setStatus('Audio queued — will transcribe when connected');
-      return;
-    }
-
-    // Single transcribe path: flushOutbox iterates the queue serially
-    // (for/await loop + isFlushing mutex), calls /transcribe per item,
-    // routes to composer / chat based on autoSend setting, updates the
-    // card. Rapid-fire memos all land here — mutex serializes them so
-    // composer-append order matches record order, no duplicates.
-    //
-    // Earlier architecture had a second "live" transcribeChain that
-    // raced with this: both paths fetched /transcribe for the same
-    // blob, both appended, producing duplicates ("1 1 2 3 2 3" pattern
-    // the user reported). Now there's only one path.
-    flushOutbox().catch(() => {});
-  }
+  memoOutbox.startBackgroundPollers();
 
   // ── Cursor-aware dictation (call=true, autoSend=false) ─────────────
   // webrtcDictate is the live-streaming + cursor-aware injection module.
@@ -2590,7 +2309,7 @@ async function boot() {
       try {
         const { audioBlob, durationMs } = await memo.stop();
         exitMemoMode();
-        await handleMemoResult(audioBlob, durationMs, autoSend, 'composerSend.click');
+        await memoOutbox.handleMemoResult(audioBlob, durationMs, autoSend, 'composerSend.click');
       } finally {
         composerSend.disabled = false;
       }
@@ -2610,7 +2329,7 @@ async function boot() {
       sendBtn: composerSend,
       onDone: (audioBlob) => {
         exitMemoMode();
-        handleMemoResult(audioBlob, undefined, autoSend, 'memo.onDone');
+        memoOutbox.handleMemoResult(audioBlob, undefined, autoSend, 'memo.onDone');
       },
       onCancel: () => {
         exitMemoMode();
