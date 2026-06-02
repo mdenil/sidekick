@@ -33,7 +33,6 @@ import { initNotifications } from './notifications/index.ts';
 import * as badge from './notifications/badge.ts';
 import { loadMutes } from './notifications/mutes.ts';
 import { initVisibilityReporting } from './notifications/visibility.ts';
-import { fetchWithTimeout, TimeoutError } from './util/fetchWithTimeout.ts';
 import * as status from './status.ts';
 import * as settings from './settings.ts';
 import * as headphones from './audio/shared/headphones.ts';
@@ -57,7 +56,7 @@ import * as remoteControl from './remoteControl.ts';
 import * as multiSelect from './multiSelect.ts';
 import * as agentSettingsMod from './agentSettings.ts';
 import { primeAudio, getSharedAudioCtx } from './audio/shared/platform.ts';
-import { playReplyTts, cancelReplyTts } from './audio/turn-based/tts.ts';
+import { cancelReplyTts } from './audio/turn-based/tts.ts';
 import * as ttsModule from './audio/turn-based/tts.ts';
 import * as replyNavigator from './audio/turn-based/replyNavigator.ts';
 import * as replyPlayer from './audio/turn-based/replyPlayer.ts';
@@ -67,7 +66,6 @@ import * as fakeLock from './ios/fakeLock.ts';
 import { setMicPeakListener } from './audio/shared/micMeter.ts';
 import { attachCard } from './cards/attach.ts';
 import { registerCard } from './cards/registry.ts';
-import { parseCardsFromText, extractImageBlocks } from './cards/fallback.ts';
 import * as ambient from './ambient.ts';
 import { playFeedback } from './audio/shared/feedback.ts';
 import * as memo from './audio/shared/memo.ts';
@@ -91,6 +89,9 @@ import * as transcriptStore from './transcript/store.ts';
 import { bindTranscriptPipeline, isVirtualizerEnabled } from './transcript/index.ts';
 import { flushScrollPosition } from './chatScrollPositions.ts';
 import { setStayAliveHint as setProxyStayAliveHint } from './proxyClient.ts';
+import * as listenReply from './listenReplyState.ts';
+import * as handlers from './backendEventHandlers.ts';
+import * as memoOutbox from './memoOutbox.ts';
 
 // Card kind modules
 import imageCard from './cards/kinds/image.ts';
@@ -117,39 +118,6 @@ async function restoreMemoCards() {
 }
 
 let memoActive = false;  // true while voice-memo recording bar is shown
-
-let listenAwaitingReplyChatId: string | null = null;
-let listenAwaitingReplyAt = 0;
-let listenReplyTtsOwned = false;
-// The replyId of the autoplayed reply Listen currently owns. The TTS→Listen
-// bridge handlers are scoped to THIS id: a stale TTS event for a superseded
-// reply (e.g. the 'stopped' emitted when playReplyTts cancels a paused-by-
-// barge prior reply) must NOT drop ownership of the new reply. Without this
-// scoping a barge-pause of reply #1 followed by reply #2's autoplay muted
-// TTS for the rest of a Listen call (the superseded-'stopped' for #1 flipped
-// the old single boolean false after #2 had claimed ownership).
-let listenOwnedReplyId: string | null = null;
-const LISTEN_REPLY_AUTOPLAY_WINDOW_MS = 2 * 60 * 1000;
-
-function markListenAwaitingReply(chatId: string | null): void {
-  if (!chatId) return;
-  listenAwaitingReplyChatId = chatId;
-  listenAwaitingReplyAt = Date.now();
-}
-
-function shouldAutoPlayForListen(conversation: string | undefined | null): boolean {
-  if (!conversation || conversation !== listenAwaitingReplyChatId) return false;
-  if (Date.now() - listenAwaitingReplyAt > LISTEN_REPLY_AUTOPLAY_WINDOW_MS) return false;
-  const st = turnbased.getState();
-  return st === 'committing' || st === 'cooldown';
-}
-
-function consumeListenReply(chatId: string): void {
-  if (listenAwaitingReplyChatId === chatId) {
-    listenAwaitingReplyChatId = null;
-    listenAwaitingReplyAt = 0;
-  }
-}
 
 // releaseCaptureIfActive is defined as a closure inside boot() so it can
 // close the WebRTC peer connection cleanly when slash-commands or other
@@ -1006,29 +974,25 @@ async function boot() {
   // Each handler is scoped to the owned replyId — a stale event for a
   // superseded reply (different replyId) is ignored so it can't steal or
   // drop ownership of the reply Listen actually owns.
-  const ownsReply = (p: any): boolean =>
-    listenReplyTtsOwned && !!p?.replyId && p.replyId === listenOwnedReplyId;
+  const ownsReply = (p: any): boolean => listenReply.ownsReply(p);
   ttsModule.on('play-start', (p: any) => { if (ownsReply(p)) { try { turnbased.notifyReplyPlayback(true);  } catch {} } });
   ttsModule.on('resumed',    (p: any) => { if (ownsReply(p)) { try { turnbased.notifyReplyPlayback(true);  } catch {} } });
   ttsModule.on('paused',     (p: any) => {
     if (ownsReply(p)) {
       try { turnbased.notifyReplyPlayback(false); } catch {}
-      listenReplyTtsOwned = false;
-      listenOwnedReplyId = null;
+      listenReply.releaseOwnership();
     }
   });
   ttsModule.on('ended',      (p: any) => {
     if (ownsReply(p)) {
       try { turnbased.notifyReplyPlayback(false); } catch {}
-      listenReplyTtsOwned = false;
-      listenOwnedReplyId = null;
+      listenReply.releaseOwnership();
     }
   });
   ttsModule.on('stopped',    (p: any) => {
     if (ownsReply(p)) {
       try { turnbased.notifyReplyPlayback(false); } catch {}
-      listenReplyTtsOwned = false;
-      listenOwnedReplyId = null;
+      listenReply.releaseOwnership();
     }
   });
   draft.init({
@@ -1283,7 +1247,7 @@ async function boot() {
         } else {
           await backfillHistory();
         }
-        await flushOutbox();
+        await memoOutbox.flushOutbox();
         if (settings.refreshModels) settings.refreshModels().catch(() => {});
         // Eager schema fetch so consumers depending on agent settings
         // (currently the composer attach-button vision-gate) have data
@@ -1304,10 +1268,10 @@ async function boot() {
         status.setStatus('Gateway: disconnected');
       }
     },
-    onDelta: handleReplyDelta,
-    onFinal: handleReplyFinal,
-    onToolEvent: handleToolEvent,
-    onActivity: handleActivity,
+    onDelta: handlers.handleReplyDelta,
+    onFinal: handlers.handleReplyFinal,
+    onToolEvent: handlers.handleToolEvent,
+    onActivity: handlers.handleActivity,
     onNotification: handleNotification,
     onUserMessage: handleUserMessage,
     onSessionChanged: () => {
@@ -1381,7 +1345,7 @@ async function boot() {
   // without this the queue just sits (reconnect-only retries don't
   // fire when the WS never dropped). Mutex in queue.flush keeps this
   // idempotent if two triggers overlap.
-  backend.onSend(() => { flushOutbox().catch(() => {}); });
+  backend.onSend(() => { memoOutbox.flushOutbox().catch(() => {}); });
 
   // Hide settings rows whose feature isn't supported by the active backend.
   // E.g. openai-compat doesn't expose a model catalog → hide the model row.
@@ -2267,288 +2231,7 @@ async function boot() {
     updateSendButtonState();
   }
 
-  // Tracks the in-flight /transcribe upload size (bytes) so the periodic
-  // status refresher can surface "Uploading audio (NKB)…" while the
-  // request is on the wire. Field bug 2026-05-02: 14-22s queue→flush
-  // window was completely silent, leaving the user wondering if anything
-  // was happening between "queued" and the eventual transcript landing
-  // in the composer. null = no upload in flight; the refresher falls
-  // back to its normal connected/stalled narrative.
-  let uploadInFlightBytes: number | null = null;
-
-  /** Flush queued audio items — update the corresponding memo cards with transcripts. */
-  async function flushOutbox() {
-    const result = await queue.flush(
-      async (text) => { backend.sendMessage(text); },
-      async (blob, mimeType, id, autoSend) => {
-        // Timeout scales with blob size: small memos under 1MB ≈ minute or
-        // less of audio (Deepgram batch returns in 1-3s) get the snappy
-        // 15s budget. Larger blobs get 60s — the upload alone for a 5MB
-        // webm over Tailscale can take 5-10s, plus Deepgram batch latency
-        // grows roughly with audio length. Earlier 15s flat ceiling
-        // wedged 3-minute memos in permanent-retry: each attempt timed
-        // out before Deepgram could respond, queue never drained.
-        const timeoutMs = blob.size > 1_000_000 ? 60_000 : 15_000;
-        // Per-user keyterm biasing for batch transcribe. Same IDB list the
-        // WebRTC offer ships; bridge accepts repeated `?keyterms=…&keyterms=…`
-        // and merges into the Deepgram spec like the streaming path does.
-        // Without this, memo-mode transcription runs un-biased even if the
-        // user has chips configured (was the case for "clawdian" miss).
-        let kt: string[] = [];
-        try {
-          const { readList } = await import('./keyterms.ts');
-          kt = (await readList()) || [];
-        } catch {}
-        const url = kt.length
-          ? `/transcribe?${kt.map(t => 'keyterms=' + encodeURIComponent(t)).join('&')}`
-          : '/transcribe';
-        let res;
-        // Surface "Uploading audio (NKB)…" immediately + via the
-        // periodic refresher (which prefers uploadInFlightBytes when
-        // set). Cleared in finally so success/timeout/error all reset
-        // the indicator. fetchWithTimeout doesn't expose progress
-        // events, so this is indeterminate by design — just enough
-        // to tell the user "stop tapping, it's working."
-        uploadInFlightBytes = blob.size;
-        const kb = Math.round(blob.size / 1024);
-        status.setStatus(`Uploading audio (${kb} KB)…`, 'live');
-        try {
-          try {
-            res = await fetchWithTimeout(url, {
-              method: 'POST', headers: { 'Content-Type': mimeType }, body: blob,
-              timeoutMs,
-            });
-          } catch (e) {
-            if (e instanceof TimeoutError) {
-              // Surface + chime; blob stays in queue for retry on next
-              // reconnect. The card moves to queued(⏳) so the user sees
-              // something is pending.
-              log('transcribe timeout — blob stays queued for retry');
-              const transcriptEl = document.getElementById('transcript');
-              const card = id && transcriptEl ? memoCard.find(transcriptEl, id) : null;
-              if (card) memoCard.update(card, { status: 'queued' });
-              playFeedback('error');
-            }
-            throw e;  // re-throw so queue.flush keeps the item
-          }
-        } finally {
-          uploadInFlightBytes = null;
-        }
-        const data = await res.json();
-        if (!data.ok) {
-          // Distinguish PERMANENT failures (corrupt blob, unsupported
-          // format, Deepgram 400) from TRANSIENT (network, 5xx, timeout).
-          // Permanent: drop from queue so we don't retry forever.
-          // Transient: throw, queue.flush keeps the item for next round.
-          //
-          // Symptom: queued audio memos all fail with "deepgram 400
-          // corrupt or unsupported data" on each retry — typically
-          // blobs recorded while the iOS mic-perm dialog was up
-          // (silent / partial). Without this guard the outbox grows
-          // unbounded.
-          const err = String(data.error || 'transcription failed');
-          const isPermanent = /\b4\d\d\b|corrupt|unsupported|empty body/i.test(err);
-          if (isPermanent) {
-            log('transcribe: permanent failure, dropping blob:', err);
-            const transcriptEl = document.getElementById('transcript');
-            const card = id && transcriptEl ? memoCard.find(transcriptEl, id) : null;
-            const note = '(audio unprocessable)';
-            if (card) memoCard.update(card, { transcript: note, status: 'failed' });
-            try { await voiceMemos.update(id, { transcript: note, status: 'failed' }); } catch {}
-            playFeedback('error');
-            return;  // don't throw — queue.flush will drop the item
-          }
-          throw new Error(err);  // transient → keep in queue
-        }
-        const text = (data.transcript || '').trim();
-        const transcriptEl = document.getElementById('transcript');
-        const card = id && transcriptEl ? memoCard.find(transcriptEl, id) : null;
-
-        // Empty transcript — /transcribe succeeded but heard nothing
-        // (silent clip / inaudible). Surface that on the card so the user
-        // isn't left staring at an orphan row. Persist the status so a
-        // reload doesn't restore it as pending again.
-        if (!text) {
-          const note = '(no speech detected)';
-          if (card) memoCard.update(card, { transcript: note, status: 'failed' });
-          await voiceMemos.update(id, { transcript: note, status: 'failed' });
-          return;
-        }
-
-        // Routing depends on the per-memo autoSend flag captured at
-        // record time (settings.micAutoSend at the moment startMemo()
-        // was called). autoSend=true → append to composer (so any
-        // already-typed text is preserved) and immediately submit;
-        // autoSend=false → just append, leaving the user to review +
-        // send manually. Both paths converge through composer.appendText
-        // → composer.submit, which is the same codepath as clicking Send.
-        if (card) card.remove();
-        await voiceMemos.remove(id);
-        composer.appendText(text);
-        if (autoSend) {
-          composer.submit();
-        }
-      }
-    );
-    if (result.skipped) diag('outbox: flush skipped (already flushing)');
-    else if (result.sent > 0) log('outbox: flushed', result.sent, 'queued messages');
-    return result;
-  }
-
-  // Periodic background retry. Covers the scenario where /transcribe
-  // fails mid-memo (blob queued) but the gateway WS stays connected —
-  // no reconnect event fires, no user send happens. Without this, a
-  // queued blob sits until the next reload or user action. Poll is
-  // cheap (IDB read + early-out if empty); only flushes when there's
-  // pending work AND the gateway is reachable.
-  setInterval(async () => {
-    if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
-    try {
-      const pending = await queue.pending();
-      if (pending > 0 && backend.isConnected()) {
-        diag(`outbox: periodic retry (${pending} pending)`);
-        flushOutbox().catch(() => {});
-      }
-    } catch {}
-  }, 30_000);
-
-  // Periodic network-status refresh. Surfaces queued count + weak-signal
-  // detection in the header. Only writes when there's no active WebRTC
-  // call (controls.ts owns the call-status narrative).
-  const WEAK_SIGNAL_MS = 8_000;
-  setInterval(async () => {
-    if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
-    if (webrtcControls.isOpen()) return;
-    try {
-      const gwConnected = backend.isConnected();
-      const summary = await queue.summary();
-      // Idle cursor — wall-clock ms since /api/sidekick/stream last
-      // delivered ANY envelope. EventSource can stay "connected" while
-      // the underlying TCP connection is dead (cellular handoff,
-      // suspended radio). Combined with queued outbound, a long idle
-      // window is the signal that we're stalled. msSinceLastEnvelope()
-      // returns 0 on fresh connect → treated as "no signal yet."
-      //
-      // The pre-refactor openclaw path also surfaced a `weakSignal`
-      // state (idle stream, no queue, ambiguously-iffy network). We
-      // intentionally don't recreate that here: the SSE channel is
-      // sparse by design — an idle drawer browse can go minutes
-      // without an envelope and that's normal — so a `weakSignal`
-      // fire on idle would be a constant false positive. Stalled
-      // (idle + queued outbound) IS unambiguous and stays.
-      const msIdle = backend.msSinceLastEnvelope();
-      // Upload-in-flight wins over the connectivity narrative — the
-      // user wants to see "uploading" until the request lands, even
-      // if the gateway briefly looks idle. Without this the 2s
-      // refresher would clobber the "Uploading…" pill back to
-      // "Connected" within a tick.
-      if (uploadInFlightBytes != null) {
-        const kb = Math.round(uploadInFlightBytes / 1024);
-        status.setStatus(`Uploading audio (${kb} KB)…`, 'live');
-      } else if (!gwConnected) {
-        status.setState('reconnecting', { queuedCount: summary.count, queuedAudioMs: summary.totalAudioMs });
-      } else if (msIdle > WEAK_SIGNAL_MS && summary.count > 0) {
-        status.setState('stalled', { queuedCount: summary.count, queuedAudioMs: summary.totalAudioMs });
-      } else {
-        status.setState('connected', {
-          queuedCount: summary.count,
-          queuedAudioMs: summary.totalAudioMs,
-        });
-      }
-    } catch {}
-  }, 2_000);
-
-  /** Save blob to IDB + enqueue for retry + render a placeholder memo card
-   *  in chat. Always runs on record stop, regardless of online/offline —
-   *  gives the user immediate visual feedback during the quiet
-   *  transcription window. Returns {id, card, rec}. autoSend is stored
-   *  on the queue item so flushOutbox can route correctly even when the
-   *  flush happens minutes later (periodic retry / reconnect). */
-  async function renderMemoCard(audioBlob, durationMs, autoSend = false) {
-    // Hard ceiling: the bridge accepts up to 25MB at /v1/transcribe and
-    // the proxy mirrors that. webm voice is ~30KB/s so 25MB ≈ 14 min.
-    // Anything larger gets DROPPED here with a status warning rather
-    // than queued — a too-big blob in the outbox just retries forever
-    // and blocks the channel for smaller subsequent memos. User can
-    // re-record in shorter chunks. Threshold is intentionally a few
-    // hundred KB below the 25MB limit so an upload-time encoding bump
-    // doesn't push a borderline blob over.
-    const MEMO_MAX_BYTES = 24 * 1024 * 1024;
-    if (audioBlob.size > MEMO_MAX_BYTES) {
-      const mb = (audioBlob.size / (1024 * 1024)).toFixed(1);
-      const mins = Math.round((durationMs ?? 0) / 60000);
-      log(`memo: too big (${mb}MB ≈ ${mins}min) — dropped, would block the queue`);
-      status.setStatus(
-        `Memo too long (${mins}m) — dropped. Try shorter chunks.`,
-        'err',
-      );
-      try { playFeedback('error'); } catch {}
-      return { id: null, card: null, rec: null };
-    }
-
-    const id = crypto.randomUUID();
-    const transcriptEl = document.getElementById('transcript');
-
-    const rec = {
-      id, blob: audioBlob, mimeType: audioBlob.type, durationMs,
-      waveform: new Float32Array(40),
-      transcript: null, status: 'pending', timestamp: Date.now(),
-    };
-
-    let card = null;
-    if (transcriptEl) {
-      card = memoCard.render(transcriptEl, rec);
-      chat.autoScroll();
-    }
-
-    await voiceMemos.save(rec);
-    await queue.enqueue({ id, type: 'audio', blob: audioBlob, mimeType: audioBlob.type, durationMs, autoSend });
-    log('memo: queued audio blob (' + Math.round(audioBlob.size / 1024) + 'KB) autoSend=' + autoSend);
-
-    // Background waveform extraction
-    voiceMemos.extractWaveform(audioBlob).then(bars => {
-      if (card) {
-        const anyCard = card as any;
-        if (anyCard._setWaveform) anyCard._setWaveform(bars);
-      }
-      voiceMemos.update(id, { waveform: Array.from(bars) }).catch(() => {});
-    }).catch(e => log('memo: waveform extract failed:', e.message));
-
-    return { id, card };
-  }
-
-  async function handleMemoResult(audioBlob: Blob, durationMs?: number, autoSend = false, path = 'unknown') {
-    // Diagnostic for the iOS PTT auto-send bug — echoes the captured
-    // autoSend flag + which release path triggered this finish, so
-    // future regressions are debuggable from the JS console without
-    // having to instrument startMemo from scratch.
-    log(`memo finish: path=${path} autoSend=${autoSend} blob=${audioBlob ? Math.round(audioBlob.size/1024)+'KB' : 'null'}`);
-    if (!audioBlob) return;
-    // Always render the placeholder card + enqueue the blob, regardless
-    // of connectivity. Matches the "user gets immediate visual feedback"
-    // UX spec and keeps ONE processing path (flushOutbox) whether we're
-    // online or offline.
-    const { card } = await renderMemoCard(audioBlob, durationMs, autoSend);
-
-    const offline = navigator.onLine === false || !backend.isConnected();
-    if (offline) {
-      if (card) memoCard.update(card, { status: 'queued' });
-      status.setStatus('Audio queued — will transcribe when connected');
-      return;
-    }
-
-    // Single transcribe path: flushOutbox iterates the queue serially
-    // (for/await loop + isFlushing mutex), calls /transcribe per item,
-    // routes to composer / chat based on autoSend setting, updates the
-    // card. Rapid-fire memos all land here — mutex serializes them so
-    // composer-append order matches record order, no duplicates.
-    //
-    // Earlier architecture had a second "live" transcribeChain that
-    // raced with this: both paths fetched /transcribe for the same
-    // blob, both appended, producing duplicates ("1 1 2 3 2 3" pattern
-    // the user reported). Now there's only one path.
-    flushOutbox().catch(() => {});
-  }
+  memoOutbox.startBackgroundPollers();
 
   // ── Cursor-aware dictation (call=true, autoSend=false) ─────────────
   // webrtcDictate is the live-streaming + cursor-aware injection module.
@@ -2626,7 +2309,7 @@ async function boot() {
       try {
         const { audioBlob, durationMs } = await memo.stop();
         exitMemoMode();
-        await handleMemoResult(audioBlob, durationMs, autoSend, 'composerSend.click');
+        await memoOutbox.handleMemoResult(audioBlob, durationMs, autoSend, 'composerSend.click');
       } finally {
         composerSend.disabled = false;
       }
@@ -2646,7 +2329,7 @@ async function boot() {
       sendBtn: composerSend,
       onDone: (audioBlob) => {
         exitMemoMode();
-        handleMemoResult(audioBlob, undefined, autoSend, 'memo.onDone');
+        memoOutbox.handleMemoResult(audioBlob, undefined, autoSend, 'memo.onDone');
       },
       onCancel: () => {
         exitMemoMode();
@@ -2828,7 +2511,7 @@ async function boot() {
             return;
           }
           const chatId = resolveOrMintSendChatId();
-          markListenAwaitingReply(chatId);
+          listenReply.markAwaitingReply(chatId);
           composer.appendText(text);
           composer.submit();
         } catch (e: any) {
@@ -2852,7 +2535,7 @@ async function boot() {
           return;
         }
         const chatId = resolveOrMintSendChatId();
-        markListenAwaitingReply(chatId);
+        listenReply.markAwaitingReply(chatId);
         composer.appendText(body);
         composer.submit();
       },
@@ -4302,350 +3985,6 @@ async function backfillHistory() {
   })();
   try { await backfillInFlight; }
   finally { backfillInFlight = null; }
-}
-
-// ─── Activity handler ───────────────────────────────────────────────────────
-
-/** Activity signal — only kept around for the diag log + the future
- *  drawer-side "agent typing" indicator. Rendering itself is now
- *  driven by the projection's BubbleSpec.streaming flag, so this
- *  handler no longer touches the DOM. */
-function handleActivity({ working, detail, conversation }: any) {
-  void working; void detail; void conversation;
-}
-
-/** Find the most-recent non-streaming agent bubble and attach a card.
- *  Falls back to the active streaming bubble if there's no finalized
- *  agent reply yet. */
-function attachCardToLatestAgentBubble(card) {
-  const el = document.getElementById('transcript');
-  if (!el) return;
-  const bubbles = Array.from(
-    el.querySelectorAll('.line.agent[data-reply-id]:not(.streaming)')
-  ) as HTMLElement[];
-  const streaming = el.querySelector('.line.agent.streaming') as HTMLElement | null;
-  const target = bubbles[bubbles.length - 1] || streaming;
-  if (!target) {
-    log('attachCard: no agent bubble to attach to — dropping card', card.kind);
-    return;
-  }
-  attachCard(target, card);
-}
-
-// ─── Backend event handlers ─────────────────────────────────────────────────
-// Normalized per-event handlers. Shell logic only — the backend adapter
-// handles wire-format parsing. Events not surfaced by the adapter (agent
-// lifecycle, heartbeat, etc.) don't reach us by design.
-
-/** Streaming partial reply. `cumulativeText` is the full text so far.
- *  Adapter already drops user-echo prefix variants so we don't need to
- *  defensively filter them here. With per-turn replay machinery gutted,
- *  the bubble is purely a text surface: TTS is owned by the WebRTC
- *  talk-mode track on the server side and arrives as audio independently. */
-function handleReplyDelta({ replyId, cumulativeText, conversation, messageId, isReplay = false }: any) {
-  if (!cumulativeText) return;
-  // Always store the envelope — even for background chats, so a
-  // future switch-back finds the streamed text already there.
-  if (conversation && messageId) {
-    transcriptStore.appendInflight(conversation, {
-      type: 'reply_delta',
-      chat_id: conversation,
-      message_id: messageId,
-      text: cumulativeText,
-      edit: true,
-    });
-  }
-  // Audio + feedback side effects are scoped to the on-screen chat.
-  const viewed = sessionDrawer.getViewed();
-  if (viewed && conversation && conversation !== viewed) return;
-  // First-delta-of-turn signal: chime + suppress envelope. With the
-  // store the "first delta" predicate is "no prior reply_delta with
-  // this message_id" — checked via the store before appendInflight
-  // would have added it. Since we already appended above, query the
-  // pre-append state by looking for a duplicate message_id in the
-  // already-stored envelopes; cheap enough.
-  if (!isReplay && messageId && conversation) {
-    const envs = transcriptStore.getState(conversation).inflight;
-    const isFirstDelta = envs.filter(e =>
-      e.type === 'reply_delta' && (e as any).message_id === messageId,
-    ).length === 1;  // exactly 1 = the one we just pushed
-    if (isFirstDelta) {
-      try { playFeedback('send'); } catch { /* best-effort */ }
-    }
-  }
-  webrtcSuppress.onAssistantDelta();
-  if (ttsModule.isPaused()) {
-    cancelReplyTts('new-turn');
-  }
-  void replyId;  // retained in signature for adapter contract; unused now
-}
-
-const postFinalRefreshTimers = new Map<string, ReturnType<typeof setTimeout>>();
-const postFinalRefreshSeq = new Map<string, number>();
-
-function durableIdentity(row: any): string {
-  return `${row?.sidekick_id || ''}:${String(row?.id ?? '')}`;
-}
-
-function durableHasReply(
-  rows: any[],
-  beforeIds: Set<string>,
-  messageId?: string | null,
-  finalText?: string | null,
-): boolean {
-  for (const row of rows) {
-    if (row?.role !== 'assistant') continue;
-    if (messageId && row.sidekick_id === messageId) return true;
-    if (
-      finalText &&
-      row.content === finalText &&
-      !beforeIds.has(durableIdentity(row))
-    ) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function schedulePostFinalDurableRefresh(
-  chatId: string,
-  messageId?: string | null,
-  finalText?: string | null,
-): void {
-  if (!chatId || !backend.capabilities().sessionBrowsing) return;
-  if (sessionDrawer.getViewed() !== chatId) return;
-  const prev = postFinalRefreshTimers.get(chatId);
-  if (prev) clearTimeout(prev);
-  const seq = (postFinalRefreshSeq.get(chatId) ?? 0) + 1;
-  postFinalRefreshSeq.set(chatId, seq);
-  const beforeDurableIds = new Set(
-    transcriptStore.getState(chatId).durable.map((row) => durableIdentity(row)),
-  );
-  const timer = setTimeout(() => {
-    postFinalRefreshTimers.delete(chatId);
-    void (async () => {
-      if (postFinalRefreshSeq.get(chatId) !== seq) return;
-      if (sessionDrawer.getViewed() !== chatId) return;
-      try {
-        const result: any = await backend.fetchSessionMessages(chatId);
-        if (postFinalRefreshSeq.get(chatId) !== seq) return;
-        if (sessionDrawer.getViewed() !== chatId) return;
-        replaySessionMessages(
-          chatId,
-          result.messages || [],
-          { firstId: result.firstId ?? null, hasMore: !!result.hasMore },
-          undefined,
-          result.inflight,
-          { preserveScrollIfLive: true },
-        );
-        if (
-          messageId &&
-          durableHasReply(result.messages || [], beforeDurableIds, messageId, finalText || null)
-        ) {
-          transcriptStore.clearInflightThroughReplyFinal(chatId, messageId);
-        }
-        log(
-          `post-final durable refresh chat=${chatId} msg=${messageId ?? '∅'} ` +
-          `messages=${(result.messages || []).length} ` +
-          `inflight=${Array.isArray(result.inflight) ? result.inflight.length : 0}`,
-        );
-      } catch (e: any) {
-        diag(`post-final durable refresh failed chat=${chatId}: ${e?.message || String(e)}`);
-      }
-    })();
-  }, 900);
-  postFinalRefreshTimers.set(chatId, timer);
-}
-
-/** Complete reply. `content` (if present) is the raw block array used to
- *  pull out image attachments. */
-/** "⏳ Still working… (N min elapsed — iteration X/60, …)" — the canonical
- *  heartbeat shape an autonomous agent emits per-iteration. Mirrors the
- *  push-gate matcher in proxy/sidekick/notifications/dispatch.ts
- *  (isProgressHeartbeat). Field 2026-05-27: every heartbeat reply_final
- *  was dismissing pending approvals for the chat — fixed by skipping
- *  this branch when the text matches. KEEP IN SYNC with the server matcher. */
-function isProgressHeartbeatText(raw: string): boolean {
-  const s = (raw || '').trim();
-  if (!s) return false;
-  return /^⏳\s*Still working\b/i.test(s)
-    || /\bStill working\.{0,3}\s*\(\s*\d+\s*min elapsed\b.*\biteration\s*\d+\s*\/\s*\d+/i.test(s);
-}
-
-function handleReplyFinal({ replyId, text, content = [], conversation, messageId, isReplay = false }: any) {
-  sessionDrawer.scheduleRefresh();
-  // Auto-resolve any pending approval for this chat — but ONLY when this
-  // is a REAL reply, not a "⏳ Still working…" heartbeat. Heartbeats fire
-  // every iteration of a long autonomous turn (one per ~3 min); without
-  // the gate, the first heartbeat after an approval landed used to delete
-  // the approval row from the tray (field 2026-05-27). A real reply means
-  // the agent moved past the approval point, so mark 'dismissed'.
-  if (!isReplay && conversation) {
-    // Heartbeat detection: real hermes typically streams the body via
-    // reply_delta and emits reply_final with EMPTY text (final = done
-    // signal, not body carrier). So `text` from this envelope is often
-    // '' — we must look up the accumulated bubble text by messageId to
-    // know whether this turn was a "⏳ Still working…" beat or a real
-    // turn-ending reply. The proxy push gate does the same against its
-    // reply buffer (dispatch.ts:271).
-    let finalTextRaw = typeof text === 'string' ? text : '';
-    if (!finalTextRaw && messageId) {
-      // First try the DOM — fast path for the viewed chat.
-      try {
-        const el = document.querySelector(
-          `#transcript [data-key="${CSS.escape(messageId)}"]`,
-        ) as HTMLElement | null;
-        finalTextRaw = el?.textContent || '';
-      } catch { /* CSS.escape failure or missing DOM — fall through */ }
-      // Fall back to the inflight buffer. Replies on an OFF-screen chat
-      // aren't in the DOM (only the viewed chat renders), so DOM lookup
-      // misses — but the reply_delta envelope IS in the store's inflight
-      // buffer, with the accumulated heartbeat text. Reverse-scan for the
-      // latest delta carrying this messageId.
-      if (!finalTextRaw) {
-        const inflight = transcriptStore.getState(conversation).inflight;
-        for (let i = inflight.length - 1; i >= 0; i--) {
-          const env: any = inflight[i];
-          if (env?.type === 'reply_delta' && env.message_id === messageId && typeof env.text === 'string') {
-            finalTextRaw = env.text;
-            break;
-          }
-        }
-      }
-    }
-    if (!isProgressHeartbeatText(finalTextRaw)) {
-      activityStore.resolveApprovalsForChat(conversation, 'dismissed');
-    }
-  }
-
-  // Push the envelope into the store unconditionally — even for
-  // background chats. The store is per-chat; the active chat re-renders
-  // and finalizes the bubble; background chats stay correct for the
-  // next switch-back.
-  if (conversation && messageId) {
-    transcriptStore.appendInflight(conversation, {
-      type: 'reply_final',
-      chat_id: conversation,
-      message_id: messageId,
-      text: text || undefined,
-    });
-    // Reply_final = whole turn ack'd; drop any remaining optimistic
-    // pending sends for this chat (defensive — user_message echo
-    // normally clears them earlier).
-    const state = transcriptStore.getState(conversation);
-    for (const p of state.pendingSends.slice()) {
-      transcriptStore.clearPendingSend(conversation, p.messageId);
-    }
-  }
-
-  // Fall back to the accumulated reply_delta text when the adapter
-  // sends an empty reply_final. Hermes does this on some real runs:
-  // the transcript can still render from delta state, and Activity
-  // should show the same useful text instead of an empty notification.
-  let finalText = text || '';
-  if (!finalText && conversation && messageId) {
-    const envs = transcriptStore.getState(conversation).inflight;
-    for (const env of envs) {
-      if (env.type === 'reply_delta' && env.message_id === messageId) {
-        finalText = env.text;
-      }
-    }
-  }
-
-  const viewed = sessionDrawer.getFocused();
-  if (viewed && conversation && conversation !== viewed) {
-    // Skip activity + badge for "⏳ Still working…" heartbeats so a long
-    // autonomous turn doesn't spam the Activity tray with N agent_reply
-    // rows per turn — AND, critically, doesn't trigger pruneSuperseded-
-    // Approvals to delete a pending approval for the same chat (each
-    // upserted heartbeat agent_reply has a newer createdAt than the
-    // approval, so the prune would dismiss the approval). Mirrors the
-    // proxy push gate (isProgressHeartbeat, dispatch.ts:271).
-    if (!isReplay && !isProgressHeartbeatText(finalText)) {
-      activityStore.upsertNotification({
-        chatId: conversation,
-        kind: 'agent_reply',
-        content: finalText || '',
-        sidekickId: typeof messageId === 'string' ? messageId : null,
-        chatLabel: sessionDrawer.getTitleForChat?.(conversation) || null,
-      });
-      badge.incrementUnread(conversation);
-    }
-    return;
-  }
-
-  if (!isReplay && viewed && conversation) {
-    void badge.clearUnread(conversation);
-  }
-
-  webrtcSuppress.onAssistantFinal();
-
-  const imageBlocks = extractImageBlocks(content);
-
-
-  if (!isReplay && viewed && conversation === viewed) {
-    schedulePostFinalDurableRefresh(conversation, messageId, finalText || null);
-  }
-
-  if (NO_REPLY_RE.test(finalText)) {
-    log('suppressed NO_REPLY from agent');
-    return;
-  }
-
-  // Resolve the freshly-finalized bubble via data-key — the
-  // reply_final envelope above already triggered a reconcile pass, so
-  // the bubble is in the DOM with .text/markdown applied.
-  const bubble = messageId
-    ? document.querySelector(`#transcript [data-key="${CSS.escape(messageId)}"]`) as HTMLElement | null
-    : null;
-
-  if (finalText) {
-    if (!isReplay) playFeedback('receive');
-
-    // Speak-replies (CALL-ONLY): turnbased-tts when in Listen and not
-    // in a WebRTC call (where the peer track owns audio). Outside a
-    // call, the user reads replies; per-bubble play handles on-demand
-    // replay.
-    const inListen = turnbased.getState() !== 'idle';
-    const webrtcOpen = webrtcControls.isOpen();
-    const route = isReplay ? 'no-audio (replay)'
-      : !inListen ? 'no-audio (call idle)'
-      : webrtcOpen ? 'webrtc-peer'
-      : 'turnbased-tts';
-    diag(`[reply-route] ${route} replyId=${replyId} len=${finalText.length} turnbased=${turnbased.getState()} webrtcOpen=${webrtcOpen} isReplay=${isReplay}`);
-    if (!isReplay && inListen && !webrtcOpen && shouldAutoPlayForListen(conversation)) {
-      consumeListenReply(conversation as string);
-      listenReplyTtsOwned = true;
-      listenOwnedReplyId = replyId;
-      void playReplyTts(finalText, settings.get().voice, replyId).catch(() => {
-        listenReplyTtsOwned = false;
-        listenOwnedReplyId = null;
-        try { turnbased.notifyReplyPlayback(false); } catch {}
-      });
-    }
-
-    if (bubble) {
-      try {
-        const cards = parseCardsFromText(finalText);
-        for (const c of cards) attachCard(bubble, c);
-      } catch (e) { log('card parse err:', e.message); }
-      for (const b of imageBlocks) attachCard(bubble, b);
-    }
-  } else if (imageBlocks.length) {
-    for (const b of imageBlocks) attachCardToLatestAgentBubble(b);
-  }
-}
-
-/** Tool-events — cards and similar side-channel data the agent emits.
- *  Currently just canvas.show; grows as backends add more. */
-function handleToolEvent({ kind, payload, conversation }: any) {
-  // Drop only for an explicitly DIFFERENT viewed session.
-  const viewed = sessionDrawer.getViewed();
-  if (viewed && conversation && conversation !== viewed) return;
-  if (kind === 'canvas.show' && payload) {
-    log('canvas.show event from agent');
-    attachCardToLatestAgentBubble(payload);
-  }
 }
 
 // ─── Go ─────────────────────────────────────────────────────────────────────

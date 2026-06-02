@@ -41,8 +41,8 @@ import { readdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  launchBrowser, launchSharedBrowser, attachConsoleCapture, dumpLines, DEFAULT_URL,
-  resetServerSettings,
+  launchBrowser, launchSharedBrowser, launchAudioBrowser, attachConsoleCapture,
+  dumpLines, DEFAULT_URL, resetServerSettings,
 } from './smoke/lib.mjs';
 import { installMockBackend } from './smoke/mock-backend.mjs';
 
@@ -113,7 +113,20 @@ async function runOne(scenario, browser) {
   // (mobile-only) or `MOBILE = 'both'` (expanded to desktop + mobile
   // pair by the runner). Resolved by main() into a per-variant flag.
   const useMobile = !!scenario.mobileVariant;
-  const { ctx, page, cleanup } = await launchBrowser(browser, { headed: HEADED, mobile: useMobile });
+  // Audio scenarios opt out of the silent shared browser and get their
+  // own Chromium that feeds a real WAV into getUserMedia (AUDIO_FIXTURE
+  // = filename under smoke/fixtures, AUDIO_NOLOOP = play-once). The
+  // dedicated browser is torn down by `cleanup` in the finally below.
+  const audioFixture = scenario.module?.AUDIO_FIXTURE;
+  let ctx, page, cleanup;
+  if (audioFixture) {
+    const fixturePath = path.join(SMOKE_DIR, 'fixtures', audioFixture);
+    ({ ctx, page, cleanup } = await launchAudioBrowser(fixturePath, {
+      headed: HEADED, noLoop: !!scenario.module?.AUDIO_NOLOOP,
+    }));
+  } else {
+    ({ ctx, page, cleanup } = await launchBrowser(browser, { headed: HEADED, mobile: useMobile }));
+  }
   const getConsole = attachConsoleCapture(page);
   const log = (msg) => console.log(`  [${scenario.name}] ${msg}`);
   let failMessage = null;

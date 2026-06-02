@@ -69,9 +69,18 @@ export function setDevMode(on: boolean): void {
  *  because session state lives there — caller signals when a
  *  full nuke (vs. just network) is wanted.
  *
+ *  VAD assets (the `vad-assets-*` Cache API bucket) are PRESERVED by
+ *  default: they're 14.7 MB and re-downloading them cold takes ~60-70s,
+ *  which loses the race against turn-mode TTS so client-side barge VAD
+ *  never warms in time to fire (field repro 2026-06-01: a quick-tap
+ *  force-reload wiped vad-assets-v4 → 68s cold re-download → barge dead
+ *  for that turn). The full nuke (clearVadCache:true, wired to the
+ *  long-press path) still exists for when a VAD-lib bug/update genuinely
+ *  needs the assets re-fetched.
+ *
  *  Returns a Promise that resolves before the reload happens; the
  *  reload itself is fire-and-forget. */
-export async function forceReload(opts: { clearIdb?: boolean } = {}): Promise<void> {
+export async function forceReload(opts: { clearIdb?: boolean; clearVadCache?: boolean } = {}): Promise<void> {
   log('[force-reload] starting nuke sequence');
   // 1. Unregister all service workers — kills the fetch-interception
   //    layer that would otherwise serve cached responses on reload.
@@ -84,13 +93,22 @@ export async function forceReload(opts: { clearIdb?: boolean } = {}): Promise<vo
       }
     }
   } catch (e) { log('[force-reload] SW unregister failed:', e); }
-  // 2. Delete every Cache API bucket (sw-cache-v1 etc.). This is the
-  //    HTTP-asset cache the SW was populating.
+  // 2. Delete Cache API buckets (sw-cache-v1 etc.) — the HTTP-asset
+  //    cache the SW was populating. Skip the `vad-assets-*` bucket
+  //    unless clearVadCache is set: preserving it avoids the 14.7 MB
+  //    cold re-download that starves client-side barge VAD (see
+  //    docstring). Unregistering the SW above does NOT drop these
+  //    buckets — they're keyed storage that outlives the SW.
   try {
     if ('caches' in self) {
       const keys = await caches.keys();
-      await Promise.all(keys.map(k => caches.delete(k)));
-      log(`[force-reload] cleared ${keys.length} cache bucket(s):`, keys);
+      const toDelete = opts.clearVadCache
+        ? keys
+        : keys.filter(k => !k.startsWith('vad-assets'));
+      await Promise.all(toDelete.map(k => caches.delete(k)));
+      const preserved = keys.filter(k => !toDelete.includes(k));
+      log(`[force-reload] cleared ${toDelete.length} cache bucket(s):`, toDelete,
+          preserved.length ? `(preserved ${preserved.join(', ')})` : '');
     }
   } catch (e) { log('[force-reload] caches.delete failed:', e); }
   // 3. Optional IDB clear — session state, message store, etc. live
@@ -205,7 +223,7 @@ export function mountDevPill(): void {
       reloadBtn.className = 'dev-reload-btn';
       reloadBtn.type = 'button';
       reloadBtn.textContent = '↻';
-      reloadBtn.title = 'Force reload (clears SW + asset cache). Long-press to also wipe IDB session state.';
+      reloadBtn.title = 'Force reload (clears SW + asset cache, keeps VAD assets). Long-press for full nuke: IDB session state + VAD assets too.';
       reloadBtn.setAttribute('aria-label', 'Force reload');
       let reloadHoldTimer: ReturnType<typeof setTimeout> | null = null;
       const cancelReloadHold = () => {
@@ -215,12 +233,14 @@ export function mountDevPill(): void {
         cancelReloadHold();
         reloadHoldTimer = setTimeout(() => {
           reloadHoldTimer = null;
-          // Long-press path: nuke IDB too. Confirm because session
-          // history lives there — easy to lose work otherwise.
-          const ok = confirm('Force reload + wipe IDB (session history)?\nOK = full nuke, Cancel = abort.');
+          // Long-press path: the full nuke — IDB (session history) AND
+          // the VAD asset cache (forces the 14.7 MB re-download). Confirm
+          // because both are costly to lose: session history is gone and
+          // the next barge waits ~60-70s for VAD to re-warm.
+          const ok = confirm('Full nuke: wipe IDB (session history) + VAD assets (14.7 MB re-download)?\nOK = full nuke, Cancel = abort.');
           if (ok) {
-            log('[dev-reload] long-press → forceReload({clearIdb:true})');
-            void forceReload({ clearIdb: true });
+            log('[dev-reload] long-press → forceReload({clearIdb:true, clearVadCache:true})');
+            void forceReload({ clearIdb: true, clearVadCache: true });
           }
         }, 600);
       });

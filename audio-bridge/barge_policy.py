@@ -48,6 +48,7 @@ logger = logging.getLogger(__name__)
 # Frame and Silero sizing (must match stt_bridge frame contract).
 SAMPLE_RATE = 16000
 SILERO_WINDOW_SAMPLES = 512  # 32 ms at 16 kHz — Silero's expected window
+SILERO_CONTEXT_SAMPLES = 64  # v5 prepends 64 samples of prior audio per window
 INT16_TO_FLOAT = 1.0 / 32768.0
 
 # Defaults — overridable via env. Numbers picked to match the spirit of
@@ -108,6 +109,16 @@ class BargePolicy:
         self._consec_speech = 0
         self._consec_silence = 0
         self._is_active = False
+        # Diagnostic (temporary, logging-only): per-TTS-window peaks so a
+        # single real device call reveals WHICH way barge breaks — mic
+        # carries no detectable speech during playback (iOS double-talk
+        # ducking; max_amp≈0) vs. speech present but p_speech sits just
+        # under threshold (a tuning fix; max_p≈0.3-0.49). Flushed once
+        # when the TTS window ends.
+        self._diag_max_p = 0.0
+        self._diag_max_amp = 0.0
+        self._diag_windows = 0
+        self._diag_fired = False
 
     @property
     def is_active(self) -> bool:
@@ -126,6 +137,21 @@ class BargePolicy:
             hysteresis. Emit envelopes on state-change boundaries.
         """
         if not tts_active:
+            # Diagnostic: flush the peaks seen during the window that just
+            # ended (one line per agent utterance). max_amp≈0 ⇒ the mic
+            # uplink was ducked/suppressed during playback (device AEC);
+            # max_p just under threshold ⇒ tune it down.
+            if self._diag_windows > 0:
+                logger.info(
+                    "[barge-policy] tts window ended: %d windows, max p_speech=%.3f, "
+                    "max |amp|=%.4f, fired=%s (threshold=%.2f, min_speech_frames=%d)",
+                    self._diag_windows, self._diag_max_p, self._diag_max_amp,
+                    self._diag_fired, self._speech_threshold, self._min_speech_frames,
+                )
+                self._diag_max_p = 0.0
+                self._diag_max_amp = 0.0
+                self._diag_windows = 0
+                self._diag_fired = False
             # Reset cleanly so the next TTS-active window starts fresh.
             if self._is_active:
                 self._is_active = False
@@ -140,6 +166,10 @@ class BargePolicy:
 
         # int16 → float32 in [-1, 1]
         arr = np.frombuffer(frame_bytes, dtype=np.int16).astype(np.float32) * INT16_TO_FLOAT
+        if arr.size:
+            amp = float(np.abs(arr).max())
+            if amp > self._diag_max_amp:
+                self._diag_max_amp = amp
         self._buf.extend(arr.tolist())
 
         # Consume non-overlapping 512-sample windows.
@@ -151,6 +181,9 @@ class BargePolicy:
             except Exception as e:  # pragma: no cover
                 logger.warning("[barge-policy] infer threw: %s", e)
                 continue
+            self._diag_windows += 1
+            if p_speech > self._diag_max_p:
+                self._diag_max_p = p_speech
             self._step(p_speech)
 
     def _step(self, p_speech: float) -> None:
@@ -160,6 +193,7 @@ class BargePolicy:
             self._consec_silence = 0
             if not self._is_active and self._consec_speech >= self._min_speech_frames:
                 self._is_active = True
+                self._diag_fired = True
                 try:
                     self._emit({"type": "speech-active", "active": True})
                     logger.info(
@@ -304,11 +338,21 @@ def _make_onnx_infer() -> Optional[SileroInfer]:
 
     sr = np.array(SAMPLE_RATE, dtype=np.int64)
     state = np.zeros((2, 1, 128), dtype=np.float32)
+    # Silero v5's silero_vad.onnx requires 64 samples of preceding audio
+    # (at 16 kHz) prepended to each 512-sample window — the model infers on
+    # 576 samples. The official OnnxWrapper carries this rolling context
+    # forward across frames (silero_vad/utils_vad.py); feeding a bare 512
+    # window makes the model emit ~0 on everything (it never crosses
+    # threshold, so barge silently dies). Keep the last 64 samples of each
+    # fed window as the next frame's context.
+    context = np.zeros((1, SILERO_CONTEXT_SAMPLES), dtype=np.float32)
 
     def infer(frame: np.ndarray) -> float:
-        nonlocal state
+        nonlocal state, context
         x = frame.reshape(1, -1).astype(np.float32)
+        x = np.concatenate([context, x], axis=1)
         out, state = session.run(None, {"input": x, "state": state, "sr": sr})
+        context = x[:, -SILERO_CONTEXT_SAMPLES:]
         return float(out[0][0])
     return infer
 
