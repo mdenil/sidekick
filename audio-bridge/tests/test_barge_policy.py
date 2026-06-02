@@ -282,3 +282,91 @@ def test_onnx_infer_drives_policy_active_on_high_prob():
     for _ in range(20):
         policy.feed_frame(_frame_int16(), tts_active=True)
     assert policy.is_active is False
+
+
+# ── Real-speech end-to-end (phone-free barge regression guard) ────────
+#
+# The narrow silence-scores-low check above ALSO passed on the broken
+# onnx invocation (2026-05-31 → 06-01) that omitted the 64-sample v5
+# context prepend — that model scored EVERYTHING ~0, so it never fired
+# barge yet still "scored silence low". This test feeds a real speech
+# clip through the actual vendored model + hysteresis and asserts a
+# speech-active emission, which is what the device barge depends on. It
+# would have caught the regression with zero phone access.
+
+import wave
+
+
+def _load_wav_16k_mono_int16(path: Path) -> np.ndarray:
+    """Read a WAV → mono int16 @ 16 kHz (linear-resample if needed)."""
+    with wave.open(str(path), "rb") as w:
+        sr, n, ch, sw = (
+            w.getframerate(), w.getnframes(),
+            w.getnchannels(), w.getsampwidth(),
+        )
+        raw = w.readframes(n)
+    assert sw == 2, f"expected int16 WAV, got sampwidth={sw}"
+    a = np.frombuffer(raw, dtype=np.int16).astype(np.float32)
+    if ch == 2:
+        a = a.reshape(-1, 2).mean(axis=1)
+    if sr != 16000:
+        idx = np.linspace(0, len(a) - 1, int(len(a) * 16000 / sr))
+        a = np.interp(idx, np.arange(len(a)), a)
+    return a.astype(np.int16)
+
+
+def _speech_fixture() -> Path:
+    """Real spoken-audio clip shipped with the smoke fixtures."""
+    root = HERE.parent.parent  # audio-bridge/tests → repo root
+    for rel in (
+        "scripts/smoke/fixtures/barge-speech.wav",
+        "scripts/smoke/fixtures/hello-sidekick.wav",
+        "test/fixtures/audio/user-says-stop.wav",
+    ):
+        p = root / rel
+        if p.exists():
+            return p
+    pytest.skip("no speech fixture found")
+
+
+def test_real_speech_fires_barge_through_vendored_onnx():
+    """Feed a real speech clip through the vendored onnx model + policy and
+    assert speech-active fires. Regression guard for the missing v5 context
+    prepend (without it the model returns ~0 and barge silently dies)."""
+    pytest.importorskip("onnxruntime")
+    import barge_policy as bp
+
+    infer = bp._make_onnx_infer()
+    assert infer is not None, "vendored onnx model should load when onnxruntime present"
+
+    samples = _load_wav_16k_mono_int16(_speech_fixture())
+    captured, emit = _make_recorder()
+    policy = BargePolicy(infer=infer, emit_envelope=emit)
+
+    # Feed as 320-sample (20 ms) int16 frames — the stt_bridge frame contract.
+    FRAME = 320
+    for i in range(0, len(samples) - FRAME, FRAME):
+        policy.feed_frame(samples[i:i + FRAME].tobytes(), tts_active=True)
+
+    assert policy.is_active or any(
+        e.get("active") is True for e in captured
+    ), "real speech must drive the policy to speech-active (barge)"
+
+
+def test_real_speech_scores_high_through_onnx_infer():
+    """Sanity floor on the model itself: a real speech clip must produce at
+    least one window over threshold. Directly catches the context-prepend
+    regression at the infer layer (broken model maxed out ~0.004)."""
+    pytest.importorskip("onnxruntime")
+    import barge_policy as bp
+
+    infer = bp._make_onnx_infer()
+    assert infer is not None
+
+    samples = (_load_wav_16k_mono_int16(_speech_fixture()).astype(np.float32)
+               * bp.INT16_TO_FLOAT)
+    W = SILERO_WINDOW_SAMPLES
+    max_p = 0.0
+    for i in range(0, len(samples) - W, W):
+        max_p = max(max_p, infer(samples[i:i + W]))
+    assert max_p > 0.5, f"real speech should score >0.5; got max p_speech={max_p:.4f}"
