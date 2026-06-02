@@ -29,6 +29,7 @@
 import { log, diag } from '../../util/log.ts';
 import * as replyCache from './replyCache.ts';
 import * as settings from '../../settings.ts';
+import * as audioSession from '../shared/session.ts';
 
 // ── Public state machine + event surface ─────────────────────────────
 
@@ -378,6 +379,13 @@ export async function playReplyTts(
     player.src = blobUrl;
     // Drop any prior peer-track binding so the blob takes over.
     player.srcObject = null;
+    // iOS: HTMLAudioElement.play() inherits the AVAudioSession category at
+    // play() time. Turn-mode TTS fires while the session is still
+    // 'play-and-record' (from the listen-mode mic capture), which routes
+    // output to the iPhone earpiece instead of connected BT — inaudible
+    // on a headset. Hint 'playback' first so it routes to BT A2DP. iOS
+    // keeps mic capture alive since the session started in play-and-record.
+    audioSession.prepareForPlayback();
     await player.play();
     log(`[text-tts] playing ${text.length} chars`);
   } catch (e: any) {
