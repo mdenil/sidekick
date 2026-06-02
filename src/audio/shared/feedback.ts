@@ -1,15 +1,13 @@
 /**
  * @fileoverview Subtle audio feedback sounds — tiny clicks for send/receive.
  *
- * v0.447 (Jonathan, 2026-05-05): switched from live Web Audio oscillators to
- * pre-rendered WAV blobs played via HTMLAudioElement. Reason: chimes that
- * fired while the iOS AVAudioSession category was 'play-and-record' (mic
- * mode) routed to the iPhone speaker, while chimes that fired during TTS
- * playback ('playback' category) routed to BT correctly. Root cause: the
- * shared AudioContext binds to the iOS hardware route AT CREATION TIME —
- * later setSessionType() hints don't migrate existing oscillator
- * destinations. Field-confirmed split: send/commit/start/listening → phone,
- * receive/barge → BT.
+ * Switched from live Web Audio oscillators to pre-rendered WAV blobs played
+ * via HTMLAudioElement. Reason: chimes that fired while the iOS
+ * AVAudioSession category was 'play-and-record' (mic mode) routed to the
+ * iPhone speaker, while chimes during TTS playback ('playback' category)
+ * routed to BT correctly. Root cause: the shared AudioContext binds to the
+ * iOS hardware route AT CREATION TIME — later setSessionType() hints don't
+ * migrate existing oscillator destinations.
  *
  * Fix: HTMLAudioElement.play() inherits whatever AVAudioSession category
  * is current at play() time, identically to TTS (which uses the same
@@ -59,8 +57,8 @@
  *  Per-cue baked gains are pre-scaled by RENDER_SCALE; el.volume is set to
  *  the user's `audioFeedbackVolume` (0..1, default 0.5) at play time. A
  *  volume of 0 suppresses all cues (logged, not a bug). "Attention" cues
- *  (error, barge, call-dropped) are baked louder so they cut through wind
- *  / traffic in bike-mode.
+ *  (error, barge, call-dropped) are baked louder to cut through wind
+ *  and traffic.
  */
 
 import * as settings from '../../settings.ts';
@@ -73,10 +71,9 @@ export type ChimeName =
 
 // Pre-render at scale=4 so el.volume=userVolume reproduces the legacy
 // oscillator path's amplitude curve.
-// 2026-05-09: bumped 4 → 8 after Jonathan field-reported the commit
-// ("over") chime missing or inaudible during walk + bike scenarios.
-// At scale=4 the loudest baked gain (commit) was 0.05*4*0.5 = 0.10
-// effective at default volume — quiet over BT headsets with wind noise.
+// Bumped 4 → 8: the commit ("over") chime was missing or inaudible in
+// outdoor scenarios with BT headsets and wind noise. At scale=4 the
+// loudest baked gain (commit) was 0.05*4*0.5 = 0.10 at default volume.
 // At scale=8 it's 0.05*8*0.5 = 0.20 (~2x louder). Headroom remains
 // before clipping (loudest pre-scale gain is barge at 0.18; 0.18*8 =
 // 1.44 — clamped to 1.0 by the WAV encoder, slight clipping on the
@@ -107,7 +104,7 @@ function chimeDuration(name: ChimeName): number {
  *   - send:    short rising click, confirms outbound
  *   - receive: soft descending pop, confirms inbound
  *   - error:   two low descending tones — distinct from send/receive so
- *              bike-mode users hear a failure without watching the screen.
+ *              users hear a failure without watching the screen.
  *              Plays at ~1.5x the gain of send/receive because its whole
  *              job is to be noticed over wind/traffic.
  *   - start:   single very short high-pitched tick, ~half the gain of send.
@@ -217,9 +214,9 @@ function scheduleChime(name: ChimeName, ctx: BaseAudioContext, t0: number): void
     osc2.start(t2);
     osc2.stop(t2 + 0.08);
   } else if (name === 'barge') {
-    // v0.397 louder + longer (Jonathan field-tested 2026-05-03 — hard to
-    // hear over agent TTS at the original 0.06 gain). Sine kept (vs
-    // triangle) so it stays non-jangly when it cuts off TTS mid-syllable.
+    // Louder and longer than the original 0.06 gain, which was hard to
+    // hear over agent TTS. Sine kept (vs triangle) so it stays
+    // non-jangly when it cuts off TTS mid-syllable.
     osc.type = 'sine';
     osc.frequency.setValueAtTime(600, t0);
     gain.gain.setValueAtTime(0.18 * scale, t0);
@@ -371,19 +368,15 @@ export function playFeedback(name: ChimeName): void {
     return;
   }
   const userVolume = Math.max(0, Math.min(1, volume));
-  // Per-fire log so Jonathan's "missing/quiet chime" field reports can
-  // be cross-referenced against intended fires. Catches three classes:
-  //   - chime never fired (no log line at all)
-  //   - chime fired but volume was low (vol field shows it)
-  //   - chime fired + play failed (the play().catch below logs that)
+  // Per-fire log for diagnosing missing/quiet chimes. Catches three
+  // classes: chime never fired, chime fired at low volume, chime fired
+  // but play() rejected.
   diag(`[feedback] play (${name}) vol=${userVolume.toFixed(2)}`);
 
   // Fire-and-forget. First-call render is async; subsequent calls resolve
-  // synchronously off the cache. Errors logged (not swallowed silently)
-  // so dev-mode catches missing chimes — Jonathan field-reported 2026-
-  // 05-09 that the commit ("over") chime was inconsistent. Without
-  // logging we'd never know which side failed (render vs play).
-  // Failures still don't throw upward into the app's hot path.
+  // synchronously off the cache. Errors are logged (not swallowed silently)
+  // so dev-mode can catch missing chimes — without logging we'd never know
+  // which side failed (render vs play). Failures don't throw into the hot path.
   void (async () => {
     let el: HTMLAudioElement;
     try {
@@ -400,7 +393,7 @@ export function playFeedback(name: ChimeName): void {
         // Most common cause on iOS: AVAudioSession not yet activated by
         // a user gesture, or the WebView's audio output path is wedged.
         // Log for diagnostics; the keepalive engine + interruption
-        // handlers we added 2026-05-09 should reduce the second class.
+        // handlers should reduce the second class.
         diag(`[feedback] play failed (${name}): ${err?.message ?? err}`);
       });
     }

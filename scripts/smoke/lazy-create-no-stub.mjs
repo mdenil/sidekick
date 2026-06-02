@@ -1,5 +1,5 @@
 // Scenario: clicking "New chat" must NOT create an empty drawer row.
-// Option B (Jonathan 2026-04-29): the chat materializes only on first
+// The chat materializes only on first
 // send, so the drawer never shows "New chat / 0 msgs" stubs. Once the
 // user actually sends, the chat shows up in the drawer normally.
 //

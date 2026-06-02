@@ -515,9 +515,9 @@ function handleEnvelope(type: string, env: any, chatId: string): void {
       // for this bubble — pass straight through as cumulativeText.
       // isReplay flows so the shell's first-delta-of-turn chime stays
       // quiet on SSE ring-replay catch-up after switching to a chat
-      // with recent activity (Jonathan field bug 2026-05-13: 'send'
-      // chime fired every switch into the cron-active chat because
-      // handleReplyDelta saw replay envelopes as "first delta").
+      // with recent activity (without isReplay, the 'send' chime fires
+      // on every switch into a chat with in-flight activity because
+      // handleReplyDelta sees replay envelopes as "first delta").
       subs?.onDelta?.({ replyId, cumulativeText: text, conversation: chatId, messageId: msgId, isReplay });
       return;
     }
@@ -539,8 +539,8 @@ function handleEnvelope(type: string, env: any, chatId: string): void {
       // before /api/sidekick/sessions enrichment refreshes.
       // NOT on replay: server replays past envelopes on stream
       // reconnect; bumping then triggers a drawer-reorder cascade
-      // (Jonathan, 2026-05-04 field repro: 5+ resumes per page-load).
-      // The IDB row's lastMessageAt is already correct from the
+      // (multiple resumes per page-load). The IDB row's lastMessageAt
+      // is already correct from the
       // original live event, so skipping replay is safe.
       if (!isReplay) {
         conversations.updateLastMessageAt(chatId, Date.now()).catch(() => {});
@@ -572,8 +572,7 @@ function handleEnvelope(type: string, env: any, chatId: string): void {
       // titling the chat after the first message. Update the local
       // IDB title and notify the shell so the drawer re-renders in
       // place. Without the callback, the new title only surfaces on
-      // the next list poll / page reload (UX bug — Jonathan reported
-      // 2026-04-28; pinned by smoke title-update.mjs).
+      // the next list poll / page reload.
       const newTitle = typeof env.title === 'string' ? env.title : '';
       if (newTitle) {
         conversations.updateTitle(chatId, newTitle).catch(() => {});
@@ -797,8 +796,8 @@ export const proxyClientAdapter = {
     // listSessions' local-only-row path returns title='New chat' and
     // mergePending drops the snippet-bearing pending row, leaving the
     // drawer showing 'New chat' for the full duration of long
-    // tool-using turns (Jonathan field bug 2026-05-11: 20-second tool
-    // call showed 'New chat' until reply landed). stampPlaceholderTitle
+    // tool-using turns (a long tool call would show 'New chat' until
+    // the reply landed). stampPlaceholderTitle
     // catches the second-message-in-an-untitled-chat case (hydrate
     // no-ops on existing rows by design).
     const seedTitle = text.slice(0, 80);
@@ -1140,7 +1139,7 @@ export const proxyClientAdapter = {
    *  high-latency link 8 of those serially saturate the pipe and starve
    *  the user's actual drill. A handful of rows warms the cache (resume()
    *  renders it instantly, then grows it from the server) for ~12KB, so
-   *  the speculative prefetch barely touches the link (Jonathan 2026-05-29). */
+   *  the speculative prefetch barely touches the link. */
   async prefetchSessionMessages(id: string) {
     return fetchSessionMessages(id, 'proxy-client.prefetch', 12);
   },
@@ -1157,12 +1156,10 @@ export const proxyClientAdapter = {
    *  handlers route to their replay-aware branches (suppress chime,
    *  badge increment, TTS playback, lastMessageAt bump, etc.) — same
    *  contract the SSE ring replay already uses for fresh-subscriber
-   *  catch-up. Pre-2026-05-12 the inflight replay omitted this flag,
-   *  so a chat whose inflight cache grew large (cron-firing chats
-   *  where each new envelope cancels the 30s pendingDrop and the
-   *  cache accumulates reply_finals over many turns — Jonathan field
-   *  bug 2026-05-12, chat 99298465 chimed on every click) re-fired
-   *  the receive chime on every switch-in. */
+   *  catch-up. Without this flag, a chat whose inflight cache grew
+   *  large (cron-firing chats where each new envelope cancels the 30s
+   *  pendingDrop and the cache accumulates reply_finals over many
+   *  turns) would re-fire the receive chime on every switch-in. */
   replayInflight(chatId: string, envelopes: any[]): void {
     if (!envelopes || envelopes.length === 0) return;
     diag(`proxy-client: replaying ${envelopes.length} inflight envelopes for ${chatId}`);

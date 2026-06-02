@@ -4,11 +4,10 @@
 //   3. Clicking again removes the class from both
 //   4. The store reports isPinned() consistently with the DOM state
 //
-// Field bug 2026-05-12 motivated this smoke: Jonathan reported
-// "I clicked the pin and it just didn't work" — without an automated
-// test the regression slot was an empty hole. Pins this end of the
-// surface so we catch DOM/event-handler breakage before the user
-// does.
+// Regression guard: the pin button click silently did nothing — without
+// an automated test the regression slot was an empty hole. Pins this
+// end of the surface so we catch DOM/event-handler breakage before the
+// user does.
 
 import {
   waitForReady, openSidebar, send, captureNextChatId,

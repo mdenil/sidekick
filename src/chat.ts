@@ -86,8 +86,8 @@ let missedWhileScrolled = 0;
  *  a scroll-to-0 event WHILE viewedSessionIdRef still points at the
  *  LEAVING chat — without this guard that synthetic scroll overwrites the
  *  leaving chat's just-saved (real) position with scrollTop=0 and a
- *  garbage anchor, so switch-back restores to the wrong place
- *  (scroll-mid-history-survives-switch regression). The explicit save in
+ *  garbage anchor, so switch-back restores to the wrong place. The explicit
+ *  save in
  *  resume() already ran before the clear, so suppressing here loses
  *  nothing. */
 let scrollSaveSuppressed = false;
@@ -141,10 +141,10 @@ export function restoreDomAnchor(anchor: { key: string; offsetPx: number }): boo
   // Converge across frames: each frame, re-seat the anchor at offsetPx.
   // Needed because `content-visibility: auto` rows above the anchor start
   // as 100px placeholders and settle to real heights as they render into
-  // view — each settle shifts the anchor, so a single scroll undershoots
-  // (field 2026-05-27: switch-back landed ~560px off). Also absorbs a
-  // transient scrollTop reset fired mid-render (render-race). Bails when
-  // stable or after ~20 frames; a newer restore supersedes via the gen.
+  // view — each settle shifts the anchor, so a single scroll undershoots.
+  // Also absorbs a transient scrollTop reset fired mid-render (render-race).
+  // Bails when stable or after ~20 frames; a newer restore supersedes via
+  // the gen.
   const gen = ++_restoreAnchorGen;
   let frames = 0;
   let stable = 0;
@@ -159,7 +159,7 @@ export function restoreDomAnchor(anchor: { key: string; offsetPx: number }): boo
     // over the next several frames, each pushing the anchor down. Keep
     // re-seating until the anchor holds for a few consecutive frames (or a
     // ~0.5s cap), so we converge to the settled layout, not the placeholder
-    // one (field 2026-05-27: bailing at frame 1 landed ~750px high).
+    // one.
     if (stable < 3 && ++frames < 30) requestAnimationFrame(step);
   };
   step();
@@ -222,12 +222,8 @@ export function forceScrollToBottom(): void {
   // scrollTo(scrollHeight) lands at the *estimated* bottom. The jump
   // reveals the real bottom rows; the virtualizer's ResizeObserver then
   // measures them, scrollHeight shifts, and the view is left part-way.
-  // Field 2026-05-27 (Jonathan): the jump-to-bottom arrow "takes me down
-  // part way, I have to click + scroll several times to reach bottom",
-  // and switching into a chat "lands at the bottom then jumps up". Both
-  // are the same estimate→measure settle. Re-scroll to scrollHeight every
-  // frame until it stops changing (or a safety cap) so we track the bottom
-  // as the revealed rows are measured.
+  // Re-scroll to scrollHeight every frame until it stops changing (or a
+  // safety cap) so we track the bottom as the revealed rows are measured.
   //
   // Bails the instant the user scrolls up: the scroll listener flips
   // `pinnedToBottom` false on their gesture, so the loop yields and never
@@ -243,10 +239,10 @@ export function forceScrollToBottom(): void {
     if (transcriptEl !== el || gen !== _stickBottomGen || !pinnedToBottom) return;
     const sh = el.scrollHeight;
     el.scrollTo({ top: sh, behavior: 'instant' as ScrollBehavior });
-    // iOS PWA paint anchor (Jonathan, 2026-05-05): scrollTop reaches the
-    // right value but WebKit doesn't paint until a real DOM child is the
-    // scroll target. Last-element seek is the difference between paint and
-    // not-paint; no-op cost on other browsers.
+    // iOS PWA paint anchor: scrollTop reaches the right value but WebKit
+    // doesn't paint until a real DOM child is the scroll target.
+    // Last-element seek is the difference between paint and not-paint;
+    // no-op cost on other browsers.
     const last = el.lastElementChild as HTMLElement | null;
     if (last && typeof last.scrollIntoView === 'function') {
       try { last.scrollIntoView({ block: 'end', inline: 'nearest' }); } catch { /* noop */ }
@@ -313,12 +309,11 @@ export function autoScroll(): void {
 
 /** Explicitly set the pinned-to-bottom flag. Session-restore calls this
  *  with `false` for a mid/anchor restore so autoScroll() can't snap the
- *  heavy incoming chat to the live edge while it renders and fight the
- *  anchor restore (field bug 2026-05-26: visible bounce-to-bottom on
- *  switching into the pitch deck mid-history). The scroll listener already
- *  re-derives pinned on the next real scroll, so this just removes the
- *  window where a false-positive isPinned() (at scrollTop≈0 right after the
- *  switch-then-load clear collapses scrollHeight) lets autoScroll run. */
+ *  incoming chat to the live edge while it renders and fight the anchor
+ *  restore. The scroll listener already re-derives pinned on the next real
+ *  scroll, so this just removes the window where a false-positive isPinned()
+ *  (at scrollTop≈0 right after the switch-then-load clear collapses
+ *  scrollHeight) lets autoScroll run. */
 /** DEBUG-ONLY: trace every programmatic scroll write on the transcript —
  *  both `el.scrollTo(...)` and `el.scrollTop = …` — with a caller hint, so a
  *  repro names the EXACT code re-asserting a scroll target (field 2026-05-27:
@@ -419,8 +414,7 @@ export async function init(el: HTMLElement | null): Promise<boolean> {
       // Force-flush the snapshot debounce. Without this, a reload
       // immediately after a chat switch loses the last 250ms of activity
       // — the IDB-persisted snapshot still reflects the PREVIOUS chat
-      // and post-reload boot restores the wrong one. Field bug
-      // 2026-05-25 (switch-away-and-back smoke under switch-then-load).
+      // and post-reload boot restores the wrong one.
       flushSnapshotPersist();
     });
   }
@@ -567,9 +561,7 @@ export async function init(el: HTMLElement | null): Promise<boolean> {
       });
       // Re-wire show-more/show-less buttons. Snapshot restores the DOM
       // text but the onclick handler is lost across page reload. Without
-      // this re-attach, buttons existed visually but did nothing —
-      // particularly visible on iOS PWA where reload is the common
-      // entry path (Jonathan field bug 2026-05-17).
+      // this re-attach, buttons existed visually but did nothing.
       transcriptEl.querySelectorAll<HTMLElement>('.bubble-fold-toggle').forEach(btn => {
         const line = btn.closest<HTMLElement>('.line');
         if (!line) return;
@@ -617,7 +609,6 @@ export async function init(el: HTMLElement | null): Promise<boolean> {
  *  reload restores the prior DOM row AND a fresh replay from inflight
  *  appends another (since the in-memory `rows` Map is empty post-JS-
  *  reset). 3 reloads → 3 stacked "N tools · done" rows on the same chat
- *  (Jonathan field bug 2026-05-17).
  *
  *  Trade-off: past-turn activity rows disappear on reload. Acceptable
  *  for now; the principled fix is to extend renderHistoryMessage to
@@ -630,7 +621,7 @@ function persist(): void {
   // partial snapshot that's wrong on reload. Save the transcriptStore's
   // durable + pagination for the active chat instead; cold-load injects
   // it into the store and the projection + reconciler render via the
-  // normal pipeline (Decision 4A, 2026-05-25).
+  // normal pipeline.
   if (getVirtualizerSlot()) {
     if (!viewedSessionIdRef) return;
     const state = transcriptStore.getState(viewedSessionIdRef);
@@ -679,10 +670,9 @@ export function flushSnapshotPersist(): void {
  *  ONCE at the end. Without batching, the resume loop is O(N²): each
  *  `persist()` reads `transcriptEl.innerHTML` (O(N) DOM serialization)
  *  and writes the full snapshot to IDB — N calls × O(N) bytes per
- *  call. Field repro 2026-05-04: 200-msg chat took ~5s to render
- *  client-side (server-side fetch was <1s). Pre-existing slowness;
- *  surfaced when the cascade fix made click-to-content the dominant
- *  load-time component. */
+ *  call. Without batching, a 200-message chat took ~5s to render
+ *  client-side (server-side fetch was <1s); the per-call DOM serialization
+ *  cost dominates at scale. */
 export function flushBatchedRender(): void {
   autoScroll();
   persist();
@@ -808,9 +798,9 @@ export function addLine(speaker: string, text: string, cls = '', opts: {
     const msgId = String(opts.messageId);
     const pinBtn = document.createElement('button');
     pinBtn.className = 'pin-btn';
-    // Thumbtack — recognizable as a pin (vs the abstract paperclip
-     // shape used pre-2026-05-12 that Jonathan correctly flagged as
-     // ambiguous). Two SVGs in DOM; CSS swaps visibility via .pinned.
+    // Thumbtack — recognizable as a pin (vs an abstract paperclip
+     // shape, which is ambiguous). Two SVGs in DOM; CSS swaps visibility
+     // via .pinned.
     pinBtn.innerHTML = `
       <svg class="pin-icon pin-outline" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 10.76V4h6v6.76l3 1.74v2.5H6v-2.5z"/></svg>
       <svg class="pin-icon pin-filled" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M12 17v5" stroke-linecap="round"/><path d="M9 10.76V4h6v6.76l3 1.74v2.5H6v-2.5z"/></svg>
@@ -853,11 +843,9 @@ export function addLine(speaker: string, text: string, cls = '', opts: {
         const liveText = div.dataset.text
           || (div.querySelector('.text') as HTMLElement | null)?.textContent
           || '';
-        // Store up to ~16000 chars so even a long markdown reply (pitch
-        // deck section, brainstorm, planning doc) shows IN FULL when
-        // the drawer item expands. Earlier 1500 cap truncated common
-        // expanded reads (Jonathan field bug 2026-05-14: expanded pin
-        // body was cut off mid-section). 16K is well under IDB pressure
+        // Store up to ~16000 chars so even a long markdown reply shows
+        // IN FULL when the drawer item expands. The earlier 1500 cap
+        // truncated common expanded reads. 16K is well under IDB pressure
         // for any realistic pin count (1 MB at 60 pins of max size).
         const preview = liveText.length > 16000 ? liveText.slice(0, 15997) + '…' : liveText;
         const role = cls.includes('agent') ? 'assistant'
@@ -943,8 +931,7 @@ export function addLine(speaker: string, text: string, cls = '', opts: {
         // PDF preview: minimal label chip. Click opens the data: URL in
         // a new tab so the user can sanity-check what they sent without
         // pdf.js bulk. Local-only — the chip lives in DOM memory and
-        // disappears on hard refresh (Jonathan, 2026-05-05: "no need
-        // to push to backend, can just live locally").
+        // disappears on hard refresh (no server-side persistence needed).
         const a = document.createElement('a');
         a.href = att.dataUrl;
         a.target = '_blank';
@@ -958,8 +945,8 @@ export function addLine(speaker: string, text: string, cls = '', opts: {
     if (attDiv.children.length > 0) div.appendChild(attDiv);
   }
 
-  // Long-bubble fold (Jonathan, 2026-05-05). Bubbles whose source text
-  // exceeds the threshold get clipped with a "Show more" toggle. Per-
+  // Long-bubble fold. Bubbles whose source text exceeds the threshold
+  // get clipped with a "Show more" toggle. Per-
   // bubble state lives in `foldStateByMsgId` so a virt unmount/remount
   // preserves the user's toggle — the bubble's DOM is gone after a
   // scroll-out, but msgId is stable; remount restores the prior state
@@ -977,8 +964,8 @@ export function addLine(speaker: string, text: string, cls = '', opts: {
     div.classList.add('foldable');
     // Default state: agent replies start EXPANDED (you usually want to read
     // them in full); user bubbles start FOLDED (own messages are reference,
-    // collapse by default to save scroll real estate). Per Jonathan, 2026-
-    // 05-05. Either side can be toggled per-bubble.
+    // collapse by default to save scroll real estate). Either side can be
+    // toggled per-bubble.
     const defaultExpanded = cls.includes('agent');
     const persistedState = opts.messageId ? foldStateByMsgId.get(String(opts.messageId)) : undefined;
     const startExpanded = persistedState === undefined ? defaultExpanded : persistedState === 'expanded';
@@ -1115,11 +1102,10 @@ export function prependHistory(renderFn: () => void) {
  *  append shifts the target's y-coordinate but the smooth-scroll keeps
  *  animating to the *old* coordinate, landing the user on the wrong
  *  message. Each successive click triggers another page until pagination
- *  exhausts — the field bug Jonathan called "takes 3 tries to land on the
- *  right message" (2026-05-13). The load-LATER direction matters since the
- *  bounded drill window lands the target near the window's bottom edge
- *  (within the loadLater threshold); unsuppressed, a deep jump would walk
- *  all the way to the live tail (2026-05-29). Sets a deadline; both
+ *  exhausts. The load-LATER direction matters since the bounded drill window
+ *  lands the target near the window's bottom edge (within the loadLater
+ *  threshold); unsuppressed, a deep jump would walk all the way to the live
+ *  tail. Sets a deadline; both
  *  maybeLoadEarlier and maybeLoadLater bail until it passes. */
 let suppressLazyLoadUntil = 0;
 export function suppressLazyLoadFor(ms: number): void {

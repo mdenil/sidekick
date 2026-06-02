@@ -1,9 +1,9 @@
 // Scenario: an empty IDB-only chat (0 msgs, no draft, no attachments)
 // gets dropped when the user navigates AWAY to a different chat.
 //
-// Reported by Jonathan 2026-04-30: a "New chat / 0 msgs" entry
-// persisted mid-list after he created it and clicked another chat
-// without sending. The new-chat button itself doesn't write IDB rows
+// Regression guard: a "New chat / 0 msgs" entry persisted mid-list
+// after creation without sending. The new-chat button itself doesn't
+// write IDB rows
 // (lazy-create design — see hermes-gateway.ts:newSession), but
 // cross-device hydrate, dangling rows from an aborted send, or older
 // pre-lazy-create rows can leave orphans behind. This test directly
@@ -74,7 +74,7 @@ async function seedOrphanIdbRow(page, chatId) {
       const tx = db.transaction(STORE, 'readwrite');
       tx.objectStore(STORE).put({
         chat_id: id, title: 'New chat',
-        // 2h ago — matches what Jonathan reported.
+        // 2h ago — typical orphan age.
         created_at: Date.now() - 2 * 60 * 60 * 1000,
         last_message_at: Date.now() - 2 * 60 * 60 * 1000,
       });

@@ -108,7 +108,7 @@ export default async function run({ page, log }) {
 
   // ── On desktop the drawer should STAY OPEN — pin drawer is a
   //    todo-list / context surface that should persist while the
-  //    user drills around the chat (Jonathan UX 2026-05-13).
+  //    user drills around the chat.
   //    Mobile auto-closes (full-overlay layout would otherwise
   //    obscure the drilled-to message), but smokes run at 1280x800
   //    desktop unless MOBILE='true'.
@@ -127,9 +127,9 @@ export default async function run({ page, log }) {
   log(`post-jump: pinned bubble rendered in transcript ✓`);
 
   // The target's TOP should be near the viewport top (block:'start'
-  // alignment). Field bug 2026-05-13 (Jonathan): earlier `block:
-  // 'center'` centered tall bubbles, so their start fell well above
-  // the viewport — the drill felt "off by 2-3 messages." Allow
+  // alignment). Regression guard: earlier `block:'center'` centered
+  // tall bubbles, so their start fell well above the viewport — the
+  // drill felt "off by 2-3 messages." Allow
   // smooth-scroll a moment to settle, then verify rect.top is in
   // [-20, viewport*0.3] — within a small slack of the top edge.
   await page.waitForTimeout(800);

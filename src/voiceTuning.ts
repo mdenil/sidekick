@@ -57,7 +57,7 @@ export function detectDeviceClass(): DeviceClass {
  *  factor the Mac calibration revealed (~0.10 / 0.025 = 4×).
  *  Re-tune from device after first iOS field test of v0.385.
  *
- *  Tunable per-row; Jonathan will adjust from real devices.
+ *  Tunable per-row; calibrate from real devices.
  */
 /** Per-device tuning record. Two unrelated kinds of values riding
  *  together — the only thing they share is "varies per device class":

@@ -1,12 +1,10 @@
 // Scenario: clicking a non-sidekick chat (whatsapp/telegram), then
 // clicking away, then clicking BACK should re-render its content.
-// Reported by Jonathan 2026-04-29: 1st click on whatsapp shows content;
-// click to another chat; click whatsapp again → body empty.
+// Regression guard: 1st click on whatsapp shows content; click to
+// another chat; click whatsapp again → body empty.
 //
-// My mental model says this should work (cache cb fires for the 2nd
-// click since cache was populated by the 1st render). If this test
-// goes GREEN, my model is right and we need real-PWA repro detail
-// to understand. If it goes RED, the test reveals the bug.
+// If this test goes GREEN, the cache-cb fires for the 2nd click
+// as expected. If it goes RED, the test reveals the regression.
 //
 // Test plan (mocked):
 //   1. Pre-populate sidekick chat A (3 msgs) + whatsapp chat W (5 msgs).

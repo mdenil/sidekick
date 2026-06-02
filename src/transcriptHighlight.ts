@@ -86,9 +86,9 @@ function ensureHint(): void {
 }
 
 /** Position the hint chip just above the currently highlighted bubble.
- *  Field UX 2026-05-16 (Jonathan): the fixed bottom-center placement
- *  overlapped the composer. Anchor to the bubble instead so the chip
- *  moves with the selection and stays out of the input area. */
+ *  Fixed bottom-center placement overlapped the composer; anchoring to
+ *  the bubble keeps the chip with the selection and out of the input
+ *  area. */
 function positionHint(): void {
   if (!hintEl) return;
   const bubble = highlightedEl;
@@ -167,9 +167,8 @@ function exitHighlight(): void {
 
 /** Called by external state-change paths (chat switch, new chat) to
  *  drop highlight mode without focusing the composer. Idempotent.
- *  Field UX 2026-05-16 (Jonathan): "when i go into select mode and
- *  then switch sessions or do new chat this overlay should disappear
- *  but it doesn't." */
+ *  Without this, the overlay persists across session switches and new
+ *  chat creation. */
 export function clearHighlight(): void {
   if (!highlightedEl) {
     hideHint();

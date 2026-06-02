@@ -1,4 +1,4 @@
-// Contract (Jonathan, 2026-05-27): the transcript follows the live edge
+// Contract: the transcript follows the live edge
 // ONLY while the scrollbar is at the very bottom — so a reply streaming in
 // stays in view hands-free (bike / cursor in another window). The moment
 // the user scrolls UP off the bottom, new replies (and tool calls) must NOT

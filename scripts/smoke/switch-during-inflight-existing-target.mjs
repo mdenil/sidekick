@@ -1,12 +1,11 @@
-// Field bug 2026-05-11 (Jonathan, real install):
+// Regression guard:
 //
 //   1. New chat → send "set a 10 second timer"
 //   2. Switch to an EXISTING chat in the drawer (heavier resumeSession
 //      path than switching to another fresh empty chat)
-//   3. Check the original chat's sidebar title — STILL showed "New chat",
-//      not the user's snippet, for the full 20-second tool-using turn.
-//      Then briefly flashed the snippet when reply landed, then hermes
-//      replaced it with the auto-generated title.
+//   3. The original chat's sidebar title showed "New chat" (not the user's
+//      snippet) for the full in-flight window, then briefly flashed the
+//      snippet when the reply landed.
 //   4. Switch back to the original chat — user message gone from transcript
 //      in some runs, present in others.
 //
@@ -35,7 +34,7 @@
 //      chat A. With the fix, it reads IDB, sees title=snippet (not
 //      'New chat'), and skips.
 //   6. Assert chat A's IDB row STILL has title=snippet (cleanup was
-//      bypassed). This is the precise repro of the field bug.
+//      bypassed). This is the precise regression repro.
 //   7. Assert chat A's sidebar row STILL shows the snippet.
 //
 // Note: this smoke pins the IDB-survival half. The transcript-survival
@@ -125,7 +124,7 @@ export default async function run({ page, log }) {
   // debounced, listSessions is two-stage (cache + server). 1.5s covers all.
   await page.waitForTimeout(1500);
 
-  // The precise field bug: IDB chat A's row must still exist with title=snippet.
+  // Assert IDB chat A's row still exists with title=snippet.
   const idbAfterSwitch = await readIDB(page, chatA);
   assert(
     idbAfterSwitch !== null,

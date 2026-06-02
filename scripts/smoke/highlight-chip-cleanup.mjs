@@ -4,9 +4,7 @@
 // mode (transcriptHighlight.ts) which adds a hint chip to body. The
 // chip persisted across session switches and new-chat clicks because
 // nothing was wired to call exitHighlight on those transitions —
-// Jonathan saw the chip stuck on the wrong transcript. (Field UX
-// 2026-05-16: "when i go into select mode and then switch sessions
-// or do new chat this overlay should disappear but it doesn't").
+// the chip stayed stuck on the wrong transcript after switching away.
 //
 // Fix (commit e6b2ded): export clearHighlight() + wire into
 // sessionDrawer.setViewed so navigating away drops both the

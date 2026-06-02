@@ -5,7 +5,7 @@
  * `audio/turn-based/turnbased.ts`, each with their own setInterval +
  * BargeWindow + speechVad wiring.
  *
- * Detection design (VAD-only, post-2026-05-04 simplification):
+ * Detection design (VAD-only):
  *
  *   Fire condition = isPlayingCb() && isEnabledCb() && warmup-elapsed
  *                    && !in-cooldown && speechVad.isSpeechActive()
@@ -108,11 +108,11 @@ const DEFAULT_WARMUP_MS = 500;
 const DEFAULT_FRAME_MS = 50;
 const DEFAULT_COOLDOWN_MS = 2000;
 // Silero minSpeechMs — minimum sustained speech-like energy required
-// before isSpeechActive flips true. Bumped 150 → 400 (Jonathan, 2026-05-05)
-// to suppress wind/breathing/road-rumble false-fires on bike (BT headset
-// open mic). Wind has speech-shaped spectral content briefly but rarely
-// sustains vocal-band character for 400ms; legitimate barge takes ~250ms
-// longer to register, acceptable trade. Tunable per-call via
+// before isSpeechActive flips true. Bumped 150 → 400 to suppress
+// wind/breathing/road-rumble false-fires on open-mic Bluetooth headsets.
+// Wind has speech-shaped spectral content briefly but rarely sustains
+// vocal-band character for 400ms; legitimate barge takes ~250ms longer
+// to register — acceptable trade-off. Tunable per-call via
 // BargeDetectorOpts.minSpeechMs if a quieter env wants snappier UX.
 const DEFAULT_MIN_SPEECH_MS = 400;
 
@@ -270,11 +270,10 @@ export class BargeDetector {
     const speechActive = speechActiveOverride
       ? speechActiveOverride()
       : (this.vadSource?.isSpeechActive() ?? false);
-    // Diag — log on STATE CHANGES only (was every 10 ticks ≈ 200ms,
-    // which spammed the log relay during long calls — Jonathan flagged
-    // 2026-05-09 in a 5-min field test). Pre-firing field repros are
-    // still debuggable: warmup→OK, cooldown→OK, vad silent→speech all
-    // emit a line. Steady-state idle is silent.
+    // Diag — log on STATE CHANGES only (logging every tick spammed
+    // the relay during long calls). State transitions are still visible:
+    // warmup→OK, cooldown→OK, vad silent→speech all emit a line.
+    // Steady-state idle is silent.
     const stateKey = `${enabled}|${inWarmup}|${inCooldown}|${speechActive}`;
     if (stateKey !== this.lastDiagState) {
       this.lastDiagState = stateKey;
@@ -298,13 +297,13 @@ export class BargeDetector {
     //   - vadSource.appliesPeakGate() === false (BridgeVadSource — its
     //     fires are post-AEC + hysteresis-filtered upstream; client-side
     //     peak isn't driven for bridge fires so peak reads 0 and would
-    //     suppress 100% of fires. Field-confirmed 2026-05-07).
+    //     suppress 100% of fires).
     // While the page is backgrounded (lockscreen, app switcher), iOS
     // WKWebView throttles JS Web Audio — the AnalyserNode reads stale
     // / near-zero values even though the WebRTC mic upstream is still
     // flowing at full volume (the bridge's Silero correctly classifies
-    // user speech). Field repro 2026-05-10 (Jonathan): peak 0.008 vs
-    // minPeak 0.15 → every barge attempt suppressed until phone unlock.
+    // user speech). Peak reads near-zero when hidden, which suppresses
+    // every barge attempt until the phone is unlocked.
     // Skip the peak gate when we're not visible — trust the bridge's
     // post-AEC Silero classification alone. AEC residual risk is low:
     // the bridge already runs Silero on POST-AEC audio, so residual

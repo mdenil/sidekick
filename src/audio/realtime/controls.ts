@@ -47,8 +47,7 @@ export interface ControlsOpts {
   /** Fires when a CONNECTED call was dropped by the network (not a user
    *  hangup). Host uses it to raise the "Call dropped — network unstable"
    *  banner with a Reconnect affordance. `reason` is the close reason from
-   *  realtime.ts ('net-failed' today; 'net-disconnect' reserved for the
-   *  Phase B reconnect path). */
+   *  realtime.ts (e.g. 'net-failed', 'net-disconnect'). */
   onCallDropped?: (reason: string) => void;
 }
 
@@ -72,8 +71,8 @@ export function init(o: ControlsOpts) {
   conn.setStateListener((state, mode) => {
     log('[webrtc-controls] state=', state, 'mode=', mode);
     // Pre-button-split this code flipped btn-mic.active when a call
-    // opened (back when btn-mic WAS the call button). After the split
-    // (2026-05) calls live on btn-call; btn-mic.active should reflect
+    // opened (back when btn-mic WAS the call button). After the split,
+    // calls live on btn-call; btn-mic.active should reflect
     // mic modes only (memo / dictate). main.ts:syncCallButtonVisual
     // owns btn-call.active. The 'connecting' class still belongs to
     // the mic button visually — it's the one that animates the spin
@@ -92,9 +91,9 @@ export function init(o: ControlsOpts) {
       if (!conn.isOpen()) mic.classList.remove('listening');
     }
     // Disable btn-call during transient states so rapid double-taps
-    // can't race the WebRTC handshake (field repro 2026-05-03: a second
-    // pointerdown while connecting tore down the in-flight session and
-    // failed the call). idle/connected/failed stay enabled — the user
+    // can't race the WebRTC handshake (a second pointerdown while
+    // connecting tears down the in-flight session and fails the call).
+    // idle/connected/failed stay enabled — the user
     // wants those clickable (open / hang up / retry).
     const call = btnEl('btn-call');
     if (call) {
@@ -218,8 +217,8 @@ export function isOpen(): boolean {
   return conn.isOpen();
 }
 
-/** True while a dropped call is attempting soft recovery (Phase B). The
- *  call isn't `connected` but it's not gone either — used so stay-alive
+/** True while a dropped call is attempting soft recovery. The call
+ *  isn't `connected` but it's not gone either — used so stay-alive
  *  hints and the hang-up affordance treat recovery as a live call. */
 export function isReconnecting(): boolean {
   return conn.isReconnecting();

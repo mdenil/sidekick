@@ -139,9 +139,8 @@ import type { STTProvider, TranscriptEvent, Unsubscribe } from '../shared/stt-pr
 // ── Diagnostic flag ────────────────────────────────────────────────────
 
 const dictateDebugOn = (() => {
-  // isDevMode() subsumes all three diag flags when on (Jonathan's
-  // on-the-go phone-bug-report workflow). Dynamic import to avoid a
-  // hot-import cycle through main.ts (boot order).
+  // isDevMode() subsumes all three diag flags. Dynamic import to avoid
+  // a hot-import cycle through main.ts (boot order).
   try {
     const qs = new URLSearchParams(location.search);
     if (qs.get('dictate-debug') === '1') return true;
@@ -216,8 +215,7 @@ let initialCursor: number | null = null;
  *  from the same utterance would land at the user's NEW caret and
  *  produce a duplicate.
  *
- *  Why content-aware (added 2026-05-07 after time-only false-positives
- *  on quick "click-then-respeak" workflow): a fixed time window large
+ *  Why content-aware: a fixed time window large
  *  enough to catch slow bridge tails (~2s) ALSO swallows the first
  *  interim of a genuinely-new utterance. Comparing first-N-chars
  *  distinguishes "Deepgram refining the abandoned utterance" from "a
@@ -237,8 +235,7 @@ let lastInterimText = '';
  *  strict equality check — the previous "is pos inside the utterance
  *  range" heuristic was too lenient when the utterance covered the
  *  whole textarea (ANY click inside existing content was tolerated,
- *  never resetting, and voice kept appending at the end). Field bug
- *  2026-05-07. */
+ *  never resetting, and voice kept appending at the end). */
 let lastSetCursor = -1;
 
 // ── Public API ─────────────────────────────────────────────────────────
@@ -267,9 +264,9 @@ export function init(input: HTMLTextAreaElement | null): void {
   // composer's selection by checking activeElement at handler time.
   document.addEventListener('selectionchange', onUserSelectionChange);
   // User-tap-to-focus during active dictation: commit the in-flight
-  // utterance and stop fighting iOS for the cursor. Field bug 2026-05-10
-  // (Jonathan, Cap): tapping the composer during dictation deferred the
-  // iOS keyboard appearance by ~7 seconds because dictate's setCursor()
+  // utterance and stop fighting iOS for the cursor. Tapping the
+  // composer during dictation deferred the iOS keyboard appearance by
+  // ~7 seconds because dictate's setCursor()
   // polling kept calling setSelectionRange() right as iOS was trying
   // to present the keyboard — WKWebView treats programmatic selection
   // as a reason to delay keyboard from a user-gesture focus. After
@@ -548,8 +545,8 @@ function ensureAnchor(): void {
   // itself is plenty visible. Detection via the .capacitor-app class
   // on documentElement (set by the Cap WKUserScript at boot); shared
   // code stays Cap-agnostic — it's just reading a CSS class hint.
-  // (Jonathan, 2026-05-09 Cap field bug: keyboard pops on dictate
-  // entry, hides composer controls, doesn't push app up.)
+  // Skip on Cap: keyboard pop on dictate entry hides composer
+  // controls and doesn't push the app up.
   const isCap = typeof document !== 'undefined' &&
                 document.documentElement.classList.contains('capacitor-app');
   if (!isCap) {
@@ -682,7 +679,7 @@ function writeRange(start: number, end: number, text: string): void {
     // dispatch one explicitly so the OTHER listeners on the textarea
     // (autoResize + updateSendButtonState in main.ts) react. Without
     // this dispatch, streaming dictation grew the value but the box
-    // didn't auto-grow — Jonathan's UX bug 2026-05-04.
+    // didn't auto-grow.
     // Our own onUserInput sees this event but `updating=true` makes
     // it a no-op for the state machine.
     composerInput.setRangeText(text, start, end, 'preserve');
@@ -743,7 +740,7 @@ function onUserSelectionChange(_ev: Event): void {
   // "is pos inside [anchor, utteranceEnd]" heuristic was too lenient
   // when the utterance covered the whole textarea — ANY click inside
   // existing content was tolerated, no reset, and voice kept
-  // appending at the end. Field bug 2026-05-07.
+  // appending at the end.
   if (pos === lastSetCursor) return;
   diag('[dictate] user moved cursor — committing in place');
   resetUtterance('user-cursor-outside');

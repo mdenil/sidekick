@@ -13,24 +13,18 @@
  */
 const CACHE_NAME = 'v0.565';
 
-// Dedicated cache for VAD assets. Key insight (Jonathan, 2026-05-04):
-// VAD assets are 14.7 MB and don't change with every app deploy — the
-// Silero model is versioned by filename, the ORT runtime is from a
-// pinned npm package. Bumping CACHE_NAME ABOVE used to evict them
-// every release, forcing a 14.7 MB re-download per refresh. They now
-// live in this separate cache that survives app version bumps; only
-// invalidate when the VAD lib version itself changes (bump VAD_CACHE).
+// Dedicated cache for VAD assets. Key insight: VAD assets are 14.7 MB
+// and don't change with every app deploy — the Silero model is
+// versioned by filename, the ORT runtime is from a pinned npm package.
+// Bumping CACHE_NAME ABOVE used to evict them every release, forcing a
+// 14.7 MB re-download per refresh. They now live in this separate cache
+// that survives app version bumps; only invalidate when the VAD lib
+// version itself changes (bump VAD_CACHE).
 //
 // Update protocol: when @ricky0123/vad-web is upgraded OR the Silero
 // model changes, bump VAD_CACHE — the activate handler then prunes
-// the old VAD cache and the next call re-fetches. Dev workflow: this
-// is rare; ~once per quarter at most.
-// Bumped 2026-05-05: vad-web.mjs patched with [micvad-trace] phase logs
-// for diagnosing the Mac Chrome 5s hang in MicVAD.new. v3 routes the
-// trace through window.__MICVAD_TRACE_BUF__ + speechVad's watchdog
-// flush so the on-page debug panel captures the lines. Once the
-// diagnosis is done and the trace removed, revert to v1.
-// v4: silero_legacy.js patched with deeper inside-modelFactory trace
+// the old VAD cache and the next call re-fetches. This is rare;
+// ~once per quarter at most.
 const VAD_CACHE = 'vad-assets-v4';
 
 // Minimum viable shell for offline boot. Bundle JS modules used to be
@@ -54,8 +48,8 @@ const APP_SHELL = [
   // Silero VAD WASM assets are NOT in APP_SHELL — they're 14.7 MB
   // total (12.8 MB ORT WASM + 1.8 MB Silero model + 24 KB ESM loader +
   // 3 KB worklet). Pre-caching blocked SW install/activate by 15-20s
-  // on every version bump (Jonathan, 2026-05-04). Lazy-cache instead:
-  // the existing /assets/* fetch handler caches on first hit, so the
+  // on every version bump. Lazy-cache instead: the existing /assets/*
+  // fetch handler caches on first hit, so the
   // first call after a version bump pays the one-time download cost
   // and warms the cache for everything after. main.ts kicks off a
   // background prefetch ~5s after page ready so the cost is hidden

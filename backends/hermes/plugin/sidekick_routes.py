@@ -36,11 +36,9 @@ def _strip_source_prefix(chat_id: Any) -> str:
     use internally (no `<source>:` prefix). PWA-facing routes accept
     either shape — the sidekick proxy passes the FULL `sidekick:<uuid>`
     form, but the plugin's _safe_send_envelope downstream uses the
-    stripped UUID. Without this normalization, e.g.
+    stripped UUID. Without this normalization,
     EngagementState.mark_visible records under the prefixed key while
-    is_engaged checks the stripped key → engagement gate never fires.
-    Field bug 2026-05-18 (Jonathan): push fired despite desktop being
-    visibly engaged with the source chat."""
+    is_engaged checks the stripped key → engagement gate never fires."""
     if not isinstance(chat_id, str) or not chat_id:
         return ""
     _, stripped = _parse_gateway_id(chat_id)
@@ -140,7 +138,7 @@ async def handle_visibility(ctx, request: web.Request) -> web.Response:
         return _json({"error": "invalid_request", "message": "chat_id required"}, status=400)
     # Normalize before recording — dispatch path keys engagement on the
     # stripped chat_id. See _strip_source_prefix docstring for the
-    # asymmetric-key field bug.
+    # asymmetric-key normalization rationale.
     chat_id = _strip_source_prefix(raw_chat_id)
     if not chat_id:
         return _json({"error": "invalid_request", "message": "chat_id required"}, status=400)

@@ -2,9 +2,8 @@
 // — at varying scrollback depths — must land on the CORRECT bubble
 // every single click, first try.
 //
-// Field bug 2026-05-13 (Jonathan, iOS): "clicking on pins in ios
-// still doesn't immediately jump to correct message. i can't figure
-// out pattern." The recent fixes addressed two known angles:
+// Regression guard: clicking a pin on iOS does not immediately jump to
+// the correct message. The fixes addressed two known angles:
 //
 //   - `0b10cde` instant-scroll + load-earlier suppression for in-window
 //     targets (was: 3-click drift from smooth-scroll racing lazy-load)
@@ -19,9 +18,9 @@
 // depths 5/35/75 (deep / mid / recent) and cycles through them in
 // every order asserting each lands on the right bubble.
 //
-// MOBILE coverage: this is the primary failure surface Jonathan
-// reports the bug on, so the suite expands via MOBILE='both' to
-// cover desktop + iPhone viewport.
+// MOBILE coverage: this is the primary failure surface (mobile), so
+// the suite expands via MOBILE='both' to cover desktop + iPhone
+// viewport.
 
 import {
   waitForReady, assert,

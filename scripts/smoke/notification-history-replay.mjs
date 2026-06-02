@@ -17,15 +17,15 @@
 //
 // The bug this guards against: history-replay rendering diverging from
 // live arrival, leaving cron rows looking like regular agent bubbles
-// after a reload / session-switch. Jonathan caught this in the wild
-// 2026-05-15 ("getting Cronjob Response: ... boilerplate in the
-// transcript on reload") — the fix landed but no smoke pinned it.
+// after a reload / session-switch (observed as "Cronjob Response: ...
+// boilerplate in the transcript on reload") — the fix landed but no
+// smoke pinned it.
 //
 // Setup: 5-message chat with a notification row sandwiched between
 // regular user/assistant turns. Click in → reload → switch away + back.
 // Assert the notification row keeps the correct shape on every path.
 //
-// Gap flagged 2026-05-17: the mock backend's /messages endpoint does
+// Note: the mock backend's /messages endpoint does
 // NOT currently surface the `kind` field even when set on the mock chat
 // (mock-backend.mjs lines 228-251 pass through tool_call_id, tool_calls,
 // sidekick_id but not kind). So the test relies on the content-shape
@@ -73,7 +73,7 @@ export function MOCK_SETUP(mock) {
         timestamp: t0 + 1,
       },
       // Cron-style notification row persisted as role='assistant' with
-      // kind='cron' (the canonical shape after the 2026-05-15 SSOT
+      // kind='cron' (the canonical shape after the SSOT
       // refactor — see backends/hermes/plugin _write_msg_links_after_turn
       // and proxy/sidekick/notifications/dispatch). The `kind` field is
       // set for forward-compat with the mock-backend `kind` passthrough
@@ -188,8 +188,8 @@ async function assertNotificationShape(page, log, phase) {
   assert(probe.hasNotificationClass, `[${phase}] row missing .notification class`);
   // The renderer uses `${emoji} ${kind}` as the speaker for kind='cron'
   // (or shape-detected cron). Check for the ⏰ emoji explicitly — that's
-  // the user-visible signal Jonathan relies on to distinguish cron rows
-  // from regular agent bubbles at a glance.
+  // the user-visible signal that distinguishes cron rows from regular
+  // agent bubbles at a glance.
   assert(
     probe.speakerText.includes('⏰'),
     `[${phase}] speaker label missing ⏰ emoji — got ${JSON.stringify(probe.speakerText)}`,

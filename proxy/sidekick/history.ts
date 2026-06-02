@@ -61,10 +61,10 @@ async function handleSessionMessagesViaUpstream(
   around: string | null = null,
   after: number | null = null,
 ): Promise<void> {
-  // [/messages-trace] instrumentation (Jonathan, 2026-05-04 overnight) —
-  // diagnose where the 4-20s server-side latency lives. Three phase
-  // timings: enter, upstream-call, response-serialize. Disable by
-  // commenting out once the bottleneck is identified.
+  // [/messages-trace] instrumentation — diagnose where server-side
+  // latency lives. Three phase timings: enter, upstream-call,
+  // response-serialize. Disable by commenting out once the bottleneck
+  // is identified.
   const traceId = `msgs_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
   const t0 = Date.now();
   const trace = (event: string, extra: string = '') =>
@@ -90,8 +90,7 @@ async function handleSessionMessagesViaUpstream(
       // routes tool rows through activityRow.appendToolResult and parses
       // tool_calls to rebuild the activity row's headers. Without these
       // fields, post-session-switch reload showed assistant text but no
-      // tool activity — exactly the "tool calls disappeared" symptom
-      // Jonathan hit on 2026-05-17.
+      // tool activity ("tool calls disappeared" on session resume).
       ...(it.tool_call_id ? { tool_call_id: it.tool_call_id } : {}),
       ...(it.tool_calls ? { tool_calls: it.tool_calls } : {}),
       // SSE-shape id (umsg_*/msg_*) when the plugin recorded a link

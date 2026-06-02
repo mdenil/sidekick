@@ -1,7 +1,7 @@
 // Scenario: after a fresh reload, the drawer's active (highlighted)
 // row must match the chat whose content is rendered in the body.
-// Reported by Jonathan 2026-04-29: drawer showed an empty "New chat"
-// stub highlighted, but body rendered the WhatsApp chat's content.
+// Regression guard: drawer showed an empty "New chat" stub highlighted,
+// but body rendered the WhatsApp chat's content.
 //
 // Repro: pre-existing local-only IDB stub + a server-side chat the
 // user last viewed. Hard reload. Boot path restores chat snapshot

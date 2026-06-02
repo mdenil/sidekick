@@ -1,5 +1,5 @@
-// Floating deep-window → load-newer walk (Jonathan, London link,
-// 2026-05-29). After a deep `?around=` drill lands a BOUNDED window
+// Floating deep-window → load-newer walk. After a deep `?around=`
+// drill lands a BOUNDED window
 // CENTERED on the target, the window is "floating" — it does NOT reach
 // the live tail (hasMoreNewer=true). Scrolling DOWN must walk the window
 // forward toward the tail via the symmetric `?after=` (load-newer)

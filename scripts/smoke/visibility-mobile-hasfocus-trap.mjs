@@ -1,5 +1,5 @@
-// Contract (Jonathan, 2026-05-28, on a flight): a push notification fired
-// for the chat I was actively viewing at the bottom of. Root cause: the
+// Contract: a push notification fired for a chat being actively viewed.
+// Root cause: the
 // visibility reporter (src/notifications/visibility.ts) requires
 // document.hasFocus() before reporting state='visible' to the proxy. On
 // iOS PWAs hasFocus() routinely returns false even when the user is

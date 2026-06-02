@@ -1,5 +1,5 @@
-// Regression guard for the iOS activity-badge mispositioning bug
-// (Jonathan, 2026-06-01, on a flight): the green unread "N" chip on the
+// Regression guard for the iOS activity-badge mispositioning bug:
+// the green unread "N" chip on the
 // mobile Activity toolbar button rendered floating at the viewport's
 // top-right corner instead of pinned to the bell icon.
 //

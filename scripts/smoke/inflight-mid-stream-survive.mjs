@@ -5,8 +5,7 @@
 // the user message AND the in-flight tool call must be visible
 // throughout — replayed from inflight on every switch-back.
 //
-// Regression-pin for the long-running field bug (Jonathan, multiple
-// repros 2026-05-10/11): hermes-core persists post-turn
+// Regression guard: hermes-core persists post-turn
 // (gateway/run.py:7311 — `session_store.append_to_transcript`
 // fires after `agent_result` is computed). For a 30-second tool-
 // using turn, state.db is empty about it. A naive switch-away
@@ -14,7 +13,7 @@
 // fetched history which was empty → blank transcript despite the
 // agent doing work.
 //
-// Fix (option C, 2026-05-11): proxy maintains an in-memory inflight
+// Fix: proxy maintains an in-memory inflight
 // cache keyed by chat_id (`proxy/sidekick/inflight.ts`). Every
 // envelope from `dispatchTurnViaUpstream` is recorded with a
 // timestamp + per-chat queue. History fetch includes them as

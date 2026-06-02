@@ -5,7 +5,7 @@ Strategy: buffer the agent reply text-stream into sentence-sized chunks,
 call the Aura REST ``/v1/speak`` endpoint with ``encoding=linear16&
 sample_rate=16000`` per chunk, stream the raw PCM bytes back as they
 arrive over HTTP.  This trades a bit of latency vs. the (more complex)
-Aura WebSocket streaming API for code we can confidently ship overnight.
+Aura WebSocket streaming API.
 
 If you want the WS path later, re-implement ``_synth_chunk`` to open a
 single WS for the whole call and write text frames as the chunks arrive

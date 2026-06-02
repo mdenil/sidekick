@@ -2,11 +2,10 @@
 // times. After each reload, the transcript should contain exactly the
 // original messages — no duplicates.
 //
-// Field bug 2026-05-10 (Jonathan, then Tom): every page reload appended
-// another full copy of the conversation on top of the IDB-restored
-// transcript, doubling/tripling on each refresh until the chat became
-// 8+ copies of the same exchange. Sister bug to the swipe-active class
-// — also a state-reconciliation gap.
+// Regression guard: every page reload used to append another full copy
+// of the conversation on top of the IDB-restored transcript,
+// doubling/tripling on each refresh until the chat became 8+ copies of
+// the same exchange — a state-reconciliation gap.
 //
 // Root cause: chat.init() rehydrated transcriptEl.innerHTML from IDB
 // (DOM gets all the previous bubbles). renderedMessages.entries lives

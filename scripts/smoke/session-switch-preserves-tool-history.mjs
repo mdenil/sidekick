@@ -1,6 +1,6 @@
 // Regression gate for the 2026-05-17 session-switch tool-history bug.
 //
-// Repro (Jonathan field, 2026-05-17 ~12:40 BST):
+// Repro:
 //   1. Open a chat with a completed turn containing multiple tool
 //      calls. On fresh load, the transcript shows the activity row
 //      with N entries — this is the SSOT-rebuild path proven by

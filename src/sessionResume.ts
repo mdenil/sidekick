@@ -45,10 +45,10 @@ import { getScrollPosition } from './chatScrollPositions.ts';
  *  prepend (scroll-back AND deep-pin drill). Fire-and-forget; the cap
  *  keeps a pathological session from eating disk. This is what makes
  *  deep pins "get faster warm" — without it IDB only ever holds the
- *  newest page (Jonathan 2026-05-29). */
+ *  newest page. */
 function persistGrownTranscript(id: string): void {
   const s = transcriptStore.getState(id);
-  // Caching invariant (Jonathan 2026-05-29): only persist a run that
+  // Caching invariant: only persist a run that
   // reaches the live tail. A floating deep `around` window
   // (hasMoreNewer=true) is a disjoint slice from the middle of the
   // session — writing it would clobber the tail-anchored IDB cache with
@@ -147,12 +147,12 @@ export function replaySessionMessages(
   // The cache-render path in sessionDrawer.resume passes undefined so
   // the live inflight envelopes (user_message echo + reply_delta
   // accumulated while a SEPARATE chat was viewed) survive switch-back.
-  // Field bug 2026-05-25 (Jonathan, [pitch deck]): typed + agent
-  // started replying, switched away, switched back — user bubble +
-  // agent reply vanished because the cached resume's setInflight([])
-  // wiped them. The full server-fetch re-render normally repopulates,
-  // but the cache-match optimization (same durable length → skip
-  // re-render + replayInflight) doesn't always re-paint cleanly.
+  // Without this guard, a cached resume's setInflight([]) would wipe
+  // in-flight envelopes (user_message echo + reply_delta) accumulated
+  // while a separate chat was viewed — the user bubble + agent reply
+  // would vanish on switch-back. The full server-fetch re-render
+  // normally repopulates, but the cache-match optimization doesn't
+  // always re-paint cleanly.
   if (Array.isArray(inflight)) {
     transcriptStore.setInflight(id, inflight);
   }
@@ -240,9 +240,9 @@ export function replaySessionMessages(
     // post-reply durable refresh (schedulePostFinalDurableRefresh) and the
     // disconnect reconcile (onResume). The on-screen scroll position is
     // LIVE truth here; re-applying the SAVED anchor/at-edge position fights
-    // the user. Field 2026-05-27 (Jonathan): sending /agents fired a
-    // post-reply re-resume whose anchor-restore yanked the view UP, away
-    // from the just-arrived reply, and fought manual scrolling. Follow the
+    // the user. A post-reply re-resume's anchor-restore can yank the view
+    // UP away from the just-arrived reply and fight manual scrolling. Follow
+    // the
     // live edge only if still pinned (so a reply the user is watching keeps
     // streaming into view); otherwise leave scroll EXACTLY as-is.
     //
@@ -266,9 +266,8 @@ export function replaySessionMessages(
       // for an at-bottom view that's some row roughly one viewport above
       // the live edge. Restoring to that anchor pins the user to that
       // row, not to the bottom; if new turns arrived the user ends up
-      // visibly ABOVE the bottom. Field bug 2026-05-25 (Jonathan, [pitch
-      // deck]): "scroll away from the bottom and back — it's somewhere
-      // higher up." atBottom is the user-intent flag; honor it first.
+      // visibly ABOVE the bottom. atBottom is the user-intent flag;
+      // honor it first.
       const tryAnchor = !saved.atBottom
         && saved.anchorKey && typeof saved.anchorOffsetPx === 'number'
         ? chat.restoreDomAnchor({ key: saved.anchorKey, offsetPx: saved.anchorOffsetPx })
@@ -396,11 +395,9 @@ function scheduleAtBottomRepin(): void {
  *  instant; `scrollIntoView({behavior:'instant'})` is NOT honored on
  *  iOS WKWebView (Safari treats `'instant'` as `'auto'` which defers
  *  to the CSS smooth, so the animation runs — racing layout shifts
- *  and load-earlier triggers along the way). Field bug 2026-05-13
- *  (Jonathan, iOS): "clicking pins in iOS still doesn't immediately
- *  jump to correct message" — the cycle smoke proved the logic
- *  correct on chromium-emulated mobile, but real iOS still drifted
- *  because the smooth animation kept running.
+ *  and load-earlier triggers along the way). Without the rAF re-fire,
+ *  iOS pins could drift because the smooth animation kept running past
+ *  load-earlier prepends.
  *
  *  Compute target scrollTop from current rects so prior layout shifts
  *  (load-earlier prepends, etc.) don't matter. Then re-fire on rAF
@@ -418,9 +415,8 @@ function drillScrollTo(target: HTMLElement): void {
   // De-pin so autoScroll() in rerenderInto (the follow-tail hook we
   // added with the virtualizer gut) doesn't snap us back to the bottom
   // on the next render — the user explicitly asked to be at THIS
-  // bubble, not the live edge. Field 2026-05-29 (Jonathan, traveling):
-  // drill from activity tray fired, drillScrollTo landed, then
-  // autoScroll yanked back to scrollHeight on a duplicate-resume render.
+  // bubble, not the live edge. Without this, autoScroll can yank back
+  // to scrollHeight on a duplicate-resume render after drillScrollTo.
   chat.setPinnedToBottom(false);
   const apply = () => {
     const tr = transcriptEl.getBoundingClientRect();
@@ -472,9 +468,8 @@ async function drillToOlderMessage(
  *  redundant ~1MB ?around= round trips that saturate a high-latency link)
  *  AND its in-flight dedup keys only on chat id, so a rapid second jump to
  *  a DIFFERENT target in the same session gets swallowed and the bubble
- *  never appears (Jonathan 2026-05-29: jumping between pins inside the
- *  pitch deck — one jump hung forever, the next fired 3 concurrent big
- *  fetches and took 8.6s). Instead: scroll+flash if the bubble is already
+ *  never appears (one jump can hang forever while the next fires several
+ *  concurrent large fetches). Instead: scroll+flash if the bubble is already
  *  in the DOM (instant), else ONE bounded around fetch, else serial
  *  older-page paging. */
 export async function drillToMessageInViewedSession(
@@ -511,7 +506,7 @@ export async function drillToMessageInViewedSession(
 // Keep the initial drill window TIGHT — just enough rows to render the
 // target centered with a screenful of scrollback. A row can carry a large
 // tool result, so a full 200-row page is ~830KB; over a high-latency link
-// (Jonathan: Philadelphia → London) that's the bulk of a deep jump's wait.
+// that's the bulk of a deep jump's wait over a high-latency link.
 // A ~40-row window is ~290KB (~1/3) and still fills the viewport; the user
 // pulls more in by scrolling (gated loadEarlier/loadLater).
 const DRILL_AROUND_LIMIT = 40;
@@ -670,9 +665,8 @@ async function drillViaSerialOlderPages(
  *  so the transcript's scrollTop is adjusted by exactly the amount of
  *  new content inserted above the user's viewport. Without this, the
  *  same logical message they were looking at appears to JUMP upward
- *  by `newScrollHeight - oldScrollHeight` pixels — the field-bug
- *  Jonathan hits when scrolling through long chats on mobile (2026-05-18,
- *  Crack A regression from the legacy chat.prependHistory wrapper). */
+ *  by `newScrollHeight - oldScrollHeight` pixels when new rows are
+ *  prepended above the viewport. */
 export async function loadEarlierHistory(beforeId: number): Promise<void> {
   const id = viewedSessionForLoadEarlier;
   if (!id) return;

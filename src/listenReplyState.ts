@@ -41,8 +41,8 @@ export function shouldAutoPlay(conversation: string | undefined | null): boolean
   // autoplay to exactly the reply this turn is waiting for. Do NOT additionally
   // gate on a transient turn state (committing/cooldown): on a slow link the
   // reply lands after the turn machine has re-armed ('armed'), and an extra
-  // state check silently drops TTS — the "turn mode doesn't speak" field bug
-  // (regression from 2e82220, which over-narrowed the gate).
+  // state check silently drops TTS — a regression from 2e82220 that
+  // over-narrowed the gate.
   return turnbased.getState() !== 'idle';
 }
 

@@ -11,8 +11,8 @@ Why state.db is canonical for bodies: the older dual-body model
 (envelope write-through to sidekick.db PLUS state.db backfill via
 reconcile) could leave the same logical message stored twice when
 reconcile's content-match failed — surfaced as duplicate bubbles in
-the PWA (Jonathan field bug 2026-05-19, two "Hey — received." bubbles
-with mismatched timestamps). Reading bodies from state.db only
+the PWA as duplicate bubbles with mismatched timestamps. Reading
+bodies from state.db only
 eliminates the dupe class structurally; sidekick.db's role narrows to
 linkage.
 """
@@ -300,8 +300,7 @@ def test_rolls_up_compacted_child_session_messages(db, state_db):
 def test_drops_compaction_seed_block(db, state_db):
     """The `[CONTEXT COMPACTION — REFERENCE ONLY]` marker + everything
     before it within a child session is the hermes-injected seed block.
-    Must not surface to the PWA (verbatim user-prompt dupe avoidance,
-    Jonathan field bug 2026-05-17)."""
+    Must not surface to the PWA (verbatim user-prompt dupe avoidance)."""
     parent_prompt = "x" * 250
     _add_session(state_db, "parent_s", system_prompt=parent_prompt)
     _add_session(state_db, "child_s", chat_id=None,
@@ -338,9 +337,8 @@ def test_returns_empty_for_unknown_chat(db, state_db):
 
 
 def test_envelope_only_chat_still_surfaces_msg_links_rows(db, state_db):
-    """**The 2026-05-29 field bug** Jonathan hit right after state.db
-    became the default body source: brand-new chats and mid-turn
-    streaming chats have envelope-written rows in msg_links but NO
+    """Brand-new chats and mid-turn streaming chats have envelope-written
+    rows in msg_links but NO
     state.db rows yet (hermes flushes state.db at end of turn). A pure
     state.db read returned ZERO messages for these chats → activity-row
     drill said "no longer has a session," pinned messages couldn't open,

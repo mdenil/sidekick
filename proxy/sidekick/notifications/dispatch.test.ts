@@ -3,10 +3,10 @@
 // during a long autonomous turn can't coalesce-overwrite the urgent,
 // actionable approval banner on the same chat.
 //
-// Field 2026-05-26 (Jonathan, pitch deck): the approval push was delivered
-// (FCM delivered=1) but never surfaced — every push for the chat shared
-// tag `chat:<id>`, so the next heartbeat reply replaced the approval
-// banner. Fix: approvals tag as `approval:<id>`.
+// Regression: an approval push was delivered (FCM delivered=1) but never
+// surfaced — every push for the chat shared tag `chat:<id>`, so the next
+// heartbeat reply replaced the approval banner. Fix: approvals tag as
+// `approval:<id>`.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';

@@ -1,13 +1,7 @@
-// Field bug 2026-05-12 (Jonathan, multi-session juggle): user
-// message bubbles disappear when switching between two sessions
-// during in-flight turns.
+// Regression guard: user message bubbles disappear when switching
+// between two sessions during in-flight turns.
 //
-//   "I'm interacting with my agent in two different sessions ...
-//    we're having dropouts between them as I switch back and forth.
-//    Some of my bubbles are disappearing."
-//
-// Repro pattern: multi-send juggle — Jonathan: "fire several messages
-// and waits for several replies" — two chats, two sends per chat,
+// Repro pattern: multi-send juggle — two chats, two sends per chat,
 // switch back and forth firing replies in interleaved order.
 //
 //   1. Two pre-existing chats A and B with prior content.

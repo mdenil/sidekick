@@ -68,8 +68,8 @@ function targetOwnsHorizontalMotion(target: EventTarget | null): boolean {
  *  by dragging a selection handle (or extending the selection) fires
  *  pointer events the drawer swipe handler would otherwise interpret
  *  as drawer-open gestures. Bail in that case so the OS-native
- *  selection drag wins. Field bug 2026-05-13 (Jonathan): "when I
- *  select text and drag it triggers the drawers." */
+ *  selection drag wins — without this, dragging a selection handle
+ *  can trigger the drawer swipe handler. */
 function hasActiveTextSelection(): boolean {
   if (typeof window === 'undefined') return false;
   const sel = window.getSelection?.();
@@ -313,10 +313,9 @@ export function initDrawerSwipe(opts: DrawerSwipeOptions): void {
       if (vOpen >= VELOCITY_SNAP_PX_MS) openFinal = true;
       else if (vOpen <= -VELOCITY_SNAP_PX_MS) openFinal = false;
       // 1/3 distance threshold favors commit — a quick flick should
-      // count as intent. Earlier 1/2 forced users to do a full
-      // half-drawer drag (Jonathan field bug 2026-05-13: short swipes
-      // at dx~120 v~0.5 snapped back). Same threshold on both drawers
-      // by the "guaranteed identical behavior" principle.
+      // count as intent. A 1/2 threshold forced users to do a full
+      // half-drawer drag before the gesture committed. Same threshold
+      // on both drawers by the "guaranteed identical behavior" principle.
       else openFinal = dx * direction > widthPx / 3;
     } else {
       // Closing: vOpen positive means user reversed toward open.
@@ -337,13 +336,10 @@ export function initDrawerSwipe(opts: DrawerSwipeOptions): void {
 
   /** Reset the drawer's inline transform + transition state. Called
    *  from every safety-net path so a stuck mid-drag doesn't leave the
-   *  drawer (or its sibling content) visually translated. Field bug
-   *  2026-05-14 (Jonathan, iOS, screenshot): the transcript view ended
-   *  up shifted horizontally like an app switcher — abandoned swipe
-   *  left an inline transform on the drawer that pushed the layout
-   *  sideways; the body class cleared via the existing safety nets
-   *  but the inline transform persisted. Restoring the transform/
-   *  transition makes the drawer snap back to its CSS-driven position. */
+   *  drawer (or its sibling content) visually translated. An abandoned
+   *  swipe can leave an inline transform on the drawer that pushes the
+   *  layout sideways; the body class clears via the existing safety nets
+   *  but the inline transform persists without this reset. */
   const resetInlineTransform = () => {
     if (drawer.style.transform || drawer.style.transition) {
       drawer.style.transform = '';

@@ -1,7 +1,6 @@
-// Field bug 2026-05-24 (Jonathan, follow-up to the scroll-top fix in
-// f4550fb): switching between two existing sessions with MID-history
-// scroll positions doesn't reliably restore. Switchback lands "usually
-// but not always a different place than I left it." The existing
+// Regression guard: switching between two existing sessions with
+// MID-history scroll positions doesn't reliably restore — switchback
+// lands at a different place than the user left it. The existing
 // scroll-top smoke only exercises scroll-to-zero, where a poisoned
 // save of 0 still matches the (wrong) restore-to-top assertion.
 //

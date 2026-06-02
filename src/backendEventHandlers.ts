@@ -188,9 +188,9 @@ function schedulePostFinalDurableRefresh(
 /** "⏳ Still working… (N min elapsed — iteration X/60, …)" — the canonical
  *  heartbeat shape an autonomous agent emits per-iteration. Mirrors the
  *  push-gate matcher in proxy/sidekick/notifications/dispatch.ts
- *  (isProgressHeartbeat). Field 2026-05-27: every heartbeat reply_final
- *  was dismissing pending approvals for the chat — fixed by skipping
- *  this branch when the text matches. KEEP IN SYNC with the server matcher. */
+ *  (isProgressHeartbeat). Every heartbeat reply_final would dismiss pending
+ *  approvals for the chat without this guard — skip that branch when the
+ *  text matches. KEEP IN SYNC with the server matcher. */
 function isProgressHeartbeatText(raw: string): boolean {
   const s = (raw || '').trim();
   if (!s) return false;
@@ -203,8 +203,8 @@ export function handleReplyFinal({ replyId, text, content = [], conversation, me
   // Auto-resolve any pending approval for this chat — but ONLY when this
   // is a REAL reply, not a "⏳ Still working…" heartbeat. Heartbeats fire
   // every iteration of a long autonomous turn (one per ~3 min); without
-  // the gate, the first heartbeat after an approval landed used to delete
-  // the approval row from the tray (field 2026-05-27). A real reply means
+  // the gate, the first heartbeat after an approval landed would delete
+  // the approval row from the tray. A real reply means
   // the agent moved past the approval point, so mark 'dismissed'.
   if (!isReplay && conversation) {
     // Heartbeat detection: real hermes typically streams the body via

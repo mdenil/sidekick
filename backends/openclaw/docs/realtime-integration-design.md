@@ -1,14 +1,13 @@
 # Realtime voice integration — design notes
 
-Drafted 2026-05-15 during openclaw bring-up, while the architecture
-was fresh in head. Not a build plan yet — just a captured design
-discussion to revisit once we've finished the openclaw-as-second-backend
-integration and are ready to lift voice mode.
+Design notes for realtime voice integration, captured during openclaw
+bring-up. Not a build plan — a design discussion to revisit when
+lifting voice mode.
 
 ## Context: how openclaw's "Start Talk" works
 
-Stack (from `~/code/openclaw-integ/src/gateway/server-methods/talk-session.ts`
-+ `extensions/openai/realtime-voice-provider.ts`):
+Stack (from `src/gateway/server-methods/talk-session.ts`
++ `extensions/openai/realtime-voice-provider.ts` in the openclaw gateway):
 
 1. Browser captures mic → base64 PCM16 24kHz frames
 2. Frames flow into the openclaw gateway WS (`talk.session.appendAudio`)
@@ -23,9 +22,7 @@ Stack (from `~/code/openclaw-integ/src/gateway/server-methods/talk-session.ts`
    fed back as the tool result; the realtime model speaks it.
 
 Auth note: openclaw falls back to Codex OAuth when no explicit OpenAI
-API key is configured (`extensions/openai/realtime-voice-provider.ts:312`),
-which is why Jonathan's setup works today against his ChatGPT Pro plan
-without a separate API key.
+API key is configured (`extensions/openai/realtime-voice-provider.ts:312`).
 
 ## What gets logged where today (openclaw)
 
@@ -39,21 +36,21 @@ without a separate API key.
   session holds it; once the call ends, only what the consult tool
   passed down to the text agent persists in any durable store.
 
-## Jonathan's proposal
+## Proposed approach
 
-> When we port realtime up into sidekick, log and dedupe the real audio
-> transcript into the session logs. Annotate as realtime-dialog,
-> visualise differently (collapsed by default) so users can see the
-> full interaction. Multiple turns of audio per single turn of LLM, so
-> not obvious how to interleave — but root principle: user-agent stream
-> is linear and sequential, so use timestamps to park every message in
-> the appropriate spot in the transcript. Won't make context-fed-to-
-> main-agent fully evident, but memory is already opaque, so history
-> of user interaction is probably enough.
+When porting realtime to sidekick, log and dedupe the audio transcript
+into the session logs. Annotate as realtime-dialog and visualise
+differently (collapsed by default) so users can see the full
+interaction. Multiple turns of audio per single turn of LLM, so
+interleaving isn't obvious — but the root principle is: user-agent
+stream is linear and sequential, so use timestamps to park every
+message in the appropriate spot in the transcript. Won't make
+context-fed-to-main-agent fully evident, but memory is already opaque,
+so history of user interaction is probably enough.
 
-This is the right direction. Below are refinements, not objections.
+Below are refinements.
 
-## My refinements
+## Refinements
 
 ### 1. The natural unit is a "consult arc", not interleaved timestamps
 
@@ -100,8 +97,7 @@ The hook point: the relay's `transcript` events
 `final: true` entry into a sidekick-owned table keyed by chat_id +
 relaySessionId + monotonic seq.
 
-Schema sketch (add to `~/code/sidekick-openclaw-plugin/src/schema.sql`
-when we get there):
+Schema sketch (add to `src/schema.sql` when implemented):
 
 ```sql
 CREATE TABLE IF NOT EXISTS voice_dialog (
@@ -169,8 +165,7 @@ Sidekick's UI just needs to render both streams.
 
 ## Status
 
-Captured 2026-05-15 during openclaw bring-up. Not on the critical path
-for the openclaw-as-second-backend project. Revisit once we have
-`/v1/conversations` + `/v1/responses` working against openclaw and
-sidekick can A/B both backends. Voice mode is the natural Phase 2 of
-the multi-backend project — start designing concretely then.
+Not on the critical path for the openclaw-as-second-backend project.
+Revisit once `/v1/conversations` + `/v1/responses` work against
+openclaw and sidekick can A/B both backends. Voice mode is the natural
+Phase 2 of the multi-backend project.

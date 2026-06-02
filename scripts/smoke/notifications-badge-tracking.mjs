@@ -21,8 +21,7 @@
 // the smoke can observe the call sequence without requiring an
 // installed PWA.
 //
-// Timing: PWA's requestRefresh debounce is 1500ms (bumped from 200ms
-// after the Mac WindowServer repaint-storm incident 2026-05-16). Each
+// Timing: PWA's requestRefresh debounce is 1500ms. Each
 // "observable" badge state requires waiting at least 1700ms after the
 // triggering envelope for the fetch to land.
 

@@ -1,10 +1,9 @@
 /**
- * Visibility-state aware push gate — the 12 cases agreed with Jonathan
- * on 2026-05-12 for the "agent reply mid-flight when I leave the app"
- * bug class. This is the gate with the highest annoying-bug risk
- * (push fires while you're actively chatting → constant banner spam,
- * or fails to fire when you've backgrounded → silent missed reply),
- * so each case is its own test.
+ * Visibility-state aware push gate — 12 cases covering the "agent reply
+ * mid-flight when I leave the app" bug class. This is the gate with the
+ * highest annoying-bug risk (push fires while you're actively chatting →
+ * constant banner spam, or fails to fire when you've backgrounded →
+ * silent missed reply), so each case is its own test.
  *
  * Window constant: ENGAGED_WINDOW_MS = 10s. The PWA reports
  * visibility=visible + viewed-chat=X every time visibility toggles
@@ -108,7 +107,7 @@ test('case 1: chat foreground, fresh visibility=visible → no push (SSE deliver
   }
 });
 
-// ── Case 2: backgrounded → push (the case Jonathan flagged) ────────
+// ── Case 2: backgrounded → push ─────────────────────────────────────
 
 test('case 2: chat backgrounded (visibility=hidden) → push fires', async () => {
   const g = await startVisRig({ subscriptionSuffix: 'c2' });

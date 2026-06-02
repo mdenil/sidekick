@@ -1,13 +1,12 @@
 // Scenario: clicking a session in the sidebar must switch the chat
-// view on a SINGLE click, every time. Jonathan reports ~1/3 of clicks
-// fail to register on his Mac + iOS Safari + iOS Chrome PWA — a
-// stochastic race, almost certainly caused by overlapping
-// `resume(id)` calls firing their callbacks out of order.
+// view on a SINGLE click, every time. Regression guard for stochastic
+// race: ~1/3 of clicks fail to register on Mac + mobile PWA because
+// overlapping `resume(id)` calls fire their callbacks out of order.
 //
-// Repro per Jonathan: build a list of 5 sessions, click top-to-bottom
-// then bottom-to-top, expect each click to switch on the first try.
+// Repro: build a list of 5 sessions, click top-to-bottom then
+// bottom-to-top, expect each click to switch on the first try.
 //
-// Race I spotted in src/sessionDrawer.ts:resume():
+// Race in src/sessionDrawer.ts:resume():
 //   - resumeInFlight only dedups SAME-id concurrent resumes.
 //   - Different-id clicks both proceed; each fires onResumeCb twice
 //     (cache hit + server fetch). Last callback to land wins the
@@ -97,9 +96,9 @@ async function assertSwitched(page, expect, forbid, { timeout = 5000, holdMs = 6
 
 export default async function run({ page, log, ctx, mock }) {
   // Throttle the history endpoint so cache-cb and server-cb callbacks
-  // overlap — that's the race window where Jonathan sees clicks
-  // missing or bouncing back. Localhost without throttling completes
-  // both in <10ms; the race never manifests.
+  // overlap — that's the race window where clicks go missing or bounce
+  // back. Localhost without throttling completes both in <10ms; the
+  // race never manifests.
   await ctx.route('**/api/sidekick/sessions/*/messages*', async (route) => {
     await new Promise(r => setTimeout(r, 250));
     await route.continue();

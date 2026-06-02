@@ -1,4 +1,4 @@
-// Contract (Jonathan, 2026-05-29): clicking an APPROVAL row in the
+// Contract: clicking an APPROVAL row in the
 // Activity tray must drill to the in-chat approval bubble (same as the
 // agent_reply case in activity-row-drills-to-bubble.mjs).
 //
@@ -33,10 +33,9 @@ export function MOCK_SETUP(mock) {
   // approval bubble via the projection's notification path
   // (`isNotificationLikeItem` keys off `kind`).
   // Tail history AFTER the approval so the target sits mid-chat — surfaces
-  // the "drill lands, then autoScroll snaps back to bottom" regression
-  // (field 2026-05-29). Without these trailing messages, the approval
-  // happens to be at the bottom and autoScroll's snap-to-bottom looks
-  // like a successful drill.
+  // the "drill lands, then autoScroll snaps back to bottom" regression.
+  // Without these trailing messages, the approval happens to be at the
+  // bottom and autoScroll's snap-to-bottom looks like a successful drill.
   const tail = [];
   for (let i = 0; i < 30; i++) {
     tail.push({

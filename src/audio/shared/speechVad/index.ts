@@ -88,7 +88,7 @@ let testCtxOverride: AudioContext | null = null;
  *  call lifecycle creates a NEW micStream. Refcount-reusing an old
  *  MicVAD meant the second call's "barge" was bound to the dead
  *  first-call stream and never saw any frames (vad=silent forever —
- *  the bug Jonathan caught at v0.422 13:52:48). With refcount gone,
+ *  the dead-stream bug). With refcount gone,
  *  stream identity is naturally fresh per start().
  *
  *  The cost: each call rebuilds MicVAD (~1s on M1 Mac, ~3s cold on
@@ -243,9 +243,8 @@ export async function start(
   phase(`ctx.state=${ctx.state} — about to await prefetch then call MicVAD.new()`);
 
   // Wait for the page-load prefetch to populate the SW cache before
-  // we let MicVAD.new fire its own fetch. On hostile networks (Jonathan
-  // 2026-05-05: T-Mobile 5G + WiFi at ~78 KB/s effective), the model
-  // fetch alone takes >30s — well past our 15s watchdog. Without this
+  // we let MicVAD.new fire its own fetch. On hostile networks the model
+  // fetch alone can take >30s — well past our 15s watchdog. Without this
   // gate, MicVAD.new's fetch gets cancelled mid-download, the SW
   // cache never populates, and every retry fails identically.
   // With it, we block the FIRST call long enough for the cache to
@@ -267,10 +266,10 @@ export async function start(
     // of a silent never-resolving promise.
     //
     // History:
-    //   v0.422 (2026-05-04): 10s — generous to start
-    //   v0.426: tightened to 5s (assumed phase logs would localize
+    //   Initial: 10s — generous to start
+    //   Tightened to 5s (assumed phase logs would localize
     //           hangs; assumed warm cache was the common case)
-    //   v0.436 (2026-05-05): bumped back to 15s. Field repro: cold
+    //   Bumped back to 15s: cold
     //   first-call on Mac Chrome over Tailscale needs ~6s for the
     //   /build/vendor/vad-web.mjs dynamic import alone (cold TLS +
     //   HTTP/2 connection setup), then ~5-8s for model fetch + ORT
@@ -391,9 +390,8 @@ export async function start(
       endListeners: new Set(),
     };
     phase('started (model=legacy)');
-    // Flush the [micvad-trace] buffer ALSO on success when the
-    // call took >2s — diagnostic for warm-cache slowness like the
-    // 13.6s success Jonathan saw. Skip the flush for fast cases
+    // Flush the [micvad-trace] buffer on success when the call took
+    // >2s — diagnostic for warm-cache slowness. Skip for fast cases
     // to avoid log spam.
     try {
       const buf: string[] | undefined = (typeof window !== 'undefined') ? (window as any).__MICVAD_TRACE_BUF__ : undefined;

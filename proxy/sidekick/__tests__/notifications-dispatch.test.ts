@@ -309,9 +309,9 @@ test('payload: reply_final body preview is pulled from buffered reply_delta text
   // The hermes plugin spec is explicit: reply_final carries
   // {type, chat_id, message_id} — no text. Without buffering, every
   // reply push had an empty body and the OS banner just showed
-  // "Sidekick" with nothing under it (Jonathan field report
-  // 2026-05-12). stream.ts threads the cumulative reply_delta text
-  // through as a body override so the banner shows a preview.
+  // "Sidekick" with nothing under it. stream.ts threads the cumulative
+  // reply_delta text through as a body override so the banner shows
+  // a preview.
   const g = await startGateRig();
   try {
     // Stream a couple of reply_deltas, then the reply_final. The
@@ -394,13 +394,12 @@ test('payload: notification envelope without kind gets the generic bell emoji', 
 
 // ── Cron envelope formatting (watch-readability pass) ───────────────
 //
-// Field bug 2026-05-14 (Jonathan, Apple Watch): cron notifications
-// showed "Cronjob Response: <task>" + "(job_id: <hex>)" + separator
-// + "session_id: <ts>_<hash>" — the entire visible band on his
-// watch was boilerplate, never reaching the agent's actual reply.
-// envelopeToPayload now parses the canonical scheduler.py boilerplate
-// out so title leads with the task name + emoji and body leads with
-// the agent's content. Job-id moves to a short suffix.
+// Cron notifications arrived with boilerplate ("Cronjob Response: <task>",
+// "(job_id: <hex>)", "session_id: <ts>_<hash>") filling the visible band
+// before reaching the agent's actual reply. envelopeToPayload now parses
+// the canonical scheduler.py boilerplate out so title leads with the task
+// name + emoji and body leads with the agent's content. Job-id moves to a
+// short suffix.
 
 test('payload: cron envelope strips scheduler boilerplate, leads with agent reply', async () => {
   const g = await startGateRig();

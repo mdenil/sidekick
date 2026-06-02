@@ -1,4 +1,4 @@
-// Contract (Jonathan, 2026-05-27): when searching in cmd+K, a session the
+// Contract: when searching in cmd+K, a session the
 // user has RENAMED must keep showing that name — not flash the real name
 // and then, ~300ms later, get replaced with the raw `sidekick:<uuid>` id.
 //

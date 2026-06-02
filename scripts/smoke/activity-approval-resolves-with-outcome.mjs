@@ -1,4 +1,4 @@
-// Contract (Jonathan, 2026-05-28): when an approval is actioned —
+// Contract: when an approval is actioned —
 // whether by clicking Approve/Session/Deny in the Activity tray, or by
 // typing /approve, /approve session, /deny in the chat — the approval
 // row STAYS in the tray with a clear-at-a-glance outcome pill

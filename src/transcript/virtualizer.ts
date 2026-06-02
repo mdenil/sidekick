@@ -1,16 +1,16 @@
 /**
- * @fileoverview Phase 1 — transcript virtualizer scaffolding.
+ * @fileoverview Transcript virtualizer scaffolding.
  *
- * Pure window-math + per-spec height cache + DOM-binding factory. No
- * consumers yet — main.ts / sessionResume / chat.ts still drive the
- * reconciler directly against #transcript. Phase 2 will route them
- * through bindVirtualizer behind a feature flag.
+ * Pure window-math + per-spec height cache + DOM-binding factory.
+ * When active, main.ts / sessionResume / chat.ts route transcript
+ * updates through bindVirtualizer behind a feature flag rather than
+ * driving the reconciler directly against #transcript.
  *
- * Layering (current):
+ * Layering (default — virtualizer off):
  *
  *   transcriptStore  ──► projection  ──► reconciler ──► #transcript
  *
- * Layering (post Phase 5):
+ * Layering (virtualizer on):
  *
  *   transcriptStore  ──► projection  ──► virtualizer ──► renderWindow ──► #transcript
  *                                          │
@@ -19,8 +19,7 @@
  *
  * The virtualizer owns:
  *   - heightCache: Map<key, measuredHeightPx>; per-kind defaults for
- *     uncached entries (Phase 2 will populate via ResizeObserver on
- *     first mount).
+ *     uncached entries (populated via ResizeObserver on first mount).
  *   - visible-window state derived from cache + scrollTop + viewport.
  *   - synthetic spacer divs that pad scrollHeight so the browser
  *     scrollbar tracks the full virtual list, not just the rendered
@@ -30,7 +29,7 @@
  *   - transcriptStore (canonical source of truth — out of scope).
  *   - projection (also out of scope; produces BubbleSpec[] verbatim).
  *   - bubble DOM creation (reconciler.reconcile is the renderWindow
- *     implementation in Phase 2+).
+ *     implementation).
  *
  * Anchor model: scroll position is captured as `{messageKey, offsetPx}`
  * (the topmost partially-visible spec + its top's pixel offset relative
@@ -52,7 +51,7 @@ import type { BubbleSpec } from './types.ts';
 
 /** Per-kind default heights used when a spec isn't in the cache yet.
  *  Wrong-but-bounded: real measurements drift in within a frame of first
- *  paint via the ResizeObserver Phase 2 wires up. These exist so the
+ *  paint via the ResizeObserver wired to the DOM binding. These exist so the
  *  initial scrollHeight estimate is roughly the right shape — a long
  *  chat doesn't render with a 50px scrollbar then jump to 12000px
  *  once measurements catch up. */
@@ -70,8 +69,8 @@ const DEFAULT_HEIGHTS: Record<BubbleSpec['kind'], number> = {
 const DEFAULT_OVERSCAN = 6;
 
 /** Scroll-restore handoff between save site (getAnchor) and restore
- *  site (restoreAnchor). The same shape will be persisted to IDB in
- *  Phase 3 when chatScrollPositions migrates from raw scrollTop. */
+ *  site (restoreAnchor). The same shape can be persisted to IDB when
+ *  chatScrollPositions migrates from raw scrollTop. */
 export interface SavedAnchor {
   /** BubbleSpec.key of the spec the saved position anchored to. */
   key: string;
@@ -230,11 +229,12 @@ const SPACER_TOP_CLASS = 'transcript-spacer-top';
 const SPACER_BOTTOM_CLASS = 'transcript-spacer-bottom';
 
 export interface VirtualizerOpts {
-  /** The scrollable element. Phase 2 binds this to `#transcript`. */
+  /** The scrollable element (typically `#transcript`). */
   transcriptEl: HTMLElement;
-  /** Caller-supplied render: paint `specs` into `slotEl`. Phase 2 will
-   *  pass `reconciler.reconcile`. Stays pluggable so the unit + dev
-   *  tests can supply a stub without dragging in the projection model. */
+  /** Caller-supplied render: paint `specs` into `slotEl`. The default
+   *  wiring passes `reconciler.reconcile`. Stays pluggable so the unit
+   *  + dev tests can supply a stub without dragging in the projection
+   *  model. */
   renderWindow: (slotEl: HTMLElement, specs: BubbleSpec[]) => void;
   /** Specs above/below the strictly-visible window to keep mounted.
    *  Defaults to 6 each side (≈1 viewport of nominal bubbles). */
@@ -259,8 +259,8 @@ export interface VirtualizerHandle {
   isPinnedToBottom(thresholdPx?: number): boolean;
   /** Scroll to the absolute bottom. */
   scrollToBottom(behavior?: ScrollBehavior): void;
-  /** Direct access to the height cache. Phase 2's ResizeObserver
-   *  writes through this; Phase 4's snapshot path reads `entries()`. */
+  /** Direct access to the height cache. The ResizeObserver writes
+   *  through this; the snapshot path reads `entries()`. */
   getHeightCache(): HeightCache;
   /** All current spec keys in order. Filter by `navigable` for the
    *  keyboard-nav use case — drops non-user/assistant kinds so ↑↓

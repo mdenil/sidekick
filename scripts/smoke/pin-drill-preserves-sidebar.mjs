@@ -1,8 +1,8 @@
-// Desktop bug 2026-05-13 (Jonathan): clicking a pinned message in
-// the right drawer drills into the chat correctly, but ALSO closes
-// the left session sidebar. Only the pin drawer should auto-close
-// on drill — the sidebar is an independent surface and should stay
-// in whatever state the user left it.
+// Regression guard: clicking a pinned message in the right drawer
+// drills into the chat correctly, but ALSO closes the left session
+// sidebar. Only the pin drawer should auto-close on drill — the
+// sidebar is an independent surface and should stay in whatever state
+// the user left it.
 //
 // Pin a message → open both drawers (desktop) → click the pin item
 // → assert sidebar remains expanded, pin drawer closes, transcript
@@ -99,8 +99,8 @@ export default async function run({ page, log }) {
   await page.waitForTimeout(800);
 
   // BOTH drawers should remain open on desktop — pin drawer is a
-  // persistent todo-list surface (Jonathan UX 2026-05-13), and the
-  // session sidebar is independent.
+  // persistent todo-list surface, and the session sidebar is
+  // independent.
   assert(await pinDrawerOpen(page),
     `post-drill (desktop): pin drawer should stay open (todo-list semantic)`);
   log(`pin drawer stayed open ✓`);

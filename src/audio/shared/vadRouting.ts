@@ -6,29 +6,25 @@
  * the localStorage-backed call-mode-menu setting (Auto / Client / Bridge).
  *
  * History:
- *   - Pre-2026-05-09 the default was per-device (iOS=client, others=
- *     bridge). The split was driven by client-side Silero working on
- *     iOS at normal volume + Mac client-side ONNX cold-start being
- *     structurally broken (microsoft/onnxruntime#19177). After
- *     2026-05-09 iPhone speakerphone field test confirmed bridge
- *     fires correctly on real speech without false-firing on AEC
- *     residual at normal volume, the default flipped to bridge
- *     everywhere. ClientSideVadSource stays compiled in as the
- *     escape hatch for max-volume / bike conditions where bridge's
- *     single-signal Silero hasn't been verified yet.
- *   - The override row in the call-mode menu is keep-don't-kill —
- *     it lets us A/B compare in real use without redeploying.
+ *   - The original default was per-device (iOS=client, others=bridge),
+ *     driven by client-side Silero working on iOS and Mac client-side
+ *     ONNX cold-start being structurally broken
+ *     (microsoft/onnxruntime#19177). After confirming bridge-side Silero
+ *     fires correctly on real speech without false-firing on AEC residual
+ *     at normal volume, the default flipped to bridge everywhere.
+ *     ClientSideVadSource stays compiled in as an escape hatch.
+ *   - The override row in the call-mode menu allows A/B comparison
+ *     without redeploying.
  */
 
 import { detectDeviceClass } from '../../voiceTuning.ts';
 import { ClientSideVadSource, FallbackVadSource, type VadSource } from './vadSource.ts';
 
 /** Floor applied to the user's barge threshold on the built-in
- *  speaker route. CURRENTLY DISABLED (=0) — full slider range needs
- *  to stay tunable while Jonathan field-tests. Once we have data on
- *  where false fires concentrate at speaker volume, set this to a
- *  positive value (likely 0.5-0.7 range based on AEC residual research)
- *  and re-enable the clamp. The wiring + tests stay so flipping the
+ *  speaker route. CURRENTLY DISABLED (=0) — full slider range remains
+ *  tunable. Once AEC residual data is collected at speaker volume, set
+ *  this to a positive value (likely 0.5-0.7 based on residual research)
+ *  and re-enable the clamp. The wiring + tests remain so flipping the
  *  constant is a one-line change. */
 export const SPEAKER_BARGE_THRESHOLD_FLOOR = 0;
 
@@ -83,14 +79,9 @@ export function setVadStrategyOverrideSetting(s: VadStrategySetting): void {
  *  Precedence: URL `?vad=` (one-off dev/CI testing) > localStorage
  *  setting (PWA-installed user testing) > default (`bridge` everywhere).
  *
- *  Flipped 2026-05-09 from per-device split (iOS=client, others=bridge)
- *  to bridge-default after iPhone speakerphone field test confirmed
- *  bridge-side Silero correctly fires on real speech and doesn't
- *  false-fire on AEC residual at normal volume. Client path stays
- *  reachable via `?vad=client` for max-volume / bike conditions where
- *  bridge multi-signal validation isn't shipped yet. Toggleable
- *  abstraction means the client code remains compiled in; deletion
- *  is a separate cleanup gated on a week of bridge-default field use. */
+ *  Bridge is the default everywhere: bridge-side Silero fires correctly
+ *  on real speech without false-firing on AEC residual. Client path
+ *  remains reachable via `?vad=client` as an escape hatch. */
 export function chooseVadStrategy(): VadStrategy {
   const urlOverride = getVadStrategyOverride();
   if (urlOverride) return urlOverride;

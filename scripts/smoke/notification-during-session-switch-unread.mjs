@@ -1,5 +1,5 @@
-// Regression for the real cron notification race Jonathan hit on
-// 2026-05-20: user clicks away from a chat, the target session's
+// Regression guard for cron notification race: user clicks away from a
+// chat, the target session's
 // /messages fetch is still in flight, and a notification lands for
 // the previous chat. The clicked row must become the engagement target
 // immediately; otherwise the old chat still looks "on screen", the

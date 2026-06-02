@@ -1,5 +1,5 @@
-// Field bug 2026-05-24 (Jonathan, desktop): scrolled to TOP of a long
-// chat, switched away, scroll position lost on return / reload.
+// Regression guard: scrolled to TOP of a long chat, switched away,
+// scroll position lost on return / reload.
 //
 // Why a new smoke instead of editing existing ones:
 //   - existing smokes scroll via page.evaluate(scrollTo). Real wheel

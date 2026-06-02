@@ -282,8 +282,7 @@ async function runUnifiedSearch(q: string) {
     // it with an empty server response. Pre-fix bug: a hermes-gateway
     // user typing "lon" would briefly see fuzzy hits, then watch them
     // disappear 300ms later when the empty server search overwrote
-    // the section with "No matching sessions." (Jonathan repro
-    // 2026-04-29.)
+    // the section with "No matching sessions."
     if (backend.hasSearch()) {
       const topSessions = result.sessions.slice(0, 10);
       // The user's RENAMED session title lives in sidekick.db

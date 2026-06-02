@@ -3,10 +3,9 @@
 OpenClaw plugin that exposes the sidekick `/v1/*` HTTP+SSE contract.
 
 Mirrors the responsibilities of `backends/hermes/plugin/__init__.py`
-in the [sidekick repo](https://github.com/jscholz/sidekick) (the
-Python reference implementation against hermes-agent). Sidekick proxy
-treats this plugin and the hermes plugin identically — it just changes
-`SIDEKICK_PLATFORM_URL`.
+(the Python reference implementation against hermes-agent). Sidekick
+proxy treats this plugin and the hermes plugin identically — it just
+changes `SIDEKICK_PLATFORM_URL`.
 
 **Status (2026-05-16):** full surface implemented. Drawer, transcript
 replay, turn dispatch with SSE, out-of-band events, push, pins,
@@ -79,7 +78,7 @@ loopback-internal reads:
   `/v1/conversations/{id}/items` (transcript replay) and unread
   badge counting.
 
-Rationale (cemented 2026-05-15): the plugin and openclaw share a
+Rationale: the plugin and openclaw share a
 filesystem, so direct reads are simpler than WS+auth. Reassess if the
 schema stabilizes and we want robustness against openclaw internal
 changes.
@@ -101,7 +100,7 @@ changes.
 | `OPENCLAW_SK_AGENT` | Agent ID within profile | `dev` |
 | `OPENCLAW_STATE_DIR` | Override openclaw state dir | `~/.openclaw-<profile>` |
 | `OPENCLAW_GATEWAY_PORT` | Gateway WS port | `8646` |
-| `SIDEKICK_VAPID_SUBJECT` | WebPush subject mailto | `mailto:jscholz@reimaginerobotics.ai` |
+| `SIDEKICK_VAPID_SUBJECT` | WebPush subject mailto | `mailto:admin@example.com` |
 | `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | One-time bootstrap into `vapid_keys` table | Generated fresh if absent |
 
 ### Differences from the hermes plugin

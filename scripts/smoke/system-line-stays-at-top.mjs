@@ -1,8 +1,8 @@
-// Pin the 2026-05-26 fix: a keyless `.line.system` timeline marker (e.g.
-// "New chat started") must HOLD its position as messages reconcile around
-// it. Field bug (Jonathan): started a new chat, "New chat started" began
-// at the top, but each subsequent message pushed it down one row until it
-// sat at the bottom of the conversation.
+// Regression guard: a keyless `.line.system` timeline marker (e.g.
+// "New chat started") must HOLD its position as messages reconcile
+// around it. Bug: starting a new chat, "New chat started" began at the
+// top, but each subsequent message pushed it down one row until it sat
+// at the bottom of the conversation.
 //
 // Root cause: the reconciler positioned spec[i] at `children[i]`, counting
 // the keyless marker as occupying a slot — so each appended message did

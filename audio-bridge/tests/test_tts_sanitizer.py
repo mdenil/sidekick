@@ -2,7 +2,7 @@
 bare URLs so Aura doesn't read punctuation literally.
 
 Pre-fix Aura was reading **bold** as "star star bold star star" out
-loud (Jonathan reported during a bike ride 2026-05-01). The expanded
+loud. The expanded
 regex set covers bold / italic / headers / bullets / code blocks /
 bare URLs / a wide emoji range. The canonical reference set lives in
 `test/tts-clean.test.ts` for the PWA-side cleanForTts; this Python

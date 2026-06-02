@@ -202,27 +202,24 @@ def test_notification_carries_kind(db):
 
 
 def test_recent_envelope_not_hidden_behind_legacy_backfill(db, state_db):
-    """Jonathan field bug 2026-05-19 (chat cb5dc920…):
-
-    Envelope-write happens at envelope-emit time → row at rowid=29
+    """Envelope-write happens at envelope-emit time → row at rowid N
     with created_at=NOW. Then a hard refresh triggers reconcile,
-    which backfills 622 historic rows from state.db. Those rows are
+    which backfills many historic rows from state.db. Those rows are
     inserted in state.db-id order — NOT chronological — so they
-    occupy rowids 30-651. Pagination by rowid (`ORDER BY rowid ASC,
-    LIMIT 200 from the tail`) would return rowids 452-651, hiding
-    the fresh envelope row at rowid 29.
+    occupy higher rowids. Pagination by rowid would hide the fresh
+    envelope row behind the backfill.
 
     Correct behavior: pagination by created_at, so the fresh envelope
     row (timestamp NOW) is in the most-recent window regardless of
     rowid.
     """
     # Step 1: simulate the just-sent message landing via envelope write.
-    fresh_ts = 1779182521.0  # Jonathan's actual POST time
+    fresh_ts = 1779182521.0  # represents a "just sent" timestamp
     state.upsert_msg_link(
         db, id="umsg_fresh", chat_id=CHAT_ID, role="user",
         content="my just-sent message",
     )
-    # Force the created_at to "now-ish" matching the field repro.
+    # Force the created_at to "now-ish" to simulate the envelope-write.
     db.exec(
         "UPDATE msg_links SET created_at=?, updated_at=? WHERE id=?",
         (fresh_ts, fresh_ts, "umsg_fresh"),

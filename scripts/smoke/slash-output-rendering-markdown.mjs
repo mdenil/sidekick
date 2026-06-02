@@ -1,12 +1,11 @@
 // Regression gate for the 2026-05-17 slash-command markdown rendering
 // bug.
 //
-// Repro (Jonathan field, 2026-05-17): the `/agents` slash command's
-// response rendered without proper newlines — multiple sections
-// collapsed into a single line. Specifically, lines that the agent
-// emitted as separate sources ("Running background processes: 0" and
-// "Gateway async jobs: 0") ended up jammed together with no line
-// break between them in the rendered bubble.
+// Repro: the `/agents` slash command's response rendered without
+// proper newlines — multiple sections collapsed into a single line.
+// Specifically, lines emitted as separate sources ("Running background
+// processes: 0" and "Gateway async jobs: 0") ended up jammed together
+// with no line break between them in the rendered bubble.
 //
 // What miniMarkdown (src/util/markdown.ts) is supposed to do:
 //   - `## Active Agents`  → <h2>Active Agents</h2>
@@ -64,7 +63,7 @@ export function MOCK_SETUP(mock) {
   mock.setAutoReplyEnabled(false);
 }
 
-// The exact reply payload Jonathan reported as broken in production.
+// The exact reply payload shape that was broken in production.
 // Two adjacent bold-prefixed lines at the bottom with no blank line
 // between them — this is the shape that triggers the paragraph-
 // wrap-skip bug in miniMarkdown.
@@ -87,7 +86,7 @@ export default async function run({ page, log, mock }) {
   await page.waitForSelector('.slash-popover', { state: 'visible', timeout: 3_000 });
   log('catalog loaded — popover opened on /');
 
-  // Dispatch /agents via Enter — same path the field bug took.
+  // Dispatch /agents via Enter — same path as the regression.
   await page.fill(SEL.composer, '/agents');
   await page.focus(SEL.composer);
   await page.keyboard.press('Enter');
@@ -253,7 +252,7 @@ export default async function run({ page, log, mock }) {
   // collapses to whitespace under default CSS), the bubble renders
   // them as one logical line and the user sees them jammed together.
   //
-  // This is the exact Jonathan-reported field bug. Note that visual
+  // This is the exact regression. Note that visual
   // separation (different bounding-rect Y coords) is NOT a reliable
   // test on its own: at narrow viewports, the first line may wrap
   // incidentally and put "Gateway async jobs" on a new row even

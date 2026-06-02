@@ -1,14 +1,13 @@
 // Pinned bubbles must participate in divergence-heal's orphan-dedup,
 // even though they're STALE-immune.
 //
-// Field bug 2026-05-13 (Jonathan): "i'm getting dupes on reload now"
-// — a single pinned message rendered as 3 identical bubbles after
-// reload. Root cause: the prior fix protecting pinned bubbles from
-// stale-removal used a `:not(.pinned)` selector that ALSO excluded
-// them from the orphan-dedup loop. When some earlier render path
-// produced multiple DOM bubbles for the same msgId (IDB snapshot
-// drift across schema versions, integer-id vs sidekick_id divergence,
-// or any future regression), heal never even SAW the dupes.
+// Regression guard: a single pinned message rendered as multiple
+// identical bubbles after reload. Root cause: the prior fix protecting
+// pinned bubbles from stale-removal used a `:not(.pinned)` selector
+// that ALSO excluded them from the orphan-dedup loop. When some earlier
+// render path produced multiple DOM bubbles for the same msgId (IDB
+// snapshot drift across schema versions, integer-id vs sidekick_id
+// divergence, or any future regression), heal never even SAW the dupes.
 //
 // This smoke gates that exact regression: inject two bubbles with
 // the same msgId — both .pinned — trigger a resume that runs heal,

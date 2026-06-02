@@ -99,7 +99,7 @@ export function reconcile(transcriptEl: HTMLElement, specs: BubbleSpec[], opts: 
   // keyless system rows. The previous implementation positioned spec[i]
   // at `children[i]`, which counted a system marker as occupying a slot —
   // so each appended message did insertBefore(msg, marker) and the marker
-  // sank one row per message (field bug 2026-05-26: "New chat started"
+  // sank one row per message ("New chat started"
   // started at the top of a fresh chat and got pushed to the bottom as
   // the conversation grew). Anchoring to the spec subsequence instead
   // leaves markers pinned to their place in the timeline.

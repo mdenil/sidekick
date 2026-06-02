@@ -26,7 +26,7 @@
  *   close()
  *     - close PC, stop tracks, POST /api/rtc/close
  *
- * Phase-1 narrowness: no data channel, no client-side STT.  Captions
+ * Initial narrowness: no data channel, no client-side STT. Captions
  * (interim transcripts) come back via the existing chat SSE — the
  * server pushes them through the same agent-input channel.
  */
@@ -47,12 +47,11 @@ export type CallMode = 'stream' | 'talk';
 /**
  * Why a call's peer connection was torn down. Threaded into close() and
  * logged in `[webrtc-close]` so a "what happened to my call" report is one
- * grep away (see hosts/cortex/call-resilience-plan.md, Phase A).
+ * grep away (see hosts/cortex/call-resilience-plan.md).
  *
  *   user-hangup   the user tapped hang up (or a mode-switch closed+reopened)
  *   net-failed    a CONNECTED call's PC went `failed`/`closed` unexpectedly
- *   net-disconnect a CONNECTED call's PC went `disconnected` (reserved for
- *                 Phase B's reconnect path; not yet a close trigger)
+ *   net-disconnect a CONNECTED call's PC went `disconnected` (triggers reconnect)
  *   setup-failed  the call never reached `connected` (mic/offer/answer error)
  */
 export type CloseReason =
@@ -202,7 +201,7 @@ export function setDroppedListener(cb: (reason: CloseReason) => void) {
   onDropped = cb;
 }
 
-// ── Reconnect (Phase B) ─────────────────────────────────────────────────
+// ── Reconnect ──────────────────────────────────────────────────────────
 // WhatsApp-class soft recovery. When a CONNECTED call's PC drops
 // (disconnected/failed), we DON'T tear the call down — we hold a
 // `reconnecting` state and re-open a fresh peer connection on the same
@@ -215,7 +214,7 @@ export function setDroppedListener(cb: (reason: CloseReason) => void) {
 // restart has nothing to re-offer to. A full re-open with the same chatId
 // continues the same conversation (dispatch routes by chat_id, not
 // peer_id) and survives today's bridge unchanged. True ICE restart is a
-// future optimization gated on bridge-side support (the old Phase C).
+// future optimization gated on bridge-side support.
 let RECONNECT_WINDOW_MS = 75_000;     // 60-90s escalation window (overrides
                                       // Chromium's ~10s disconnected→failed)
 let RECONNECT_MAX_ATTEMPTS = 8;       // bound retries within the window
@@ -450,7 +449,7 @@ export function queryBargeVad(): boolean {
  *  it actual frames (even silent ones) for ~1 s gives the filter the
  *  stable-output epoch it needs to lock on. Without this, the first
  *  ~500 ms of each call's TTS leaks into the mic at full level
- *  (residual peak ~0.6 measured 2026-05-06) until AEC converges,
+ *  (residual peak ~0.6) until AEC converges,
  *  which is a self-barge trigger source.
  *
  *  Fire-and-forget — runs in parallel with ICE/signaling so the
@@ -493,7 +492,7 @@ export async function open(
   }
 
   // Remember the call args so a reconnect can re-open the same chat with
-  // the same mode. Reused by attemptReopen (Phase B).
+  // the same mode (reused by attemptReopen).
   lastOpenArgs = { mode, opts: { sessionId: opts?.sessionId ?? null, chatId: opts?.chatId ?? null } };
 
   // Phase timing — emitted on every state transition so a "5s+ to
@@ -511,14 +510,11 @@ export async function open(
   setState('requesting-mic');
   let micStream: MediaStream;
   try {
-    // v0.413 baseline (restored 2026-05-04 after v0.414/v0.415 broke
-    // both realtime and turnbased barge):
+    // DSP constraints:
     //   - talk mode:   AEC ON (suppress speaker→mic bleed of TTS),
     //                  NS off, AGC off (both can defeat barge).
     //   - stream mode: AEC OFF (no peer-track TTS to bleed),
     //                  NS off, AGC off.
-    // This is the DSP triple Jonathan field-tested as "worked
-    // perfectly first try" on v0.413 realtime talk mode.
     const useAec = (mode === 'talk');
     // [audio-state] checkpoint before mic acquisition. iOS audio-
     // session category SHOULD be playAndRecord by here for AEC to
@@ -564,12 +560,10 @@ export async function open(
   setState('connecting');
 
   // Empty iceServers — Tailscale provides reachability between phone and
-  // Pi without STUN/TURN. STUN was tried 2026-05-04 to defeat Mac
-  // Chrome's mDNS-obfuscated host candidates (8s ICE cold start), but
-  // the actual bottleneck is bridge-side aioice retransmitting STUN
-  // checks to unreachable srflx-public addresses. Adding STUN on the
-  // PWA generated MORE unreachable srflx pairs, possibly making it
-  // worse. Reverted pending diagnosis with full ICE-state instrumentation.
+  // Pi without STUN/TURN. Adding STUN actually generated more unreachable
+  // srflx pairs (bridge-side aioice retransmits STUN checks to
+  // srflx-public addresses) and worsened Mac Chrome ICE cold-start time.
+  // Omitting STUN keeps the ICE candidate set minimal.
   const pc = new RTCPeerConnection({ iceServers: [] });
 
   // Add the mic track (sendrecv direction).
@@ -592,8 +586,8 @@ export async function open(
   //   path Web Audio destination uses. The plain <audio srcObject>
   //   path bypasses this channel, so AEC has no reference signal and
   //   can't subtract — agent voice arrives in the mic at full volume,
-  //   which is the iOS self-barge bug class (instrumented 2026-05-06,
-  //   peak 0.6 in mic during agent TTS confirms no attenuation).
+  //   which is the iOS self-barge bug class (agent voice leaks into
+  //   mic at full level, peak ~0.6, confirms no AEC attenuation).
   //
   //   FALLBACK (<audio srcObject>): if the shared AudioContext isn't
   //   available, or MediaStreamAudioSourceNode construction throws,
@@ -609,13 +603,13 @@ export async function open(
   //   file ran into ctx-suspended at ontrack time and used <audio>
   //   exclusively as a workaround; the priming step fixes the timing.)
   // Web Audio routing is iOS-only — see comment block above. On Mac
-  // Chrome we measured (2026-05-06) that connecting the WebRTC remote
-  // stream to audioContext.destination silenced the user's speakers
-  // entirely (Chrome's AEC consumed the destination as its reference
-  // channel without also routing to system audio). iOS PWA standalone
-  // is the platform that NEEDS the Web Audio path for AEC to engage;
-  // every other platform's <audio srcObject> already gets working AEC
-  // via the browser's WebRTC stack.
+  // Chrome, connecting the WebRTC remote stream to
+  // audioContext.destination silenced the user's speakers entirely
+  // (Chrome's AEC consumed the destination as its reference channel
+  // without also routing to system audio). iOS PWA standalone is the
+  // platform that NEEDS the Web Audio path for AEC to engage; every
+  // other platform's <audio srcObject> already gets working AEC via
+  // the browser's WebRTC stack.
   const ua = (typeof navigator !== 'undefined' && navigator.userAgent) || '';
   const isIOS = /iPad|iPhone|iPod/.test(ua) ||
     (/Macintosh/.test(ua) && (navigator as any).maxTouchPoints > 1);
@@ -630,9 +624,8 @@ export async function open(
     // is too thin to absorb jitter and the user hears chunks drop. 300ms
     // is roughly where WhatsApp-class voice calls sit — perceptually
     // still real-time, with enough headroom to ride through ~250ms
-    // network burps. Field bug 2026-05-24 (Jonathan): sidekick call
-    // dropouts were noticeably worse than WhatsApp on the same network;
-    // exposed buffer-hint was the smoking gun. Hint is best-effort —
+    // network burps. A too-small buffer is the smoking gun for call
+    // dropouts on cellular networks. Hint is best-effort —
     // browsers may not honor it exactly, but Chromium + WebKit both
     // respect it within the 0-3s range. Set via `(ev.receiver as any)`
     // because the typed DOM lib lags the actual implementation.
@@ -801,9 +794,9 @@ export async function open(
   });
 
   // Build offer + signal.
-  // Per-step timing inside `signal` — added 2026-05-08 to localize the
-  // 4-6s cold-start hang on Mac Chrome. The aggregate `phase('signal')`
-  // line still fires below; these sub-phases just split it.
+  // Per-step timing inside `signal` — localizes slow SDP exchange on
+  // Mac Chrome. The aggregate `phase('signal')` line fires below;
+  // these sub-phases split it further.
   let offer: RTCSessionDescriptionInit;
   try {
     const tCreateOffer = performance.now();
@@ -858,12 +851,8 @@ export async function open(
     keyterms = (await loadOrSeed()) || [];
   } catch {}
   log('[webrtc] offer keyterms=', keyterms.length, keyterms.length ? `(first: ${keyterms[0]})` : '');
-  // Honour the user's "Barge-in" toggle + sensitivity on the bridge
-  // side. Both used to be no-ops since the WebRTC pivot — only the
-  // (now-removed) client-side barge ever read them. The threshold is
   // Barge detection runs client-side (BargeWindow over the mic
-  // AnalyserNode); the bridge no longer ships an RMS VAD as of
-  // 2026-05-03. The user's `bargeIn` toggle + sensitivity are read
+  // AnalyserNode). The user's `bargeIn` toggle + sensitivity are read
   // locally by realtimeBarge.ts on every frame.
   const offerPayload: Record<string, unknown> = {
     sdp: pc.localDescription?.sdp ?? '',
@@ -978,11 +967,8 @@ export async function close(
   setState('closing');
   const session = active;
   active = null;
-  // Per-step timing inside `local` — added 2026-05-08 to investigate
-  // the 5s call-3 hangup that correlated with a failed VAD on Mac
-  // Chrome. If any sync close step is mysteriously slow (dataChannel.
-  // close, pc.close racing with a dead audio worklet, etc.) this will
-  // surface it.
+  // Per-step timing inside `local` — surfaces any unexpectedly slow
+  // sync close step (dataChannel.close, pc.close, etc.).
   const tStart = performance.now();
   try { audioPlatform.releaseMicStream('webrtc'); } catch { /* ignore */ }
   const tMicReleased = performance.now();

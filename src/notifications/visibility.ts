@@ -19,7 +19,7 @@
 //      'visible' AND a chat is viewed. Without this, sitting on the
 //      same chat with no events lets the server-side
 //      timestamp age past ENGAGED_WINDOW_MS and the very next reply
-//      gets a spurious push banner (Jonathan field bug 2026-05-12).
+//      gets a spurious push banner.
 //
 // Failures are deliberately swallowed (best-effort): a missed report
 // just means the gate falls back to the legacy SSE-attached +
@@ -46,9 +46,9 @@ let getViewedRef: (() => string | null) | null = null;
  *  can return false even when the app is actively foregrounded — it's a
  *  desktop-centric API and not reliable on touch devices (covered by
  *  visibilityState='hidden' already if the user backgrounds the app).
- *  Field 2026-05-28 (Jonathan, iOS PWA on a flight): a push for the
- *  focused chat fired because the heartbeat kept reporting state='hidden'
- *  (hasFocus()=false) and the proxy's engagement timestamp aged out. */
+ *  Without this guard, the heartbeat reports state='hidden' on mobile and
+ *  the proxy's engagement timestamp ages out, triggering spurious pushes
+ *  for the focused chat. */
 function isMobileRuntime(): boolean {
   if (typeof document !== 'undefined' && document.documentElement.classList.contains('capacitor-app')) return true;
   if (typeof navigator === 'undefined') return false;
@@ -161,8 +161,8 @@ export function initVisibilityReporting(getViewed: () => string | null): void {
 
   // Heartbeat — keeps the proxy's engagement timestamp fresh while the
   // user sits on a chat. Without this, the timestamp ages past the server
-  // engagement window and any new reply gets a spurious push banner
-  // (Jonathan field bug 2026-05-12). The timer exists only while the
+  // engagement window and any new reply gets a spurious push banner.
+  // The timer exists only while the
   // page is foregrounded/focused on a chat; hidden/blur stops it instead
   // of waking phone PWAs to no-op.
   syncHeartbeat();

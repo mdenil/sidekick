@@ -188,10 +188,9 @@ export function isPushEligibleType(envelopeType: string): boolean {
  *
  *      To stop or manage this job, send me a new message (e.g. "stop reminder {task_name}").
  *
- *  For a watch-sized push that, in raw form, eats the entire visible
- *  band on boilerplate and never reaches the agent's actual content
- *  before truncation (Jonathan, 2026-05-14 — "Cronjob and job IDs and
- *  session IDs are all I see on my watch").
+ *  For a watch-sized push the raw form eats the entire visible band on
+ *  boilerplate and never reaches the agent's actual content before
+ *  truncation.
  *
  *  Parser splits the wrapper into its parts so we can lead with the
  *  agent's reply and let the title + suffix carry the metadata. */
@@ -281,7 +280,7 @@ export function isProgressHeartbeat(raw: string): boolean {
  *  Falls back to "Sidekick" / empty body when the envelope is missing
  *  the obvious fields — the receive side handles those gracefully.
  *
- *  Format strategy (Jonathan 2026-05-14 watch-readability pass):
+ *  Format strategy:
  *    - Title carries the category emoji + a short scannable label
  *      (chat speaker, cron task name, etc.). NO boilerplate words.
  *    - Body leads with the agent's actual content. Metadata that's
@@ -321,10 +320,9 @@ export function envelopeToPayload(env: Record<string, any>, bodyOverride?: strin
   //      wrapper. This is what hermes' cron scheduler ACTUALLY
   //      produces — and it ships as reply_delta + reply_final via
   //      the sidekick adapter's send() method, not as a notification
-  //      envelope. Field bug 2026-05-15 (Jonathan, iPhone): cron
-  //      pushes still arrived with the full boilerplate filling the
-  //      watch banner because the kind-only gate never fired in
-  //      production.
+  //      envelope. The kind-only gate never fires in production, so
+  //      cron pushes arrived with the full boilerplate filling the
+  //      banner without this shape-detection path.
   const parsedCron = parseCronContent(raw);
   const isCronShape = !!parsedCron.taskName;
   const isCronEnvelope = isCronShape
@@ -384,12 +382,11 @@ export function envelopeToPayload(env: Record<string, any>, bodyOverride?: strin
   // notification instead of stacking. BUT approvals get their OWN tag
   // namespace: an approval is urgent + actionable and must NOT be
   // overwritten by the stream of `reply_final` ("Still working…") pushes
-  // that share the chat during a long autonomous turn. Field 2026-05-26
-  // (Jonathan): a pitch-deck approval push (delivered=1) was silently
-  // replaced by the next heartbeat reply for the same chat, so the
-  // approval banner never surfaced. Approvals still coalesce with each
-  // other per-chat (one outstanding approval banner), just independent of
-  // replies.
+  // that share the chat during a long autonomous turn (a delivered
+  // approval push can be silently replaced by the next heartbeat reply
+  // for the same chat, so the approval banner never surfaces). Approvals
+  // still coalesce with each other per-chat (one outstanding approval
+  // banner), just independent of replies.
   const isApproval = env.type === 'notification' && env.kind === 'approval';
   const tag = chatId
     ? (isApproval ? `approval:${chatId}` : `chat:${chatId}`)

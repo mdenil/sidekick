@@ -8,11 +8,12 @@
  *   - Going through a loopback WS would require the plugin to pair as
  *     its own device + get scope approval — same hoop the CLI hits.
  *   - openclaw's own `sessions.list` handler reads the same files we
- *     read here (see ~/code/openclaw-integ/src/gateway/server-methods/
- *     sessions.ts loadCombinedSessionStoreForGateway). So we're not
- *     bypassing a smart layer — we're reading the source of truth.
+ *     read here (see `src/gateway/server-methods/sessions.ts`
+ *     `loadCombinedSessionStoreForGateway` in the openclaw gateway).
+ *     So we're not bypassing a smart layer — we're reading the source
+ *     of truth.
  *
- * Layout (verified 2026-05-15 on profile sk-integ, openclaw v2026.5.12):
+ * Layout:
  *   {stateDir}/agents/{agentId}/sessions/sessions.json
  *     - dict of { [sessionKey]: SessionRegistryEntry }
  *     - sessionKey shape: "agent:{agentId}:{slot}" e.g. "agent:dev:main"

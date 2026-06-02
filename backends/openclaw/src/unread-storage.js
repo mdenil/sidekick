@@ -80,9 +80,8 @@ function isUnreadCountable(msg) {
 /** Compute per-chat unread counts across all sessions in the agent.
  *  Returns `{chats: [{chat_id, unread_count, marked_unread, last_read_at}], total}`.
  *
- *  total = sum of per-chat unread_counts (Jonathan picked sum over
- *  chat-count for higher-fidelity feedback; the schema doesn't care,
- *  switching would be a one-line aggregation change). */
+ *  total = sum of per-chat unread_counts (higher-fidelity than
+ *  chat-count; switching would be a one-line aggregation change). */
 export function computeUnread(db, { agentId = AGENT_ID, profile = PROFILE } = {}) {
   const stateDir = resolveStateDir({ profile });
   const sessions = listSessions({ stateDir, agentId });

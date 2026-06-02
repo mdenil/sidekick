@@ -78,17 +78,16 @@ def _add_msg(state_db, sid, role, content, ts, tool_calls=None,
 
 
 def test_unread_counts_envelope_only_reply_before_state_db_flush(db, state_db):
-    """**The 2026-05-29 field bug** Jonathan reported: agent emits a
-    short "Checking." quick-ack reply on an off-screen chat. PWA
-    upserts the activity row + bumps badge.incrementUnread, then
-    refreshes from server via /api/sidekick/notifications/unread. The
-    server-side compute_unread used to count state.db assistant rows
+    """Agent emits a short "Checking." quick-ack reply on an off-screen
+    chat. PWA upserts the activity row + bumps badge.incrementUnread,
+    then refreshes from server via /api/sidekick/notifications/unread.
+    The server-side compute_unread used to count state.db assistant rows
     ONLY — but the envelope just arrived; hermes hasn't post-turn-
     flushed yet, so state.db has nothing for this chat. compute_unread
     returned 0; badge.ts:109's auto-markAllRead fired and nuked the
     activity row as "stale." Full reply arrived later → state.db was
-    flushed by then → badge bumped correctly. Hence the asymmetry
-    Jonathan observed: short reply silent, full reply badges.
+    flushed by then → badge bumped correctly. Hence the asymmetry:
+    short reply silent, full reply badges.
 
     Contract: a final-status envelope assistant row (msg_links row with
     status='final', non-NULL tool_calls excluded) must count toward

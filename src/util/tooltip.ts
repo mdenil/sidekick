@@ -1,7 +1,6 @@
 // Custom tooltip — replaces the browser's native ~1.5s slow tooltip
 // with a positioned bubble that animates in after a 300ms hover.
-// Extracted from main.ts 2026-05-11 for the Phase 2 / pre-notifications
-// refactor.
+// Extracted from main.ts for the pre-notifications refactor.
 //
 // Why custom rather than native:
 //   - Native tooltip's delay isn't tunable + lasts forever on hover.

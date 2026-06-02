@@ -1,4 +1,4 @@
-// Pin the iOS-tap regression Jonathan personally hit: a tooltip
+// Regression guard: a tooltip
 // that was about to appear (after the 300ms hover delay) must be
 // CANCELLED if the user taps before it shows. Without this, on
 // touch devices the tooltip would render on top of the very thing

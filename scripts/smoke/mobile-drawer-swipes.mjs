@@ -4,11 +4,8 @@
 //      order without the underlying drawer mis-handling the gesture
 //   3. Closing one doesn't affect the state of the other
 //
-// This is the smoke Jonathan specifically asked for ("fiddly one so
-// add a smoke that tests one at a time and then both drawers in both
-// orders - they will overlap on mobile"). Mobile coverage is gated
-// behind the new `MOBILE` scenario flag in lib.mjs — first scenario
-// to actually exercise the iPhone-shape harness.
+// Mobile coverage is gated behind the `MOBILE` scenario flag in
+// lib.mjs — exercises the iPhone-shape harness.
 //
 // Swipe simulation: synthesizes pointerdown / pointermove / pointerup
 // events at the window level since the gesture handlers
@@ -167,10 +164,10 @@ export default async function run({ page, log }) {
   log(`  sidebar closed cleanly ✓`);
 
   // ── Phase 3b: short close-swipe (1/3 threshold) ──────────────────
-  // Jonathan field bug 2026-05-13: typical swipes landed at dx~120
-  // v~0.5 and snapped back open under the stricter widthPx/2 rule.
-  // Lower threshold to widthPx/3 — a flick should close, not a
-  // full deliberate half-drag.
+  // Regression guard: typical swipes landed at dx~120 v~0.5 and
+  // snapped back open under the stricter widthPx/2 rule. Lower
+  // threshold to widthPx/3 — a flick should close, not a full
+  // deliberate half-drag.
   log('phase 3b: short close-swipe should commit at widthPx/3');
   await forceCloseBoth(page);
   await openPinDrawerViaToggle(page);

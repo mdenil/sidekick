@@ -5,7 +5,7 @@
 // injected into getUserMedia. The real mic channel records it, the
 // real SilenceWindow commits, /transcribe hits live Deepgram STT, and
 // the real agent replies — all under a slow link (fast3g), the field
-// condition Jonathan hits. This is the install-time companion to the
+// condition (slow link). This is the install-time companion to the
 // always-green mocked spoken-turn-tts (which proves the audio CHANNEL +
 // playback wiring with no key); THIS proves the cloud STT + live agent
 // actually work together end to end on a recorded mic blob.

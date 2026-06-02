@@ -341,9 +341,9 @@ function appendBackfillAtEnd(text) {
  *  — keeps false positives from common single-word tails (e.g. "the",
  *  "and") from eating real content.
  *
- *  The typical seam overlap: DG transcribed "...over to Oleg this week"
- *  just before wedging; our backfill re-transcribed "this week. Also
- *  Misha mentioned...". After dedup → "Also Misha mentioned...".
+ *  The typical seam overlap: the transcriber emitted "...send it over
+ *  this week" just before wedging; our backfill re-transcribed "this
+ *  week. Also worth noting...". After dedup → "Also worth noting...".
  *  @param {string} prevText — trailing text of the preceding segment
  *  @param {string} newText — the incoming backfill text
  *  @returns {string} newText with the leading duplicate stripped

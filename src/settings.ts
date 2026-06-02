@@ -220,10 +220,10 @@ function startModelPoll() {
 // Keys + values match `proxy/sidekick/frontend-config.ts`'s
 // FRONTEND_SETTINGS table. If you add a setting, add it to BOTH.
 const DEFAULTS = {
-  // Speak-replies + realtime default ON for fresh installs (Tom field
-  // report 2026-05-10): a brand-new user opening the call menu and
-  // seeing both toggles off makes the voice features look broken
-  // out of the box. Existing users keep whatever they've already
+  // Speak-replies + realtime default ON for fresh installs: a
+  // brand-new user opening the call menu and seeing both toggles off
+  // makes the voice features look broken out of the box. Existing
+  // users keep whatever they've already
   // toggled (load() merges over DEFAULTS, so a yaml-persisted false
   // stays false).
   tts: true,
@@ -311,9 +311,8 @@ const PER_DEVICE_KEYS = new Set<string>([
   'micDevice',
   'ttsVoiceLocal',
   'listenSttEngine',
-  // Text size moved to per-device 2026-05-19 (Jonathan field request:
-  // desktop needs ~18px, phone needs ~14-16px — sharing one value
-  // either bloats desktop or shrinks phone illegible).
+  // Text size is per-device: desktop needs ~18px, phone needs ~14-16px —
+  // sharing one value either bloats desktop or shrinks phone illegible.
   'contentSize',
 ]);
 

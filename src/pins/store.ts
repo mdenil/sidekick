@@ -12,11 +12,8 @@
 // calls `requestRefresh()` to pull the new state.
 //
 // Why server-driven (mirror of badge.ts's history): IDB-side pins
-// were strictly per-device. A user pinning a message on desktop and
-// expecting to see it on their phone was a 2026-05-16 field bug —
-// "afaict they are still fully decoupled. i cleared and created pins
-// on desktop and mobile and they remained independent the whole time"
-// (Jonathan). Server SSOT fixes this structurally.
+// were strictly per-device — pins created on desktop were not visible
+// on mobile. Server SSOT fixes this structurally.
 //
 // In-memory cache (`pinsByKey`) is a SYNC mirror of the server-returned
 // state so chat.ts's `isPinned()` check on every bubble render doesn't

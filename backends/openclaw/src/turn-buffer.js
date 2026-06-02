@@ -141,7 +141,7 @@ export class TurnBuffer {
    *  Items merge produced finalized rows without `sidekick_id` on
    *  the in-flight assistant, which caused a visible double-render
    *  once live SSE deltas resumed. Envelope shape carries the
-   *  message_id end-to-end. (Crack C, 2026-05-17 audit.)
+   *  message_id end-to-end.
    *
    *  Wire shape mirrors `proxy/sidekick/upstream.ts` SidekickEnvelope. */
   renderEnvelopes(turn) {

@@ -149,10 +149,10 @@ some of the functionality.
 
 ## Adding new Cap-specific features
 
-Architectural rule (Jonathan, 2026-05-09): **Cap-specific behavior
-stays under `mobile/ios/App/App/`**. Shared code in `src/` should be
-deletable as a unit (the `mobile/` directory could be removed and
-`src/` would still build a working PWA).
+Architectural rule: **Cap-specific behavior stays under
+`mobile/ios/App/App/`**. Shared code in `src/` should be deletable as
+a unit (the `mobile/` directory could be removed and `src/` would still
+build a working PWA).
 
 Workflow:
 1. Pick the right Swift file:

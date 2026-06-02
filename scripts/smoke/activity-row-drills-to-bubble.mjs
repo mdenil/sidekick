@@ -1,7 +1,7 @@
-// Contract (Jonathan, 2026-05-29): clicking a row in the Activity tray
-// must navigate me to the originating chat AND scroll to the specific
-// message bubble that produced the notification, highlighting it
-// (`search-target-flash`) for visual confirmation.
+// Contract: clicking a row in the Activity tray must navigate to the
+// originating chat AND scroll to the specific message bubble that
+// produced the notification, highlighting it (`search-target-flash`)
+// for visual confirmation.
 //
 // Wiring: activity row li.onclick → opts.onOpen → onActivityOpen
 // (main.ts) → drillToChatMessage(chatId, msgId, {validateExists:true})
@@ -11,7 +11,7 @@
 // `querySelector([data-key="${msgId}"])` → drillScrollTo + adds the
 // flash class.
 //
-// Post-v2 invariant (2026-05-29): the activity row's stored
+// Post-v2 invariant: the activity row's stored
 // `messageId` (the live envelope id) MATCHES the in-chat bubble's
 // `data-key` — guaranteed by the plugin's order-fallback link in
 // reconcile_from_state_db Pass 1.b, which links the envelope row to

@@ -1,8 +1,8 @@
-// Field bug 2026-05-24 (Jonathan, second video session): A→B→A round-trip
-// with mid-history scroll on real chats containing tool calls / images
-// loses scroll position. The mocked smoke `scroll-mid-history-survives-
-// switch.mjs` couldn't catch it because the mocked transcript fully
-// renders on first load. The real path:
+// Regression guard: A→B→A round-trip with mid-history scroll on real
+// chats containing tool calls / images loses scroll position. The mocked
+// smoke `scroll-mid-history-survives-switch.mjs` couldn't catch it
+// because the mocked transcript fully renders on first load. The real
+// path:
 //
 //   1. user wheel-scrolls long chat A to mid-history → saveScrollPosition(A, N, atBottom=false)
 //   2. switches to B, switches back to A
@@ -23,10 +23,10 @@
 //     the user-visible bug, and a 300px scrollTop tolerance lets that
 //     through silently.
 //
-// Read-only — no message sends. Uses two long real chats Jonathan
-// named for the diagnostic ([pitch deck] 335 msgs + 160 tools; [JOAM]
-// 99 msgs). Install-only so it doesn't run in the default suite — but
-// drift assertion gives it teeth when explicitly invoked.
+// Read-only — no message sends. Uses two long real chats
+// ([pitch deck] 335 msgs + 160 tools; [JOAM] 99 msgs). Install-only
+// so it doesn't run in the default suite — but drift assertion gives
+// it teeth when explicitly invoked.
 //
 // Run:
 //   node scripts/run-smoke.mjs scroll-real-tool-chats-diag --real-backend

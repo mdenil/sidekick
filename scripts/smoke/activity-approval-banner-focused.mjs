@@ -1,6 +1,6 @@
-// Contract (Jonathan, 2026-05-28): an approval arriving in the chat the
-// user is CURRENTLY VIEWING must still raise the in-app banner. Field
-// bug 2026-05-27: an approval landed in the focused chat — it rendered
+// Contract: an approval arriving in the chat the
+// user is CURRENTLY VIEWING must still raise the in-app banner.
+// Regression guard: an approval landing in the focused chat rendered
 // as a transcript bubble, but there was no banner, no badge, and no
 // activity row stayed (the heartbeat bug killed that separately).
 //

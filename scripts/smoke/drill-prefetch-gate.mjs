@@ -1,5 +1,4 @@
-// Deep-jump perf invariants — no private data (Jonathan, London link,
-// 2026-05-29). Codifies the four fixes that killed the multi-second
+// Deep-jump perf invariants. Codifies the four fixes that killed the multi-second
 // same-session drill stalls, using only synthetic chats + the mock's
 // per-chat artificial /messages delay (mock.setMessageDelay) as a stand-in
 // for a slow network — the behavioral equivalent of Chrome DevTools'

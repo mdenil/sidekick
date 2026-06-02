@@ -146,9 +146,7 @@ async def _run_tts(peer, voice_config: VoiceConfig, text_queue, track) -> None:
             # during its tail flush). Without this, the inner halt-check
             # below sees the orphaned flag on synth()'s very first yield
             # and bails the new round before any audio flows — frames_fed=0,
-            # reply text in chat history, no TTS audio. Reproduced 2026-05-06
-            # iPhone speakerphone (post-natural-completion barge at 13:42:48
-            # killed the next reply at 13:42:55). The inner check at line 142
+            # reply text in chat history, no TTS audio. The inner check
             # still catches in-flight barges within this round.
             if track.halt_event.is_set():
                 logger.info(

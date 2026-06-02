@@ -1,15 +1,11 @@
 /**
- * @fileoverview Phase 1 — virtualizer pure-math tests.
+ * @fileoverview Virtualizer pure-math unit tests.
  *
  * Covers `createHeightCache`, `computeVisibleWindow`, `computeAnchor`,
  * and `scrollTopForAnchor`. All four functions are pure (no DOM, no
  * module state), so we exercise the math exhaustively without
- * standing up a browser.
- *
- * The DOM-binding `bindVirtualizer` factory is covered by the
- * Playwright dev-test in `scripts/dev-tests/virtualizer-window-math.mjs`
- * (which can hit a real headless browser); these tests only validate
- * the windowing/anchor math the factory delegates to.
+ * standing up a browser. The DOM-binding `bindVirtualizer` factory
+ * requires a real browser context and is not covered here.
  */
 
 import { describe, it } from 'node:test';

@@ -9,9 +9,9 @@
 //   2. Warm reuse — second start() against the same stream. Must
 //      return immediately (sub-100ms) via the activeVad reuse path.
 //
-// Why this matters: Jonathan's Mac Chrome was hitting 10s timeouts
-// on every single MicVAD.new (2026-05-04 logs). Stubbed smokes
-// passed because they bypassed the real wasm/worklet path entirely.
+// Why this matters: 10s timeouts on every MicVAD.new were observed
+// on some Chrome builds. Stubbed smokes passed because they bypassed
+// the real wasm/worklet path entirely.
 
 import { waitForReady, assert } from './lib.mjs';
 

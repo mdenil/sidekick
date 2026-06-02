@@ -1,5 +1,5 @@
-// Deep-drill "items around target" invariant (Jonathan, London link,
-// 2026-05-29): jumping to a pin/activity target that's OLDER than the
+// Deep-drill "items around target" invariant: jumping to a pin/activity
+// target that's OLDER than the
 // initial replay window must take ONE round trip — the plugin's
 // `?around=<target>` endpoint returns a BOUNDED window CENTERED on the
 // target (context above + below, capped at ~limit rows) — NOT N serial

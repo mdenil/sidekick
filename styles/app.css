@@ -57,10 +57,9 @@
   /* iOS Safari auto-inflates text on rotate-to-landscape (a heuristic
    * for "wider screen = bigger text") and doesn't reverse it on
    * rotate-back. Pin the adjustment to 100% so the document keeps the
-   * authored sizes across orientation changes. Field bug 2026-05-13
-   * (Jonathan: text grew in landscape and stayed large after rotating
-   * back to portrait). `text-size-adjust` is the WHATWG-standard name;
-   * the -webkit- prefix is the one iOS actually honors today. */
+   * authored sizes across orientation changes. `text-size-adjust` is
+   * the WHATWG-standard name; the -webkit- prefix is the one iOS
+   * actually honors today. */
   html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
   body {
     background: var(--bg); color: var(--fg);
@@ -172,10 +171,9 @@
     /* Explicit opaque background so the sessions-list never bleeds
      * through during scroll/transition (was inheriting from #sidebar
      * which is set, but the inheritance broke when the parent's
-     * background went transparent during the drawer's slide animation
-     * — Jonathan 2026-05-16: pin/session drawer symmetry pass). The
-     * pin-drawer's footer (the in-drawer ambient widget) already sets
-     * background: var(--surface) explicitly for the same reason. */
+     * background went transparent during the drawer's slide animation).
+     * The pin-drawer's footer (the in-drawer ambient widget) already
+     * sets background: var(--surface) explicitly for the same reason. */
     background: var(--surface);
   }
   .sb-section-title {
@@ -259,9 +257,9 @@
   /* Cap-specific safe-area rules for .header / .sidebar-top live in
    * mobile/ios/App/App/WebViewDelegate.swift's capOverlayScript and
    * are injected via WKUserScript at document_start. Architectural
-   * rule (Jonathan, 2026-05-09): Cap-specific behavior stays inside
-   * mobile/ios/ so the Cap shell could be ripped out by deleting
-   * that directory without touching this file. */
+   * rule: Cap-specific behavior stays inside mobile/ios/ so the Cap
+   * shell could be ripped out by deleting that directory without
+   * touching this file. */
   /* Brand layout: [S]  [subtitle top-right / idekick bottom-right] [version]
    * The S-mark spans both rows vertically so its bottom visually aligns
    * with idekick's baseline; subtitle sits top-right of the S, shifted
@@ -534,9 +532,9 @@
   /* While the user is in session multi-select mode, kill native text
    * selection across the page so shift-click doesn't simultaneously
    * paint a session highlight AND a browser text-range highlight
-   * (the awkward dual-selection state Jonathan reported). Inputs +
-   * textareas keep their normal text-edit behavior — composer / filter
-   * field stay typeable. */
+   * (the awkward dual-selection state). Inputs + textareas keep their
+   * normal text-edit behavior — composer / filter field stay
+   * typeable. */
   body.session-multiselect-active {
     user-select: none;
     -webkit-user-select: none;
@@ -680,8 +678,8 @@
   }
   .sess-filter::placeholder { color: var(--muted); }
   .sess-filter:focus { border-color: var(--primary); background: var(--surface); }
-  /* Inline clear-X button (Jonathan, 2026-05-05): only visible when the
-     filter has content. Overlays the right edge of the input. */
+  /* Inline clear-X button: only visible when the filter has content.
+     Overlays the right edge of the input. */
   .sess-filter-clear {
     position: absolute; top: 50%; right: 6px; transform: translateY(-50%);
     width: 22px; height: 22px; padding: 3px;
@@ -1469,14 +1467,13 @@
        browser keeps the viewport stable when off-screen content above
        changes height (images load, tool rows expand) — our scroll-jump fix. */
   }
-  /* Switch-then-load loading state (Jonathan, 2026-05-25). Click handler
-     flips the transcript to the target chat synchronously — for an
-     uncached chat the viewport empties until cache/server lands. A
-     subtle spinner appears after 200ms so a fast cache hit shows nothing
-     (no flash), while a slow uncached load gets clear visual feedback
-     that the click registered. Spinner is centered absolutely; the
-     transcript itself stays empty (no DOM placeholder) so the next
-     render is a clean append. */
+  /* Switch-then-load loading state. Click handler flips the transcript
+     to the target chat synchronously — for an uncached chat the viewport
+     empties until cache/server lands. A subtle spinner appears after 200ms
+     so a fast cache hit shows nothing (no flash), while a slow uncached
+     load gets clear visual feedback that the click registered. Spinner is
+     centered absolutely; the transcript itself stays empty (no DOM
+     placeholder) so the next render is a clean append. */
   .transcript::after {
     content: '';
     position: absolute;
@@ -1577,13 +1574,12 @@
   }
   .line {
     margin-bottom: 10px; max-width: 900px;
-    /* Long-transcript scroll-jank mitigation. Field bug 2026-05-10
-       (Jonathan, Cap): scroll became janky/borderline-unusable in Cap
-       (less so in PWA) on a chat with ~540k pixels of scrollHeight
-       (~926 viewport-heights of accumulated DOM). content-visibility:
-       auto tells the browser to skip rendering off-screen bubbles
-       until they scroll into view. contain-intrinsic-size provides a
-       stable placeholder so scroll position doesn't jump as bubbles
+    /* Long-transcript scroll-jank mitigation. Scroll becomes
+       janky on chats with very large scrollHeight (~540k px / ~900
+       viewport-heights of accumulated DOM). content-visibility: auto
+       tells the browser to skip rendering off-screen bubbles until
+       they scroll into view. contain-intrinsic-size provides a stable
+       placeholder so scroll position doesn't jump as bubbles
        enter/exit the rendered set. Supported in Safari 18+, iOS 18+
        and all Chromium; older iOS gracefully ignores (no regression).
        The deeper fix (transcript virtualization / bubble pruning to
@@ -1626,11 +1622,11 @@
   }
   .line .text { color: var(--fg); display: block; margin-top: 2px; font-size: var(--content-size); line-height: 1.5; }
 
-  /* Long-bubble fold (Jonathan, 2026-05-05). Bubbles with body length
-   * past the threshold get `.foldable`; tap "Show more" to add `.expanded`.
-   * Threshold + preview lines tunable via vars below. Per-bubble state is
-   * NOT persisted — resets on reload, by design (cheap, no IDB churn).
-   * Code blocks are excluded (they have their own scrollbar). */
+  /* Long-bubble fold. Bubbles with body length past the threshold get
+   * `.foldable`; tap "Show more" to add `.expanded`. Threshold + preview
+   * lines tunable via vars below. Per-bubble state is NOT persisted —
+   * resets on reload, by design (cheap, no IDB churn). Code blocks are
+   * excluded (they have their own scrollbar). */
   :root {
     --bubble-fold-threshold-chars: 1500;  /* chat.ts reads via getComputedStyle */
     --bubble-fold-preview-lines: 8;
@@ -1838,11 +1834,8 @@
   /* ── Pin button — sits LEFT of copy on user msgs, LEFT of play+copy
    * on agent msgs. Padding + top match .copy-btn (4px/4px) so the
    * icons align vertically across all three buttons (user bubble: pin
-   * + copy; agent bubble: pin + play + copy). Jonathan field UX
-   * 2026-05-16: previous padding:8/top:2 left pin 2px lower than copy
-   * and the larger padding box crowded user-message text.
-   * Two SVGs in DOM (outline + filled); CSS swaps visibility based
-   * on .pinned state. */
+   * + copy; agent bubble: pin + play + copy). Two SVGs in DOM (outline
+   * + filled); CSS swaps visibility based on .pinned state. */
   .line .pin-btn {
     position: absolute; top: 4px; right: 28px;
     background: none; border: none; color: var(--muted);
@@ -1875,10 +1868,10 @@
   /* Keyboard-hint chip — anchored just above (or below) the highlighted
    * bubble while message-select mode is active. JS sets `left` and
    * `top` from the bubble's bounding-rect; CSS centers horizontally
-   * via translateX(-50%). Field UX 2026-05-16 (Jonathan): previous
-   * fixed-bottom placement overlapped the composer. Subtle: muted
-   * surface, dimmed separators, tiny <kbd> chips emphasize the keys.
-   * Fades in on entry, out on exit. */
+   * via translateX(-50%). Fixed-bottom placement would overlap the
+   * composer, so this chip is positioned relative to the highlighted
+   * bubble instead. Subtle: muted surface, dimmed separators, tiny
+   * <kbd> chips emphasize the keys. Fades in on entry, out on exit. */
   .transcript-highlight-hint {
     position: fixed;
     left: 0; top: 0;
@@ -1934,7 +1927,7 @@
    *     content area becomes visible (pin list, header). body shifts
    *     padding-right to 360px so chat squeezes left to make room.
    *   - Both sidebars open at once = 3-column layout
-   *     (sessions | chat | pins) — what Jonathan asked for.
+   *     (sessions | chat | pins).
    *
    * Mobile:
    *   - Rail hidden entirely. Drawer slides in as a full overlay,
@@ -1950,16 +1943,15 @@
    * so swipe gestures land on the top drawer and dismiss it cleanly.
    * Without this, the structurally-later #pin-drawer always wins
    * z-index ties even when the user JUST opened the sidebar.
-   * Jonathan's invariant: "whoever came out most recently is on
-   * top, swipe gesture is always with respect to the top panel." */
+   * Invariant: the most-recently-opened panel is on top; swipe
+   * gestures always target the top panel. */
   #sidebar.front, #pin-drawer.front { z-index: 51; }
 
   /* Mirror of #sidebar's structure: same fixed-position rail-at-rest
    * (48px) → expanded (var --pin-drawer-width) width transition,
    * same flex-COLUMN with .pin-drawer-top + .pin-drawer-content +
    * .pin-drawer-bottom children. Mirror-flipped to the right viewport
-   * edge. Field UX 2026-05-16 (Jonathan): "reuse the exact same
-   * drawer structure, mirror image on the other side". */
+   * edge — mirror-image of the left sidebar on the right side. */
   #pin-drawer {
     position: fixed; top: 0; right: 0; bottom: 0;
     width: 48px;
@@ -2003,11 +1995,11 @@
    * Vertical padding matches `.header` (4px / 4px) so the bottom border
    * of the pin-drawer's top strip lines up visually with `.header`'s
    * bottom border across the page (the drawer is position:fixed; top:0
-   * and overlays the right edge of the header). Jonathan field nit
-   * 2026-05-17: lines were off by ~12px because the old 10/6 padding
-   * — copied from `.sidebar-top` — made the strip taller than the
-   * header. The collapsed-rail toggle rule below trims sb-icon-btn's
-   * 36px min-height so the icon fits the new strip. */
+   * and overlays the right edge of the header). Using 4/4 padding
+   * (matching `.header`) rather than the `.sidebar-top` 10/6 padding,
+   * which would make the strip taller than the header. The collapsed-
+   * rail toggle rule below trims sb-icon-btn's 36px min-height so the
+   * icon fits the strip. */
   .pin-drawer-top {
     display: flex; flex-direction: column;
     padding: 4px 8px 4px;
@@ -2039,11 +2031,10 @@
     /* Positioning context for the count banner overlay
      * (#pin-drawer-count-rail). Without this, the banner's `position:
      * absolute; top/left:-2px` resolves against the next positioned
-     * ancestor (#pin-drawer), drifting the badge off the pin icon —
-     * Jonathan field 2026-05-18. justify-self continues to control
-     * horizontal placement so the centering fix from 2026-05-17 (when
-     * #pin-drawer is .collapsed, the toggle spans all 3 cols + centers)
-     * is unaffected. */
+     * ancestor (#pin-drawer), drifting the badge off the pin icon.
+     * justify-self continues to control horizontal placement so the
+     * collapsed-state centering (toggle spans all 3 cols) is
+     * unaffected. */
     position: relative;
   }
   .right-drawer-rail-buttons {
@@ -2404,12 +2395,11 @@
     color: var(--muted);
   }
 
-  /* Expanded (drawer open) — clock + date row + forecast strip. As of
-   * the 2026-05-16 structural refactor (Jonathan: "reuse the exact
-   * same drawer structure"), the widget is a normal flow item inside
-   * .pin-drawer-bottom — no absolute positioning, no left-offset
-   * gymnastics, no z-index. The bottom slot is itself the bottom of
-   * the drawer column, parallel to .sidebar-bottom on the left side. */
+  /* Expanded (drawer open) — clock + date row + forecast strip. The
+   * widget is a normal flow item inside .pin-drawer-bottom — no
+   * absolute positioning, no left-offset gymnastics, no z-index. The
+   * bottom slot is itself the bottom of the drawer column, parallel
+   * to .sidebar-bottom on the left side. */
   #pin-drawer:not(.collapsed) .ambient-widget.ambient-in-drawer.expanded {
     width: 100%;
     padding: 4px 6px 0;
@@ -2427,8 +2417,7 @@
    * — without it the implicit-grid sizing was content-only (~170px)
    * and the forecast row, which spans cols 1 / -1, was confined to
    * that 170px instead of the full ~300px panel. That caused the
-   * forecast cols to wrap vertically (Jonathan field bug 2026-05-15
-   * — "all in the same column"). */
+   * forecast cols to wrap vertically instead of sitting in a row. */
   #pin-drawer:not(.collapsed) .ambient-widget.ambient-in-drawer.expanded {
     display: grid;
     grid-template-columns: 1fr auto;
@@ -2458,8 +2447,8 @@
   }
   /* 5-day forecast strip (or fewer columns when the drawer is too
    * narrow to fit five). Sits in row 2 of the expanded grid — the
-   * old "current conditions" row was removed 2026-05-15 (Jonathan)
-   * because the same data is in today's forecast column. Each column
+   * The old "current conditions" row was removed because the same
+   * data is in today's forecast column. Each column
    * shows day-name, icon, hi (stacked above) and lo (below). High/
    * low are ALWAYS stacked vertically regardless of column width, so
    * the layout doesn't shift when the drawer resizes. Container
@@ -2476,10 +2465,9 @@
      * with the parent's left edge (clock alignment) and the LAST col
      * sits flush with the right edge (date alignment). Cols size to
      * their natural content width; the gap is the remaining space
-     * distributed between them. Field UX 2026-05-15 (Jonathan): the
-     * earlier `repeat(5, 1fr)` grid centered each col's text within
-     * its slot, leaving FRI offset right of "13:44" and TUE offset
-     * left of "FRIDAY 15 MAY".
+     * distributed between them. The earlier `repeat(5, 1fr)` grid
+     * centered each col's text within its slot, leaving FRI offset
+     * right of the clock and TUE offset left of the date.
      *
      * flex-direction MUST be explicit: an earlier legacy rule at
      * `.ambient-widget.expanded .amb-forecast` (lower specificity,
@@ -3288,10 +3276,11 @@
     background: var(--primary);
     border-radius: 50%;
   }
-  /* Soft-recovery (Phase B): a dropped call is attempting to reconnect.
-     Pulsing amber — distinct from idle (grey), the dim/disabled connecting
-     state, and the solid-green connected state. Stays tappable: a tap
-     hangs up / cancels the reconnect (see controls.toggleCall). */
+  /* Soft-recovery reconnecting state: a dropped call is attempting to
+     reconnect. Pulsing amber — distinct from idle (grey), the dim/
+     disabled connecting state, and the solid-green connected state.
+     Stays tappable: a tap hangs up / cancels the reconnect (see
+     controls.toggleCall). */
   .composer #btn-call.reconnecting {
     color: #1a1a1a;
     background: #e0a92e;
@@ -3438,9 +3427,8 @@
   }
   /* `display: flex` above wins over the UA's [hidden] { display: none },
      so the JS-driven `vadRow.hidden = true` was a no-op for non-dev
-     users (Tom field report 2026-05-10 — saw the dev-only VAD row in
-     his menu). Restore expected `hidden` semantics with a same-
-     specificity override. */
+     users (the dev-only VAD row was visible to everyone). Restore
+     expected `hidden` semantics with a same-specificity override. */
   .mic-mode-menu .mic-vad-row[hidden] {
     display: none;
   }
@@ -3789,10 +3777,9 @@
   .ambient-widget {
     position: fixed; bottom: 16px; right: 16px;
     /* Theme-aware translucent surface — was hardcoded rgba(255,255,255,0.55)
-       which inverted to a washed-out gray on dark mode (Jonathan, 2026-05-05).
-       color-mix gives a translucent --surface that picks up theme tokens
-       in both dark and light, while preserving the glassmorphism backdrop-
-       filter effect. */
+       which inverted to a washed-out gray on dark mode. color-mix gives a
+       translucent --surface that picks up theme tokens in both dark and
+       light, while preserving the glassmorphism backdrop-filter effect. */
     background: color-mix(in srgb, var(--surface) 75%, transparent);
     backdrop-filter: blur(12px);
     -webkit-backdrop-filter: blur(12px);

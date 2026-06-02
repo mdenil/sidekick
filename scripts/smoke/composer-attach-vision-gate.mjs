@@ -1,5 +1,5 @@
-// Pin the model-aware image-upload gate (Jonathan asked 2026-05-01):
-// the camera + attach buttons in the composer enable only when the
+// Pin the model-aware image-upload gate: the camera + attach buttons
+// in the composer enable only when the
 // currently-selected agent model is multimodal/vision-capable.
 //
 // Heuristic match against common multimodal model name patterns lives

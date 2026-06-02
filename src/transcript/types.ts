@@ -1,7 +1,7 @@
 /**
- * @fileoverview Crack A — canonical types for the projection model.
+ * @fileoverview Canonical types for the projection model.
  *
- * Vision (Jonathan, 2026-05-17): the transcript is a PURE FUNCTION of
+ * The transcript is a PURE FUNCTION of
  * two non-overlapping sources of truth:
  *
  *   1. `state.db`        — durable rows from hermes / openclaw plugin's

@@ -22,7 +22,7 @@
  * reports anything else (headphones / bluetooth / airplay) → return
  * `'isolated'`. On non-iOS or when the API is unavailable → return
  * `'unknown'`. Callers treat 'unknown' as "show the user a manual
- * control and trust them" — Jonathan's Mac demo case.
+ * control and trust them" (e.g. Mac desktop).
  *
  * Implementation: the audioSession API is observable via
  * `navigator.audioSession.onstatechange`. We subscribe once, cache the
@@ -73,9 +73,9 @@ export function onChange(cb: Listener): () => void {
 }
 
 /** Synchronous LIVE read of routing — re-reads navigator.audioSession.type
- *  every call rather than relying on the cache. We learned the hard way
- *  (2026-05-06 instrumentation) that iOS's `audioSession.statechange`
- *  event fires for active/inactive transitions, NOT for `type` changes,
+ *  every call rather than relying on the cache. iOS's
+ *  `audioSession.statechange` fires for active/inactive transitions,
+ *  NOT for `type` changes,
  *  so a cached value can stay stale when the OS flips the route. The
  *  read is cheap (one property access). The cache (`current`) survives
  *  only as a "previous value" for change-detection in the listener
@@ -89,9 +89,8 @@ export function getRouting(): Routing {
 /** Snapshot of audio-session state for instrumentation. Returns the
  *  full picture (routing + raw audioSession.type/outputType/mode) at
  *  one moment in time. iOS-only fields are null on other platforms.
- *  Used by the Phase-A barge investigation to correlate AEC engagement
- *  with audio-session category transitions. Remove the call sites
- *  once the bug is closed. */
+ *  Used to correlate AEC engagement with audio-session category
+ *  transitions in diagnostic traces. */
 export function audioStateSnapshot(): {
   routing: Routing;
   audioSessionAvailable: boolean;
@@ -215,9 +214,8 @@ function init(): void {
   }
   // Wakeup #2: navigator.mediaDevices.devicechange. iOS reliably fires
   // this when the route flips between speaker / headphones / BT etc.
-  // Confirmed in field logs (2026-05-06): two devicechange events fire
-  // during call setup as iOS reshuffles routing, and the audioSession
-  // type updates synchronously with them. This is our actual hook.
+  // Two devicechange events fire during call setup as iOS reshuffles
+  // routing, and the audioSession type updates synchronously with them.
   if (navigator.mediaDevices?.addEventListener) {
     try { navigator.mediaDevices.addEventListener('devicechange', poll); }
     catch (e: any) { log('[headphones] devicechange listener failed:', e?.message); }

@@ -1,13 +1,12 @@
 // Scenario: New-chat rotation must NOT auto-delete empty drawer rows.
 //
-// Inverted from its original form 2026-05-09: the prior version asserted
-// rotation cleaned up stale 0-msg chats. That auto-cleanup behavior was
-// removed 2026-05-05 (main.ts:1751 comment) after confirmed data loss —
-// at least two real sidekick sessions ("Series A pitch deck init",
-// "YouTube investment memo") were wiped because their messageCount
-// transiently read 0 during hermes session-rotation/compression. Hard
-// rule per Jonathan: sidekick never auto-deletes server-side data; stale
-// empty rows stay until the user removes them via the row menu.
+// Inverted from its original form: the prior version asserted rotation
+// cleaned up stale 0-msg chats. That auto-cleanup behavior was removed
+// (main.ts:1751 comment) after confirmed data loss — sessions were wiped
+// because their messageCount transiently read 0 during
+// session-rotation/compression. Hard rule: sidekick never auto-deletes
+// server-side data; stale empty rows stay until the user removes them
+// via the row menu.
 //
 // This test now LOCKS IN that invariant — a regression to "rotation
 // auto-deletes empty rows" would re-introduce the data-loss bug.

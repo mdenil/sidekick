@@ -1,7 +1,7 @@
 """Unit tests for the items endpoint's compaction-injection filter.
 
-Background (Jonathan field bug 2026-05-17, chat 56b3d788…):
-Hermes' context-compaction creates a child session and inserts a
+Background: hermes' context-compaction creates a child session and
+inserts a
 synthesized "context-window seed" block at its head — a verbatim copy
 of the user prompt that triggered compaction, plus replays of recent
 assistant/tool rows, ending in a `[CONTEXT COMPACTION — REFERENCE

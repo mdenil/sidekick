@@ -69,7 +69,7 @@ export interface VadSource {
    *  with hysteresis (7 sustained 32ms frames). The signal it emits is
    *  already filtered; layering a client peak gate on top has nothing to
    *  meaningfully gate against (peak isn't sourced for bridge fires)
-   *  and 100% of fires get suppressed (field-confirmed 2026-05-07). */
+   *  and 100% of fires get suppressed. */
   appliesPeakGate(): boolean;
 }
 
@@ -111,13 +111,12 @@ export class ClientSideVadSource implements VadSource {
  * message — this matches BargeDetector's real lifecycle (start runs
  * during call setup, before `connectionstatechange === 'connected'`).
  *
- * ── Peak gate (added 2026-05-08 after iPhone field test) ─────────────
+ * ── Peak gate ──────────────────────────────────────────────────────────
  *
- * Bridge VAD ALONE will fire on AEC residual at high speaker volume
- * (field-confirmed iPhone 2026-05-08: self-barged at "count 2" and
- * "count 4" while iPhone speaker was at normal volume; same hardware,
- * same AEC, but client mode with minPeak=0.15 gate suppressed the same
- * residual cleanly). To make bridge a drop-in equivalent for the
+ * Bridge VAD ALONE fires on AEC residual at high speaker volume —
+ * confirmed on iPhone speakerphone at normal volume. Client mode with a
+ * minPeak=0.15 gate suppressed the same residual cleanly. To make bridge
+ * a drop-in equivalent for the
  * high-volume use case, we now run a lightweight local AnalyserNode
  * over the same micStream the bridge consumes and expose its
  * `recentPeak` so BargeDetector's iOS minPeak gate can apply.
@@ -239,8 +238,8 @@ export class BridgeVadSource implements VadSource {
  *
  * WHY: bridge VAD only fires {type:'speech-active'} envelopes when the
  * audio-bridge has silero-vad/torch installed and barge_policy.attach()
- * returned a live policy. On a fresh install with no torch (Misha's box,
- * field bug 2026-05-26) the bridge stays silent, BridgeVadSource never
+ * returned a live policy. On a fresh install with no torch the bridge
+ * stays silent, BridgeVadSource never
  * sees speech, and realtime barge is dead — even though client-side Silero
  * would have worked (and does, in turn-based mode, which defaults to it).
  * This source closes that gap without regressing a provisioned bridge.
@@ -249,8 +248,8 @@ export class BridgeVadSource implements VadSource {
  * the bridge source and ask the bridge {type:'barge-vad-query'}; the bridge
  * replies {type:'barge-vad', available}. The query is re-sent each poll
  * tick until the data channel opens (it isn't open yet during call setup).
- *   - available=true  → stay on bridge (Jonathan's provisioned path is
- *                       untouched; his being silent never triggers fallback).
+ *   - available=true  → stay on bridge (provisioned path is untouched;
+ *                       silence never triggers fallback).
  *   - available=false → swap to a lazily-started ClientSideVadSource.
  *   - no reply by deadline (old bridge build that ignores the query, or a
  *                       dead channel) → assume unavailable, swap to client.

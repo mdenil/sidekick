@@ -1,4 +1,4 @@
-// Field bug 2026-05-19 (Jonathan): sent a message in the active chat,
+// Regression guard: sent a message in the active chat,
 // got TWO identical assistant bubbles. Screenshot showed the same
 // "Hey — received." text rendered twice for a single response.
 //

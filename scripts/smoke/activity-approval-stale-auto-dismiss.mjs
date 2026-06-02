@@ -1,4 +1,4 @@
-// Contract (Jonathan, 2026-05-28): a pending approval that's been
+// Contract: a pending approval that's been
 // untouched for the stale window (30 minutes in production) and has had
 // no other chat activity should auto-resolve to 'dismissed' with status
 // pill "Stale", so the tray doesn't accumulate stuck-pending approvals

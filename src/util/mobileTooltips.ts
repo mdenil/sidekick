@@ -11,9 +11,8 @@
 // buttons (pin items, session menu rows, etc.). Cheap: only fires on
 // subtree mutations and only checks for [title].
 //
-// Field UX 2026-05-16 (Jonathan): "tooltip on pinbar and session bar
-// pop up when touching the button, which is annoying. prob should be
-// suppressed on mobile entirely."
+// On touch-primary devices, native tooltips pop up on tap, which is
+// disruptive; they should be suppressed on mobile entirely.
 
 function isTouchPrimary(): boolean {
   if (typeof window === 'undefined') return false;

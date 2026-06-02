@@ -231,8 +231,8 @@
     // A `no-cors` probe was the prior approach but it resolves on ANY
     // HTTP response — a decommissioned host still bound to :3001 (or one
     // returning 404) counted as "reachable", so we'd redirect into a
-    // white screen (field repro 2026-05-26: a migrated cortex host still
-    // answered the socket). Now we require:
+    // white screen (e.g. a decommissioned host still bound to the port
+    // returned 404 but resolved the socket). Now we require:
     //   - a 200 from <url>/health
     //   - the proxy's Access-Control-Allow-Origin:* header (so this
     //     capacitor://localhost origin can read the body cross-origin)
@@ -286,11 +286,11 @@
     // (intentionally don't re-enable the button on success — redirecting)
   }
 
-  // Launch path with a saved URL: probe BEFORE redirecting. Pre-fix
-  // (2026-05) this did a blind `location.href = saved + '/'`, which
-  // stranded the WebView on a black screen whenever the saved host was
-  // unreachable — e.g. after a backend host migration (cortex→fontbrain)
-  // or simply opening the app offline. Now we show a "Connecting…"
+  // Launch path with a saved URL: probe BEFORE redirecting. Previously
+  // this did a blind `location.href = saved + '/'`, which stranded the
+  // WebView on a black screen whenever the saved host was unreachable —
+  // e.g. after a backend host migration or simply opening the app
+  // offline. Now we show a "Connecting…"
   // splash, probe with a timeout, redirect on success, and on
   // failure/timeout fall back to the form. Crucially we NEVER clear the
   // saved URL on a failed probe — airplane mode or a transient outage

@@ -103,7 +103,7 @@ export async function start(opts) {
   audioChunks = [];
   // Cap the audio bitrate at 24 kbps. Speech-to-text (Deepgram / Whisper)
   // transcribes low-bitrate audio fine, and the default MediaRecorder
-  // bitrate (~216 kbps measured in field testing 2026-05-03) makes
+  // bitrate (~216 kbps default) makes
   // multi-minute memos ~10x larger than they need to be — a 92s memo
   // shrank from 2.5MB to ~250KB, cutting park-bench 5G upload time
   // from 22s to ~2s. Works on iOS Safari (AAC) and Chrome (Opus).

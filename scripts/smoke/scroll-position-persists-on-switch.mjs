@@ -1,9 +1,6 @@
-// Field bug 2026-05-12 (Jonathan, desktop): scroll position not preserved
-// across session switches.
-//
-//   "I picked the session, scroll to the very bottom, switch to a
-//    different session, and switch back, and it jumped me in the
-//    middle of the conversation."
+// Regression guard: scroll position not preserved across session
+// switches — picking a session, scrolling to the bottom, switching
+// away and back, jumps to the middle of the conversation.
 //
 // Earlier diag traces showed two underlying issues:
 //   (1) CSS scroll-behavior: smooth animates a raw `scrollTop = N`

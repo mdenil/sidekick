@@ -1,6 +1,6 @@
-// Field bug 2026-05-25 (Jonathan, [pitch deck]): "I scroll to the bottom
-// of pitch deck, switch away, switch back, and it's somewhere higher
-// up — I have to scroll down again." Even when the at-bottom state is
+// Regression guard: scrolling to the bottom of a chat, switching away,
+// then switching back lands higher up instead of at the bottom. Even
+// when the at-bottom state is
 // saved (saved.atBottom=true), the virt anchor-restore path was being
 // chosen over the at-edge path. The anchor captures whichever spec was
 // first-visible at viewport top (some spec ~1 viewport above the live

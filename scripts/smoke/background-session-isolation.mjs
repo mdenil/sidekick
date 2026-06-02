@@ -3,7 +3,7 @@
 //
 // Why install-only:
 //
-// Today (2026-05-12), /background works cleanly in sidekick because of
+// Currently, /background works cleanly in sidekick because of
 // a load-bearing upstream "bug": hermes-agent's _ensure_db_session()
 // in run_agent.py:2438 hardcodes user_id=None when it INSERTs the
 // session row, regardless of what user_id was passed to the AIAgent

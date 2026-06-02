@@ -27,8 +27,8 @@ queued, see Phase 2 below)
   read.
 - ``content`` is the full message text. Yes, this duplicates state.db's
   content column. This is the **deliberate pattern** the design memo
-  ``hosts/cortex/sidekick-supplemental-store-schema.md`` (signed off
-  2026-05-15) called for, matching what iMessage / Slack / WhatsApp do
+  ``hosts/cortex/sidekick-supplemental-store-schema.md`` called for,
+  matching what iMessage / Slack / WhatsApp do
   for the same problem: one local store keyed by a stable UI id with
   full content, server is sync substrate not content cache.
 - ``status`` is ``streaming`` during a turn, ``final`` after reply_final,
@@ -36,8 +36,8 @@ queued, see Phase 2 below)
 
 ## Why duplicate state.db.messages content
 
-Audit (2026-05-19) confirmed hermes is effectively append-only at the
-row level: no UPDATE on content, no per-row DELETE. The only mutations
+Hermes is effectively append-only at the row level: no UPDATE on
+content, no per-row DELETE. The only mutations
 are **whole-session ops** (``/retry``, ``/undo``, ``/compress`` →
 delete+reinsert all rows in session; explicit session delete; 90-day
 prune). These trigger a session_changed envelope which the heal path
@@ -62,7 +62,7 @@ bugs are silent NULL content in JOIN results that ship without warning.
 
 # Migration phasing
 
-**Phase 1 (this commit) — Write-through + smoke.** ``_safe_send_envelope``
+**Phase 1 — Write-through + smoke.** ``_safe_send_envelope``
 calls into ``sidekick_state.record_envelope`` which upserts the row to
 ``msg_links`` (renamed to ``messages`` in Phase 2). Items endpoint
 still reads from state.db; sidekick.db rows accumulate alongside but
@@ -113,8 +113,8 @@ CREATE TABLE IF NOT EXISTS msg_links (
   kind          TEXT,
   tool_name     TEXT,
   tool_call_id  TEXT,
-  -- tool_calls JSON (added 2026-05-19): for assistant rows that
-  -- orchestrate tool calls, holds the OpenAI Responses-API-shape
+  -- tool_calls JSON: for assistant rows that orchestrate tool calls,
+  -- holds the OpenAI Responses-API-shape
   -- array — `[{ id, function: { name, arguments } }, ...]`. The PWA
   -- projection reads this to populate tool-row names + args on
   -- reload; without it, reconciled chats render as "(unknown)".
@@ -126,9 +126,8 @@ CREATE TABLE IF NOT EXISTS msg_links (
 );
 CREATE INDEX IF NOT EXISTS idx_msg_links_chat ON msg_links(chat_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_msg_links_agent ON msg_links(agent_row_id);
--- Idempotent migration: existing installs added the column 2026-05-19.
--- ALTER TABLE in sqlite is forgiving when the column already exists
--- (it'd raise; we catch in Python).
+-- Idempotent migration: ALTER TABLE in sqlite is forgiving when the
+-- column already exists (it'd raise; we catch in Python).
 
 CREATE TABLE IF NOT EXISTS pins (
   chat_id    TEXT NOT NULL,

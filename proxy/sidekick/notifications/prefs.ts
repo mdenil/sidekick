@@ -9,10 +9,10 @@
 // v2 (when needed) would split into per-(subscription, ...) keying
 // for true device-scoped prefs.
 //
-// Time semantics: server-local time, 24h "HH:MM" strings. Jonathan
-// + Tom + Luke are all UK so server-local matches device-local. If
-// multi-TZ becomes a concern later, add a `tz` field to the prefs
-// shape and have the gate localize before comparing.
+// Time semantics: server-local time, 24h "HH:MM" strings. This assumes
+// the server and its users share a timezone. If multi-TZ becomes a
+// concern later, add a `tz` field to the prefs shape and have the gate
+// localize before comparing.
 
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';

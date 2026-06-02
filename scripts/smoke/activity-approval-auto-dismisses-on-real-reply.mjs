@@ -1,4 +1,4 @@
-// Contract (Jonathan, 2026-05-28): when a non-heartbeat reply_final
+// Contract: when a non-heartbeat reply_final
 // lands for a chat that has a pending approval, the agent has
 // effectively moved on — auto-resolve the approval to 'dismissed' so
 // the tray reflects reality. Pairs with the heartbeat-survives smoke:

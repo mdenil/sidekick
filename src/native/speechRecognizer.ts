@@ -4,7 +4,7 @@
  * On Capacitor/iOS the standalone Web Speech `SpeechRecognition` session
  * that sendwordDetector opens is gated by WKWebView — it errors with
  * `service-not-allowed`, never matches, and Listen falls back to silence-
- * only commit (field bug 2026-05-10). This module talks to the native
+ * only commit. This module talks to the native
  * `SpeechRecognizer` Capacitor plugin (SFSpeechRecognizer) instead, re-
  * emitting its partial results as STTProvider TranscriptEvents so the
  * detector's existing FED path (feedTranscript) consumes them unchanged.

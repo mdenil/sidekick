@@ -36,9 +36,9 @@ let activeStream: MediaStream | null = null;
 let activeOwner: string | null = null;
 // Synchronous reservation slot so concurrent acquire() calls can't all
 // pass the activeStream gate during the long await chain (prime ~1.5s +
-// getUserMedia ~200ms). Field repro 2026-05-05: rapid btn-call taps spawned
-// 3 parallel acquires, each created its own MediaStream, only the last was
-// tracked in activeStream — leaking 2 mic-live tracks with no owner.
+// getUserMedia ~200ms). Without this, rapid tap sequences spawn parallel
+// acquires that each create their own MediaStream — leaking mic-live
+// tracks with no owner.
 let pendingOwner: string | null = null;
 
 /**

@@ -5,11 +5,10 @@
 // initiation — but it swaps speechVad's read for a window-flag override
 // (`setSpeechActiveOverrideForTests`), so it NEVER runs the real Silero
 // WASM + AudioWorklet stack against real audio. That override is exactly
-// what would mask the field bug Jonathan hit (2026-06-01): "barge didn't
-// work in realtime." If the real VAD path is wired wrong — model fails
-// to prefetch, AudioWorklet never sees mic frames, isSpeechActive() is
-// stuck false — the override-based test stays green while the product is
-// broken.
+// what would mask a regression where barge stops working in realtime. If
+// the real VAD path is wired wrong — model fails to prefetch, AudioWorklet
+// never sees mic frames, isSpeechActive() is stuck false — the
+// override-based test stays green while the product is broken.
 //
 // This is the teeth: NO override. barge-speech.wav (~8s of sustained
 // counting) is injected into getUserMedia via the audio browser, the
@@ -134,7 +133,7 @@ export default async function run({ page, log, mock }) {
 
   // Real VAD: ~500ms warmup + model latency + speech onset. The fixture
   // is ~8s of sustained speech (and loops), so 15s is ample. If this
-  // times out, the real VAD path is broken (the field bug).
+  // times out, the real VAD path is broken.
   let fired = false;
   const t0 = Date.now();
   while (!fired && Date.now() - t0 < 15_000) {

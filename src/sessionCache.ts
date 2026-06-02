@@ -161,7 +161,7 @@ export async function putMessagesCache(
 // from the server on demand. Big enough that real sessions cache whole
 // (the heaviest, [pitch deck], is ~900 rows); a guard against a
 // pathological 10k+-row session eating disk. Users can clear site data
-// to reset (Jonathan, 2026-05-29: "very generous for now").
+// to reset; generous enough for typical real-world sessions.
 export const MAX_CACHED_MESSAGES = 5000;
 
 /** Merge a freshly-fetched newest page into a (possibly fuller) cached
@@ -172,7 +172,7 @@ export const MAX_CACHED_MESSAGES = 5000;
  *  cached history the page doesn't cover is preserved — this is what stops
  *  the resume reconcile from truncating loaded history back down to the
  *  newest ~200 rows every time (the deep-pin "never gets faster warm"
- *  bug, Jonathan 2026-05-29). */
+ *  bug). */
 export function mergeNewestPage(cached: any[], page: any[]): any[] {
   if (!cached.length) return page.slice();
   if (!page.length) return cached.slice();

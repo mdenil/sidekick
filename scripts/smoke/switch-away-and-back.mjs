@@ -1,10 +1,9 @@
 // Scenario: user sends a message in chat A, agent replies, user
 // switches to chat B in the sidebar, then switches back to A. Both
 // the user's message AND the agent's reply must be visible in A's
-// transcript. Field bug 2026-05-11 (Jonathan, real install): only
-// the agent reply was visible after switching back; the user's
-// original message had disappeared from the rendered DOM despite
-// being present in state.db.
+// transcript. Regression guard: only the agent reply was visible
+// after switching back; the user's original message had disappeared
+// from the rendered DOM despite being present in state.db.
 //
 // Test plan (mocked):
 //   1. Seed two chats: chat A (just the title, no messages — we'll
@@ -110,7 +109,7 @@ export default async function run({ page, log }) {
   await clickRow(page, chatA);
   // Poll for both the user marker AND the agent reply to be visible.
   // The user marker is the regression target — the agent reply was
-  // visible in the field bug, but the user marker disappeared.
+  // visible in the original bug, but the user marker disappeared.
   await page.waitForFunction(
     ({ marker, prefix }) => {
       const t = document.getElementById('transcript')?.textContent || '';

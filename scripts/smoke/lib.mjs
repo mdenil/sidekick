@@ -24,10 +24,9 @@ import { chromium } from 'playwright-core';
 //      network" heuristics that surface as net::ERR_BLOCKED_BY_CLIENT
 //      on the forwarded stream — breaks every smoke that touches the
 //      live stream channel. The Playwright build doesn't ship those
-//      blocks. Field bug 2026-05-17: I previously declared 3 smokes
-//      (tool-row-reload-dedup, multi-session-bubble-survival,
-//      cross-device-pin-sync) "pre-existing flakes" because they
-//      failed under google-chrome-stable; all 3 pass cleanly under
+//      blocks. Note: those 3 smokes (tool-row-reload-dedup,
+//      multi-session-bubble-survival, cross-device-pin-sync) appeared
+//      as flakes under google-chrome-stable; all 3 pass cleanly under
 //      the Playwright build.
 //   3. /usr/bin/chromium (apt package) as last resort.
 import { existsSync, readdirSync } from 'node:fs';

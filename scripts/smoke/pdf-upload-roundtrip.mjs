@@ -67,7 +67,7 @@ export default async function run({ page, log, fail }) {
   log(`fresh chat (chat_id=${chatId || 'unknown'}) — no prior agent bubbles`);
 
   try {
-  // ── Vision-capability gate (2026-05-17 rewrite) ───────────────────
+  // ── Vision-capability gate ────────────────────────────────────────
   //
   // Previous behavior: this smoke USED to pick a vision-capable model
   // from the live schema's options[] and POST it to /api/sidekick/
@@ -75,8 +75,7 @@ export default async function run({ page, log, fail }) {
   // whatever vision-capable model it found (almost always an
   // openrouter-prefixed one). It never restored the original. Result:
   // every full smoke run left the user paying openrouter credits for
-  // unrelated agent calls. 2026-05-16: Jonathan caught it; today we
-  // ripped it out.
+  // unrelated agent calls. That path has been removed.
   //
   // New behavior: the test interrogates the *current* model's
   // capabilities via /api/sidekick/model-capabilities. Three cases:
@@ -239,10 +238,9 @@ export default async function run({ page, log, fail }) {
   } finally {
     // Cleanup so smoke runs don't pollute the real user's drawer —
     // runs whether the test passed or threw. No model restoration
-    // needed: as of 2026-05-17 we never change the model from inside
-    // this test (Jonathan's rule: "it shouldn't change the model
-    // itself"). If the test wants vision it asks the user to provide
-    // it via primary or aux config; otherwise it fails loudly.
+    // needed: this test never changes the model. If it wants vision it
+    // expects the user to provide it via primary or aux config;
+    // otherwise it fails loudly.
     if (chatId) await deleteChat(page, chatId);
   }
 }

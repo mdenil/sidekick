@@ -5,9 +5,8 @@
 //   2. The right-side pin drawer aggregates the pinned message after
 //      the reload
 //
-// Field bug 2026-05-13 (Jonathan): "i see message pins for a sec
-// and then they disappear" on dev-reload. This smoke is the gate
-// that catches the regression before the user does.
+// Regression guard: pins visible briefly on dev-reload then disappear.
+// This smoke catches the regression before the user does.
 
 import {
   waitForReady, openSidebar, send, captureNextChatId,

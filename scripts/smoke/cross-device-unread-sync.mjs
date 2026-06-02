@@ -8,7 +8,7 @@
 //   2. EventSource subscription list didn't include `unread_changed`,
 //      so even when the envelope was fanned by the proxy, the PWA
 //      never delivered it to handleEnvelope. (caught by cross-device-
-//      pin-sync.mjs sibling smoke 2026-05-16)
+//      pin-sync.mjs sibling smoke)
 //
 // What this test does:
 //   1. PWA boots viewing chat A. Mock seeds chat B with no unread.

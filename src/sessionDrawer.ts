@@ -179,9 +179,8 @@ function syncMultiSelectClasses(): void {
 
 /** Toggle a body-level class so the rest of the page can disable
  *  native text selection while the user is in multi-select mode.
- *  Without this the drawer ends up in the awkward "I have a session
- *  selected AND a text range selected" state Jonathan flagged in
- *  the screenshot. */
+ *  Without this the drawer ends up in an awkward dual-selection state
+ *  (session selected AND text range selected simultaneously). */
 function syncMultiSelectBodyClass(): void {
   const cls = 'session-multiselect-active';
   if (multiSelect.size > 0) document.body.classList.add(cls);
@@ -221,8 +220,8 @@ function installSelectionKeyboardListener(): void {
     // the composer / filter input). Also bail when ANY other modifier
     // is held — macOS window-tiling is bound to Cmd+Ctrl+Shift+arrow
     // and other OS-level shortcuts overlap similarly; only bare
-    // shift+arrow is ours. Field bug 2026-05-15 (Jonathan): macOS
-    // Cmd+Ctrl+Shift+Up got intercepted instead of tiling the window.
+    // shift+arrow is ours. Without the modifier guards, macOS
+    // Cmd+Ctrl+Shift+Up is intercepted instead of tiling the window.
     if (e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey
         && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
       const t = e.target as HTMLElement | null;
@@ -356,9 +355,8 @@ function navigateByKey(direction: -1 | 1): boolean {
  *
  *   - Synchronously paints the target row `.active` AND claims
  *     optimisticActiveId — the highlight flips on click, not after the
- *     server transcript fetch returns (the field bug: 3-13s server-gated
- *     highlight that flickered back to the origin chat over the high-
- *     latency London link).
+ *     server transcript fetch returns (previously the highlight was
+ *     server-gated, flickering back for 3-13s over high-latency links).
  *   - resume() renders from the IDB transcript cache first (instant for a
  *     cached chat — the user's "should be instant if cached" ask), then
  *     reconciles against the server.
@@ -417,7 +415,7 @@ let cachedSessions: any[] = [];
  *  server's listSessions catches up (id appears in cachedSessions) OR
  *  when the entry has been absent from the server response for longer
  *  than PENDING_TTL_MS (catches "chat deleted from another device"
- *  cross-device-stale-pending bug — Jonathan reported 2026-05-01).
+ *  cross-device-stale-pending bug).
  *
  *  Each entry also carries `_addedAt` (client wall-clock at insertion)
  *  so we can age out stale entries without depending on the server-
@@ -501,7 +499,6 @@ export function setViewed(id: string | null) {
   // navigates away from the chat that had a highlighted bubble. The
   // bubble itself is about to be detached from the DOM; without this,
   // the chip stays visible against an irrelevant transcript.
-  // Field UX 2026-05-16 (Jonathan).
   if (prev !== id) {
     void import('./transcriptHighlight.ts').then((m) => m.clearHighlight?.());
   }
@@ -583,9 +580,9 @@ function setupUnreadListener(): void {
   if (typeof window === 'undefined') return;
   window.addEventListener('sidekick:unread-changed', repaintUnreadIndicators);
   // Cross-device delete sync — proxyClient already wiped the IDB row
-  // and broadcast this event. We just need to schedule a sidebar
-  // refresh so the DOM row drops. Jonathan field bug 2026-05-16:
-  // "deleting a session on phone left a straggler in desktop sidebar".
+  // and broadcast this event. Schedule a sidebar refresh so the DOM
+  // row drops. Without this, a cross-device delete leaves a straggler
+  // row in the sidebar until the next poll.
   window.addEventListener('sidekick:server-conversation-deleted', () => scheduleRefresh());
 }
 // Wire at module load — idempotent + no DOM lookup needed (event
@@ -667,10 +664,10 @@ export async function refresh() {
   // refresh between click-fire and the server fetch resolving) would
   // paint the OLD viewed chat as active, momentarily flickering the
   // sidebar selection back to the previous chat before snapping to
-  // the click target when setViewed finally fired. Field repro:
-  // Jonathan, virgin Chrome cleared cache, "click chat A → flickers to
-  // current → back to A". Symptom predates today's work; surfaced
-  // because the cache-miss path is more visible post-cascade-fix.
+  // the click target when setViewed finally fired. On a cache miss,
+  // "click chat A" briefly flickers back to the current chat before
+  // settling on A (the highlight lags the click until the server
+  // list arrives).
   const active = optimisticActiveId || viewedSessionId || backend.getCurrentSessionId?.() || '';
 
   // 1. Render from cache if available.
@@ -1016,7 +1013,8 @@ function renderRow(s: any, activeId: string): HTMLLIElement {
   // Click handler lives on the whole `li` so the entire highlighted
   // area (li.active border + background) is responsive — clicks on the
   // 10px×12px padding around .sess-row used to fall through, leaving
-  // a visible-but-unclickable rim around each row (Jonathan, 2026-05-12).
+  // a visible-but-unclickable rim around each row; click on the li
+  // itself catches those misses.
   // menuBtn already stopPropagation's its own click, and openMenu()
   // does the same for the menu container, so this doesn't fire on
   // menu interactions.
@@ -1043,8 +1041,8 @@ function renderRow(s: any, activeId: string): HTMLLIElement {
       return;
     }
     if (multiSelect.size > 0) clearMultiSelect();
-    // ── Click-trace instrumentation (Jonathan, 2026-05-04) ────────────
-    // Diagnose-before-fix: capture timing at every phase from this
+    // ── Click-trace instrumentation ──────────────────────────────────
+    // Capture timing at every phase from this
     // click event through to the rendered transcript so the sidebar
     // flicker / slow-load symptoms can be located in actual data, not
     // hypothesized. Trace id correlates concurrent clicks.
@@ -1066,13 +1064,13 @@ function renderRow(s: any, activeId: string): HTMLLIElement {
     // that fires before resume()'s own optimistic-set (5-15ms later,
     // after onBeforeSwitchCb returns) doesn't repaint the OLD viewed
     // chat as active — that produced the "active → leaving → new"
-    // flicker Jonathan reported (2026-05-25, post-virt-default soak).
+    // flicker where the old active chat momentarily re-highlights.
     optimisticActiveId = s.id;
     trace('sync-active-flip');
     // Switch-then-load: resume() blanks the transcript + shows the
     // spinner synchronously (after it saves the leaving chat's scroll
     // position) so the old chat's content doesn't linger until the new
-    // one loads (Jonathan field report 2026-05-26).
+    // one loads.
     resume(s.id);
   };
   // macOS Chrome / Safari fire `contextmenu` on ctrl+click instead
@@ -1334,7 +1332,7 @@ async function resume(id: string, targetMessageId?: string) {
   const myGen = ++resumeGen;
   // Capture the prior viewed id BEFORE we update optimisticActiveId so
   // the shell's onBeforeSwitch hook can clean up empty/abandoned chats
-  // (the "New chat / 0 msgs" pollution case Jonathan reported). Skip
+  // (the "New chat / 0 msgs" pollution case). Skip
   // when we're "navigating" to the same chat — that's a refresh, not
   // a switch.
   //
@@ -1360,7 +1358,7 @@ async function resume(id: string, targetMessageId?: string) {
     // after the leaving chat's scroll position is saved/flushed above,
     // but before the (async) cache/server fetch repopulates. The old
     // chat's content disappears instantly instead of lingering until the
-    // new transcript lands (Jonathan field report 2026-05-26). This is a
+    // new transcript lands. This is a
     // pure in-DOM operation (empty the rendered content + add the
     // `.transcript-loading` class) — it issues NO IDB write and awaits
     // nothing, so it can't reintroduce the IDB-pagehide persistence race
@@ -1438,8 +1436,8 @@ async function resume(id: string, targetMessageId?: string) {
       // the full set + the deeper load-earlier cursor; otherwise this is
       // just the page (cold load / equal-length). The full merged set is
       // what we persist, so the cache GROWS to the whole transcript instead
-      // of churning the newest page (Jonathan 2026-05-29: cache all loaded
-      // content so deep pins are instant on revisit).
+      // of churning the newest page — the cache grows to the whole
+      // transcript so deep pins are instant on revisit.
       const cacheFuller = cacheRendered && !!cached && cached.messages.length > messages.length;
       const merged = cacheFuller ? sessionCache.mergeNewestPage(cached!.messages, messages) : messages;
       const mergedPagination = cacheFuller ? cached!.pagination : pagination;
@@ -1532,8 +1530,8 @@ function ensureFilterInput(): HTMLInputElement | null {
   // Insert as the only child of the (now full-width) sessions header.
   header.appendChild(input);
 
-  // Inline clear-X button (Jonathan, 2026-05-05): tap to clear filter
-  // without needing keyboard/Esc. Mirrors the keydown Escape handler
+  // Inline clear-X button: tap to clear filter without needing
+  // keyboard/Esc. Mirrors the keydown Escape handler
   // below — same teardown of value, currentFilter, IDB persistence,
   // pending timers, then re-render unfiltered. Visible only while the
   // input has content.

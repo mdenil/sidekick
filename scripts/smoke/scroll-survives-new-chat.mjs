@@ -1,8 +1,7 @@
-// Field bug 2026-05-24 (Jonathan, video: scroll_save_failing2.mov):
-// scroll a chat to mid-history, click the "New chat" button (NOT a
-// drawer row), send a message in the fresh chat, then click the
-// original chat in the drawer → it restores to scrollTop=0 (TOP) even
-// though the user was mid-history before leaving.
+// Regression guard: scroll a chat to mid-history, click the "New chat"
+// button (NOT a drawer row), send a message in the fresh chat, then
+// click the original chat in the drawer → it restores to scrollTop=0
+// (TOP) even though the user was mid-history before leaving.
 //
 // Why a separate smoke from scroll-mid-history-survives-switch:
 //   - That smoke exercises resume()→resume() via drawer rows; that

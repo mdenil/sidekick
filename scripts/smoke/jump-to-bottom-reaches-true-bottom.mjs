@@ -1,4 +1,4 @@
-// Contract (Jonathan, 2026-05-27): clicking the jump-to-bottom arrow from
+// Contract: clicking the jump-to-bottom arrow from
 // the middle of a chat must land at the TRUE bottom in ONE click — not
 // part-way, forcing repeated clicks. Same root cause as "switch into a
 // chat → lands at bottom then jumps up": under virtualization scrollHeight

@@ -2,7 +2,7 @@
 // SSE channel delivers an envelope for a message that history fetch
 // has ALSO already rendered.
 //
-// User-reported bug (2026-04-30): one assistant message in hermes DB
+// Regression guard: one assistant message in hermes DB
 // renders as TWO bubbles in the chat. iOS PWA log showed one
 // [bubble-diag] reply_delta + one reply_final per msg_id, so the
 // duplication is happening in the render path — not at envelope

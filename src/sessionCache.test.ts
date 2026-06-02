@@ -1,6 +1,6 @@
 /**
  * @fileoverview Tests for the pure transcript-cache helpers that back
- * "persist all loaded pages to IDB" (Jonathan 2026-05-29). These run
+ * "persist all loaded pages to IDB". These run
  * without the IndexedDB plumbing — they're the logic that decides what
  * the cache keeps when a freshly-fetched newest page is reconciled
  * against a (possibly deeper) cached transcript.

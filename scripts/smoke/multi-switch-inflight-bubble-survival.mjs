@@ -1,21 +1,16 @@
-// Field bug 2026-05-12 (Jonathan, mid-tool-call switching):
-//
-//   "one of my 'temp user bubbles' (the thing you store in inflight
-//    cache during tool calls) disappeared after a second switch
-//    away and back to session. a dev-refresh picked it up."
+// Regression guard: an inflight user bubble disappeared after a second
+// switch away and back to a session during a mid-tool-call turn; a
+// dev-refresh recovered it.
 //
 // The existing inflight-thinking-survives-switch.mjs pins the
 // SINGLE switch-away-and-back path. This smoke pins the DOUBLE
 // round-trip: away → back → away → back → bubble must still be
 // there.
 //
-// Status 2026-05-12: PASSES against the mocked rig with the
-// realistic mid-tool-call inflight set (user_message + tool_call +
-// tool_result + reply_delta). Jonathan's exact field-bug shape
-// isn't captured by this — when he re-triggers with dev mode on
-// we'll widen the smoke to match the precise failure path. Keeping
-// the smoke as-is in the meantime as a regression guard for the
-// simpler "two switch round-trips during a tool call" invariant.
+// Currently passes against the mocked rig with the realistic
+// mid-tool-call inflight set (user_message + tool_call + tool_result
+// + reply_delta). Keeping this as a regression guard for the simpler
+// "two switch round-trips during a tool call" invariant.
 //
 // Setup is the same shape as inflight-thinking-survives-switch:
 // pre-seed an inflight user_message envelope so /messages returns
@@ -99,14 +94,12 @@ export default async function run({ page, log, mock }) {
   assert(umsgId, `pre-switch: user bubble must have msgId, got ${JSON.stringify(beforeSwitch[0])}`);
   log(`pre-switch: user bubble present (msgId=${umsgId}) ✓`);
 
-  // Stage inflight envelope set. Jonathan's field repro was mid
-  // tool-call, so the inflight cache holds user_message PLUS one
-  // or more tool envelopes (matches "i had a tool call going").
+  // Stage inflight envelope set: mid-tool-call shape, so the inflight
+  // cache holds user_message PLUS one or more tool envelopes.
   // The proxyClient reads env.text not env.content for user_message.
-  // Jonathan's field repro: "i had a tool call going". So inflight
-  // contains user_message + tool_call + tool_result + partial
-  // reply_delta — the full mid-turn shape where the agent has
-  // started streaming a reply but reply_final hasn't fired.
+  // Inflight contains user_message + tool_call + tool_result + partial
+  // reply_delta — the full mid-turn shape where the agent has started
+  // streaming a reply but reply_final hasn't fired.
   const replyId = 'reply-inflight-1';
   mock.setInflight(chatA, [
     {

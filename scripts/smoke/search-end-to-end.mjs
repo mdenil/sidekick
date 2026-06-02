@@ -1,10 +1,9 @@
 // Real-backend end-to-end search smoke. Posts a message with a unique
 // marker, waits for hermes to persist (post-turn append_to_transcript),
 // then asserts /api/sidekick/search finds the marker. Catches the
-// 2026-05-11 regression where the v11 schema migration bumped
-// schema_version=11 but left the messages_fts_insert/delete/update
-// triggers absent — silently breaking every search of post-migration
-// content.
+// regression where the v11 schema migration bumped schema_version=11
+// but left the messages_fts_insert/delete/update triggers absent —
+// silently breaking every search of post-migration content.
 //
 // This test would have caught the bug the moment the next message was
 // sent after the broken migration ran. The mocked smoke harness can't

@@ -1,7 +1,7 @@
-// Field bug 2026-05-12 (Jonathan, multi-session juggle, gateway log):
+// Regression guard: divergence-heal wipes inflight bubbles.
 //
-//   [chat-resume] divergence detected: DOM has 75 bubbles vs server 41
-//                                     — clearing + re-rendering
+// Symptom: [chat-resume] divergence detected: DOM has 75 bubbles vs
+// server 41 — clearing + re-rendering.
 //
 // The divergence-heal in replaySessionMessages compares finalized DOM
 // bubble count to server message count and re-renders from scratch

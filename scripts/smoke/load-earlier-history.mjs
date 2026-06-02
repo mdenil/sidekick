@@ -30,8 +30,7 @@ const CHAT_ID = 'mock-chat-load-earlier';
 export function MOCK_SETUP(mock) {
   // 30 messages with monotonic content markers, plus a first-page
   // limit cap of 10 so the initial render is msg-21..30 and
-  // hasMore=true. Pagination support + the limit cap landed in
-  // mock-backend.mjs 2026-05-11 to support this test.
+  // hasMore=true.
   mock.setHistoryFirstPageLimit(10);
   const messages = [];
   for (let i = 0; i < 30; i++) {

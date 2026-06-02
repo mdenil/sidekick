@@ -140,7 +140,7 @@ This table is updated as we ship fixes. The dates are when each value last chang
 
 ## Known issues being investigated
 
-- **Self-barge mid-call on mobile.** Reproduced on iPhone PWA standalone — barge fires within ~10 s of TTS playback as the agent speaks, with VAD flipping from silent to speech. Indicates the mic stream feeding Silero is hearing the agent's voice (speaker bleed not removed by AEC, or AEC not engaged for the path Silero reads from). Phase A audio-state instrumentation lands the data needed to confirm; the slider plumbing (separate bug, fixed 2026-05-06) is no longer a contributor.
+- **Self-barge mid-call on mobile.** Reproduced on iPhone PWA standalone — barge fires within ~10 s of TTS playback as the agent speaks, with VAD flipping from silent to speech. Indicates the mic stream feeding Silero is hearing the agent's voice (speaker bleed not removed by AEC, or AEC not engaged for the path Silero reads from). The slider plumbing (separate bug, fixed 2026-05-06) is no longer a contributor.
 - **Silero `MicVAD.new` 15 s timeout on Mac Chrome cold start.** Model fetch hangs; no VAD warm; barge silently disabled for the call. Likely network/cache flakiness on first-call asset load. Separate from the self-barge issue.
 
 (Add new entries here as they surface; remove when fixed and verified.)

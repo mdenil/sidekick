@@ -70,8 +70,8 @@ export function getState(chatId: string): ChatState {
  *  keys for the same message — durable's integer-id key and inflight's
  *  umsg_ / msg_ key — and can't dedup them. Result: an "orphan tail"
  *  of duplicate ghost turns at the bottom of the transcript with
- *  synthetic timestamps (Jonathan field bug 2026-05-18, chat
- *  54f0e929 — the entire RFC turn re-appeared at 17:24/17:25).
+ *  synthetic timestamps (entire turns re-appearing at the bottom of
+ *  the transcript).
  *
  *  Dropping completed-turn envelopes here breaks the accumulation: the
  *  in-progress turn (no reply_final yet) is preserved for live render. */
@@ -99,7 +99,7 @@ export function setDurable(
  *  durable. When the mirror hasn't caught up (e.g. background-chat
  *  reply arrived via SSE but state.db/sidekick.db write-through
  *  hasn't landed yet), the inflight envelope is the ONLY copy of
- *  the content and we must NOT drop it (field bug 2026-05-19:
+ *  the content and we must NOT drop it (e.g.
  *  background-reply-first-switch-shows-content.mjs).
  *
  *  Original motivation (commit 4d2f7dd): plugin's link-table write

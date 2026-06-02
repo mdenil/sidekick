@@ -391,10 +391,8 @@ async function onBarPointerDown(e: PointerEvent, bar: HTMLElement): Promise<void
 // pre-reload tap (e.g. on Refresh) can land on a play-btn that just
 // rendered in the same screen position. Ignoring play-btn clicks for
 // the first PHANTOM_CLICK_MUTE_MS after page load prevents auto-TTS
-// on reload that the user didn't actually intend. Set 2026-05-03
-// after Jonathan's "agent started talking on reload" report — log
-// showed [reply-player] click 8s after mediaSession init with no
-// other code path firing it.
+// on reload that the user didn't actually intend — a phantom tap can
+// land on a play-btn that appears in the same screen position.
 const PHANTOM_CLICK_MUTE_MS = 1500;
 const PAGE_LOAD_T0 = typeof performance !== 'undefined' ? performance.now() : 0;
 
@@ -417,11 +415,10 @@ async function onPlayClick(e: Event, btn: HTMLElement): Promise<void> {
 
   const activeId = tts.getActiveReplyId();
   // Guard against tap-while-loading: each subsequent tap supersedes
-  // the in-flight /tts fetch and restarts it, leaving the user
-  // waiting forever and producing no feedback. Field bug 2026-05-02:
-  // 6 taps over 80s on a single bubble while waiting for the first
-  // synth. If THIS bubble is currently loading, drop the click — the
-  // CSS spinner already signals "working on it." Other bubbles can
+  // the in-flight /tts fetch and restarts it, leaving the user waiting
+  // with no feedback (multiple taps on a loading bubble just restart
+  // the synth). If THIS bubble is currently loading, drop the click —
+  // the CSS spinner already signals "working on it." Other bubbles can
   // still steal focus; that's the supersede-and-cancel design.
   if (activeId === replyId && tts.getState() === 'loading') {
     log(`[reply-player] click ignored (loading) bubble=${replyId}`);

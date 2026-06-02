@@ -121,13 +121,12 @@ export async function handleSidekickMessage(req, res) {
   // the upstream's vision tools can read them; raw OAI third-party
   // upstreams ignore the unknown field.
   const messageId = newMessageId();
-  // Field-bug diagnostic (Jonathan 2026-05-11): user reported that
-  // messages typed into the PWA never reach state.db despite the
-  // optimistic bubble showing as sent. State.db ends up with the
-  // chat row but 0 messages, and gateway logs only show GET history
-  // requests — no /v1/responses POST. Surface every step of the
-  // dispatch so the next repro pins where in the pipeline the
-  // message gets dropped.
+  // Diagnostic: messages typed into the PWA may not reach state.db
+  // despite the optimistic bubble showing as sent (state.db ends up
+  // with the chat row but 0 messages, gateway logs show only GET
+  // history — no /v1/responses POST). Surface every step of the
+  // dispatch so a repro can pin where in the pipeline the message
+  // gets dropped.
   console.log(
     `[sidekick:messages] POST chat=${chatId} ` +
     `text=${JSON.stringify(text.slice(0, 80))} ` +

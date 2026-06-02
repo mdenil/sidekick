@@ -1,6 +1,6 @@
 // Replayed notification envelopes must not reopen attention UI.
 //
-// Field bug 2026-05-21: a stale approval prompt from a previous smoke
+// Regression guard: a stale approval prompt from a previous smoke
 // kept reappearing on every hard reload. The proxy correctly stamps SSE
 // ring replay with _replay=true; the PWA must treat that as catch-up state,
 // not as a fresh notification.

@@ -13,7 +13,7 @@ this and skips its own dispatch path.
 Observability: every gate decision logs at WARNING so the journal
 answers "why didn't push fire for envelope X?" without re-reading
 the code. (Default Python root logger level is WARNING; INFO is
-silenced in stock hermes-gateway. Field bug 2026-05-18.)
+silenced in stock hermes-gateway.)
 """
 
 from __future__ import annotations

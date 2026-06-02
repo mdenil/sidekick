@@ -2,8 +2,8 @@
 // title, the drawer entry's text should update IN PLACE without
 // requiring a reload or click-elsewhere-and-back.
 //
-// Reported by Jonathan 2026-04-28. Root cause (audit): the PWA's
-// session_changed handler at hermes-gateway.ts:385 writes
+// Regression guard. Root cause (audit): the PWA's session_changed
+// handler at hermes-gateway.ts:385 writes
 // `conversations.updateTitle(chatId, env.title)` to IDB but does
 // not call `sessionDrawer.refresh()`. The drawer renders from
 // `cachedSessions` (last server fetch) until something else

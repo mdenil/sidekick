@@ -22,9 +22,9 @@ class SidekickBridgeViewController: CAPBridgeViewController, WKUIDelegate, WKScr
 
     /// Cap-specific JS+CSS injected at document_start so the PWA core
     /// (index.html, styles/app.css) has zero Capacitor-conditional code.
-    /// Architectural rule (Jonathan, 2026-05-09): Cap-specific behavior
-    /// stays inside `mobile/ios/App/` so the Cap shell could be ripped
-    /// out by deleting the directory without touching shared sources.
+    /// Architectural rule: Cap-specific behavior stays inside
+    /// `mobile/ios/App/` so the Cap shell could be ripped out by
+    /// deleting the directory without touching shared sources.
     ///
     /// Three things need Cap-only treatment:
     ///   1. `viewport-fit=cover` — required for env(safe-area-inset-*)
@@ -54,9 +54,9 @@ class SidekickBridgeViewController: CAPBridgeViewController, WKUIDelegate, WKScr
       //     returns 0 → `.capacitor-app .header` rule resolves to
       //     `padding: max(4px, -20px) ...` = 4px → brand draws 4px
       //     from screen top, overlapping the status bar / clock.
-      //     (Field-reported by Jonathan 2026-05-09 right after the
-      //     isolation refactor — pre-refactor the meta was static in
-      //     index.html so CSS saw real env values.)
+      //     (Pre-isolation the meta was static in index.html so CSS
+      //     saw real env values; post-refactor the WKUserScript path
+      //     must wait for <head> before injecting.)
       // Use MutationObserver to fire as soon as <head> appears (more
       // reliable than DOMContentLoaded for Cap's WKWebView, which can
       // sometimes lay out before DCL fires).
@@ -70,12 +70,10 @@ class SidekickBridgeViewController: CAPBridgeViewController, WKUIDelegate, WKScr
           s.id = 'cap-overlay-style';
           s.textContent = [
             '.capacitor-app .header {',
-            '  /* -8px (was -20px) — Jonathan 2026-05-09: -20 was OK',
-            '   * but the brand still crowded the iOS clock. -8 shifts',
-            '   * down ~12px more, about the height of the "A" in the',
-            '   * "AGENT PORTAL" subtitle. Brand sits below the clock',
-            '   * with a comfortable gap, no overlap. max() floor of',
-            '   * 4px keeps non-notch sane (env returns 0 there). */',
+            '  /* -8px (was -20px): shifts the brand down ~12px more,',
+            '   * clearing the iOS clock with a comfortable gap. max()',
+            '   * floor of 4px keeps non-notch devices sane (env',
+            '   * returns 0 there). */',
             '  padding: max(4px, calc(env(safe-area-inset-top) - 8px)) 18px 4px;',
             '}',
             '.capacitor-app .sidebar-top {',
@@ -208,9 +206,9 @@ class SidekickBridgeViewController: CAPBridgeViewController, WKUIDelegate, WKScr
     // alert/confirm/prompt calls unless the WKUIDelegate provides
     // these methods. Without them, `window.alert(...)` does nothing,
     // `window.confirm(...)` returns false, `window.prompt(...)`
-    // returns null. Field bug 2026-05-10 (Jonathan): the Reset Server
-    // URL button used confirm() to gate the action; suppressed dialog
-    // → confirm()=false → handler bailed → user saw nothing happen.
+    // returns null. Without these handlers, the Reset Server URL button's
+    // confirm() dialog is suppressed → confirm()=false → handler bails
+    // → user sees nothing happen.
     //
     // These handlers route the dialogs through native UIAlertController
     // so they actually appear. Each preserves the page that issued
@@ -252,7 +250,7 @@ class SidekickBridgeViewController: CAPBridgeViewController, WKUIDelegate, WKScr
         // mic permission + JS dialogs, which displaced Cap's handler — so its
         // bridge probes started falling through to this default text-input
         // implementation, popping up two UIAlertControllers showing the raw
-        // JSON on every fresh iOS launch (Jonathan, 2026-05-18).
+        // JSON on every fresh iOS launch.
         //
         // Detect those bridge prompts here and answer them the same way Cap
         // does when the plugin is disabled in config (we don't enable either

@@ -367,7 +367,7 @@ export async function playReplyTts(
         // emitted 'stopped' but left state='loading' + active set, which
         // wedged the play-btn: replyPlayer.ts's loading-guard dropped
         // every subsequent tap with "[reply-player] click ignored
-        // (loading)." Field repro 2026-05-09: /tts 502 → tap dead.
+        // (loading)." Without this fix, a /tts error leaves the play-btn dead.
         cancelReplyTts('tts-http-error');
         return;
       }

@@ -2,8 +2,7 @@
 // vad-web is already loaded + parsed AND the wasm/onnx assets are in
 // the SW cache, so MicVAD.new init is fast.
 //
-// Verifies the v0.426 prefetch tightening (Jonathan, 2026-05-04: "16s
-// on Safari fresh load"):
+// Verifies the prefetch tightening (Safari fresh-load was taking 16s+):
 //   - /build/vendor/vad-web.mjs included in prefetch (was missing
 //     from the asset list — fix landed v0.426).
 //   - speechVad.isSupported() invoked during prefetch so the dynamic

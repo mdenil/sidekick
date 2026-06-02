@@ -22,16 +22,14 @@
  *     which already wraps getUserMedia + iOS AVAudioSession prep)
  *   - the canonical mic analyser builder (handles iOS suspended-context
  *     resume + WebRTC stream gotchas)
- *   - chime playback (was audio/feedback.ts; will move here in Phase 2.3)
+ *   - chime playback (see audio/shared/feedback.ts)
  *
- * Phase 2.1 — initial commit creates the surface and DELEGATES to
- * existing modules so behavior is unchanged. Subsequent commits migrate
- * callers one at a time.
+ * This module creates the surface and DELEGATES to existing modules so
+ * behavior is unchanged. Subsequent additions migrate callers one at a time.
  *
  * Hard rule: outside this file, `grep -E 'new (window\\.)?AudioContext|
  * navigator\\.mediaDevices\\.getUserMedia|createMediaStreamSource'`
- * should return zero hits in src/. Audit lives in CONTRIBUTING.md and
- * is enforced by the grep step in Phase 2.7.
+ * should return zero hits in src/. Audit lives in CONTRIBUTING.md.
  */
 
 import { unlock as unlockImpl, getAudioCtx as getCtxImpl, isUnlocked as isUnlockedImpl, onRouteChange as onRouteChangeImpl, reset as resetCtxImpl } from '../../ios/audio-unlock.ts';
@@ -114,10 +112,9 @@ export const releaseMicStream = captureImpl.release;
  *  but the analyser sees zero frames; caller can fall back to a
  *  static "listening" indicator).
  *
- *  Phase 2.1 stub: delegates to a minimal implementation. Phase 2.2
- *  will fold in fakeLock's existing wiring (resume-suspended-ctx,
- *  meterCtx fallback). The eventual iOS-pocketlock-waveform fix lives
- *  inside this function.
+ *  Delegates to a minimal implementation; factored to fold in fakeLock's
+ *  existing wiring (resume-suspended-ctx, meterCtx fallback) going
+ *  forward.
  */
 export function getMicAnalyser(stream: MediaStream, fftSize: number = 256): AnalyserNode | null {
   if (!stream || stream.getAudioTracks().length === 0) return null;
@@ -144,7 +141,7 @@ export function getMicAnalyser(stream: MediaStream, fftSize: number = 256): Anal
 // Canonical chime API is `playFeedback` from audio/shared/feedback.ts —
 // import it directly. The platform shim used to re-export it as
 // `playChime`, but that re-export was unused (zero callers in src/test)
-// and invited the "two ways to chime" footgun Jonathan flagged 2026-05-04.
+// and invited a "two ways to chime" footgun.
 // Removed; ChimeName re-export kept for type-only consumers.
 
 export type ChimeName = Parameters<typeof playFeedbackImpl>[0];

@@ -1,17 +1,15 @@
 #!/usr/bin/env node
 // Remote Playwright harness: trace SAME-SESSION deep pin jumps.
 //
-// Jonathan's report (2026-05-29): jumping BETWEEN pin views WITHIN one
-// long session (the pitch deck) is slow (5-20s), while interleaving with
-// OTHER sessions is fast. The sibling open-in-chat-trace.mjs deliberately
-// drifts to a neutral row between clicks (cross-session); this one does
-// the OPPOSITE: it stays inside one chat and jumps among that chat's pins
-// back-to-back, which is the exact slow case.
-//
-// Runs on jons-macbook-air so real London-link latency is in play.
+// Regression guard: jumping BETWEEN pin views WITHIN one long session
+// is slow (5-20s), while interleaving with OTHER sessions is fast. The
+// sibling open-in-chat-trace.mjs deliberately drifts to a neutral row
+// between clicks (cross-session); this one does the OPPOSITE: it stays
+// inside one chat and jumps among that chat's pins back-to-back, which
+// is the exact slow case.
 //
 // Env:
-//   SIDEKICK_URL   (default https://fontbrain.taile0c895.ts.net:3001)
+//   SIDEKICK_URL   (default http://127.0.0.1:3001)
 //   CHAT           bare/full chat id to confine jumps to (default the
 //                  pitch deck: ae6435b5-53aa-4819-b594-d21652c89397)
 //   DRILL_TIMEOUT  ms to wait for the target bubble (default 30000)

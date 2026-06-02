@@ -1,6 +1,6 @@
-// Field bug 2026-05-25 (Jonathan, [pitch deck]): typed in chat A, agent
-// started replying, switched to chat B, switched back to A — the user
-// bubble + the agent's in-flight reply were GONE until a manual refresh.
+// Regression guard: typed in chat A, agent started replying, switched
+// to chat B, switched back to A — the user bubble + the agent's
+// in-flight reply were GONE until a manual refresh.
 //
 // Root cause: sessionDrawer.resume() cache-render path called
 // onResumeCb(id, cached.messages, cached.pagination, []) passing []

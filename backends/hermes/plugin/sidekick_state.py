@@ -466,9 +466,8 @@ def list_messages_for_chat(
     state-db-id order, which is NOT chronological for chats that
     pre-date Phase 1's write-through — a reload would push the just-
     sent envelope row out of the "recent" window behind the historic
-    backfill (Jonathan field bug 2026-05-19 right after restart:
-    his fresh user message at rowid 29 was hidden behind 622 legacy
-    inserts that arrived during reconcile).
+    backfill — a fresh user message can end up hidden behind legacy
+    inserts that arrived during reconcile.
 
     Cursor (`before_rowid`, kept named for wire-back-compat) is the
     millisecond-precision timestamp of the cursor item:
@@ -548,7 +547,7 @@ def list_messages_for_chat_with_state_db_source(
     every message body, and reconcile failures could leave the same
     logical message stored twice — once via envelope write-through,
     once via state.db backfill — surfaced to the PWA as duplicate
-    bubbles (Jonathan field bug 2026-05-19).
+    bubbles.
 
     With v2, the items endpoint reads state.db.messages (the canonical
     server-side store) and joins sidekick.db.msg_links *as a side
@@ -607,11 +606,10 @@ def list_messages_around_for_chat_with_state_db_source(
 
     Why: the PWA's pin/activity "open in chat" drill used to reach a deep
     message by paging backward N times from the newest page — N serial
-    ~1 MB round trips over Jonathan's Philadelphia→London link (5–20 s).
-    The first fix made the drill one round trip but tail-contiguous: a pin
-    near the TOP of a long session pulled back everything from the target
-    to the tail — 835 rows / 4.27 MB for [pitch deck], still 5–20 s over
-    the link. This bounds the payload to ``limit`` rows regardless of how
+    round trips that could be slow on high-latency connections. The first
+    fix made the drill one round trip but tail-contiguous: a pin near the
+    TOP of a long session pulled back everything from the target to the
+    tail. This bounds the payload to ``limit`` rows regardless of how
     deep/old the target is, at the cost of leaving a gap between the
     window's newest row and the live tail.
 
@@ -725,7 +723,7 @@ def _build_chronological_items(
     # any messages that landed in compaction-rotated child sessions
     # (user_id=NULL but parent's system_prompt matches) under the
     # requested chat_id. Without this, compacted-out turns are
-    # invisible (Jonathan field bug 2026-05-12).
+    # invisible.
     sql = """
         WITH RECURSIVE session_root(id, root_system_prompt, is_compaction_child) AS (
             SELECT id, system_prompt, 0 FROM sessions
@@ -836,8 +834,7 @@ def _build_chronological_items(
     # chat (state.db row not yet flushed) would surface as ZERO messages
     # via v2 read — breaking activity-row drill ("no longer has a
     # session"), pinned-message open, and any other path that addresses
-    # a freshly-arrived message. Field 2026-05-29 (Jonathan, immediately
-    # after the B2 default flip).
+    # a freshly-arrived message.
     #
     # Pull msg_links rows with NULL agent_row_id (unmatched to any
     # state.db row) for this chat and project them into the same wire
@@ -904,8 +901,8 @@ def reconcile_from_state_db(
          get removed. Rows with NULL agent_row_id are NEVER dropped
          — they're either in-flight or pre-link, both legitimate.
 
-    Pass 3 is the self-healing fix Jonathan signed off 2026-05-19:
-    state.db is authoritative for whole-session mutations, so any
+    Pass 3 (self-heal): state.db is authoritative for whole-session
+    mutations, so any
     sidekick.db row linked to a vanished state.db row is provably
     stale. The orphan check runs every reconcile (cheap O(N) set
     ops on already-fetched data) which means /retry-style mutations
@@ -1070,8 +1067,7 @@ def reconcile_from_state_db(
         # orchestrated tool calls. Propagating it to sidekick.db means
         # PWA projection's parseToolCalls() can populate tool-row
         # names + args on reload — without this, reconciled chats
-        # render as "(unknown)" + args="{}" (Jonathan field bug
-        # 2026-05-19, chat 5308f030).
+        # render as "(unknown)" + args="{}".
         tool_calls_raw = r["tool_calls"] if "tool_calls" in r.keys() else None
         try:
             db.exec(

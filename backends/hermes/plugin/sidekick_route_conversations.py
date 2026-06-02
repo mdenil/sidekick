@@ -97,11 +97,10 @@ def _summaries_by_user_id(
     via a recursive CTE that maps every session to its root
     user_id. The upstream hermes contract claims rotated sessions
     inherit user_id from the root, but in practice compaction
-    creates child sessions with user_id=NULL (Jonathan field bug
-    2026-05-12). The CTE resolves the effective user_id by walking
-    parent_session_id chains until we hit a session with user_id
-    set; that root user_id is then used as the GROUP BY key for
-    the drawer row.
+    creates child sessions with user_id=NULL. The CTE resolves the
+    effective user_id by walking parent_session_id chains until we
+    hit a session with user_id set; that root user_id is then used
+    as the GROUP BY key for the drawer row.
 
     Where ORDER BY matters: ``ORDER BY started_at DESC LIMIT 1`` for
     the title pulls the *latest* session for the chat (whatever
@@ -133,10 +132,8 @@ def _summaries_by_user_id(
     # sidekick-specific system_prompt) from delegate sub-task
     # sessions (which use hermes-agent's DEFAULT system_prompt
     # and just happen to share parent_session_id). Without this
-    # gate the CTE over-includes — Jonathan's neck-strain chat
-    # had 6 delegate sub-tasks chained off the root, inflating
-    # the rolled-up message_count from a correct 157 (139 root +
-    # 18 continuation) to 486 (incl. 329 sub-task messages).
+    # gate the CTE over-includes delegate sub-task sessions that
+    # share parent_session_id but use the default system_prompt.
     sql = f"""
         WITH RECURSIVE session_root(id, root_user_id, root_source, root_system_prompt) AS (
             SELECT id, user_id, source, system_prompt
@@ -368,10 +365,7 @@ async def handle_delete(adapter, request: "web.Request") -> "web.Response":
         adapter._sid_to_chat_id_cache.pop(sid, None)
     # Cross-device delete sync: emit conversation_deleted so other
     # connected PWAs drop the row from their sidebar without waiting
-    # for a manual refresh. Jonathan field bug 2026-05-16: "deleting
-    # a session on phone didn't propagate to desktop; manually
-    # refreshing deletes the content but leaves the session as a
-    # straggler in sidebar." Without an envelope, the other device
+    # for a manual refresh. Without an envelope, the other device
     # only learns about the delete on its next sessions-list poll
     # (which is on a long cadence, hence the straggler).
     prefixed_chat_id = _format_gateway_id(source, chat_id)
@@ -630,7 +624,7 @@ def rename_conversation_sync(
                 latest_sid = row[0]
                 # If another session already holds this title,
                 # the partial UNIQUE INDEX would reject the UPDATE.
-                # Two cases to distinguish (Jonathan, 2026-05-05):
+                # Two cases to distinguish:
                 #
                 #  1. The conflicting row is a STALE SIBLING for the
                 #     SAME chat_id+source — i.e. a prior rotation

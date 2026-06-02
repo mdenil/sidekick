@@ -1,12 +1,12 @@
-// Contract (Jonathan, 2026-05-28): an approval row in the Activity tray
-// must SURVIVE every "⏳ Still working… iteration N/60" reply_final the
-// agent emits during a long autonomous turn. Field bug 2026-05-27: an
-// approval landed correctly but disappeared from the tray seconds later
-// because `handleReplyFinal` (main.ts:4419) calls
+// Contract: an approval row in the Activity tray must SURVIVE every
+// "⏳ Still working… iteration N/60" reply_final the agent emits
+// during a long autonomous turn. Regression guard: an approval landed
+// correctly but disappeared from the tray seconds later because
+// `handleReplyFinal` (main.ts:4419) calls
 // `dismissApprovalsForChat(conversation)` on every `reply_final`,
 // including heartbeats — even though the approval is still pending.
 //
-// Regression guard. Push an approval, then push several heartbeat
+// Push an approval, then push several heartbeat
 // reply_finals for the same chat, and assert the activity row stays put
 // (still present, kind=approval, !resolved). Sibling commit 80ced31
 // taught the push gate to skip heartbeats via `isProgressHeartbeat`; this

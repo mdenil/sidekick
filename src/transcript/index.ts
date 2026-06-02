@@ -36,8 +36,7 @@ let getViewedChatId: () => string | null = () => null;
 
 /** Lazily-bound virtualizer instance when the feature flag is on.
  *  Created on first rerenderInto call after bindTranscriptPipeline,
- *  reused for the lifetime of the page. Null when the flag is off
- *  (production default until Phase 5). */
+ *  reused for the lifetime of the page. Null when the flag is off. */
 let virtualizer: VirtualizerHandle | null = null;
 
 export interface BindOpts {
@@ -46,13 +45,13 @@ export interface BindOpts {
 }
 
 /** Returns true if the virtualizer should be used for transcript
- *  rendering. Phase 5a attempt at default-on (2026-05-25) was reverted
- *  because 21 of 134 mocked smokes were tightly coupled to default-path
- *  mechanics (scrollTop semantics, "all bubbles in DOM" assumptions,
- *  load-earlier prepend math, replyPlayer DOM-class state, etc.).
- *  These need per-smoke audits — most are test-quality issues, not
- *  virt bugs — before the default can flip safely. Today: opt-in only
- *  via `localStorage['sidekick.virtualize'] = '1'` or `?virt=1`. */
+ *  rendering. Default-on was reverted because 21 of 134 mocked smokes
+ *  were tightly coupled to default-path mechanics (scrollTop semantics,
+ *  "all bubbles in DOM" assumptions, load-earlier prepend math,
+ *  replyPlayer DOM-class state, etc.). These need per-smoke audits —
+ *  most are test-quality issues, not virt bugs — before the default
+ *  can flip safely. Currently opt-in only via
+ *  `localStorage['sidekick.virtualize'] = '1'` or `?virt=1`. */
 export function isVirtualizerEnabled(): boolean {
   try {
     if (typeof window !== 'undefined') {
@@ -178,10 +177,8 @@ function ensureVirtualizer(el: HTMLElement): void {
     // `batchBubbles: true` suppresses chat.addLine's per-bubble
     // autoScroll. Under virt the window shifts during touch-scroll;
     // each new bubble's autoScroll would re-check pinnedToBottom and
-    // snap the page back to bottom. Field bug 2026-05-25 (Jonathan,
-    // mobile PWA): "scroll moves a little, then pops back" — the
-    // reconciler's per-create autoScroll fired dozens of times per
-    // finger move. Default path (reconcile called directly on
+    // snap the page back to bottom — the reconciler's per-create
+    // autoScroll fires dozens of times per finger move on mobile. Default path (reconcile called directly on
     // #transcript from streaming/durable updates) leaves this flag
     // off and gets the legacy per-bubble follow-along.
     renderWindow: (slotEl, specs) => { reconcile(slotEl, specs, { batchBubbles: true }); },

@@ -108,10 +108,10 @@ export function name() { return adapter?.name || '(unloaded)'; }
 // ─── Foreground-fetch gate ──────────────────────────────────────────────────
 // Background warm-prefetch (sessionDrawer.warmPrefetch) walks the top-N
 // sessions fetching a full ~1MB newest page each. Over a high-latency link
-// (Jonathan: Philadelphia → London) that serial storm saturates the pipe for
-// ~20s after a hard refresh and starves the user's actual pin/activity drill —
-// the bounded `?around=` fetch shares the link with the prefetch, so a deep
-// jump that should be one round trip stretched to 5-20s (field 2026-05-29).
+// that serial storm saturates the pipe for ~20s after a hard refresh and
+// starves the user's actual pin/activity drill — the bounded `?around=`
+// fetch shares the link with the prefetch, so a deep jump that should be
+// one round trip can stretch to 5-20s.
 // User-initiated reads register as foreground here; warmPrefetch awaits
 // whenForegroundFetchIdle() before each item so it never competes with an
 // in-flight drill.

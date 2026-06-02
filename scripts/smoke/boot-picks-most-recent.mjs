@@ -2,8 +2,7 @@
 // (fresh install, cleared site-data, or activeChatId points to an
 // unsent stub), the boot path should pick the MOST RECENT session
 // and render it. Avoids the empty/blank state and the "selected
-// stub but body shows another chat" divergence Jonathan reported
-// 2026-04-29.
+// stub but body shows another chat" divergence.
 //
 // Test plan (mocked):
 //   1. Pre-populate two server chats: older (1h ago) + recent (1m ago).

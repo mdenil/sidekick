@@ -1,7 +1,6 @@
-// Field bug 2026-05-19 (Jonathan): sent "hey test message" → got TWO
-// "Hey — received." bubbles in the transcript, one at the correct
-// timestamp and one at 01:00 BST (= unix 0 + UTC+1, i.e. a row
-// whose `created_at` is 0).
+// Regression guard: sending a message produced TWO "Hey — received."
+// bubbles in the transcript, one at the correct timestamp and one at
+// 01:00 BST (= unix 0 + UTC+1, i.e. a row whose `created_at` is 0).
 //
 // Root cause (server-side): the items endpoint's
 // `reconcile_from_state_db` tries to LINK the envelope-written

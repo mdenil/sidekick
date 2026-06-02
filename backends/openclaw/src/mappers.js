@@ -2,13 +2,13 @@
  * Openclaw native shapes → sidekick UpstreamAgent shapes.
  *
  * Reference for target shapes:
- *   ~/code/sidekick/proxy/sidekick/upstream.ts
+ *   proxy/sidekick/upstream.ts
  *     - ConversationSummary (line 38)
  *     - ConversationItem    (line 126)
  *
  * Openclaw native shape reference:
- *   ~/code/openclaw-integ/src/gateway/server-methods/sessions.ts (sessions.list)
- *   ~/code/openclaw-integ/src/gateway/server-methods/chat.ts     (chat.history)
+ *   src/gateway/server-methods/sessions.ts (sessions.list)
+ *   src/gateway/server-methods/chat.ts     (chat.history)
  */
 import { firstUserMessageText, isDeliveryMirror } from './openclaw-store.js';
 
@@ -41,9 +41,9 @@ export function prefixChatId(chatId, agentId = 'dev') {
  *  the sidekick ConversationSummary shape.
  *
  *  We compute message_count + first_user_message by reading the full
- *  message log. That's O(n) per chat at drawer-load time — fine for
- *  Jonathan's volume today (single-digit chats); revisit with a cached
- *  index in the supplemental store when chat count grows. */
+ *  message log. That's O(n) per chat at drawer-load time — acceptable
+ *  for small chat counts; revisit with a cached index in the
+ *  supplemental store when chat count grows. */
 export function toConversationSummary({ sessionKey, entry, messages, agentId = 'dev' }) {
   const filtered = messages.filter((m) => !isDeliveryMirror(m));
   const firstUser = firstUserMessageText(filtered);
@@ -166,7 +166,7 @@ function mapRole(msg) {
 /** Strip the `[Sat 2026-05-16 14:00 GMT+1] ` timestamp wrapper that
  *  openclaw's chat.send injects into user messages before handing
  *  them to the agent (`injectTimestamp` in
- *  ~/code/openclaw-integ/src/gateway/server-methods/agent-timestamp.ts).
+ *  `src/gateway/server-methods/agent-timestamp.ts` in the openclaw gateway).
  *  The durable form carries it; the PWA's optimistic bubble + the
  *  in-flight turn buffer use the raw text. Without stripping in
  *  items output, a reload after the turn shows TWO user bubbles

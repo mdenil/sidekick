@@ -1,12 +1,11 @@
 // Scenario: a chat with messageCount > 0 but no title AND no snippet
 // must render as "(processing…)" in the drawer — NOT "New chat".
 //
-// Reported by Jonathan 2026-05-03 ~07:58: an SW reload happened mid
-// agent tool-loop. For a few minutes the chat had no title (hermes
-// hadn't compressed yet) AND no first_user_message yet (race with the
-// proxy's session enrichment), but had real messageCount. The drawer
-// rendered "New chat / 5 msgs" — visually identical to a fresh empty
-// orphan, which the cleanup paths key off. Misleading + dangerous.
+// Regression guard: an SW reload mid-agent tool-loop left the chat
+// with no title and no first_user_message yet (race with proxy session
+// enrichment), but with real messageCount. The drawer rendered
+// "New chat / 5 msgs" — visually identical to a fresh empty orphan,
+// which the cleanup paths key off. Misleading + dangerous.
 //
 // Post-v0.383 fix: when title is empty AND snippet is empty AND
 // messageCount > 0, the drawer surfaces "(processing…)". The "New chat"

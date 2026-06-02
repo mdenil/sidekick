@@ -1,6 +1,6 @@
 // Scenario: clicking "new chat" without sending shouldn't pollute the
-// drawer. Reported by Jonathan 2026-04-28 — 5 rapid new-chat clicks
-// produced 5 empty "New chat / 0 msgs" rows.
+// drawer. Regression guard: 5 rapid new-chat clicks produced 5 empty
+// "New chat / 0 msgs" rows.
 //
 // Test plan:
 //   1. Setup one chat with content (so drawer has a known baseline).
@@ -64,7 +64,7 @@ export default async function run({ page, log }) {
   await page.waitForTimeout(800);
 
   // Diagnostic: dump every drawer row's classes, dataset, and meta text
-  // so we know what the bug ACTUALLY looks like. Jonathan's screenshot
+  // so we know what the bug ACTUALLY looks like. The original bug
   // showed "New chat / just now / 0 msgs" rows accumulating, but the
   // text "0 msgs" might not be how the DOM expresses it.
   const drawerDump = await page.evaluate(() => {

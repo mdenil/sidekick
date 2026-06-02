@@ -7,11 +7,11 @@
  * blurred (button mousedown shifts focus before our handler runs;
  * `selectionStart` can read stale post-blur on some browsers).
  *
- * Field bug 2026-05-07 (Jonathan): user moves cursor with arrows in a
- * non-empty composer, voice still lands at value.length instead of the
- * caret. Path traced through ensureAnchor's `selectionStart ?? value.length`
- * fallback. Cache fix means captureComposerCursor returns the cached
- * caret regardless of focus state at gesture time.
+ * Regression: user moves cursor with arrows in a non-empty composer,
+ * voice still lands at value.length instead of the caret. Path traced
+ * through ensureAnchor's `selectionStart ?? value.length` fallback.
+ * Cache fix means captureComposerCursor returns the cached caret
+ * regardless of focus state at gesture time.
  */
 
 import { describe, it, beforeEach } from 'node:test';

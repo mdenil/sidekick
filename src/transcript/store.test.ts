@@ -130,7 +130,7 @@ describe('store: setDurable conditionally drains completed-turn inflight envelop
   });
 
   it('preserves completed-turn envelopes when durable is stale (background-chat race)', () => {
-    // Field bug 2026-05-19 (Jonathan): reply lands in chat A via SSE
+    // A reply landing in chat A via SSE
     // while user is on chat B. User switches to A; replaySessionMessages
     // calls setDurable(A, server_messages_for_A, ...) and the server's
     // /messages response doesn't include the new reply yet (state.db
@@ -155,8 +155,8 @@ describe('store: setDurable conditionally drains completed-turn inflight envelop
   });
 
   it('preserves completed-turn envelopes when durable rows lack sidekick_id', () => {
-    // Historical scenario (Jonathan field bug 2026-05-18, ghost tail):
-    // the plugin's link-table write silently failed, leaving durable
+    // Historical scenario (ghost tail): the plugin's link-table write
+    // silently failed, leaving durable
     // assistant rows with sidekick_id NULL. Under v1 the store
     // nuked the inflight on the assumption that durable was good;
     // under v2 we don't assume — supplemental-store's phase-3/4

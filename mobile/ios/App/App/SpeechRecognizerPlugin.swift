@@ -8,8 +8,8 @@ import AVFoundation
 /// Why this exists: the web app's send-word detector (sendwordDetector.ts)
 /// opens a standalone Web Speech `SpeechRecognition` session, which
 /// WKWebView gates with `service-not-allowed` — so on CAP the send word
-/// never matches and Listen degrades to silence-only commit (field bug
-/// 2026-05-10). This plugin runs SFSpeechRecognizer natively and streams
+/// never matches and Listen degrades to silence-only commit. This plugin
+/// runs SFSpeechRecognizer natively and streams
 /// partial transcripts back to JS via `partialResult` events; the JS side
 /// (src/native/speechRecognizer.ts) feeds them into the detector's
 /// existing FED path.

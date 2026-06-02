@@ -3,9 +3,8 @@
 // and the composer goes read-only when one is viewed (cross-platform
 // send isn't supported — would route through the wrong adapter).
 //
-// Phase 1 of the cross-platform-visibility design (see Jonathan's
-// 2026-04-29 ask: "i want sidekick to be 1:1 with my state.db /
-// sessions transcripts on disk").
+// Phase 1 of the cross-platform-visibility design: sidekick sessions
+// mirror state.db / sessions transcripts on disk.
 //
 // Test plan (mocked):
 //   1. Pre-populate 1 sidekick chat (with content) + 1 telegram chat.

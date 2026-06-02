@@ -11,8 +11,8 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     /// Silent-audio keepalive engine. iOS suspends apps that aren't actively
     /// producing audio buffers, even with UIBackgroundModes=[audio] — within
     /// 3-5 minutes of idle, the WebView's mic capture path gets torn down
-    /// while AVAudioSession + TTS playback survive (Jonathan's 2026-05-09
-    /// field test: long tool call → chimes played late, mic was dead).
+    /// while AVAudioSession + TTS playback survive (long tool call →
+    /// chimes played late, mic was dead after idle suspend).
     /// Solution: keep an AVAudioEngine running with a silent looping buffer
     /// the whole app lifetime. iOS sees continuous audio output → never
     /// suspends → mic capture stays alive. Same pattern Spotify, NRC Run
@@ -194,11 +194,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 // MARK: - Lock-screen Now Playing integration
 
 /// Singleton owning the lock-screen / Control-Center Now Playing widget.
-/// Phase 1: visibility only (this commit). Widget appears with the
-/// Sidekick brand + dark icon while audio session is active. Play /
-/// pause / stop buttons render but no-op.
-/// Phase 2 (2026-05-10): the four MPRemoteCommandCenter callbacks now
-/// fire JS-side `sidekick:remote-control` events via webView.evaluateJS.
+/// Widget appears with the Sidekick brand + dark icon while the audio
+/// session is active. The four MPRemoteCommandCenter callbacks fire
+/// JS-side `sidekick:remote-control` events via webView.evaluateJS.
 /// JS subscribes (src/remoteControl.ts) and dispatches the matching
 /// action — stop hangs up active call, play/pause toggles agent TTS.
 /// Bluetooth headset transport buttons (BT play/pause/skip) route

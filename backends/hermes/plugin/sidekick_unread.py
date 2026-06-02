@@ -40,8 +40,8 @@ def compute_unread(
     ``{chats: [{chat_id, unread_count, marked_unread, last_read_at}],
        total: N}``.
 
-    ``total`` is the SUM of per-chat counts (Jonathan picked the sum
-    over a chat-count aggregate for higher-fidelity feedback).
+    ``total`` is the SUM of per-chat counts (higher-fidelity than a
+    chat-count aggregate).
 
     Counts assistant rows (tool-call orchestrators excluded) with
     timestamp > last_read_at, from TWO sources:
@@ -53,9 +53,7 @@ def compute_unread(
     end-of-turn. A short "Checking." reply lands in msg_links seconds
     before its state.db twin; counting state.db only made the unread
     count return 0 for that brief window → PWA badge.ts:109's
-    auto-markAllRead nuked the activity row as "stale" (Jonathan field
-    bug 2026-05-29: agent's quick-ack reply got no badge while the
-    full reply minutes later badged correctly).
+    auto-markAllRead nuked the activity row as "stale".
 
     For sticky ``marked_unread=1``, returns at least 1 regardless of
     the timestamp comparison.

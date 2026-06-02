@@ -33,7 +33,7 @@
 let debugEl = null;
 
 // Dev-mode is the single source of truth for "user wants diagnostics
-// fully on" (mainly for Jonathan's on-the-go phone-bug-report workflow).
+// fully on".
 // When dev mode is on, both debugOn and relayOn become true regardless
 // of their individual URL/localStorage flags. URL flags still work for
 // surgical desktop debugging (one-shot ?debug=1 without dev mode).

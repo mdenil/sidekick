@@ -208,7 +208,7 @@ export function notifyReplyPlayback(playing: boolean): void {
     // notifyReplyPlayback(true) becomes a no-op, the agent's TTS plays
     // un-tracked, audio.ended → notifyReplyPlayback(false) is also a
     // no-op (state !== 'playing'), and the post-commit cooldownTimer
-    // re-arms WHILE the agent is still talking. Field repro:
+    // re-arms WHILE the agent is still talking. Reproduced in:
     // listen-silence-commit smoke times out waiting for re-arm because
     // the cooldownTimer fires armRecorder() against a torn-down mic
     // capture → teardown → idle.
@@ -277,8 +277,8 @@ export async function start(o: ListenOpts): Promise<boolean> {
     try { await ctx.resume(); } catch { /* ignore */ }
   }
   try {
-    // Match realtime talk's DSP triple (the v0.413 setting Jonathan
-    // confirmed worked perfectly). Pairs with the v0.417 TTS-via-Web-
+    // Match realtime talk's DSP triple (echoCancellation=true, NS+AGC=false).
+    // Pairs with the TTS-via-Web-
     // Audio routing experiment in tts.ts: by routing player output
     // through the same AudioContext as the mic, we hope Chrome's AEC
     // engages on the speaker bleed. AEC alone should be enough — NS+AGC
@@ -292,7 +292,7 @@ export async function start(o: ListenOpts): Promise<boolean> {
     teardown();
     return false;
   }
-  // Audio-session diag (kept for now — Jonathan, 2026-05-05). Confirms
+  // Audio-session diag: confirms
   // the prime ran (track label after prime should resemble BT when one
   // is connected; iPhone Mic when not) and the route is settled.
   // v0.444 enumerate-and-swap code was dropped: enumerateDevices on
@@ -445,8 +445,7 @@ async function armRecorder(): Promise<void> {
     // SERVER path — MediaRecorder buffers a blob for /transcribe.
     // Cap the audio bitrate at 24 kbps. Speech-to-text (Deepgram /
     // Whisper) transcribes low-bitrate audio fine, and the default
-    // MediaRecorder bitrate (~216 kbps measured in field testing
-    // 2026-05-03) makes multi-minute memos ~10x larger than they need
+    // MediaRecorder bitrate (~216 kbps default) makes multi-minute memos ~10x larger than they need
     // to be — a 92s memo shrank from 2.5MB to ~250KB, cutting park-
     // bench 5G upload time from 22s to ~2s. Works on iOS Safari (AAC)
     // and Chrome (Opus).

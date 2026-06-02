@@ -278,7 +278,7 @@ describe('project: dedup keys', () => {
   });
 
   it('inflight reply_final does NOT duplicate a durable assistant row that arrived without sidekick_id (field bug 2026-05-19)', () => {
-    // Active-chat dupe field repro: user sent a message, plugin mirrored
+    // Active-chat dupe scenario: user sent a message, plugin mirrored
     // the assistant row but the link write didn't land (sidekick_id NULL).
     // Without content-fallback dedup, durable keyed by integer "101" and
     // inflight keyed by "msg_xyz" rendered as two separate bubbles.

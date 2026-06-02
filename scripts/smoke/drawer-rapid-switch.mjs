@@ -4,11 +4,10 @@
 //
 // This is the strict 1:1 invariant test that drawer-switch.mjs
 // deliberately punted on (its lines 174-181 call out the rapid-fire
-// race and skip exercising it). Jonathan's normal clicking exposes the
-// race in production: stale `onResumeCb` callbacks fire AFTER newer
-// clicks because `resumeInFlight` was keyed by id only — different-id
-// concurrent resumes both run to completion, last-one-wins by
-// completion order rather than click order.
+// race and skip exercising it). Stale `onResumeCb` callbacks fire
+// AFTER newer clicks because `resumeInFlight` was keyed by id only
+// — different-id concurrent resumes both run to completion,
+// last-one-wins by completion order rather than click order.
 //
 // Failure mode this test catches:
 //   - drawer highlights chat B, transcript renders chat A

@@ -7,9 +7,8 @@
  * dlog phase logs fire, log lines stream to /tmp/sidekick-debug/<sid>.log
  * via the relay endpoint.
  *
- * Why a single flag (not three): for Jonathan's on-the-go workflow
- * (catch a bug while biking → open Claude → "look at the log"),
- * he wants either ALL diagnostics or none. The three URL flags exist
+ * Why a single flag (not three): in mobile/PWA usage you typically
+ * want either ALL diagnostics or none. The three URL flags exist
  * for surgical desktop debugging where you might enable just one.
  *
  * ── Transparency ─────────────────────────────────────────────────────
@@ -72,9 +71,8 @@ export function setDevMode(on: boolean): void {
  *  VAD assets (the `vad-assets-*` Cache API bucket) are PRESERVED by
  *  default: they're 14.7 MB and re-downloading them cold takes ~60-70s,
  *  which loses the race against turn-mode TTS so client-side barge VAD
- *  never warms in time to fire (field repro 2026-06-01: a quick-tap
- *  force-reload wiped vad-assets-v4 → 68s cold re-download → barge dead
- *  for that turn). The full nuke (clearVadCache:true, wired to the
+ *  never warms in time to fire (force-reloading while wiping the
+ *  vad-assets cache causes a ~68s cold re-download). The full nuke (clearVadCache:true, wired to the
  *  long-press path) still exists for when a VAD-lib bug/update genuinely
  *  needs the assets re-fetched.
  *
@@ -216,8 +214,7 @@ export function mountDevPill(): void {
       // Render the force-reload button next to the DEV pill. Tap to
       // do the safe nuke (SW + Cache API, no IDB). Long-press for the
       // full nuke including IDB (drops session state — confirmed via
-      // alert before firing). Discreet — only visible when dev mode
-      // is on, exactly as Jonathan asked.
+      // alert before firing). Discreet — only visible when dev mode is on.
       const reloadBtn = document.createElement('button');
       reloadBtn.id = 'dev-reload-btn';
       reloadBtn.className = 'dev-reload-btn';
@@ -292,9 +289,7 @@ export function mountDevPill(): void {
       // are computed at module load) pick up the new state. When
       // turning OFF, also strip the ?debug=1/debug-relay=1/dictate-
       // debug=1 URL flags — isDevMode reads them BEFORE localStorage,
-      // so without stripping, the toggle has zero effect (Jonathan
-      // 2026-05-12: "i hold and get popup, but it doesn't change modes
-      // and refresh and hard reload don't fix"). When turning ON, no
+      // so without stripping, the toggle has zero effect. When turning ON, no
       // URL change needed — localStorage alone is enough.
       const url = new URL(location.href);
       if (!next) {

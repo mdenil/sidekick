@@ -1,5 +1,4 @@
-// Field bug 2026-05-20 (Jonathan, screenshot from "Short Reply Test"
-// session 45a17058...): every short turn renders TWICE. State.db's
+// Regression guard: every short turn renders TWICE. State.db's
 // assistant row has `sidekick_id="sk-<unix>-<seq>"` (synthetic shape,
 // minted by the plugin's `_next_message_id()` at __init__.py:1432
 // when the envelope had no message_id). Live SSE envelopes for the

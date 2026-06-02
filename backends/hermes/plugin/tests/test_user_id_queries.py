@@ -440,9 +440,9 @@ assert len(_HERMES_DEFAULT_PROMPT) >= 200, "fixture must exceed threshold for ne
 
 
 def test_drawer_rolls_up_compacted_null_user_id_child(plugin, state_db):
-    """Field bug 2026-05-12 (Jonathan, neck-strain chat): hermes
-    compaction creates child sessions with user_id=NULL, breaking
-    the upstream contract that "rotated sessions inherit user_id."
+    """Hermes compaction creates child sessions with user_id=NULL,
+    breaking the upstream contract that "rotated sessions inherit
+    user_id."
     The recursive CTE walks parent_session_id chains so the child's
     messages get rolled up under the root's user_id — BUT only if
     the child's system_prompt matches the parent's (compaction
@@ -488,11 +488,8 @@ def test_drawer_excludes_delegate_subtask_with_different_prompt(plugin, state_db
     instead of inheriting the parent's. Their messages must NOT
     roll up into the drawer's user-facing message_count.
 
-    Field signal: Jonathan's neck-strain chat had 6 delegate sub-
-    tasks chained off the root, totaling 329 messages. Without the
-    prompt gate the drawer showed message_count=486 (139 root +
-    329 delegate + 18 real continuation) instead of the correct
-    157 (139 + 18)."""
+    Without the prompt gate the drawer can inflate message_count
+    significantly by including unrelated delegate sub-task messages."""
     _insert_session(state_db, "root", "sidekick", "u", 1000.0, title="root",
                     system_prompt=_SIDEKICK_PROMPT)
     _insert_message(state_db, "root", "user", "user msg", 1001.0)
@@ -590,8 +587,8 @@ def test_drawer_accepts_compacted_child_with_appended_prompt(plugin, state_db):
       Compacted child prompt:    "# SOUL.md - ... [22532 chars][101 chars of context]"
 
     The CTE must roll up children whose system_prompt STARTS WITH
-    the root's, not just exact-match (which would miss the
-    real-world compaction continuation Jonathan saw 2026-05-12)."""
+    the root's, not just exact-match (compaction appends a context
+    summary suffix to the base prompt)."""
     _insert_session(state_db, "root", "sidekick", "u", 1000.0,
                     system_prompt=_SIDEKICK_PROMPT)
     _insert_message(state_db, "root", "user", "before", 1001.0)

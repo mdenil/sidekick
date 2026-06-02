@@ -88,8 +88,7 @@ def _items_by_user_id(
     # child sessions (user_id=NULL) get rolled up under the
     # requested chat_id. Without this, the transcript returns
     # only the root session's messages — any messages persisted
-    # to a compaction-rotated child are invisible (Jonathan
-    # field bug 2026-05-12).
+    # to a compaction-rotated child are invisible.
     sql = """
         WITH RECURSIVE session_root(id, root_system_prompt, is_compaction_child) AS (
             SELECT id, system_prompt, 0 FROM sessions
@@ -140,11 +139,10 @@ def _items_by_user_id(
     # session was minted). Used by hermes' context-window seed; should
     # never reach the user-facing transcript.
     #
-    # Field bug 2026-05-17 (Jonathan, chat 56b3d788…): the original
-    # prompt appeared at the top (real, in parent session) AND again
-    # near the end (the compaction-injected dupe in the child session).
-    # The user saw their own prompt twice plus 4 dupe assistant/tool
-    # rows in between — incoherent transcript.
+    # The original prompt appears in the parent session AND again in
+    # the compaction-injected seed block at the head of the child
+    # session — the user would see their own prompt twice plus dupe
+    # assistant/tool rows in between, producing an incoherent transcript.
     #
     # Fix: per child session, find the LAST row whose content starts
     # with `[CONTEXT COMPACTION`, drop that marker AND every row in
@@ -186,8 +184,8 @@ def _items_by_user_id(
         if tool_name:
             item["tool_name"] = tool_name
         # Tool-call linkage. Surfaced so the PWA can reconstruct
-        # activity rows from history on reload (the SSOT-rebuild
-        # path Jonathan endorsed 2026-05-17). Hermes' core schema
+        # activity rows from history on reload (SSOT-rebuild path).
+        # Hermes' core schema
         # already persists these columns; we just propagate them
         # in the wire response. No new storage, no schema change.
         #

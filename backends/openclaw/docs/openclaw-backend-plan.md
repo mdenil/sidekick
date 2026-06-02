@@ -3,24 +3,6 @@
 **Status**: research pass complete 2026-05-14. Updated with relevant
 state-layer audit context 2026-05-15. **Not yet started.**
 
-**Author**: Claude (audit), Jonathan (design partner)
-
-**Resume protocol — read these first if context was compacted:**
-1. This file (you're here).
-2. `~/code/hermes-agent-private/sidekick-openclaw-compat.md` —
-   2026-04-29 prior audit, has the channel-plugin-is-wrong analysis
-   + the multi-identity-ID-encoding precedent.
-3. `~/code/sidekick/proxy/sidekick/upstream.ts` — the
-   `UpstreamAgent` interface every backend implements. Lines 145-223
-   are the contract.
-4. `~/code/sidekick/backends/hermes/plugin/__init__.py` — the
-   reference implementation in Python (~4150 LOC). Search for
-   `_handle_health`, `_handle_responses`, `_handle_get_conversation_items`
-   to see the canonical handlers.
-5. `~/code/hermes-agent-private/hosts/cortex/architecture-audit/`
-   doesn't exist as a doc yet — the architecture audit lives inline
-   in the 2026-05-14 conversation thread; key takeaways are in the
-   "State-layer context" section below.
 
 **Decision register — what's been decided that's relevant to openclaw:**
 - *Inflight cache stays hermes-specific.* Don't try to abstract it
@@ -173,13 +155,13 @@ Mitigation: stand up a minimal "hello world" openclaw plugin first, log every bi
 
 6. **The biggest risk is implicit.** Building openclaw-side will surface abstraction leaks in `proxy/sidekick/upstream.ts` we haven't seen yet because the only consumer is hermes. Most likely: SSE-ring semantics, inflight cache's coupling to hermes-side state.db row-id assignment, the `sidekick_msg_links` dedup machinery that today lives in hermes' state.db. Plan for the upstream.ts contract to grow in response to what we learn — DON'T treat it as frozen.
 
-## Open decisions for Jonathan
+## Open decisions
 
 1. **Cortex local vs blueberry.** Recommend cortex-local for dev speed (single shell, no SSH, side-by-side with hermes). Blueberry's openclaw install can come later as a "does it work on ARM + actual hardware" exercise.
 2. **Repo location.** New sibling `~/code/sidekick-openclaw-plugin/` (audit's recommendation, published to clawhub eventually) or vendored under `~/code/sidekick/backends/openclaw/plugin/`? The clean answer is the sibling; the pragmatic answer is co-located for now and split later if it warrants its own release.
 3. **Inflight cache: cement-as-hermes-specific OR generalize.** Recommend cement-as-hermes — earlier hubris claimed it was generic; let openclaw prove its real needs before we abstract.
 
-## What I'd do tomorrow if green-lit
+## Getting started
 
 ```bash
 # 1. Install openclaw alongside hermes on cortex
@@ -202,11 +184,11 @@ cd sidekick-openclaw-plugin
 # That's the half-day spike. Then iterate on routes.
 ```
 
-## State-layer context (2026-05-15 audit)
+## State-layer context
 
-The architecture audit Jonathan asked for produced an inventory of
-~25 stores across three tiers. Decisions that landed before the
-openclaw work begins, and that openclaw should follow:
+The architecture audit produced an inventory of ~25 stores across
+three tiers. Decisions that landed before the openclaw work begins,
+and that openclaw should follow:
 
 **Persistent state ownership:**
 - `state.db.messages` (hermes-owned) is the single source of truth
@@ -222,9 +204,9 @@ openclaw work begins, and that openclaw should follow:
   by content regex as a fallback when `kind` is unset.
 - Push notification state lives in `~/.sidekick/` JSON files
   (subscriptions, mutes, prefs) on the proxy side. Not state.db.
-  Jonathan agreed these should eventually move into a plugin-owned
-  SQLite alongside `sidekick_msg_links`, but the migration is
-  deferred until after openclaw lands.
+  These should eventually move into a plugin-owned SQLite alongside
+  `sidekick_msg_links`, but the migration is deferred until after
+  openclaw lands.
 
 **Inflight cache (proxy in-memory):**
 - Holds envelopes for in-flight turns that haven't reached state.db
@@ -263,9 +245,8 @@ reassessment during openclaw work is best positioned to fix cleanly.
 Don't patch them tactically — instead use them as load-bearing test
 cases when defining the new inflight semantics.
 
-- **Tool-call rows replay on every hard reload** (Jonathan field bug
-  2026-05-15, screenshot showed 4 stacked "16 tools · done" rows from
-  4 reloads). The inflight cache holds tool_call / tool_result
+- **Tool-call rows replay on every hard reload.** The inflight cache
+  holds tool_call / tool_result
   envelopes for a turn whose reply_final landed; on reload, the
   history fetch + inflight replay both reproduce them, but the heal
   loop doesn't catch tool rows because they don't have message ids
@@ -299,7 +280,7 @@ pipeline before starting the openclaw plugin:
   approach. Reverted in `737f7e9`. Keep for context on why we
   chose `state.db.messages` over a sibling table.
 
-## What I'd do tomorrow if green-lit (extended)
+## Getting started (extended)
 
 After the half-day install spike above, the priority order is:
 

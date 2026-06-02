@@ -1,4 +1,4 @@
-// Field bug 2026-05-11 (Jonathan): "I lost a user bubble" report.
+// Field bug 2026-05-11: "I lost a user bubble" report.
 //
 // Diagnosis: handleUserMessage's upsert was unconditional on `text`,
 // with a `text || ''` fallback. A user_message envelope carrying an

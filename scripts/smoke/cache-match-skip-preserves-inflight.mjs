@@ -1,7 +1,5 @@
-// Field bug 2026-05-12 (Jonathan, chat 99298465 dev log):
-//
-//   "ok def reproed the double 'switch away and switch back' clears
-//    the inflight cache."
+// Regression guard: switching away and back twice cleared the inflight
+// cache, losing in-flight bubbles.
 //
 // Root cause located in sessionDrawer.ts at the
 // `server-render-skip-cache-match` early-return. When the cache

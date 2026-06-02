@@ -1,12 +1,12 @@
 // Regression gate for the 2026-05-17 transient tool-row ordering bug
 // on cold page load.
 //
-// Field repro (Jonathan): a chat with multiple tool-using turns
-// rendered correctly when reached via session-switch, but after a
-// PWA refresh (cold load) ALL activity rows clumped at the END of
-// the transcript. Switching away to another chat and back fixed the
-// ordering. He'd cleared IndexedDB before reproducing — not a stale-
-// cache issue, real ordering bug.
+// Field repro: a chat with multiple tool-using turns rendered correctly
+// when reached via session-switch, but after a PWA refresh (cold load)
+// ALL activity rows clumped at the END of the transcript. Switching
+// away to another chat and back fixed the ordering. IndexedDB was
+// cleared before reproducing — not a stale-cache issue, real ordering
+// bug.
 //
 // Root cause:
 //   chat.persist() strips `.activity-row` from the snapshot HTML

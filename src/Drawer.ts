@@ -71,8 +71,8 @@ export interface DrawerHandle {
  *  on top" semantics. Also stores toggleIds so each drawer's
  *  click-outside-to-close exempts other drawers' toggle buttons
  *  (without this, tapping the pin-drawer toggle while the sidebar
- *  is open auto-closes the sidebar — Jonathan field test 2026-05-13
- *  phase-3 of mobile-drawer-swipes regression). */
+ *  is open auto-closes the sidebar — without this, tapping a sibling's
+ *  toggle while the sidebar is open would auto-close the sidebar). */
 const drawers = new Map<string, {
   el: HTMLElement;
   handle: DrawerHandle;
@@ -174,7 +174,7 @@ export function createDrawer(cfg: DrawerConfig): DrawerHandle | null {
     handle.close();
   }, true);
 
-  // ── Escape-to-close — removed 2026-05-15 (Jonathan UX nit). Esc is
+  // ── Escape-to-close — intentionally omitted. Esc is
   //    used by the sidebar session selection to deselect rows
   //    (keyboard nav); having it also close the drawer means a single
   //    Esc both deselects AND closes, which is two intentions for one

@@ -3,7 +3,7 @@
  *
  * Exposes the `/v1/*` OpenAI-Responses-style HTTP+SSE contract that the
  * sidekick proxy expects from any backend it talks to (see
- * `~/code/sidekick/proxy/sidekick/upstream.ts:145-223` for the canonical
+ * `proxy/sidekick/upstream.ts:145-223` for the canonical
  * `UpstreamAgent` interface).
  *
  * Routes currently implemented:
@@ -16,7 +16,7 @@
  *   GET /v1/conversations?limit=N           — drawer list
  *   GET /v1/conversations/{id}/items?...    — transcript replay
  *
- * Still pending (this bring-up's punch list):
+ * Still pending:
  *   POST /v1/responses          — dispatch a turn into openclaw's agent
  *   GET  /v1/events             — out-of-turn SSE (notifications, etc.)
  *   DELETE /v1/conversations/{id}
@@ -26,8 +26,8 @@
  * JS entry points directly; build chain stays minimal until the surface
  * justifies it.
  *
- * Reference: `~/code/sidekick/backends/hermes/plugin/__init__.py` is
- * the Python implementation of the same contract against hermes-agent.
+ * Reference: `backends/hermes/plugin/__init__.py` is the Python
+ * implementation of the same contract against hermes-agent.
  */
 import { definePluginEntry } from 'openclaw/plugin-sdk/plugin-entry';
 import {
@@ -201,7 +201,7 @@ export default definePluginEntry({
     // DELETE cascades through openclaw's sessions.delete (transcript +
     // bindings). PATCH (rename) is a no-op stub for v0 — openclaw has
     // no native title column, and persisting titles in the
-    // supplemental store can wait until Jonathan asks.
+    // supplemental store can be added later.
     //
     // Both share the same path shape /v1/conversations/{id} (no
     // trailing /items), so the prefix handler below routes by method.

@@ -1,7 +1,7 @@
-// Field bug 2026-05-20 (Jonathan): after a compaction/session rotation,
-// several durable Hermes rows shared the same unix-second timestamp. The
-// projection sorted same-timestamp users before assistants, moving the
-// previous assistant final ("Done. Split is live") below the next user turn.
+// Regression guard: after a compaction/session rotation, several durable
+// rows shared the same unix-second timestamp. The projection sorted
+// same-timestamp users before assistants, moving the previous assistant
+// final ("Done. Split is live") below the next user turn.
 //
 // Server order is authoritative for durable rows. This smoke pins that a
 // same-second durable assistant remains before the next durable user row.

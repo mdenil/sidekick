@@ -1,7 +1,7 @@
 // Scenario: shift-click two drawer rows → stats panel mounts → click
 // Delete → both rows disappear from the drawer.
 //
-// Adds the multi-select + bulk-delete workflow Jonathan asked for.
+// Covers the multi-select + bulk-delete workflow.
 // Same predicate as `empty-chat-rotation-cleanup` (deleteSession per
 // chat) but driven by the user's selection rather than an empty-chat
 // auto-cleanup.

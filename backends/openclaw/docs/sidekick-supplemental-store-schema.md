@@ -1,14 +1,12 @@
 # Sidekick supplemental store — schema draft
 
-**Status:** signed off by Jonathan 2026-05-15 (all six decisions
-confirmed; tier-4 framing refined per his pushback). Implementation
-green-lit.
+**Status:** approved; implementation complete.
 
 **Context:** part of the openclaw-integration work. See
 `openclaw-backend-plan.md` for the broader plan + decision register.
-The architecture audit identified state-layer sprawl across 25 stores
+The architecture audit identified state-layer sprawl across ~25 stores
 as the load-bearing source of session/notification/pin flakiness.
-This doc proposes the consolidated schema.
+This doc describes the consolidated schema.
 
 ## Goals
 
@@ -35,9 +33,9 @@ This doc proposes the consolidated schema.
   there. The new sidekick store is a separate database file.
 - Replacing the hermes state.db for transcript content. That stays
   authoritative for messages. The supplemental store augments.
-- Per-user multi-tenancy. Today it's single-user (Jonathan). Schema
-  is shaped so adding a `user_id` column later is mechanical, but
-  not built in v1.
+- Per-user multi-tenancy. Today it's single-user. Schema is shaped
+  so adding a `user_id` column later is mechanical, but not built
+  in v1.
 
 ## File location
 
@@ -211,7 +209,7 @@ CREATE INDEX IF NOT EXISTS idx_inflight_message ON inflight(message_id);
    Storage cost: ~1KB/envelope × ~100 envelopes/day × 365 days =
    36 MB/year. Trivial.
 
-4. **Four tiers of state ownership** (Jonathan sign-off 2026-05-15):
+4. **Four tiers of state ownership**:
    - **Tier 1 — Agent runtime authoritative.** `state.db.messages`
      for transcript content. Hermes' / openclaw's native store.
      Sidekick plugin reads, doesn't write.
@@ -250,7 +248,7 @@ CREATE INDEX IF NOT EXISTS idx_inflight_message ON inflight(message_id);
 
 ## What this DOESN'T solve yet
 
-- **Tool-row reload duplication** (Jonathan field bug 2026-05-15).
+- **Tool-row reload duplication.**
   Tool envelopes need dedup ids the heal loop catches. The
   supplemental store puts them in `inflight` table; the renderer
   needs to query "what tool rows have agent_row_id linked OR are
@@ -272,20 +270,8 @@ CREATE INDEX IF NOT EXISTS idx_inflight_message ON inflight(message_id);
 3. `POST /v1/responses` writing to `inflight` + `messages` as
    envelopes emit. Drives the openclaw turn dispatch.
 4. Migrate pins / push files into the supplemental store on hermes
-   plugin (preserving Tom's data). Sidekick PWA gains cross-device
-   pin sync as a side effect.
+   plugin (preserving existing user data). Sidekick PWA gains
+   cross-device pin sync as a side effect.
 5. Reassess in-memory inflight cache in the proxy. With persistent
    store backing it, the cache can shrink to "session-scoped fan-out
    buffer" or be eliminated entirely.
-
-## Questions for Jonathan
-
-1. Schema look right? Anything you'd add/drop/reshape before I build
-   against it?
-2. Decision #1 (one file): agree on single file?
-3. Decision #3 (inflight retention): agree on keep-forever with
-   `finalized_at` filter?
-4. Decision #5 (sync write timing): agree on synchronous in
-   `_safe_send_envelope`?
-5. Anything about cross-device pin/unread sync that should affect
-   v1 — e.g. do you want server-driven last-read-ack now or later?

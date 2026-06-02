@@ -7,8 +7,8 @@
  *   - The plugin needs to dispatch user turns into the agent runtime,
  *     and the gateway's `chat.send` handler is the documented entry.
  *
- * Wire protocol (verified against
- *  `~/code/openclaw-integ/src/gateway/protocol/schema/frames.ts`):
+ * Wire protocol (see
+ *  `src/gateway/protocol/schema/frames.ts` in the openclaw gateway):
  *
  *   Handshake (always first):
  *     send: {type:"req", id, method:"connect", params: ConnectParams}

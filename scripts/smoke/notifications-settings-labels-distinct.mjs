@@ -1,11 +1,10 @@
 // Settings → Notifications panel: every checkbox label must be
-// distinct. Field bug 2026-05-13 (Jonathan): two separate toggles
-// both labeled "Push notifications" — one drove
-// pushManager.subscribe (master) and one drove the per-kind filter
-// for `notification`-class envelopes. Visually identical, no way
-// to tell which one Jonathan was clicking, and a confused
-// off→on toggle of the wrong one looked like "push notifications
-// stopped working" because the master ended up off.
+// distinct. Regression guard: two separate toggles both labeled
+// "Push notifications" — one drove pushManager.subscribe (master)
+// and one drove the per-kind filter for `notification`-class
+// envelopes. Visually identical, a confused off→on toggle of the
+// wrong one would make push notifications appear to stop working
+// because the master ended up off.
 //
 // This is a pure-DOM gate. Walks every <label> inside the
 // notifications settings group, asserts no two share the same

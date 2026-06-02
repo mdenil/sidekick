@@ -1,8 +1,8 @@
 // Scenario: a full hands-free turn over the REAL audio channel, with
 // only the two cloud providers (STT + TTS) stubbed — no Deepgram key.
 //
-// This is the always-green guard for the field bug the mocked suite
-// missed (Jonathan, 2026-06-01): "tts didn't work in turn mode".
+// This is the always-green guard for the regression the mocked suite
+// missed: TTS not working in turn mode.
 //
 // What it exercises that listen-silence-commit does NOT:
 //   1. Real mic channel: AUDIO_FIXTURE feeds turn-prompt.wav into

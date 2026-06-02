@@ -7,8 +7,8 @@
  * suppression window — final + 1.2s grace). TTS audio plays through
  * the speaker for many seconds AFTER `final`, so the gate flipped off
  * mid-playback and barge could only fire in the first ~1.2s of any
- * reply. Caught in field testing 2026-05-03 (Mac, quiet room) where
- * shouting at the speaker during a 10-count produced zero fires.
+ * reply. Symptom: shouting at the speaker during a 10-count produced
+ * zero barge fires.
  *
  * The fix: separate `ttsPlaying` flag, set on `onAssistantDelta`,
  * cleared on `onListening` (the bridge's authoritative "TTS audio

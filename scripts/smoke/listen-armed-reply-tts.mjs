@@ -1,18 +1,19 @@
 // Scenario: a Listen-turn reply that lands AFTER the turn machine has
 // re-armed must still auto-speak.
 //
-// Regression guard for the field bug Jonathan hit (2026-06-01): "turn/
-// memo mode doesn't speak replies." Root cause was commit 2e82220
-// ("fix audio capture and desktop stream regressions", 2026-05-23),
-// which added shouldAutoPlayForListen() and over-narrowed the autoplay
-// gate to `turnbased.getState() === 'committing' || 'cooldown'`. On a
-// SLOW connection the agent reply arrives several seconds after the
-// turn committed — by which point the turn machine has cycled
+// Regression guard: turn/memo mode stopped speaking replies when the
+// reply arrived after the turn machine had already re-armed. Root
+// cause was commit 2e82220 ("fix audio capture and desktop stream
+// regressions", 2026-05-23), which added shouldAutoPlayForListen()
+// and over-narrowed the autoplay gate to
+// `turnbased.getState() === 'committing' || 'cooldown'`. On a SLOW
+// connection the agent reply arrives several seconds after the turn
+// committed — by which point the turn machine has cycled
 // committing → cooldown → 'armed' (re-armed for the next utterance).
 // The narrow gate then silently dropped the reply's TTS and the agent
-// went mute. Confirmed in Jonathan's relay log: a `[reply-route]
-// turnbased-tts ... turnbased=armed` line with NO following
-// `[reply-tts] enter` — playReplyTts was never called.
+// went mute. Observable via a `[reply-route] turnbased-tts ...
+// turnbased=armed` line with NO following `[reply-tts] enter` in the
+// relay log — playReplyTts was never called.
 //
 // Why the existing spoken-turn-tts / listen-silence-commit smokes miss
 // it: their mocked reply comes back instantly, while the machine is

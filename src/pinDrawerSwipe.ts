@@ -4,10 +4,10 @@
  * is right-to-left, closing is left-to-right).
  *
  * Uses the same parameterized core as the left sidebar so behavior
- * is guaranteed identical. Jonathan's prior pin-drawer-only
- * implementation only supported close-from-inside; this wrapper
- * gets open-from-anywhere "for free" because the underlying
- * drawerSwipe handles both directions via the `direction` sign.
+ * is guaranteed identical. The prior pin-drawer-only implementation
+ * only supported close-from-inside; this wrapper gets
+ * open-from-anywhere "for free" because the underlying drawerSwipe
+ * handles both directions via the `direction` sign.
  */
 
 import { initDrawerSwipe } from './drawerSwipe.ts';

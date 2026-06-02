@@ -5,9 +5,8 @@ non-interactively. Run these on cortex after a fresh openclaw install.
 
 ## 1. Codex OAuth (model provider)
 
-Openclaw needs a model provider configured. We're using Jonathan's
-OpenAI Codex OAuth with `gpt-5.4-mini` as the default to save quota
-(per 2026-05-15 discussion).
+Openclaw needs a model provider configured. OpenAI Codex OAuth with
+`gpt-5.4-mini` as the default.
 
 ```bash
 # Interactive — opens a browser for OAuth.

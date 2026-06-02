@@ -1,10 +1,8 @@
-// Contract (Jonathan, 2026-05-28): a resolved approval — and its
-// outcome — must survive a PWA reload. If I /approve something in the
-// morning and reload the page in the afternoon, the row still says
-// "✓ Approved" with the same chat link, not a stale "Action needed" or
-// (worse) a vanished row I can no longer audit. Tests the persist path:
-// activityStore writes resolution state and the next hydrate reads it
-// back intact.
+// Contract: a resolved approval — and its outcome — must survive a
+// PWA reload. The row must still say "✓ Approved" with the same chat
+// link, not a stale "Action needed" or a vanished row. Tests the
+// persist path: activityStore writes resolution state and the next
+// hydrate reads it back intact.
 
 import { waitForReady, openSidebar, clickRow, assert } from './lib.mjs';
 

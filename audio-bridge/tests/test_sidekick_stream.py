@@ -5,7 +5,7 @@ tool + result patterns).
 
 Pre-fix: stt_bridge._dispatch_to_agent broke the SSE loop on the first
 reply_final, so the post-tool-call paragraph arrived as text on the
-PWA but was never spoken (Jonathan, 2026-05-10 field repro). Fix is
+PWA but was never spoken. Fix is
 the _SidekickStreamReader + _run_sidekick_stream pair, which feeds the
 TTS queue for the lifetime of the peer regardless of bubble boundaries.
 

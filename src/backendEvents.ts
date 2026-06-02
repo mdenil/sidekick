@@ -1,6 +1,5 @@
 // Adapter-envelope handlers — the inbound side of the BackendAdapter
-// contract. Extracted 2026-05-11 for the Phase 1 / pre-notifications
-// refactor.
+// contract.
 //
 // Scope intentionally narrow: only `handleNotification` and
 // `handleUserMessage` live here today. The streaming-bubble cluster —
@@ -8,17 +7,15 @@
 // `handleToolEvent`, plus the streaming-state helpers
 // (`showStreamingIndicator`, `finalizeOldestPending`,
 // `clearStreamingIndicator`, `pendingStreamingKey`, the idle timer)
-// — remains in main.ts until Phase 2's `streamingIndicator.ts`
-// extraction. Those handlers all share mutable streaming state that
-// would need to move with them; pulling them piecemeal would scatter
-// the state machine across two modules.
+// — remains in main.ts. Those handlers all share mutable streaming
+// state that would need to move with them; pulling them piecemeal
+// would scatter the state machine across two modules.
 //
-// Why this module exists in Phase 1 anyway: `handleNotification` is
-// the Phase 3 (Web Push) integration point — the off-screen branch
-// will expand into "post an OS notification + set badge + wake the
-// SW push handler." Having it in its own module means that expansion
-// lands as a focused diff inside `backendEvents.ts` rather than a
-// ~200-line touch in main.ts.
+// `handleNotification` is the Web Push integration point — the
+// off-screen branch will expand into "post an OS notification + set
+// badge + wake the SW push handler." Keeping it here means that
+// expansion lands as a focused diff rather than a ~200-line touch
+// in main.ts.
 
 import { log } from './util/log.ts';
 import * as transcriptStore from './transcript/store.ts';
@@ -83,7 +80,7 @@ export function handleNotification({ chatId, kind, content, sidekickId, isReplay
   // approval blocks the agent until the user decides, so it's urgent
   // regardless of which chat is on screen. The transcript bubble + tray
   // row are not enough; the banner is the affordance with action buttons
-  // that doesn't require opening the right drawer (field 2026-05-27).
+  // that doesn't require opening the right drawer.
   if (!replay && chatId && kind === 'approval') {
     inAppBanner.show({
       chatId,

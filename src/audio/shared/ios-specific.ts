@@ -68,13 +68,12 @@ function setSessionType(type: string) {
  *  before getUserMedia so any prior 'playback' hint (from TTS) is cleared. */
 export function prepareForCapture() { setSessionType('play-and-record'); }
 
-// ── iOS audio-session prime (Jonathan, 2026-05-05) ─────────────────────
+// ── iOS audio-session prime ─────────────────────────────────────────────
 // On cold-start iOS PWA standalone, BT input devices are HIDDEN from
 // enumerateDevices() and from the system "default audio input" until at
-// least one getUserMedia cycle has activated the audio session. Diagnostic
-// trace 2026-05-05 confirmed: call #1 returns iPhone Microphone with
-// only iPhone Microphone in enumerateDevices(); call #2 returns BT directly
-// without any code-side device selection.
+// least one getUserMedia cycle has activated the audio session. A
+// throwaway prime call #1 returns iPhone Microphone; call #2 returns BT
+// directly without any code-side device selection.
 //
 // Workaround: do a throwaway getUserMedia → release cycle ONCE per page
 // load to "exercise" the session. The next real capture inherits the

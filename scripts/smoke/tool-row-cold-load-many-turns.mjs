@@ -2,12 +2,12 @@
 // shapes, simulates a real chat after a PWA reload.
 //
 // Why a second smoke: `tool-row-cold-load-ordering` proves the cold-
-// load fix on a 2-turn fixture and passes. But Jonathan kept seeing
-// activity rows clumped at the end of long chats on iOS post-reload
-// (2026-05-17 evening screenshot: an 11-row clump of "8 tools · done /
-// 5 tools · done / 27 tools · done / …" at the bottom of the
-// transcript). The 2-turn fixture clearly doesn't exercise whatever
-// shape breaks in production. This smoke increases the surface:
+// load fix on a 2-turn fixture and passes. But activity rows were
+// still observed clumped at the end of long chats on iOS post-reload
+// (an 11-row clump of "8 tools · done / 5 tools · done / 27 tools ·
+// done / …" at the bottom). The 2-turn fixture clearly doesn't
+// exercise whatever shape breaks in production. This smoke increases
+// the surface:
 //
 //   - 6 turns, varied tool counts (1, 3, 1, 5, 2, 4) — matches the
 //     spread visible in the field screenshot.
@@ -151,9 +151,9 @@ function assertNotClumped(structure, label) {
     if (tok.startsWith('u:')) uIdxs.push(i);
   });
   // Under virt only the visible window (~10 specs) is in DOM; expect
-  // ≥2 activity rows + ≥3 user bubbles in that slice. The field bug
-  // (rows clumped at end) still shows up in the bottom window because
-  // the visible turns near the bottom would all have ar's at their end.
+  // ≥2 activity rows + ≥3 user bubbles in that slice. The clumped-rows
+  // regression still shows up in the bottom window because the visible
+  // turns near the bottom would all have ar's at their end.
   assert(arIdxs.length >= 2,
     `[${label}] expected ≥2 activity rows, got ${arIdxs.length}: ${JSON.stringify(structure)}`);
   assert(uIdxs.length >= 3,
@@ -178,8 +178,9 @@ function assertNotClumped(structure, label) {
   }
   // Invariant 3: no activity row comes AFTER the last user bubble's
   // last text-bubble follower. In other words, activity rows can't
-  // appear at the tail beyond the final assistant text. (This is what
-  // the field bug looks like: all rows clump after every text bubble.)
+  // appear at the tail beyond the final assistant text. (This is the
+  // clumped-rows failure shape: all rows appear after every text
+  // bubble.)
   const lastUser = uIdxs[uIdxs.length - 1];
   for (const arIdx of arIdxs) {
     // If a row is past the last user bubble, the bubble before it
@@ -204,8 +205,8 @@ export default async function run({ page, log }) {
   // rows (one per turn), and 4 final assistant text bubbles in the
   // STORE. Under virt only the visible window is in DOM (~10 specs);
   // expect ≥2 activity rows interleaved with their turns at the bottom
-  // of the chat. The structural assertion below catches the field bug
-  // (rows clumping at the tail) even with only a partial window.
+  // of the chat. The structural assertion below catches the clumped-
+  // rows regression even with only a partial window.
   await page.waitForFunction(() => {
     const t = document.getElementById('transcript');
     if (!t) return false;

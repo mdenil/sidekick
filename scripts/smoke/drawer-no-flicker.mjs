@@ -12,8 +12,7 @@
 //     is N+1 mutations on #sessions-list (+1 = the clear).
 //
 // Visible result: sidebar flicker on every click, worse on rapid
-// clicks. Jonathan's 2026-04-29 session log showed alternating clicks
-// at ~1-2/s producing a flicker on every cycle.
+// clicks alternating at ~1-2/s.
 //
 // Test plan:
 //   1. Pre-populate 5 chats via MOCK_SETUP.

@@ -222,10 +222,9 @@ SESSION_POLL_INTERVAL_S = 1.5
 # This is the canonical hermes-agent platform set as of the platform-
 # adapter migration; if hermes adds a new platform, drop it in here.
 # ID-encoding helpers + source constants moved to sidekick_ids.py
-# (2026-05-17 refactor) so route-handler submodules can import them
-# without a circular dep on this package's __init__. Re-exported here
-# for backward compat with any caller that still references them from
-# the package root.
+# so route-handler submodules can import them without a circular dep
+# on this package's __init__. Re-exported here for backward compat
+# with any caller that still references them from the package root.
 from .sidekick_ids import (  # noqa: F401
     GATEWAY_DRAWER_SOURCES,
     SIDEKICK_SOURCE,
@@ -251,10 +250,7 @@ _SIDEKICK_HIDDEN_COMMANDS = frozenset({
     # /new is dispatchable but triggers the destructive-slash confirm
     # flow (gateway/run.py:_maybe_confirm_destructive_slash). The
     # sidekick "New chat" button skips that — it's the canonical UX for
-    # this action and there's no value in offering a second slash
-    # variant that prompts for approval (Jonathan field 2026-05-17:
-    # "should we drop that from sidekick? i expected it to be same as
-    # 'new chat'"). Hide here so the slash popover doesn't surface it.
+    # this action. Hide here so the slash popover doesn't surface it.
     "new",
 })
 
@@ -277,8 +273,7 @@ def _serialize_command_registry() -> List[Dict[str, Any]]:
          ``gateway_config_gate``). Exposing a ``cli_only`` command in
          the slash popover gives the user a discoverable trap: pick
          it, send it, and Clawdian replies "Unknown command" because
-         gateway/run.py rejects the dispatch (Jonathan field 2026-05-17
-         repro on /save, /cron, /history). Align the catalog with what
+         gateway/run.py rejects the dispatch. Align the catalog with what
          the gateway will actually run, so the popover only lists
          things that work end-to-end.
 
@@ -536,7 +531,7 @@ class SidekickAdapter(BasePlatformAdapter):
         # healthcheck has to target a plugin-namespaced path to
         # actually verify "is the sidekick plugin loaded?" instead of
         # "is the gateway process up?". Same handler on both paths
-        # keeps hermes side trivial. Added 2026-05-15.
+        # keeps hermes side trivial.
         self._app.router.add_get("/v1/health", self._handle_health)
         # ── Agent contract HTTP routes ────────────────────────────────
         # OAI-Responses-shape surface the proxy talks to. See
@@ -1659,8 +1654,7 @@ class SidekickAdapter(BasePlatformAdapter):
         # opened the chat but the content wasn't anywhere durable, so
         # the user lost the body whenever the banner dismissed.
         #
-        # Solution (Jonathan field bug 2026-05-14): mint a sidekick_id
-        # for the envelope, write a row to the plugin-owned
+        # Mint a sidekick_id for the envelope, write a row to the plugin-owned
         # `sidekick_notifications` sibling table, stamp the id on the
         # outgoing envelope. The history endpoint merges these rows
         # into /v1/conversations/{id}/items so a refresh-and-scroll
@@ -1671,9 +1665,7 @@ class SidekickAdapter(BasePlatformAdapter):
         # Cross-device unread sync: when a push-eligible envelope lands
         # for a chat, every connected device needs to know its unread
         # count just changed. Without this, other devices' badges stay
-        # stale until they manually foreground (Jonathan field bug
-        # 2026-05-16 — "session said 2 messages but no unreads or
-        # notifications on either device"). The PWA's listener (in
+        # stale until they manually foreground. The PWA's listener (in
         # badge.ts) is debounced 1500ms, so the cumulative effect of
         # an active conversation is one re-fetch per ~1.5s window per
         # chat — cheap.
@@ -1984,7 +1976,7 @@ class SidekickAdapter(BasePlatformAdapter):
     # this plugin's own on_pre_tool_call hook (which emits proper
     # `tool_call` envelopes that the PWA routes to the activity-row,
     # collapsed-by-default per agentActivity=summary). Accepting both
-    # produced the bug Jonathan hit 2026-05-01: N consecutive cumulative
+    # produced double-delivery: N consecutive cumulative
     # agent bubbles with tool-call lines, the actual agent reply buried
     # beneath them, only re-rendering cleanly after a session-switch
     # (which re-fetches from state.db where the ephemeral progress

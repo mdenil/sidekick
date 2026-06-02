@@ -114,10 +114,9 @@ export function init(opts?: {
   onClickRef = opts?.onClick || null;
   rootEl.addEventListener('click', () => {
     // Expanded (drawer-open) state: clicking the forecast opens the
-    // platform weather page in a new tab. Previously this collapsed
-    // the drawer, which Jonathan flagged 2026-05-15 — closing the
-    // drawer is the X button's job; the widget click should open the
-    // forecast for deeper reading. Google search "weather" is the
+    // platform weather page in a new tab. Closing the drawer is the
+    // X button's job; the widget click opens the forecast for deeper
+    // reading. Google search "weather" is the
     // most-portable universal weather page (it auto-detects location,
     // works in every locale, no Apple/Microsoft account lock-in).
     if (isExpanded()) {
@@ -193,20 +192,17 @@ function renderExpanded(hh, mm, dateObj, w) {
 
   // Forecast strip: today's column gets the EXPANDED treatment (live
   // "now" temperature + condition word + hi/lo); future-day columns
-  // stay compact (weekday, icon, hi, lo). Field request 2026-05-16
-  // (Jonathan): "current temp + expanded current day". The earlier
-  // all-compact layout (5 uniform cols) was readable but hid the
-  // "now" temperature in the rail-form pill only — once the user
-  // opened the drawer to see the full HUD, the most-frequently-
-  // glanced piece (current temp) disappeared.
+  // stay compact (weekday, icon, hi, lo). The all-compact layout
+  // (5 uniform cols) was readable but hid the "now" temperature in
+  // the rail-form pill only — once the user opened the drawer to see
+  // the full HUD, the most-frequently-glanced piece (current temp)
+  // disappeared.
   //
   // Mismatch caveat: the daily.temperature_2m_max for today is the
   // *forecasted* high; current.temperature_2m is the live observation.
   // They can disagree by a degree mid-afternoon. We render both so
   // the user can see "now is 13° but today peaks at 18°" — that's
-  // useful, not confusing. Earlier comment (2026-05-15) said we
-  // avoided current temp because of this mismatch; the call now is
-  // to surface both intentionally.
+  // useful, not confusing.
   let forecastHtml = '';
   if (daily?.time?.length > 0) {
     const cols = [];

@@ -194,11 +194,10 @@ function isInCall(): boolean {
  *  call is active AND the user's wakeLock toggle. Idempotent: the
  *  ref-counted holders set in wakeLock.ts no-ops when state matches.
  *
- *  Field bug 2026-05-10 (Jonathan): pre-fix the lock acquired on boot
- *  if settings.wakeLock=true, then never released. Phone stayed awake
- *  outside calls — battery drain. Now the lock is gated on isInCall(),
- *  so toggling the setting outside a call is a no-op until the next
- *  call starts.
+ *  Pre-fix: the lock was acquired on boot if settings.wakeLock=true,
+ *  then never released — the phone stayed awake outside calls, draining
+ *  battery. Now the lock is gated on isInCall(), so toggling the setting
+ *  outside a call is a no-op until the next call starts.
  *
  *  Called from:
  *    - boot (settings.wakeLock=true + already in call after reload)
@@ -316,8 +315,7 @@ async function boot() {
   setDebugElement(document.getElementById('debug'));
   // Dev-mode pill + long-press toggle on the version label. Renders
   // a "DEV" badge next to "v0.473" when localStorage.dev_mode='1'.
-  // See src/util/devMode.ts for the rationale (Jonathan's on-the-go
-  // phone-bug-report workflow needs unmissable transparency).
+  // See src/util/devMode.ts for the rationale (unmissable transparency).
   mountDevPill();
   // Fallback version label for runtimes where the service worker
   // can't deliver a version string — Capacitor's WKWebView blocks SW
@@ -418,9 +416,8 @@ async function boot() {
     // current chat. Skip-forward = next agent reply (re-synth via /tts
     // if not cached); skip-back = previous agent reply (cache hit on
     // anything already played this session). Replaces the earlier
-    // chat-navigation wiring per Jonathan's classic-pipeline design:
-    // "move a pointer back and forward over agent replies, generating
-    // them if needed."
+    // chat-navigation wiring: move a pointer back and forward over
+    // agent replies, generating them if needed.
     onNextTrack: () => { void replyNavigator.playNext(); },
     onPrevTrack: () => { void replyNavigator.playPrev(); },
     // seekto: reserved for a future "seek inside the current TTS reply"
@@ -586,9 +583,8 @@ async function boot() {
     //
     // Pre-fix this called backend.deleteSession on bare ids; the
     // plugin's un-prefixed DELETE fallback wiped real sessions whose
-    // chat_id matched a bare local-IDB orphan (Jonathan's morning
-    // audio-test session, 2026-05-03 01:29). This path now NEVER
-    // touches the backend.
+    // chat_id matched a bare local-IDB orphan and accidentally deleted
+    // it. This path now NEVER touches the backend.
     const cached = sessionDrawer.getCachedSessions().find(s => s.id === leavingId);
     const serverKnowsRow = !!cached && cached.messageCount > 0;
     if (serverKnowsRow) return;
@@ -710,13 +706,12 @@ async function boot() {
     // onBeforeSwitch (cleanupAbandonedChat) internally, so we don't call
     // it here. Replaces the old fully-server-gated resumeSession + replay
     // that left the highlight flickering for 3-13s over a high-latency
-    // link (field 2026-05-29, Jonathan in Philadelphia → fontbrain/London).
+    // link over high-latency connections.
     // Same-session jump (the chat is ALREADY on screen): do NOT re-resume.
     // resume() double-renders + its in-flight dedup keys only on chat id,
     // so a rapid second jump to a different target in the same session was
     // dropped (bubble never appeared) and deep jumps fired redundant
-    // concurrent ~1MB fetches (Jonathan 2026-05-29, jumping between pins
-    // inside the pitch deck). Route straight to a single bounded around
+    // concurrent ~1MB fetches. Route straight to a single bounded around
     // fetch (or an in-DOM scroll when the bubble is already rendered).
     const bare = (x: string) => String(x || '').replace(/^sidekick:/, '');
     if (msgId && bare(sessionDrawer.getViewed() || '') === bare(chatId)) {
@@ -855,9 +850,8 @@ async function boot() {
       // Wake-lock is scoped to active calls — see evaluateWakeLock()
       // for the model. Toggling the setting outside a call is a no-op
       // (stays released); inside a call the toggle takes effect
-      // immediately. Field bug 2026-05-10 (Jonathan): pre-fix the lock
-      // engaged on boot regardless of call state, draining battery
-      // outside calls.
+      // immediately. Pre-fix: the lock was engaged on boot regardless of
+      // call state, draining battery outside calls.
       evaluateWakeLock();
     },
     onAutoSendChange: () => {},
@@ -1144,9 +1138,8 @@ async function boot() {
           // overrides whatever was last viewed. Used by the iOS push
           // notification click path — service-worker navigates the
           // window to `/?chat=X&msg=Y` and we hydrate that chat + scroll
-          // to that message. Field bug 2026-05-14 (Jonathan): tapping a
-          // cron banner opened the chat but the notification content
-          // wasn't anywhere reachable. The companion fix is the hermes
+          // to that message. Previously, the notification content could
+          // be unreachable after navigating to a chat from a banner. The companion fix is the hermes
           // plugin persisting notifications to a sidekick-owned sibling
           // table so the msg is in the transcript by the time we land.
           let urlChatId: string | null = null;
@@ -1176,10 +1169,9 @@ async function boot() {
             // path (since sessionDrawer.getViewed() === id), which
             // would skip chat.clear() and leave the prior chat's
             // snapshot DOM merged on top of the URL-target chat's
-            // fresh fetch. Field bug 2026-05-14 (Jonathan, iOS):
-            // tapping a cron push opened the right chat but the new
-            // notification row wasn't visible until a sidebar click
-            // forced a clear-and-repopulate. The fix: leave viewed
+            // fresh fetch. Without this, tapping a push notification
+            // opened the right chat but the notification row wasn't
+            // visible until a sidebar click forced a clear-and-repopulate. The fix: leave viewed
             // pointing at the snapshot's chat (or null) so
             // replaySessionMessages sees sameSession=false and runs
             // the clear+repopulate branch for URL-driven switches.
@@ -1218,7 +1210,7 @@ async function boot() {
               } catch { /* noop */ }
             }
           }
-          // Boot-UX (Jonathan 2026-04-29): if nothing got rendered above
+          // Boot-UX: if nothing got rendered above
           // (no snapshot, OR snapshot's session no longer exists, OR
           // adapter's activeChatId points to an unsent stub), pick the
           // most recent existing session and show it. Avoids the
@@ -1540,7 +1532,7 @@ async function boot() {
       // text-final + 1.2s grace window — TTS audio plays for many
       // more seconds, so the post-grace window leaked TTS bleed-through
       // back as fake user transcripts (the "1 2 3 4 5 6 7 8 9 zero"
-      // feedback loop Jonathan saw 2026-05-03 09:18). Use ttsPlaying
+      // feedback loop on slow-terminating TTS). Use ttsPlaying
       // for full playback coverage; client-side BargeWindow handles
       // the legitimate barge case independently.
       if (webrtcSuppress.isTtsPlaying()) return;
@@ -2176,7 +2168,7 @@ async function boot() {
       // by this sweep when their messageCount transiently read 0 during
       // hermes session-rotation/compression. Reaches into server state
       // for "tidiness" — a backend-destructive optimization with no
-      // user signal. Hard rule (Jonathan): sidekick never auto-deletes
+      // user signal. Hard rule: sidekick never auto-deletes
       // server-side data. Stale empty rows live in the drawer until the
       // user removes them via the row menu (which has a confirm dialog).
       // On mobile, collapse the sidebar so the user sees the fresh chat —
@@ -2255,8 +2247,7 @@ async function boot() {
       // Audible "your turn" cue — same chime call mode plays from the
       // bridge's listening envelope. Dictate doesn't go through the
       // bridge so we fire it directly when the provider reports
-      // opening. Matches the chime vocabulary across modes (Jonathan,
-      // 2026-05-04 UX nit: "no chime for dictate when listening").
+      // opening. Matches the chime vocabulary across modes.
       try { playFeedback('listening'); } catch { /* feedback is best-effort */ }
     } else {
       status.setStatus('');
@@ -2800,8 +2791,8 @@ async function boot() {
     /** Padding (px) added on every side of the memo bar's bounding rect
      *  before the inside/outside test. Generous margin so a finger
      *  hovering near the bar's edge stays classified as "still
-     *  recording" — Jonathan explicitly wants no false negatives where
-     *  a near-edge release accidentally discards. Once the pointer
+     *  recording" — no false negatives where a near-edge release
+     *  accidentally discards. Once the pointer
      *  clears this padded zone in ANY direction, discard arms. */
     const MEMO_BAR_DISCARD_PADDING_PX = 40;
 
@@ -2827,7 +2818,7 @@ async function boot() {
      *  but it's a deliberate visual affordance — users naturally slide
      *  toward the trash to discard. Discard arms on EITHER condition:
      *  pointer outside the padded memo bar, OR pointer over the trash
-     *  icon. Additive per Jonathan's spec 2026-05-03. */
+     *  icon. Both conditions arm discard independently. */
     function isOverTrashZone(clientX: number, clientY: number): boolean {
       const trash = holdMemoBar?.querySelector('.memo-trash') as HTMLElement | null;
       if (!trash) return false;
@@ -3071,8 +3062,7 @@ async function boot() {
     // tap stopping a Listen call also triggers an audio-session
     // transition that can swallow the pointerup). The class then
     // stays on, disabling composer-input until next pointerup.
-    // Field bug 2026-05-10 (Jonathan): turnbased mic-tap left
-    // ptt-pressing stuck on alongside swipe-active.
+    // A mic-tap can leave ptt-pressing stuck on alongside swipe-active.
     //
     //   1. visibilitychange — return-to-foreground is a clean
     //      "user definitely isn't pressing the button anymore"
@@ -3402,10 +3392,10 @@ async function boot() {
   // the URL ?vad= override is unreachable inside an installed PWA
   // (browser caches the entry URL).
   //
-  // Dev-mode-only (Jonathan, 2026-05-09): the row is testing
-  // scaffolding for VAD experiments, not user-facing config. Hide
-  // unless dev mode is on so non-dev users don't see a confusing
-  // "VAD source: Auto / Client / Bridge" toggle in the call menu.
+  // Dev-mode-only: the row is testing scaffolding for VAD experiments,
+  // not user-facing config. Hide unless dev mode is on so non-dev
+  // users don't see a confusing "VAD source: Auto / Client / Bridge"
+  // toggle in the call menu.
   {
     const vadRow = document.getElementById('call-mode-vad-row');
     if (vadRow) {

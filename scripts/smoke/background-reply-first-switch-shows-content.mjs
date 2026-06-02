@@ -1,8 +1,6 @@
-// Field bug 2026-05-19 (Jonathan):
-//
-//   "If a reply lands in a session I'm not watching, my first switch
-//    into it doesn't have the new content. Subsequent switches away
-//    and back show the content."
+// Regression guard: a reply landing in a background session was not
+// visible on the first switch into it; subsequent switches away and
+// back showed the content.
 //
 // Repro shape:
 //   1. User sends a message in chat A.
@@ -182,7 +180,7 @@ export default async function run({ page, log, mock }) {
   log(`  transcript: ${txAfterFirstSwitch.slice(0, 200)}`);
   log(`  dump (last 4): ${JSON.stringify(dumpAfterFirstSwitch.slice(-4))}`);
 
-  // ── Final assert: the bug Jonathan reported is exactly this. ───────
+  // ── Final assert: the reply must be visible on the first switch back. ─
   // The reply MUST be visible on the FIRST switch back to chat A,
   // without requiring a second switch-away-and-back round-trip.
   assert(

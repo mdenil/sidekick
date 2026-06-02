@@ -1,6 +1,6 @@
 """Push-dispatcher contract tests.
 
-Coverage matrix (matches Jonathan's 2026-05-18 ask):
+Coverage matrix:
   - Engagement gate suppresses push when chat is visible (within window).
   - Engagement window expires after ENGAGEMENT_WINDOW_MS.
   - Engagement key matches the chat_id form the dispatch path uses

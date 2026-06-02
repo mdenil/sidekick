@@ -139,10 +139,9 @@ async def handle_offer(request: "web.Request") -> "web.Response":
 
     pc = create_peer_connection()
     peer_id = make_peer_id()
-    # [ice-trace] instrumentation (Jonathan, 2026-05-04 overnight) —
-    # diagnose Mac Chrome 8s ICE hang. Captures EVERY connection +
-    # ICE state transition with monotonic timing. print() to stderr
-    # so it bypasses the (apparently INFO-suppressed) logger.
+    # [ice-trace] instrumentation: captures every connection and ICE
+    # state transition with monotonic timing to diagnose Mac Chrome
+    # ICE hangs. print() to stderr so it bypasses the logger.
     import time as _ice_time
     import sys as _ice_sys
     _ice_t0 = _ice_time.monotonic()
@@ -214,7 +213,7 @@ async def handle_offer(request: "web.Request") -> "web.Response":
         stt_bridge.start_sidekick_stream(peer)
     dispatch_listener.attach(peer)
 
-    # Lifecycle logging — useful for postmortems on the bike.
+    # Lifecycle logging — useful for postmortems.
     @pc.on("connectionstatechange")
     async def _on_state_change():  # pragma: no cover — logging hook
         state = pc.connectionState

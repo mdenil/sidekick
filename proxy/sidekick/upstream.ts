@@ -46,7 +46,7 @@ export interface ConversationSummary {
      *  "how many times have I said something". Newer plugins emit this;
      *  optional for back-compat. Pairs with `tool_count` so the drawer
      *  can render "N turns · M tools" instead of the inflated raw msg
-     *  count (Jonathan field 2026-05-17). */
+     *  count. */
     turn_count?: number;
     /** Tool-role message count. Pairs with `turn_count`. Optional. */
     tool_count?: number;

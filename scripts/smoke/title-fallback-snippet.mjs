@@ -4,12 +4,12 @@
 // a `session_changed` envelope, the drawer flips from snippet to
 // the real title.
 //
-// Reported by Jonathan 2026-04-28. Real chats periodically end up
-// untitled (model error, blip, race) and the drawer's "New chat"
-// fallback makes them indistinguishable from never-sent stubs. The
-// proxy now exposes `first_user_message` per session row and the
-// drawer's `s.title || s.snippet || s.id` chain picks it up when
-// title is empty.
+// Regression guard: real chats periodically end up untitled (model
+// error, blip, race) and the drawer's "New chat" fallback makes them
+// indistinguishable from never-sent stubs. The proxy now exposes
+// `first_user_message` per session row and the drawer's
+// `s.title || s.snippet || s.id` chain picks it up when title is
+// empty.
 //
 // Mocked path — no hermes / LLM. The mock's /api/sidekick/sessions
 // derives first_user_message from each chat's first role='user'

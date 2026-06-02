@@ -1,9 +1,9 @@
 // Regression gate for the 2026-05-17 slash-command turn-order bug.
 //
-// Repro (Jonathan field, 2026-05-17 ~12:44 BST): typing `/agents` in
-// the composer dispatched the slash command but the user's "/agents"
-// bubble rendered AFTER the agent's reply, not before. The transcript
-// showed the agent's response, then the user's request below it.
+// Repro: typing `/agents` in the composer dispatched the slash command
+// but the user's "/agents" bubble rendered AFTER the agent's reply,
+// not before. The transcript showed the agent's response, then the
+// user's request below it.
 //
 // Root cause (src/main.ts:1547-1551 pre-fix): the slash-command path
 // in `sendTypedMessage` early-returned after `slashCommands.dispatch()`,

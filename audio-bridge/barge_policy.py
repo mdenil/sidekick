@@ -8,8 +8,7 @@ WHY: client-side ONNX Silero is structurally broken on Mac Chrome
 times out >15s). Bridge-side Silero (Python torch) loads once at
 process start, works regardless of the client device, and lets us
 ship the toggleable VadSource that frontier labs converged on
-(LiveKit, Pipecat hybrid model — see notes_aec_post_nlp_research_2026_05_06.md
-section "2026-05-06 follow-up").
+(LiveKit, Pipecat hybrid model).
 
 PIPELINE: mic → WebRTC → audio-bridge → stt_bridge._pcm_iter →
    {feed_frame() here} → silero(p_speech) → hysteresis → emit
@@ -222,14 +221,14 @@ class BargePolicy:
 # Two interchangeable inference backends, tried in this order:
 #
 #   1. torch + silero-vad  — used when already installed. Keeps existing
-#      deployments (e.g. Jonathan's provisioned venv) byte-for-byte
-#      unchanged: same model, same numbers, zero new behavior.
+#      deployments byte-for-byte unchanged: same model, same numbers,
+#      zero new behavior.
 #
 #   2. onnxruntime + vendored assets/silero_vad.onnx — the default for
 #      fresh installs. onnxruntime-CPU is a few MB; torch+silero pulls
-#      ~750MB (and, depending on the index, CUDA wheels) which Misha hit
-#      on first install 2026-05-26. requirements.txt now ships only
-#      onnxruntime so a clean `pip install -r` never drags in torch.
+#      ~750MB (and, depending on the index, CUDA wheels) on first
+#      install. requirements.txt now ships only onnxruntime so a clean
+#      `pip install -r` never drags in torch.
 #
 # Either way the bridge can run with NEITHER installed: _make_infer()
 # returns None and attach() falls back to a no-op policy that never fires

@@ -1,8 +1,7 @@
 // Scenario: a barge during Listen TTS must NOT kill TTS for the NEXT
-// reply. Field bug (PWA turn-based call, 2026-05-31, Jonathan): a
-// spurious barge paused the agent's TTS; on the agent's *subsequent*
-// reply, TTS never fired again — Listen stopped speaking for the rest
-// of the call.
+// reply. Regression guard: a spurious barge paused the agent's TTS;
+// on the agent's *subsequent* reply, TTS never fired again — Listen
+// stopped speaking for the rest of the call.
 //
 // Root cause this test locks down:
 //   onBarge → ttsModule.pauseReplyTts() PAUSES (not cancels) reply #1,

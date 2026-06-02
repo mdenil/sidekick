@@ -63,10 +63,9 @@ export function project(state: ChatState): BubbleSpec[] {
   //
   // Tracks ALL durable assistant content (regardless of sidekick_id
   // presence). The earlier no-sidekick_id-only restriction missed
-  // the field bug 2026-05-20 where state.db's assistant row had
-  // `sidekick_id="sk-<unix>-<seq>"` synthetic shape that didn't
-  // match the envelope's `message_id` envelope shape — both got
-  // sidekick_ids, neither dedup'd, both rendered.
+  // cases where state.db's assistant row had `sidekick_id="sk-<unix>-<seq>"`
+  // synthetic shape that didn't match the envelope's `message_id`
+  // shape — both got sidekick_ids, neither dedup'd, both rendered.
   const durableAssistantContentCounts = new Map<string, number>();
 
   // Durable-vs-durable dedup pre-pass. The items endpoint can return
@@ -77,9 +76,8 @@ export function project(state: ChatState): BubbleSpec[] {
   // existing `msg_xyz` row. The PWA can't tell them apart by key
   // alone (different sidekick_ids), so we dedup here by content +
   // role. The "winner" is the row with the highest timestamp;
-  // duplicates with `created_at=0` (the bug Jonathan hit 2026-05-19,
-  // rendering at 01:00 BST because unix 0 + UTC+1) lose to the row
-  // that has a real wall-clock timestamp.
+  // duplicates with `created_at=0` (rendering at epoch time) lose to
+  // the row that has a real wall-clock timestamp.
   const durableWinnerKey = pickDurableContentWinners(state.durable);
   // Near-simultaneous duplicate USER rows to drop (backend double-write
   // defense — see pickUserDuplicateLosers). Far-apart legit repeats survive.
@@ -320,11 +318,11 @@ export function project(state: ChatState): BubbleSpec[] {
   // durable owns the bubble. Without this we'd render both (durable
   // keyed by its sidekick_id, inflight keyed by SSE message_id) when
   // the two ids differ — either because durable's sidekick_id is
-  // missing (field bug 2026-05-19, "Hey — received." dupe with no
+  // missing (causing duplicate bubbles for short replies with no
   // sidekick_id), or because durable's sidekick_id is present but
-  // shaped differently from the envelope's message_id (field bug
-  // 2026-05-20, "sk-<unix>-<seq>" synthetic on durable vs envelope
-  // shape on the live SSE).
+  // shaped differently from the envelope's message_id
+  // ("sk-<unix>-<seq>" synthetic on durable vs envelope shape on
+  // the live SSE).
   //
   // Why a multiset rather than a Set: when the same content appears
   // in N durable rows (user typed "ok" N times), each inflight

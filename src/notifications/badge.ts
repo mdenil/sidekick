@@ -13,10 +13,9 @@
 //
 // Why server-driven: the old IDB-side counter drifted when push
 // arrivals + chat focus + the SW's setAppBadge fired on different
-// code paths (Jonathan field bug: "app badge 7, click all chats,
-// badge still 3"). With one fact-of-record on the server, the three
-// surfaces (sidebar, app badge, push eligibility) derive structurally
-// and can't disagree.
+// code paths (e.g. badge showed 7 after clicking all chats). With
+// one fact-of-record on the server, the three surfaces (sidebar, app
+// badge, push eligibility) derive structurally and can't disagree.
 
 import { log } from '../util/log.ts';
 import * as activityStore from './activityStore.ts';
@@ -75,15 +74,12 @@ async function closeAllSwNotifications(): Promise<void> {
  *  syncBadge() ALWAYS runs (cheap OS API call) — it reconciles the
  *  app icon badge against the server's truth. Without this, a stale
  *  OS badge from a SW push (set while the PWA was closed) survives
- *  the next foreground refresh: Jonathan field bug 2026-05-16 —
- *  "PWA icon shows 7, sidebar empty after I marked all read on
- *  desktop." The fetched empty list matched the live empty cache, the
- *  diff returned no-change, and the previously-stuck OS badge from
- *  the SW push never got cleared.
+ *  the next foreground refresh: if the fetched list matches the live
+ *  empty cache, the diff returns no-change and the previously-stuck
+ *  OS badge from the SW push never gets cleared.
  *
- *  notifyChange() (which triggers a sidebar repaint over ~86 rows)
- *  remains diff-gated to avoid the repaint storm Jonathan saw on Mac
- *  earlier the same day (WindowServer @ 122%). */
+ *  notifyChange() (which triggers a sidebar repaint over many rows)
+ *  remains diff-gated to avoid repaint storms on large session lists. */
 async function refreshFromServer(): Promise<void> {
   try {
     const r = await fetch('/api/sidekick/notifications/unread');
@@ -125,8 +121,8 @@ function setsEqual(a: Set<string>, b: Set<string>): boolean {
 
 /** Debounced refresh. 1.5s window — long enough that a burst of
  *  envelopes (cron-triggered notifications, multi-chat /seen
- *  cascades) coalesces into one fetch. Was 200ms; bumped after the
- *  Mac WindowServer load spike incident Jonathan caught. */
+ *  cascades) coalesces into one fetch. Was 200ms; bumped to avoid
+ *  triggering high repaint frequency on large session lists. */
 function requestRefresh(): void {
   if (refreshDebounce != null) return;
   refreshDebounce = (globalThis as any).setTimeout(() => {
@@ -194,9 +190,9 @@ export async function unmarkUnread(chatId: string): Promise<void> {
 }
 
 /** Settings → "Mark all read" — clear seen for every known chat.
- *  No batch endpoint yet; fan out one POST per chat. With Jonathan's
- *  chat volume (low hundreds) the round-trip cost is fine; promote
- *  to a single POST /v1/unread/seen-all if it becomes hot. */
+ *  No batch endpoint yet; fan out one POST per chat. For typical chat
+ *  volumes the round-trip cost is fine; promote to a single POST
+ *  /v1/unread/seen-all if this becomes a hot path. */
 export async function clearAllUnread(): Promise<void> {
   const seenList = Array.from(unreadByChat.keys());
   const markedList = Array.from(markedUnread);

@@ -4,9 +4,9 @@
 // transcript scrollTop should be adjusted by exactly the amount of
 // new content inserted above.
 //
-// Field repro (Jonathan, 2026-05-18, mobile): "scrolling through a
-// long chat, it jumps unpredictably." Root cause was a Crack A
-// regression — `loadEarlierHistory` called `transcriptStore.prependDurable`
+// Regression guard: scrolling through a long chat on mobile jumps
+// unpredictably. Root cause was a regression — `loadEarlierHistory`
+// called `transcriptStore.prependDurable`
 // directly, bypassing `chat.prependHistory`'s scrollTop fixup. Without
 // it, prepending N px of content leaves the user staring at a
 // different message N px above the one they were reading.

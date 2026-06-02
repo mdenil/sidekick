@@ -31,8 +31,8 @@ export default async function run({ page, log, fail, url }) {
   // PWA reads the local engine on settings.load(). Restored in the
   // try/finally below — otherwise the shared dev proxy's settings
   // table holds streamingEngine='local' and EVERY subsequent smoke
-  // in the same run boots against the wrong engine. Root cause of
-  // the listen-*/slash-commands full-suite flakes 2026-05-18.
+  // in the same run boots against the wrong engine — root cause of
+  // the listen-*/slash-commands full-suite flakes.
   await resetServerSettings(page, { streamingEngine: 'local' });
   try {
 

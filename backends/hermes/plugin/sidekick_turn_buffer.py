@@ -130,11 +130,10 @@ class TurnBuffer:
         ``message_id`` for follow-up dedup) instead of static finalized
         items.
 
-        Crack C of the 2026-05-17 turn-taking audit: this replaces the
-        older ``render_items`` items-merge approach, which produced
-        finalized-shape rows that didn't dedup against subsequent live
-        deltas (no ``sidekick_id`` on the in-flight assistant), causing
-        a visible double-render on mid-turn reload."""
+        Replaces the older ``render_items`` items-merge approach, which
+        produced finalized-shape rows that didn't dedup against subsequent
+        live deltas (no ``sidekick_id`` on the in-flight assistant),
+        causing a visible double-render on mid-turn reload."""
         out: List[Dict[str, Any]] = []
         # User message — drives the user bubble on a reconnected client.
         # Optimistic bubbles already in the DOM dedup against this via

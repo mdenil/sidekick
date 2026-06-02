@@ -1,14 +1,11 @@
 // Push subscription store — JSON-file backed.
 //
-// Deviation from the original Phase 3 plan: the plan called for SQLite
-// "mirroring sessions.ts shape", but sessions.ts is actually an HTTP
-// forwarder, not a local-SQLite store, and sidekick has no Node SQLite
-// dependency today. The data volume here is tiny (a personal sidekick
-// has 1-5 device subscriptions over its lifetime — Jonathan's phone,
-// Mac, iPad), so a flat JSON file with atomic tempfile+rename writes
-// is the right tool. Promote to SQLite only if subscription churn ever
-// makes the linear scan a hot path (it won't — push dispatch already
-// performs a network round-trip per subscription).
+// The data volume here is tiny (a personal sidekick has 1-5 device
+// subscriptions over its lifetime), so a flat JSON file with atomic
+// tempfile+rename writes is the right tool. Promote to SQLite only if
+// subscription churn ever makes the linear scan a hot path (it won't
+// — push dispatch already performs a network round-trip per
+// subscription).
 //
 // Schema:
 //   { endpoint: string,             // PushSubscription.endpoint URL
@@ -67,10 +64,8 @@ async function persist(): Promise<void> {
   //
   // Random suffix in tmp name — two concurrent persist() calls
   // (e.g. parallel push dispatches both calling markUsed) within
-  // the same ms collided on tmp filename; second rename then failed
-  // ENOENT because the first had already moved the shared tmp.
-  // Jonathan field bug 2026-05-12 (journal:
-  // `rename push-subscriptions.json.tmp-XXX-YYY -> ...: ENOENT`).
+  // the same ms can collide on tmp filename; the second rename then
+  // fails ENOENT because the first already moved the shared tmp.
   const rand = Math.random().toString(36).slice(2, 8);
   const tmp = `${storePath}.tmp-${process.pid}-${Date.now()}-${rand}`;
   await fs.writeFile(tmp, JSON.stringify(cache ?? [], null, 2), 'utf8');

@@ -4,13 +4,11 @@
 // tool-using turns) lands. Multiple back-to-back new chats stack in
 // the sidebar as distinct entries with their respective snippets.
 //
-// Field bug 2026-05-11 (Jonathan, real install): he sent "Hey. What's
-// in my agenda? Today?" via a fresh new chat. The agent hit a
-// dangerous-command-approval gate and stalled. He reloaded expecting
-// to see his message preserved. Instead the sidebar showed "New chat
-// 0 msgs" — no signal that his message was anywhere — and the
-// transcript view was confused. Server-side state.db had everything,
-// the PWA just didn't surface it.
+// Regression guard: after sending a message in a fresh new chat, the
+// agent stalled (e.g. hit an approval gate). On reload the sidebar
+// showed "New chat 0 msgs" — no signal that the message was anywhere
+// — and the transcript view was confused. Server-side state.db had
+// everything; the PWA just didn't surface it.
 //
 // Fix: sendTypedMessage now calls sessionDrawer.handleSessionAnnounced
 // with a text snippet at send time, synthesizing a pending sidebar
@@ -40,7 +38,7 @@ export function MOCK_SETUP(mock) {
   // enough to test the drawer-refresh path. Without this, the 50ms
   // auto-reply lands a reply_final almost immediately, which causes
   // hermes-style session_changed flow to fire — the bug we're pinning
-  // here (Jonathan, 2026-05-11) is that during the in-flight window
+  // here is that during the in-flight window
   // BEFORE session_changed arrives, the drawer shows 'New chat'
   // because mergePending drops the pending row when the chat enters
   // cachedSessions via listSessions' local-only-row path.

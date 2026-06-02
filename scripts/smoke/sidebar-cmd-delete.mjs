@@ -8,17 +8,17 @@
 // the row's overflow menu and the multi-select panel use.
 //
 // Test plan (mocked):
-//   Phase A — single-active path:
+//   Single-active path:
 //     1. Pre-populate three chats (A most-recent, B, C oldest).
 //     2. Click chat A — A becomes active.
 //     3. Press Cmd+Backspace, auto-accept the confirm.
 //     4. A disappears from drawer; B + C remain.
-//   Phase B — bulk path:
+//   Bulk path:
 //     5. Click B, shift-click C → multi-select panel mounts.
 //     6. Press Cmd+Backspace, auto-accept the confirm.
 //     7. B + C disappear; drawer is empty.
 //
-// Wired in 2026-05-01 alongside the arrow-key navigation feature.
+// Wired alongside the arrow-key navigation feature.
 
 import { waitForReady, openSidebar, assert } from './lib.mjs';
 
@@ -81,7 +81,7 @@ export default async function run({ page, log }) {
   }
   log('drawer pre-populated with 3 chats');
 
-  // --- Phase A: single-active delete --------------------------------
+  // --- Single-active delete ------------------------------------------
   await clickRow(page, CHAT_A);
   await page.waitForFunction(
     (id) => document.querySelector('#sessions-list li.active')?.getAttribute('data-chat-id') === id,
@@ -114,7 +114,7 @@ export default async function run({ page, log }) {
     `B + C should remain after deleting A; drawer = ${JSON.stringify(ids)}`);
   log('Phase A: A deleted; B + C remain ✓');
 
-  // --- Phase B: bulk delete -----------------------------------------
+  // --- Bulk delete --------------------------------------------------
   await clickRow(page, CHAT_B);
   await clickRow(page, CHAT_C, { modifiers: ['Shift'] });
   await page.waitForSelector('#multi-select-panel', { timeout: 3_000 });

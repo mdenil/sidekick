@@ -1,5 +1,4 @@
-// Pin the cross-device-delete-doesn't-propagate bug fix (Jonathan
-// reported 2026-05-01): a chat announced via the SSE session-started
+// Regression guard: a chat announced via the SSE session-started
 // event got added to pendingSessions on the local client and stayed
 // there indefinitely. If the chat was later deleted from another
 // device, the server's listSessions stopped returning it — but

@@ -1,6 +1,5 @@
 // Service-worker lifecycle helpers — the SW-related code main.ts used
-// to inline. Extracted 2026-05-11 for the Phase 1 / pre-notifications
-// refactor.
+// to inline. Extracted for the pre-notifications refactor.
 //
 // Three pieces here:
 //
@@ -25,8 +24,8 @@
 //
 // Behavior preserved byte-for-byte from the in-line versions in
 // main.ts pre-extraction. No new semantics; this is a pure lift so
-// the upcoming notifications module (Phase 3) has a clean owner for
-// SW registration / push-subscribe hooks.
+// the notifications module has a clean owner for SW registration /
+// push-subscribe hooks.
 
 import { log, diag } from './util/log.ts';
 
@@ -155,7 +154,7 @@ export function initPassiveUpdateDetector(): void {
 
 /** Expose `__forceUpdate()` on `window` for DevTools. When the normal
  *  refresh flow gets stuck ("update ready" toast but reload doesn't
- *  pick up the new code — Jonathan, 2026-05-05), the user can type
+ *  pick up the new code), the user can type
  *  `__forceUpdate()` in the console: unregisters every SW, deletes
  *  every Cache, then hard-reloads with a cache-bust query.
  *  Deterministic. The normal refresh flow above SHOULD handle this;

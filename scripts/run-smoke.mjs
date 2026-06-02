@@ -101,14 +101,14 @@ async function runOne(scenario, browser) {
   // Without this, a test that flips streamingEngine='local' leaks into
   // every subsequent scenario. Scenarios can still override via their
   // own resetServerSettings() call after this.
-  // SETTINGS POISONING FIX (Jonathan field bug 2026-05-13): the prior
-  // resetServerSettings here wrote tts:false / realtime:false to the
-  // SHARED dev proxy at the start of EVERY scenario, leaving those
-  // production values false after the suite finished. Caller now
-  // captures the pre-scenario settings via the wrapping main() and
-  // restores them post-suite, but for safety we ALSO no longer reset
-  // mid-suite unless a scenario explicitly opts in. Smokes that need
-  // specific values call resetServerSettings(page, {...}) themselves.
+  // SETTINGS POISONING FIX: the prior resetServerSettings here wrote
+  // tts:false / realtime:false to the SHARED dev proxy at the start of
+  // EVERY scenario, leaving those production values false after the suite
+  // finished. Caller now captures the pre-scenario settings via the
+  // wrapping main() and restores them post-suite, but for safety we ALSO
+  // no longer reset mid-suite unless a scenario explicitly opts in. Smokes
+  // that need specific values call resetServerSettings(page, {...})
+  // themselves.
   // Scenarios that need iOS-shape coverage opt in via `MOBILE = true`
   // (mobile-only) or `MOBILE = 'both'` (expanded to desktop + mobile
   // pair by the runner). Resolved by main() into a per-variant flag.
@@ -219,10 +219,10 @@ async function main() {
   // Capture the live dev proxy's user-facing settings BEFORE running
   // anything. The runner used to call resetServerSettings(null) at
   // the start of every scenario, which wrote tts:false/realtime:false
-  // to the shared proxy — leaving Jonathan's PWA stuck on those false
-  // values after the suite finished (field bug 2026-05-13). Capture
-  // here + restore in the `finally` so the proxy ends the run with
-  // exactly the values it started with, regardless of crash path.
+  // to the shared proxy — leaving any connected PWA stuck on those false
+  // values after the suite finished. Capture here + restore in the
+  // `finally` so the proxy ends the run with exactly the values it
+  // started with, regardless of crash path.
   const SETTINGS_TO_SNAPSHOT = [
     'tts', 'realtime', 'streaming', 'autoSend', 'silenceSec',
     'commitPhrase', 'bargeIn', 'bargeThreshold', 'streamingEngine',

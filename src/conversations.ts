@@ -32,9 +32,8 @@ const META_ACTIVE = 'active_chat_id';
 // the plugin's bare-id DELETE fallback wiping it). Bumping schema +
 // clearing the store on upgrade forces every client to rehydrate from
 // the gateway, guaranteeing IDB rows are stored under the SAME prefixed
-// keys the server uses. Per Jonathan 2026-05-03: "I'm not worried about
-// blasting IDB on my clients" — the server is authoritative for chat
-// metadata; the local store is a cache + lazy-create staging area.
+// keys the server uses. The server is authoritative for chat metadata;
+// the local store is a cache + lazy-create staging area.
 const DB_VERSION = 2;
 
 export interface Conversation {
@@ -76,8 +75,6 @@ function openDB(): Promise<IDBDatabase> {
       // boot picks the most-recent server row instead of dangling at
       // a now-orphaned bare id. WHY this is safe: the server is
       // authoritative for chat metadata; the local store is a cache.
-      // Per Jonathan 2026-05-03: blast OK ("not worried about IDB on
-      // my clients").
       if (event.oldVersion < 2) {
         const tx = req.transaction;
         if (tx) {

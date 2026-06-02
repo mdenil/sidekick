@@ -34,7 +34,7 @@ export function miniMarkdown(s) {
   //   2. blank lines separating items (CommonMark "loose" lists).
   // The old per-line regex (`^(?:\d+\.\s+.+\n?)+`) stopped at the first
   // non-numbered line, so the v13-spine outline rendered as a stack of
-  // single-item <ol>s — every item shown as "1." (Jonathan field report).
+  // single-item <ol>s — every item shown as "1."
   t = renderLists(t);
   // Markdown links
   t = t.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
@@ -51,7 +51,7 @@ export function miniMarkdown(s) {
   // implementation used a bare `startsWith('<')` test, which incorrectly
   // skipped the `<br>` rewrite for chunks starting with inline elements
   // like <strong> — a single-newline-separated pair of `**bold**` lines
-  // collapsed onto one rendered line (Jonathan field report 2026-05-17).
+  // collapsed onto one rendered line.
   const BLOCK_OPENER = /^<(?:pre|table|ul|ol|blockquote|h[1-6]|hr|div)\b/i;
   t = t.split(/\n\n+/).map(p =>
     BLOCK_OPENER.test(p) ? p : `<p>${p.replace(/\n/g, '<br>')}</p>`

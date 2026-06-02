@@ -1,4 +1,4 @@
-// Contract (Jonathan, 2026-05-27): manual scrolling must be smooth. Under
+// Contract: manual scrolling must be smooth. Under
 // virtualization, off-screen rows use rough per-kind height ESTIMATES
 // (user=80, assistant=160). When a row ABOVE the viewport is measured to
 // its real (taller) height — because the user scrolled up into it, or a
