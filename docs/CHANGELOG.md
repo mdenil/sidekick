@@ -1,10 +1,10 @@
 # Sidekick — Changelog
 
 We don't cut formal versioned releases yet (the only version marker is
-`CACHE_NAME` in `sw.js`, currently **v0.562**). This is the first
-consolidated changelog: a feature-level digest of the ~month of work in
-**May 2026**, distilled from ~580 commits on `master`. Granularity is
-deliberately coarse — grouped by theme, not by commit.
+`CACHE_NAME` in `sw.js`, currently **v0.565**). This is a feature-level
+digest of the work since the start of **May 2026**, distilled from
+~600 commits on `master`. Granularity is deliberately coarse — grouped
+by theme, not by commit.
 
 > **If you're upgrading, read [Heads-up by person](#heads-up-by-person)
 > at the bottom first** — it tells you what actually matters for your
@@ -134,6 +134,47 @@ A complete push-notification system:
 
 ---
 
+## June 2026 — voice reliability
+
+Two voice bugs surfaced on real phones this month. Both are fixed,
+deployed, and locked by tests that run **without a phone**, so they
+can't silently regress again:
+
+- **Realtime barge stopped working** after May's torch→onnxruntime VAD
+  swap. The onnx model needs 64 samples of prior-audio context
+  prepended to each window (silero v5 infers on 576 samples, not 512);
+  without it the model scored ~0 on everything and never detected
+  speech, so the agent never stopped talking when you spoke. Fixed by
+  carrying a rolling context — and locked by a regression test that
+  asserts real speech *scores high*. The prior test only checked that
+  silence scored low, which the broken model also passed: that was the
+  exact gap that let the regression through.
+- **Turn-mode replies were silent over Bluetooth.** The reply audio
+  played while the iOS audio session was still in mic-capture mode, so
+  it routed to the iPhone earpiece instead of the connected headset.
+  Fixed by hinting the playback audio category before play; covered by
+  a spoken-turn test that asserts the reply element actually advances
+  playback (not just that synthesis was requested).
+- **A dev-only force-reload was wiping the 14.7 MB VAD asset cache**, so
+  the next barge waited ~60s for a cold re-download and missed its
+  window. Scoped so the everyday reload keeps the VAD assets warm; the
+  full wipe is still available behind a long-press.
+
+Underneath these, the audio stack now has a **three-layer E2E suite**:
+real `/transcribe` + `/tts` contract canaries (run against the live
+services at install time), a mocked spoken-turn test with real
+getUserMedia→record→playback assertions, and a barge test that drives
+the actual Silero VAD from a real speech WAV. Pushes run through a
+**three-tier gate** — 496 unit/contract tests, the mocked Playwright
+smoke suite, and a read-only live smoke against the deployed stack
+(proxy + backend + PWA boot) — with a cross-backend conformance harness
+keeping the hermes and openclaw plugins in lockstep on the `/v1/*`
+contract. The ~3900-line `main.ts` is also being decomposed into
+focused modules behind that gate, behavior-preserving and verified at
+each step.
+
+---
+
 ## Heads-up by person
 
 ### Tom — you're a couple weeks behind and multisession never worked for you
@@ -158,13 +199,16 @@ thing to report first — it's the least-exercised path across devices.
 Your barge-in issue (worked in turn-based, not realtime; the installer
 dragged in all of CUDA; torch is huge) is addressed:
 
-1. **Realtime barge now works without server-side VAD** — it prefers the
-   bridge but falls back to in-browser Silero automatically, so you're
-   no longer dependent on the bridge being provisioned correctly.
+1. **Realtime barge works again.** Two things: the onnxruntime server
+   VAD had a bug (missing the silero-v5 context window) that made it
+   score everything as silence — now fixed and regression-tested — and
+   realtime also falls back to in-browser Silero automatically if the
+   bridge has no VAD, so you're not dependent on the bridge being
+   provisioned correctly.
 2. **The bridge no longer needs torch/CUDA** — server VAD runs on a
    vendored onnxruntime model (~2 MB, CPU). A fresh `install.sh` pulls
    onnxruntime, not torch. If you already have a torch venv it still
    works, but you can slim it: `pip uninstall torch torchaudio
    silero-vad` and the onnx path takes over (frees ~800 MB).
 3. Re-run `install.sh` (or just `git pull`) to pick up the slim bridge
-   venv provisioning.
+   venv provisioning and the VAD fix.
