@@ -33,6 +33,7 @@ import { log, diag } from './util/log.ts';
 import * as chat from './chat.ts';
 import * as replyNavigator from './audio/turn-based/replyNavigator.ts';
 import * as sessionDrawer from './sessionDrawer.ts';
+import * as switchCtl from './switchController.ts';
 import * as backend from './backend.ts';
 import * as transcriptStore from './transcript/store.ts';
 import * as sessionCache from './sessionCache.ts';
@@ -100,7 +101,7 @@ export function replaySessionMessages(
   inflight?: any[],
   opts?: { preserveScrollIfLive?: boolean },
 ): void {
-  const viewed = sessionDrawer.getViewed();
+  const viewed = switchCtl.viewedId();
   const sameSession = viewed === id;
   diag(
     `[chat-resume] enter chat_id=${id} viewed=${viewed ?? ''} ` +
@@ -116,7 +117,7 @@ export function replaySessionMessages(
   }
   setHistoryLoadedRef();
 
-  // Read the saved position BEFORE changing viewedSessionId / mutating
+  // Read the saved position BEFORE committing the new view / mutating
   // the transcript. Saves run unconditionally on every scroll event
   // (last write wins), so transient renders that fire scroll(0) just
   // get overwritten by the post-restore scroll(saved). No suppression.
@@ -496,7 +497,7 @@ function drillViaAroundWindow(chatId: string, targetMessageId: string): Promise<
     if (!transcriptEl) return false;
     try {
       const around: any = await backend.fetchMessagesAround(chatId, targetMessageId, DRILL_AROUND_LIMIT);
-      if (sessionDrawer.getViewed() !== chatId) {
+      if (switchCtl.viewedId() !== chatId) {
         log(`[cmdk] drill aborted — session changed during around fetch`);
         return false;
       }
@@ -563,7 +564,7 @@ async function drillViaSerialOlderPages(
   let cursor = initialFirstId;
   let hasMore = initialHasMore;
   for (let i = 0; i < DRILL_PAGE_CAP && hasMore && cursor != null; i++) {
-    if (sessionDrawer.getViewed() !== chatId) {
+    if (switchCtl.viewedId() !== chatId) {
       log(`[cmdk] drill aborted — session changed mid-fetch`);
       return;
     }
@@ -677,7 +678,7 @@ export async function jumpToLatest(): Promise<void> {
   if (!id) { chat.forceScrollToBottom(); return; }
   try {
     const result: any = await backend.resumeSession(id);
-    if (sessionDrawer.getViewed() !== id) return;
+    if (switchCtl.viewedId() !== id) return;
     transcriptStore.setDurable(id, result.messages || [], {
       firstId: result.firstId ?? null,
       hasMore: !!result.hasMore,

@@ -63,10 +63,10 @@ export default async function run({ page, log, url }) {
   await page.evaluate(async ({ bareId, skId }) => {
     const listenReply = await import('/build/listenReplyState.mjs');
     const beh = await import('/build/backendEventHandlers.mjs');
-    const sd = await import('/build/sessionDrawer.mjs');
+    const switchCtl = await import('/build/switchController.mjs');
     const settings = await import('/build/settings.mjs');
     settings.set('tts', true);
-    const chatId = sd.getFocused() || `test-chat-${Date.now()}`;
+    const chatId = switchCtl.focusedId() || `test-chat-${Date.now()}`;
     listenReply.markAwaitingReply(chatId);
     // Realistic adapter shape: BARE messageId + sk-prefixed replyId.
     beh.handleReplyFinal({

@@ -20,6 +20,7 @@
 import { log } from './util/log.ts';
 import * as transcriptStore from './transcript/store.ts';
 import * as sessionDrawer from './sessionDrawer.ts';
+import * as switchCtl from './switchController.ts';
 import * as badge from './notifications/badge.ts';
 import * as inAppBanner from './notifications/inAppBanner.ts';
 import * as activityStore from './notifications/activityStore.ts';
@@ -55,7 +56,7 @@ export function handleNotification({ chatId, kind, content, sidekickId, isReplay
   // notification (OS-level) is dispatched separately by the proxy
   // (proxy/sidekick/notifications/dispatch.ts); this is the in-app
   // counterpart for badge state.
-  if (chatId && chatId !== sessionDrawer.getFocused()) {
+  if (chatId && chatId !== switchCtl.focusedId()) {
     if (replay) {
       log(`notification (off-screen replay) chat=${chatId} kind=${kind} — no badge/banner`);
       return;

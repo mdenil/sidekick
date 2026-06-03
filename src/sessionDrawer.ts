@@ -33,6 +33,8 @@ import { reportChatSwitch } from './notifications/visibility.ts';
 import { unreadFor, markUnread as markChatUnread, unmarkUnread as unmarkChatUnread, isMarkedUnread } from './notifications/badge.ts';
 import * as activityStore from './notifications/activityStore.ts';
 import { showTranscriptLoading } from './transcript/index.ts';
+import * as switchCtl from './switchController.ts';
+import type { SwitchToken } from './switchController.ts';
 
 let onResumeCb: ((id: string, messages: any[], pagination?: { firstId: number | null; hasMore: boolean }, inflight?: any[], targetMessageId?: string) => void) | null = null;
 
@@ -67,10 +69,10 @@ function emitMultiSelectChange(): void {
 function toggleSelection(id: string): void {
   // First toggle in an empty selection seeds with the currently-
   // active row so the user lands at ">=2 selected" rather than
-  // "1 selected, going nowhere." Active row ≠ viewedSessionId in
+  // "1 selected, going nowhere." Active row ≠ committed view in
   // some race windows (just-clicked, replay still pending), so
   // mirror the rangeSelect / extendSelectionByKey anchor priority.
-  const active = optimisticActiveId || viewedSessionId;
+  const active = switchCtl.focusedId();
   if (multiSelect.size === 0 && active && id !== active) {
     multiSelect.add(active);
   }
@@ -90,7 +92,7 @@ function rangeSelect(id: string): void {
   // (just-clicked) wins over viewed (still-rendered) so a shift-click
   // fired immediately after a plain click anchors against the row
   // the user actually picked.
-  const anchor = multiSelectAnchor || optimisticActiveId || viewedSessionId;
+  const anchor = multiSelectAnchor || switchCtl.focusedId();
   if (!anchor || anchor === id) {
     // Degenerate case (no prior anchor and shift-clicking the active
     // row); fall through to a single-toggle so the click still does
@@ -123,7 +125,7 @@ function extendSelectionByKey(direction: -1 | 1): boolean {
   // rendered. optimistic comes BEFORE viewed so a Shift+Arrow fired
   // immediately after a click works against the JUST-clicked row,
   // not the still-rendered prior one.
-  const anchor = multiSelectAnchor || optimisticActiveId || viewedSessionId;
+  const anchor = multiSelectAnchor || switchCtl.focusedId();
   // First key press with no selection — seed with the active row +
   // its neighbor in `direction`.
   if (multiSelect.size === 0) {
@@ -274,7 +276,7 @@ function installSelectionKeyboardListener(): void {
       // Single-active path — delete whichever chat the user is
       // viewing right now. Same prompt + DELETE call the row's
       // overflow menu fires.
-      const activeId = optimisticActiveId || viewedSessionId;
+      const activeId = switchCtl.focusedId();
       if (!activeId) return;
       const row = cachedSessions.find((s) => s.id === activeId)
         || mergePending([]).find((s) => s.id === activeId);
@@ -304,7 +306,8 @@ export function navigateSibling(direction: -1 | 1): boolean {
  *  path so "Open in chat" highlights the target the moment it's clicked,
  *  not after the server transcript fetch returns. No-op if the row isn't
  *  in the (possibly filtered/paginated) list yet — scheduleRefresh will
- *  paint it from optimisticActiveId once it appears. */
+ *  paint it from the optimistic highlight (switchController) once it
+ *  appears. */
 function paintActiveRowSync(id: string, opts: { scrollIntoView?: boolean } = {}): void {
   const listEl = document.getElementById('sessions-list');
   if (!listEl) return;
@@ -318,7 +321,7 @@ function paintActiveRowSync(id: string, opts: { scrollIntoView?: boolean } = {})
 
 function navigateByKey(direction: -1 | 1): boolean {
   if (visibleRowIds.length === 0) return false;
-  const anchor = optimisticActiveId || viewedSessionId;
+  const anchor = switchCtl.focusedId();
   const cur = anchor ? visibleRowIds.indexOf(anchor) : -1;
   // No active session yet — seed at the first/last row instead of
   // doing nothing. Up = last (most-recent-but-not-active is awkward;
@@ -337,7 +340,7 @@ function navigateByKey(direction: -1 | 1): boolean {
   // Synchronous .active flip + optimistic-claim — instant feedback that
   // any scheduleRefresh racing the async resume() can't undo.
   paintActiveRowSync(targetId, { scrollIntoView: true });
-  optimisticActiveId = targetId;
+  switchCtl.setOptimistic(targetId);
   // Async resume — fetch transcript + render. Same path the click
   // handler uses, so behavior (scroll-save + switch-then-load clear +
   // replay + drawer refresh) is identical to a click; resume() handles
@@ -353,8 +356,9 @@ function navigateByKey(direction: -1 | 1): boolean {
  *  specific message bubble. Routes through the SAME cache-first resume()
  *  the sidebar rows use, so the drill is atomic + instant:
  *
- *   - Synchronously paints the target row `.active` AND claims
- *     optimisticActiveId — the highlight flips on click, not after the
+ *   - Synchronously paints the target row `.active` AND claims the
+ *     optimistic highlight (switchController) — the highlight flips on
+ *     click, not after the
  *     server transcript fetch returns (previously the highlight was
  *     server-gated, flickering back for 3-13s over high-latency links).
  *   - resume() renders from the IDB transcript cache first (instant for a
@@ -372,10 +376,10 @@ function navigateByKey(direction: -1 | 1): boolean {
  *  Returns the resume promise (resolves once the render settles). */
 export function drillTo(id: string, targetMessageId?: string): Promise<void> {
   // Instant highlight — don't wait for the async scheduleRefresh repaint
-  // or the server fetch. optimisticActiveId is also set inside resume()
-  // synchronously, but painting the row here closes the visible gap.
+  // or the server fetch. begin() also claims optimistic focus inside
+  // resume(), but painting the row here closes the visible gap.
   paintActiveRowSync(id);
-  optimisticActiveId = id;
+  switchCtl.setOptimistic(id);
   return resume(id, targetMessageId).catch((e: any) => {
     diag(`sessionDrawer: drillTo resume failed: ${e?.message || e}`);
   });
@@ -457,20 +461,19 @@ let filterServerTimer: number | null = null;
  *  ones if the older response lands second. */
 let filterServerAbort: AbortController | null = null;
 
-/** Optimistic active-id override for refresh(). The adapter's
- *  `getCurrentSessionId()` doesn't update until `resumeSession()` returns
- *  from the server — on the cache-hit path that meant refresh() was
- *  immediately painting the STALE previous id over the click's optimistic
- *  highlight, producing a flicker (or sticking if the server fetch hung).
- *  Set at click-time, cleared after resume settles. refresh() reads this
- *  first, falls back to backend state when null. */
-let optimisticActiveId: string | null = null;
+// Switch focus state (optimistic highlight, committed view, generation)
+// is owned by switchController — see that module's header. Reads come
+// straight from switchController (focusedId/viewedId); the only accessor
+// kept here is setViewed() below, which layers the view-change side
+// effects (badge clear, read-marking, engagement report) over the raw
+// switchController write so there is a single source of truth for "which
+// switch is current."
 
 /** The session id whose transcript is CURRENTLY RENDERED in the chat pane.
  *  Set by main.ts via setViewed() at every transition: replaySessionMessages,
  *  new-chat (pinned to the freshly-rotated conversationName), and boot
- *  (pinned to the restored snapshot id). Takes priority over
- *  optimisticActiveId and conversationName — the drawer should always
+ *  (pinned to the restored snapshot id). Takes priority over the
+ *  optimistic highlight and conversationName — the drawer should always
  *  highlight the row the user is actually reading, regardless of what
  *  the adapter thinks its current send-target is (they can diverge e.g.
  *  after a resume where conversationName updated but then the user tapped
@@ -478,12 +481,11 @@ let optimisticActiveId: string | null = null;
  *
  *  Also load-bearing for the renderable-event gates in main.ts
  *  (handleReplyDelta/Final): incoming `conversation` is compared against
- *  getViewed() to decide whether to render. Must stay populated whenever
+ *  switchCtl.viewedId() to decide whether to render. Must stay populated whenever
  *  there's a chat on screen, even one that's not yet persisted. */
-let viewedSessionId: string | null = null;
 export function setViewed(id: string | null) {
-  const prev = viewedSessionId;
-  viewedSessionId = id;
+  const prev = switchCtl.viewedId();
+  switchCtl.setViewed(id);
   // Switching INTO a chat is the canonical "user has now seen this"
   // signal — clear its unread badge.
   if (id) {
@@ -503,12 +505,12 @@ export function setViewed(id: string | null) {
     void import('./transcriptHighlight.ts').then((m) => m.clearHighlight?.());
   }
 }
-export function getViewed(): string | null { return viewedSessionId; }
-/** Chat the user is focused on for engagement/notification decisions.
- *  During a session switch, optimisticActiveId flips before the new
- *  transcript fetch resolves; treating the old viewed chat as focused
- *  in that window suppresses push and can clear background unread. */
-export function getFocused(): string | null { return optimisticActiveId || viewedSessionId; }
+
+/** The id refresh()/renderList should paint as `.active`: optimistic
+ *  (a switch in flight) → committed view → the adapter's send-target. */
+function activeRowId(): string {
+  return switchCtl.focusedId() || backend.getCurrentSessionId?.() || '';
+}
 
 function fmtRelativeTime(epochSec: number): string {
   if (!epochSec) return '';
@@ -593,16 +595,10 @@ export function scheduleRefresh(): void {
   if (refreshTimer) return;
   refreshTimer = setTimeout(() => {
     refreshTimer = null;
-    if (refreshInFlight) {
-      // A refresh is already running; queue another tick. Without this
-      // re-arm, a server fetch slower than the coalesce window means
-      // updates that land mid-refresh would otherwise be dropped on the
-      // floor.
-      scheduleRefresh();
-      return;
-    }
-    refreshInFlight = true;
-    refresh().finally(() => { refreshInFlight = false; });
+    // refresh() self-guards single-flight (and re-arms a trailing tick if
+    // one is already running), so the debounced path and the direct
+    // poll/visibilitychange callers all funnel through one in-flight gate.
+    void refresh();
   }, 50);
 }
 
@@ -647,7 +643,25 @@ async function warmPrefetch(top: any[]): Promise<void> {
   }
 }
 
+/** Single-flight gate over doRefresh(). EVERY caller — the debounced
+ *  scheduleRefresh tick, the list poller, the visibilitychange kick, and
+ *  external onOpen calls — routes through here so two list reconciles
+ *  never run concurrently. A concurrent call re-arms a trailing tick
+ *  (so state that changed mid-flight still repaints) and returns. */
 export async function refresh() {
+  if (refreshInFlight) {
+    scheduleRefresh();
+    return;
+  }
+  refreshInFlight = true;
+  try {
+    await doRefresh();
+  } finally {
+    refreshInFlight = false;
+  }
+}
+
+async function doRefresh() {
   const listEl = document.getElementById('sessions-list');
   if (!listEl) return;
   if (!backend.capabilities().sessionBrowsing) { listEl.innerHTML = ''; return; }
@@ -668,7 +682,7 @@ export async function refresh() {
   // "click chat A" briefly flickers back to the current chat before
   // settling on A (the highlight lags the click until the server
   // list arrives).
-  const active = optimisticActiveId || viewedSessionId || backend.getCurrentSessionId?.() || '';
+  const active = activeRowId();
 
   // 1. Render from cache if available.
   const cached = await sessionCache.getListCache();
@@ -711,7 +725,15 @@ export async function refresh() {
         }
       }
     }
-    renderListFiltered(listEl, active);
+    // Re-read focus HERE rather than reusing the pre-await `active`
+    // snapshot. `backend.listSessions` is an await point: a row switch
+    // (begin() → setOptimistic) can land between the cache render above
+    // and this post-server repaint. Painting the stale snapshot is what
+    // produced the A→B→A highlight bounce on slow links — the list would
+    // momentarily re-highlight the chat that was focused when refresh()
+    // STARTED, then snap to the live target on the next tick. focusedId()
+    // is the live source of truth; read it at paint time.
+    renderListFiltered(listEl, activeRowId());
 
     // Stale-foreground guard: if the chat pane is showing a session
     // that the server no longer knows about (it was deleted by the
@@ -724,11 +746,12 @@ export async function refresh() {
     // either, it's a transient new chat, not a deleted one). The
     // distinguishing signal: was it EVER in cachedSessions during
     // this session of the app? Tracked below via lastSeenIds.
-    if (viewedSessionId && !sessions.some(s => s.id === viewedSessionId)) {
-      if (lastSeenIds.has(viewedSessionId)) {
+    const viewed = switchCtl.viewedId();
+    if (viewed && !sessions.some(s => s.id === viewed)) {
+      if (lastSeenIds.has(viewed)) {
         // Was here, isn't here anymore → genuinely deleted.
-        diag(`sessionDrawer: viewed session ${viewedSessionId} no longer on server, clearing chat`);
-        viewedSessionId = null;
+        diag(`sessionDrawer: viewed session ${viewed} no longer on server, clearing chat`);
+        switchCtl.setViewed(null);
         onSessionGoneCb?.();
       }
     }
@@ -820,7 +843,7 @@ async function runServerFilterReconcile(q: string) {
     await sessionCache.putListCache(sessions);
     const listEl = document.getElementById('sessions-list');
     if (!listEl) return;
-    const active = optimisticActiveId || viewedSessionId || backend.getCurrentSessionId?.() || '';
+    const active = activeRowId();
     renderListFiltered(listEl, active);
   } catch (e: any) {
     if (e?.name === 'AbortError') return;
@@ -1065,7 +1088,7 @@ function renderRow(s: any, activeId: string): HTMLLIElement {
     // after onBeforeSwitchCb returns) doesn't repaint the OLD viewed
     // chat as active — that produced the "active → leaving → new"
     // flicker where the old active chat momentarily re-highlights.
-    optimisticActiveId = s.id;
+    switchCtl.setOptimistic(s.id);
     trace('sync-active-flip');
     // Switch-then-load: resume() blanks the transcript + shows the
     // spinner synchronously (after it saves the leaving chat's scroll
@@ -1245,12 +1268,13 @@ async function promptRename(s: any) {
  *    1. recentlyDeleted set — gates renderListFiltered against pre-delete
  *       listSessions responses that resolve AFTER our delete and would
  *       otherwise put `id` back into cachedSessions.
- *    2. resumeGen — bumped so any in-flight resume() for `id` bails at
- *       the myGen !== resumeGen guard before its onResumeCb fires
- *       (otherwise main.ts's replaySessionMessages re-runs setViewed(id)
- *       on the deleted chat).
- *    3. optimisticActiveId / viewedSessionId — cleared if they pointed
- *       at `id` (otherwise refresh()'s active = optimistic||viewed
+ *    2. switchController epoch — switchCtl.invalidate() bumps the
+ *       generation so any in-flight resume() for `id` bails at its
+ *       isCurrent(tok) guard before its onResumeCb fires (otherwise
+ *       main.ts's replaySessionMessages re-runs setViewed(id) on the
+ *       deleted chat).
+ *    3. switchController optimistic / viewed — cleared if they pointed
+ *       at `id` (otherwise refresh()'s activeRowId() = focusedId()
  *       fallback paints an isFresh placeholder for the deleted id).
  *    4. backend (proxyClient) — server-side DELETE + IDB conversation
  *       remove + activeChatId clear.
@@ -1265,9 +1289,9 @@ async function deleteSessionAtomic(id: string): Promise<void> {
   // Mark + bump generation BEFORE the network call so any list response
   // or resume continuation that lands during the await is already gated.
   markRecentlyDeleted(id);
-  resumeGen++;
-  if (optimisticActiveId === id) optimisticActiveId = null;
-  if (viewedSessionId === id) viewedSessionId = null;
+  switchCtl.invalidate();
+  if (switchCtl.optimisticId() === id) switchCtl.setOptimistic(null);
+  if (switchCtl.viewedId() === id) switchCtl.setViewed(null);
   await backend.deleteSession(id);
   await sessionCache.removeMessagesCache(id);
   const cached = await sessionCache.getListCache();
@@ -1301,48 +1325,37 @@ async function promptDelete(s: any) {
  *  resume() so the trace continues into the async work. */
 let pendingTrace: { traceId: string; traceT0: number; trace: (event: string, extra?: string) => void } | null = null;
 
-/** Monotonically increasing per-click generation counter. Each call
- *  to resume() captures the new value; the cache and server callbacks
- *  bail when they fire under a stale generation (i.e. a newer click
- *  has happened). The previous `optimisticActiveId === id` check was
- *  correct ONLY when no two pending resumes shared an id — the click
- *  sequence A → B → A is precisely the scenario where it fails (A's
- *  first promise sees opt=A again because A2 reset it, mistakes itself
- *  for the live call, and renders stale data over the fresh state).
- *
- *  Generations are id-independent so this hazard is closed. */
-let resumeGen = 0;
-
-/** In-flight resume promise + id + generation. A rapid double-tap on
- *  the same row used to fire the resume pipeline N times and append
- *  duplicate chat bubbles. Same-id dedup still applies, but the gen
- *  field guards against returning a superseded promise (which would
- *  silently drop the user's click). */
-let resumeInFlight: { id: string; gen: number; promise: Promise<void> } | null = null;
+/** In-flight resume promise + the switch token that owns it. A rapid
+ *  double-tap on the same row used to fire the resume pipeline N times
+ *  and append duplicate chat bubbles. Same-id dedup still applies, but
+ *  the token guards against returning a superseded promise (which would
+ *  silently drop the user's click). The generation lives in
+ *  switchController — see its header for the A→B→A hazard this closes. */
+let resumeInFlight: { id: string; tok: SwitchToken; promise: Promise<void> } | null = null;
 
 async function resume(id: string, targetMessageId?: string) {
   // Adopt the trace from the click handler if present.
   const t = pendingTrace;
   pendingTrace = null;
   t?.trace('resume-entered');
-  if (resumeInFlight?.id === id && resumeInFlight.gen === resumeGen) {
+  // Dedup BEFORE begin() bumps the generation: a double-tap on the same
+  // row while its resume is still the live switch returns the in-flight
+  // promise instead of starting a second pipeline.
+  if (resumeInFlight?.id === id && switchCtl.isCurrent(resumeInFlight.tok)) {
     t?.trace('resume-dedup-hit');
     return resumeInFlight.promise;
   }
-  const myGen = ++resumeGen;
-  // Capture the prior viewed id BEFORE we update optimisticActiveId so
-  // the shell's onBeforeSwitch hook can clean up empty/abandoned chats
-  // (the "New chat / 0 msgs" pollution case). Skip
-  // when we're "navigating" to the same chat — that's a refresh, not
-  // a switch.
-  //
-  // Use `viewedSessionId` (which persists across resume() lifecycles)
-  // rather than `optimisticActiveId` (which gets reset to null in our
-  // finally block when our gen is still live). Without that
-  // distinction, navigate-away cleanup misses the leaving id when the
-  // user waits between clicks long enough for the prior resume to
-  // fully settle.
-  const leaving = viewedSessionId || optimisticActiveId;
+  // Open the switch: bumps the generation and claims the optimistic
+  // highlight synchronously (so a racing refresh() paints THIS row, not
+  // the old one). The token authorizes every render below; superseded
+  // continuations bail at switchCtl.isCurrent(tok).
+  const tok = switchCtl.begin(id, targetMessageId);
+  // Capture the prior viewed id for the shell's onBeforeSwitch hook so it
+  // can clean up empty/abandoned chats (the "New chat / 0 msgs" pollution
+  // case). Skip when "navigating" to the same chat — that's a refresh,
+  // not a switch. viewedId() persists across resume() lifecycles;
+  // optimisticId() is the fallback for a first switch before any commit.
+  const leaving = switchCtl.viewedId() || switchCtl.optimisticId();
   if (leaving && leaving !== id) {
     saveCurrentScrollPosition();
     // Bypass the IDB debounce: a fast switch can outrun the 200ms timer,
@@ -1379,10 +1392,6 @@ async function resume(id: string, targetMessageId?: string) {
     showTranscriptLoading();
     t?.trace('transcript-cleared');
   }
-  // Claim the optimistic active id immediately so refresh() paints the
-  // clicked row as active even before the server fetch completes (and
-  // even if the server fetch is slow or fails).
-  optimisticActiveId = id;
   t?.trace('optimistic-set');
   const promise = (async () => {
     // 1. Paint from cached transcript if we have one — instant feel.
@@ -1391,7 +1400,7 @@ async function resume(id: string, targetMessageId?: string) {
     t?.trace('cache-fetch-end', `hit=${!!cached?.messages?.length} n=${cached?.messages?.length ?? 0}`);
     let cacheRendered = false;
     if (cached?.messages?.length) {
-      if (myGen === resumeGen) {
+      if (switchCtl.isCurrent(tok)) {
         t?.trace('cache-render-start');
         log(`sessionDrawer: resumed ${id} from cache (${cached.messages.length} messages)`);
         // Pass cached pagination so the cache-painted view has the
@@ -1418,7 +1427,7 @@ async function resume(id: string, targetMessageId?: string) {
       const messages = result.messages || [];
       const pagination = { firstId: result.firstId ?? null, hasMore: !!result.hasMore };
       if (result.error) {
-        if (myGen !== resumeGen) return;
+        if (!switchCtl.isCurrent(tok)) return;
         const msg = cacheRendered
           ? 'Showing cached session — reconnecting…'
           : 'Could not load session — reconnecting…';
@@ -1445,7 +1454,7 @@ async function resume(id: string, targetMessageId?: string) {
       await sessionCache.putMessagesCache(id, capped.messages, capped.pagination);
       // Stale-generation guard — see above. Bail BEFORE logging so the
       // log line accurately reflects which fetches actually rendered.
-      if (myGen !== resumeGen) return;
+      if (!switchCtl.isCurrent(tok)) return;
       // Cache-matched optimization: if the cache cb ALREADY rendered the
       // same rows the merge produced (no new tail turns / edits), skip the
       // re-render to avoid a 500ms-later blank-flicker. Critical: gate on
@@ -1480,27 +1489,27 @@ async function resume(id: string, targetMessageId?: string) {
       scheduleRefresh();
     } catch (e: any) {
       diag(`sessionDrawer: resume ${id} failed: ${e.message}`);
-      if (myGen === resumeGen) {
+      if (switchCtl.isCurrent(tok)) {
         status.setStatus(
           cacheRendered ? 'Showing cached session — reconnecting…' : 'Could not load session — reconnecting…',
           'err',
         );
         if (!cacheRendered) {
-          optimisticActiveId = null;
+          switchCtl.setOptimistic(null);
         }
         scheduleRefresh();
       }
     }
   })();
-  resumeInFlight = { id, gen: myGen, promise };
+  resumeInFlight = { id, tok, promise };
   try { await promise; } finally {
-    // Only clear the in-flight slot if it still belongs to OUR
-    // generation. A newer click already replaced it; touching it
-    // would corrupt that newer call's state.
-    if (resumeInFlight?.gen === myGen) resumeInFlight = null;
-    // Clear optimistic only if our generation is still live (no newer
-    // click superseded us).
-    if (myGen === resumeGen && optimisticActiveId === id) optimisticActiveId = null;
+    // Only clear the in-flight slot if it still belongs to OUR switch.
+    // A newer switch already replaced it; touching it would corrupt
+    // that newer call's state.
+    if (resumeInFlight?.tok.gen === tok.gen) resumeInFlight = null;
+    // Clear optimistic only if our switch is still live AND optimistic
+    // still points at us (no newer switch superseded us).
+    switchCtl.clearOptimisticIfCurrent(tok);
     t?.trace('resume-finally');
   }
 }
@@ -1554,7 +1563,7 @@ function ensureFilterInput(): HTMLInputElement | null {
     clearStoredFilter();
     const listEl = document.getElementById('sessions-list');
     if (listEl) {
-      const active = optimisticActiveId || viewedSessionId || backend.getCurrentSessionId?.() || '';
+      const active = activeRowId();
       renderListFiltered(listEl, active);
     }
     updateClearVisibility();
@@ -1579,7 +1588,7 @@ function ensureFilterInput(): HTMLInputElement | null {
       filterRenderTimer = null;
       const listEl = document.getElementById('sessions-list');
       if (!listEl) return;
-      const active = optimisticActiveId || viewedSessionId || backend.getCurrentSessionId?.() || '';
+      const active = activeRowId();
       renderListFiltered(listEl, active);
     }, 100) as unknown as number;
     // 2. Debounced server-authoritative reconcile — covers the case
@@ -1609,7 +1618,7 @@ function ensureFilterInput(): HTMLInputElement | null {
       clearStoredFilter();
       const listEl = document.getElementById('sessions-list');
       if (listEl) {
-        const active = optimisticActiveId || viewedSessionId || backend.getCurrentSessionId?.() || '';
+        const active = activeRowId();
         renderListFiltered(listEl, active);
       }
       // Drop focus so a follow-up Esc can hit other Esc handlers (close
@@ -1657,7 +1666,7 @@ export function init(opts: {
     if (input) input.value = saved;
     const listEl = document.getElementById('sessions-list');
     if (listEl && cachedSessions.length) {
-      const active = optimisticActiveId || viewedSessionId || backend.getCurrentSessionId?.() || '';
+      const active = activeRowId();
       renderListFiltered(listEl, active);
     }
   });
@@ -1675,7 +1684,7 @@ export function handleSessionAnnounced(ev: { id?: string; snippet?: string; sour
   if (!ev?.id) return;
   const snippet = typeof ev.snippet === 'string' ? ev.snippet : '';
   const listEl = document.getElementById('sessions-list');
-  const active = () => optimisticActiveId || viewedSessionId || backend.getCurrentSessionId?.() || '';
+  const active = () => activeRowId();
 
   // Case 1 — the chat is already in cachedSessions (lazy-create flow:
   // conversations.create() writes IDB with title='New chat', drawer

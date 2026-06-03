@@ -6,8 +6,8 @@
  * a phantom we just deleted in this tab?"
  *
  * Why this lives here, not in sessionDrawer:
- *   - sessionDrawer owns drawer-render state (cachedSessions,
- *     optimisticActiveId, etc.). It only needs to know "is this id
+ *   - sessionDrawer owns drawer-render state (cachedSessions, the
+ *     switchController focus epoch, etc.). It only needs to know "is this id
  *     deleted?" to filter the visible list.
  *   - proxyClient owns server-side lifecycle (activeChatId, conversations
  *     IDB row, sessions endpoint). It needs the same answer to bail out

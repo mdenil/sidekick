@@ -84,12 +84,12 @@ export default async function run({ page, log, url }) {
   const stateAtReply = await page.evaluate(async () => {
     const listenReply = await import('/build/listenReplyState.mjs');
     const beh = await import('/build/backendEventHandlers.mjs');
-    const sd = await import('/build/sessionDrawer.mjs');
+    const switchCtl = await import('/build/switchController.mjs');
     const settings = await import('/build/settings.mjs');
     settings.set('tts', true);
 
     const st = window.__listen?.state;
-    const chatId = sd.getFocused() || `test-chat-${Date.now()}`;
+    const chatId = switchCtl.focusedId() || `test-chat-${Date.now()}`;
     listenReply.markAwaitingReply(chatId);
     beh.handleReplyFinal({
       replyId: 'sk-test-reply',

@@ -16,6 +16,7 @@ import { log, diag } from './util/log.ts';
 import { replaySessionMessages, NO_REPLY_RE } from './sessionResume.ts';
 import * as backend from './backend.ts';
 import * as sessionDrawer from './sessionDrawer.ts';
+import * as switchCtl from './switchController.ts';
 import * as settings from './settings.ts';
 import * as activityStore from './notifications/activityStore.ts';
 import * as badge from './notifications/badge.ts';
@@ -82,7 +83,7 @@ export function handleReplyDelta({ replyId, cumulativeText, conversation, messag
     });
   }
   // Audio + feedback side effects are scoped to the on-screen chat.
-  const viewed = sessionDrawer.getViewed();
+  const viewed = switchCtl.viewedId();
   if (viewed && conversation && conversation !== viewed) return;
   // First-delta-of-turn signal: chime + suppress envelope. With the
   // store the "first delta" predicate is "no prior reply_delta with
@@ -139,7 +140,7 @@ function schedulePostFinalDurableRefresh(
   finalText?: string | null,
 ): void {
   if (!chatId || !backend.capabilities().sessionBrowsing) return;
-  if (sessionDrawer.getViewed() !== chatId) return;
+  if (switchCtl.viewedId() !== chatId) return;
   const prev = postFinalRefreshTimers.get(chatId);
   if (prev) clearTimeout(prev);
   const seq = (postFinalRefreshSeq.get(chatId) ?? 0) + 1;
@@ -151,11 +152,11 @@ function schedulePostFinalDurableRefresh(
     postFinalRefreshTimers.delete(chatId);
     void (async () => {
       if (postFinalRefreshSeq.get(chatId) !== seq) return;
-      if (sessionDrawer.getViewed() !== chatId) return;
+      if (switchCtl.viewedId() !== chatId) return;
       try {
         const result: any = await backend.fetchSessionMessages(chatId);
         if (postFinalRefreshSeq.get(chatId) !== seq) return;
-        if (sessionDrawer.getViewed() !== chatId) return;
+        if (switchCtl.viewedId() !== chatId) return;
         replaySessionMessages(
           chatId,
           result.messages || [],
@@ -278,7 +279,7 @@ export function handleReplyFinal({ replyId, text, content = [], conversation, me
     }
   }
 
-  const viewed = sessionDrawer.getFocused();
+  const viewed = switchCtl.focusedId();
   if (viewed && conversation && conversation !== viewed) {
     // Skip activity + badge for "⏳ Still working…" heartbeats so a long
     // autonomous turn doesn't spam the Activity tray with N agent_reply
@@ -373,7 +374,7 @@ export function handleReplyFinal({ replyId, text, content = [], conversation, me
  *  Currently just canvas.show; grows as backends add more. */
 export function handleToolEvent({ kind, payload, conversation }: any) {
   // Drop only for an explicitly DIFFERENT viewed session.
-  const viewed = sessionDrawer.getViewed();
+  const viewed = switchCtl.viewedId();
   if (viewed && conversation && conversation !== viewed) return;
   if (kind === 'canvas.show' && payload) {
     log('canvas.show event from agent');

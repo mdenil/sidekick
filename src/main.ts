@@ -42,6 +42,7 @@ import * as chat from './chat.ts';
 import * as backend from './backend.ts';
 import * as conversations from './conversations.ts';
 import * as sessionDrawer from './sessionDrawer.ts';
+import * as switchCtl from './switchController.ts';
 import * as cmdkPalette from './cmdkPalette.ts';
 import * as hotkeysHelp from './hotkeysHelp.ts';
 import { initPinDrawer } from './pins/drawer.ts';
@@ -603,8 +604,9 @@ async function boot() {
   multiSelect.init({
     getSessions: () => sessionDrawer.getCachedSessions() as any,
     // Route bulk delete through sessionDrawer's atomic path so it picks
-    // up recentlyDeleted, resumeGen bump, optimistic/viewed clears, and
-    // IDB cache patch — same race protections as the row-menu delete.
+    // up recentlyDeleted, the switchController epoch bump, optimistic/
+    // viewed clears, and IDB cache patch — same race protections as the
+    // row-menu delete.
     // Pre-refactor this called backend.deleteSession directly and missed
     // every one of those surfaces (latent bug; tests didn't exercise the
     // race for bulk).
@@ -627,7 +629,7 @@ async function boot() {
     // chat surface so they can keep going.
     onSessionGone: () => {
       diag('reset history: viewed session disappeared from server');
-      const viewed = sessionDrawer.getViewed();
+      const viewed = switchCtl.viewedId();
       if (viewed) transcriptStore.clearAll(viewed);
       draft.dismiss();
       voiceMemos.clearAll().catch(() => {});
@@ -713,7 +715,7 @@ async function boot() {
     // concurrent ~1MB fetches. Route straight to a single bounded around
     // fetch (or an in-DOM scroll when the bubble is already rendered).
     const bare = (x: string) => String(x || '').replace(/^sidekick:/, '');
-    if (msgId && bare(sessionDrawer.getViewed() || '') === bare(chatId)) {
+    if (msgId && bare(switchCtl.viewedId() || '') === bare(chatId)) {
       try {
         await drillToMessageInViewedSession(chatId, msgId);
         return true;
@@ -1074,7 +1076,7 @@ async function boot() {
   // below (or events would land on a no-op subscriber).
   bindTranscriptPipeline({
     transcriptEl: () => document.getElementById('transcript'),
-    getViewedChatId: () => sessionDrawer.getViewed(),
+    getViewedChatId: () => switchCtl.viewedId(),
   });
 
   // Session-resume rendering — drives the transcript on chat switch /
@@ -1100,7 +1102,7 @@ async function boot() {
   // attached but tab is backgrounded." Wire to the sessionDrawer's
   // getFocused accessor so the reported chat_id follows the
   // clicked row immediately, even while its transcript fetch is pending.
-  initVisibilityReporting(() => sessionDrawer.getFocused());
+  initVisibilityReporting(() => switchCtl.focusedId());
 
   // Drive the mic-button peak indicator on the composer mic (the
   // toolbar #btn-mic is gone; the composer mic is now the single
@@ -1165,7 +1167,7 @@ async function boot() {
             // briefly flash the placeholder row. ONLY when we're
             // resuming the same chat the snapshot was for; otherwise
             // we'd trick replaySessionMessages into the merge-existing
-            // path (since sessionDrawer.getViewed() === id), which
+            // path (since switchCtl.viewedId() === id), which
             // would skip chat.clear() and leave the prior chat's
             // snapshot DOM merged on top of the URL-target chat's
             // fresh fetch. Without this, tapping a push notification
@@ -1303,6 +1305,13 @@ async function boot() {
     // is wiped before the new transcript paints.
     onResume: (e: any) => {
       if (!e?.conversation) return;
+      // Epoch guard: this is a BACKGROUND reconcile of a chat whose SSE
+      // channel was down. If focus has since moved to another chat (or a
+      // switch is in flight), painting e.conversation's transcript would
+      // clobber what's now on screen. replaySessionMessages would also
+      // commit setViewed(e.conversation), hijacking the view. Only
+      // reconcile while the user is still looking at this chat.
+      if (switchCtl.focusedId() !== e.conversation) return;
       const messages = Array.isArray(e.messages) ? e.messages : [];
       const pagination = {
         firstId: e.firstId ?? null,
@@ -1353,7 +1362,7 @@ async function boot() {
   // exports toggleCall / openCall / closeIfOpen for the dispatcher
   // to invoke.
   webrtcControls.init({
-    getSessionId: () => sessionDrawer.getViewed() || backend.getCurrentSessionId?.() || null,
+    getSessionId: () => switchCtl.viewedId() || backend.getCurrentSessionId?.() || null,
     onStatus: (msg, kind) => status.setStatus(msg, kind ?? null),
     // Wake-lock follows call lifecycle — connected/closing/failed/idle
     // transitions all need re-evaluation. evaluateWakeLock is idempotent.
@@ -1422,7 +1431,7 @@ async function boot() {
   let dcUserMessageId: string | null = null;
   let dcUserBufferedFinals = '';
   function currentChatId(): string | null {
-    return backend.getCurrentSessionId?.() ?? sessionDrawer.getViewed() ?? null;
+    return backend.getCurrentSessionId?.() ?? switchCtl.viewedId() ?? null;
   }
   /** Resolve the chatId for a fresh send. On a fresh PWA the user's
    *  first action (typed send, voice send, slash command) lands BEFORE
@@ -1867,7 +1876,7 @@ async function boot() {
     const detail = (ev as CustomEvent).detail || {};
     const text = typeof detail.text === 'string' ? detail.text : '';
     const messageId = typeof detail.messageId === 'string' ? detail.messageId : '';
-    const chatId = sessionDrawer.getViewed();
+    const chatId = switchCtl.viewedId();
     if (chatId && messageId) {
       transcriptStore.clearPendingSend(chatId, messageId);
     }
@@ -2108,7 +2117,7 @@ async function boot() {
       // stays open if open). If memo has an in-flight blob queued in the
       // outbox, it'll send against the NEW session. That's a conscious
       // trade: user asked for a fresh thread, they get one.
-      const prevViewed = sessionDrawer.getViewed();
+      const prevViewed = switchCtl.viewedId();
       if (prevViewed) {
         // Mirror sessionDrawer.resume()'s leaving-chat pattern. Without
         // this, transcriptStore.clearAll(prevViewed) → reconciler removes
@@ -2364,7 +2373,7 @@ async function boot() {
       // STTProvider impls so dictate.ts's cursor-aware splice machine
       // stays the single owner of the textarea state.
       const provider = browserDictate.pickStreamingProvider();
-      const chatId = sessionDrawer.getViewed() || backend.getCurrentSessionId?.() || null;
+      const chatId = switchCtl.viewedId() || backend.getCurrentSessionId?.() || null;
       await webrtcDictate.start({
         sessionId: chatId,
         chatId,
