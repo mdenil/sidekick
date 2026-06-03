@@ -2354,6 +2354,15 @@ async function boot() {
   async function startDictate(initialCursor: number | null = null): Promise<void> {
     if (dictateActive) return;
     if (memoActive) return;
+    // Realtime dictation OFF: record the whole utterance and batch one
+    // /transcribe on stop, dropping the clean transcript into the
+    // composer without auto-send. Reuses the memo/outbox pipeline —
+    // startMemo(false) appends text and never submits. Fixes long-form
+    // over-punctuation from per-pause streaming finals (#112).
+    if (!settings.get().dictateRealtime) {
+      await startMemo(false);
+      return;
+    }
     // streamingEngine === 'local' uses browser Web Speech (Chrome/Safari);
     // it's typically reachable even when navigator.onLine reports false
     // since most browsers cache enough to keep recognising. Skip the
@@ -2660,6 +2669,12 @@ async function boot() {
       await startMemo(true);
     }
   }
+
+  // Test hook (mirrors window.__listen): lets smokes drive the mic
+  // dispatch without synthesizing the pointer gesture. Used by
+  // dictate-realtime-toggle to prove a 'tap' routes to memo (batch
+  // /transcribe → composer) when settings.dictateRealtime is off.
+  (window as any).__micDispatch = (gesture: 'tap' | 'hold') => startMicMode(gesture);
 
   /** Call-button dispatch. Realtime ON → WebRTC duplex (talk if
    *  speak-replies is on, else stream). Realtime OFF (the default) →

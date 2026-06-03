@@ -71,6 +71,11 @@ export const FRONTEND_SETTINGS = {
   // localStorage (per-device) — Web Speech API support varies by
   // browser; proxy doesn't carry it.
   realtime:               { category: 'composer',        default: false },
+  // Dictation mode: true = live streaming dictation into the composer;
+  // false = batch the whole utterance through /transcribe on stop and
+  // drop the transcript into the composer without auto-send (long-form
+  // punctuation fix). See src/settings.ts DEFAULTS.dictateRealtime.
+  dictateRealtime:        { category: 'composer',        default: true },
 } as const;
 
 export type FrontendSettingKey = keyof typeof FRONTEND_SETTINGS;
