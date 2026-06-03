@@ -340,9 +340,18 @@ export function handleReplyFinal({ replyId, text, content = [], conversation, me
       : 'turnbased-tts';
     diag(`[reply-route] ${route} replyId=${replyId} len=${finalText.length} turnbased=${turnbased.getState()} webrtcOpen=${webrtcOpen} isReplay=${isReplay}`);
     if (!isReplay && inListen && !webrtcOpen && listenReply.shouldAutoPlay(conversation)) {
+      // Use the rendered bubble's id (bare message_id, = spec.key) as the
+      // TTS reply id, NOT the sk-${message_id} `replyId` from the adapter.
+      // The bubble's data-reply-id is the bare message_id, so playing under
+      // sk-${id} put autoplay in a different namespace: the play bar never
+      // painted (findBubble missed), and a later tap on the play button saw
+      // activeId(sk-…) ≠ bubble(bare) → "different reply" → cancelled the
+      // in-flight /tts and re-synthesized (the double `[reply-tts] enter`
+      // + ~11s latency). Aligning to the bubble id keeps one namespace.
+      const ttsReplyId = messageId || replyId;
       listenReply.consumeReply(conversation as string);
-      listenReply.claimOwnership(replyId);
-      void playReplyTts(finalText, settings.get().voice, replyId).catch(() => {
+      listenReply.claimOwnership(ttsReplyId);
+      void playReplyTts(finalText, settings.get().voice, ttsReplyId).catch(() => {
         listenReply.releaseOwnership();
         try { turnbased.notifyReplyPlayback(false); } catch {}
       });
