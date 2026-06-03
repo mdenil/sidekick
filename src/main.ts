@@ -3,7 +3,7 @@
  * No logic lives here — just imports + initialization + cross-module callbacks.
  */
 
-import { loadConfig, getConfig, gwWsUrl, getAgentLabel, getAppName, applySkinning } from './config.ts';
+import { loadConfig, getConfig, gwWsUrl, getAppName, applySkinning } from './config.ts';
 import { log, diag, setDebugElement } from './util/log.ts';
 import { mountDevPill, isDevMode } from './util/devMode.ts';
 import {
@@ -27,7 +27,6 @@ import {
   loadLaterHistory,
   jumpToLatest,
   drillToMessageInViewedSession,
-  NO_REPLY_RE,
 } from './sessionResume.ts';
 import { initNotifications } from './notifications/index.ts';
 import * as badge from './notifications/badge.ts';
@@ -86,7 +85,7 @@ import * as browserDictate from './audio/streaming/browserDictate.ts';
 import * as webrtcSuppress from './audio/realtime/suppress.ts';
 import * as bgTrace from './bgTrace.ts';
 import * as transcriptStore from './transcript/store.ts';
-import { bindTranscriptPipeline, isVirtualizerEnabled } from './transcript/index.ts';
+import { bindTranscriptPipeline } from './transcript/index.ts';
 import { flushScrollPosition } from './chatScrollPositions.ts';
 import { setStayAliveHint as setProxyStayAliveHint } from './proxyClient.ts';
 import * as listenReply from './listenReplyState.ts';
@@ -3900,81 +3899,15 @@ async function boot() {
 // ─── Session history backfill ────────────────────────────────────────────────
 
 let historyLoaded = false;
-/** In-flight backfill promise. The plain `historyLoaded` bool wasn't
- *  enough in practice — field logs showed triple-backfill runs on a
- *  single page load (same session key), and the only way that happens
- *  is concurrent entry between the sync guard and the fetchHistory
- *  await. The promise single-flight pattern also returns the same
- *  completion handle to overlapping callers so they await the same
- *  work rather than starting their own fetch. */
-let backfillInFlight: Promise<void> | null = null;
 
 async function backfillHistory() {
   if (historyLoaded) { diag('backfill: skip (already loaded)'); return; }
-  if (backfillInFlight) { diag('backfill: awaiting in-flight run'); return backfillInFlight; }
-  // Under virtualization, the transcriptStore + projection + virtualizer
-  // pipeline is the canonical render path. backfillHistory predates
-  // Crack A and appends bubbles directly via chat.addLine — under
-  // virt those appends land in the slot WITHOUT data-keys and get
-  // stripped by the next reconcile pass, AND backfill's terminal
-  // forceScrollToBottom() races a user who's scrolled away during
-  // the async fetch. The store path already populates the chat on
-  // resume() / drawer click, so backfill is duplicate work.
-  if (isVirtualizerEnabled()) {
-    diag('backfill: skip (virtualizer active — store path is canonical)');
-    historyLoaded = true;
-    return;
-  }
-  backfillInFlight = (async () => {
-    historyLoaded = true;
-
-    // Defensive dedupe: if the transcript already has content (e.g. restored
-    // from the IDB snapshot), collect existing text to skip duplicates.
-    // Agent bubbles store raw markdown in data-text; `.text` textContent is
-    // rendered. Include both so backfill's raw-markdown text matches either.
-    const transcriptEl = document.getElementById('transcript');
-    const existingTexts = new Set();
-    if (transcriptEl) {
-      transcriptEl.querySelectorAll<HTMLElement>('.line').forEach(line => {
-        const rendered = line.querySelector('.text')?.textContent?.trim();
-        if (rendered) existingTexts.add(rendered);
-        const raw = line.dataset.text?.trim();
-        if (raw) existingTexts.add(raw);
-      });
-    }
-
-    const messages = await backend.fetchHistory(50);
-    if (!messages.length) return;
-    log(`backfilling ${messages.length} history messages`);
-
-    // Adapter already stripped adapter-specific conventions (openclaw's
-    // "[voice]" prefix, internal system messages, etc.). Shell just displays.
-    let appended = 0;
-    for (const msg of messages) {
-      const text = msg.text
-        || (Array.isArray(msg.content) ? msg.content.find((c) => c?.type === 'text')?.text : '')
-        || '';
-      if (!text) continue;
-      if (existingTexts.has(text.trim())) continue;
-      const timestamp = msg.timestamp || msg.created_at || msg.at;
-
-      if (msg.role === 'assistant') {
-        if (NO_REPLY_RE.test(text)) continue;
-        chat.addLine(getAgentLabel(), text, 'agent', { markdown: true, timestamp });
-        appended++;
-      } else if (msg.role === 'user') {
-        chat.addLine('You', text, 's0', { timestamp });
-        appended++;
-      }
-    }
-    diag(`backfill: appended ${appended}/${messages.length} (${messages.length - appended} deduped)`);
-
-    // Initial history backfill — always jump to latest regardless of
-    // pinned state (user just loaded the app).
-    chat.forceScrollToBottom();
-  })();
-  try { await backfillInFlight; }
-  finally { backfillInFlight = null; }
+  historyLoaded = true;
+  // The transcriptStore + projection + reconciler pipeline is the
+  // canonical render path — it populates the chat on resume() / drawer
+  // click, so direct backfill appends would be duplicate work. Retained
+  // as a one-shot guard so callers can await it without side effects.
+  diag('backfill: skip (store path is canonical)');
 }
 
 // ─── Go ─────────────────────────────────────────────────────────────────────

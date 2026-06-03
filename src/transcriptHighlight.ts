@@ -27,17 +27,10 @@ import {
   unpinMessage,
 } from './pins/store.ts';
 import * as backend from './backend.ts';
-import { getVirtualizer } from './transcript/index.ts';
 
 let composerEl: HTMLTextAreaElement | null = null;
 let transcriptEl: HTMLElement | null = null;
 let highlightedEl: HTMLElement | null = null;
-/** Under virtualization, the highlighted bubble may scroll out of the
- *  visible window and unmount. We track its KEY (BubbleSpec.key) so
- *  navigation can find it again via `virtualizer.scrollToKey`. The
- *  legacy default path (when virt is off) walks DOM directly and
- *  leaves this null. */
-let highlightedKey: string | null = null;
 let hintEl: HTMLElement | null = null;
 
 function bubbles(): HTMLElement[] {
@@ -46,26 +39,6 @@ function bubbles(): HTMLElement[] {
     transcriptEl.querySelectorAll<HTMLElement>(
       '.line[data-message-id]:not(.pending):not(.failed)',
     ),
-  );
-}
-
-/** Under virtualization, return the full navigable key list from the
- *  virtualizer (user + assistant bubbles, full chat). Falls back to
- *  null when no virtualizer is active — callers use the legacy
- *  bubbles() walk. */
-function navigableKeysViaVirt(): string[] | null {
-  const v = getVirtualizer();
-  if (!v) return null;
-  return v.getKeys({ navigable: true });
-}
-
-/** Find a `.line[data-key=KEY]` element in the transcript, or null
- *  if outside the rendered window. Used after a `scrollToKey` call to
- *  pick up the now-mounted bubble. */
-function findByKey(key: string): HTMLElement | null {
-  if (!transcriptEl) return null;
-  return transcriptEl.querySelector<HTMLElement>(
-    `.line[data-key="${CSS.escape(key)}"]`,
   );
 }
 
@@ -122,7 +95,6 @@ function setHighlight(el: HTMLElement | null): void {
     highlightedEl.classList.remove('transcript-highlight');
   }
   highlightedEl = el;
-  highlightedKey = el?.getAttribute('data-key') || null;
   if (el) {
     el.classList.add('transcript-highlight');
     // Reposition the chip AFTER scroll completes; smooth scroll is
@@ -137,30 +109,9 @@ function setHighlight(el: HTMLElement | null): void {
   }
 }
 
-/** Highlight the bubble for `key`, scrolling the virtualizer's
- *  window so the bubble mounts if needed. Used under virt by ↑↓
- *  navigation that might cross slot boundaries. */
-function setHighlightByKey(key: string): void {
-  const existing = findByKey(key);
-  if (existing) {
-    setHighlight(existing);
-    return;
-  }
-  const v = getVirtualizer();
-  if (!v) return;
-  v.scrollToKey(key, { block: 'center' });
-  // Two rAF ticks: one for the virtualizer's rerender, one for the
-  // resulting layout pass that mounts the bubble in DOM.
-  requestAnimationFrame(() => requestAnimationFrame(() => {
-    const el = findByKey(key);
-    if (el) setHighlight(el);
-  }));
-}
-
 function exitHighlight(): void {
   if (highlightedEl) highlightedEl.classList.remove('transcript-highlight');
   highlightedEl = null;
-  highlightedKey = null;
   hideHint();
   composerEl?.focus();
 }
@@ -188,31 +139,6 @@ function composerIsEmpty(): boolean {
 }
 
 function move(delta: 1 | -1): void {
-  // Under virtualization, walk the full key set from the virtualizer
-  // — only the visible window is in DOM, so the legacy bubbles()
-  // approach would treat the slot's edges as the chat's edges. The
-  // virtualizer's getKeys() returns every navigable spec in order
-  // regardless of mount state; scrollToKey expands the window when
-  // we cross the slot boundary.
-  const virtKeys = navigableKeysViaVirt();
-  if (virtKeys) {
-    if (virtKeys.length === 0) return;
-    const idx = highlightedKey ? virtKeys.indexOf(highlightedKey) : -1;
-    const next = idx < 0
-      ? (delta === -1 ? virtKeys.length - 1 : 0)
-      : idx + delta;
-    if (next < 0) {
-      setHighlightByKey(virtKeys[0]);
-      return;
-    }
-    if (next >= virtKeys.length) {
-      exitHighlight();
-      return;
-    }
-    setHighlightByKey(virtKeys[next]);
-    return;
-  }
-  // Legacy default-path walk — full chat is in DOM, indexOf works.
   const list = bubbles();
   if (list.length === 0) return;
   const idx = highlightedEl ? list.indexOf(highlightedEl) : -1;
@@ -285,13 +211,6 @@ export function initTranscriptHighlight(opts: {
     if (!composerIsEmpty()) return;
     if (highlightedEl) return;  // already in highlight mode
     e.preventDefault();
-    // Under virt: start at the most recent navigable spec (chat tail).
-    const virtKeys = navigableKeysViaVirt();
-    if (virtKeys) {
-      if (virtKeys.length === 0) return;
-      setHighlightByKey(virtKeys[virtKeys.length - 1]);
-      return;
-    }
     const list = bubbles();
     if (list.length === 0) return;
     setHighlight(list[list.length - 1]);   // most recent bubble

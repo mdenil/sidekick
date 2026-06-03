@@ -19,19 +19,15 @@ import {
 } from './chatScrollPositions.ts';
 import { isPinned as isPinMsg, pinMessage, unpinMessage, hydrate as hydratePins } from './pins/store.ts';
 import * as backend from './backend.ts';
-import { getVirtualizerSlot, getVirtualizer, rerenderActive } from './transcript/index.ts';
+import { rerenderActive } from './transcript/index.ts';
 import * as transcriptStore from './transcript/store.ts';
 
 let transcriptEl: HTMLElement | null = null;
 
 /** Where legacy addLine consumers (system delimiter, backfill replay)
- *  should hand their `.line` divs. Under virtualization the content
- *  area is the virtualizer's slot — a sibling of the top/bottom
- *  spacers — not the transcript root. Default falls back to
- *  transcriptEl, which is the production behavior pre-virt. Lazy:
- *  recomputed on every call so a flag flipped after boot picks up. */
+ *  should hand their `.line` divs. */
 function contentTarget(): HTMLElement | null {
-  return getVirtualizerSlot() || transcriptEl;
+  return transcriptEl;
 }
 let scrollToBottomBtn: HTMLElement | null = null;
 const speakerNames: Record<string | number, string> = {};
@@ -616,21 +612,6 @@ export async function init(el: HTMLElement | null): Promise<boolean> {
  *  `role='assistant' (tool_calls JSON)` rows. Follow-up. */
 function persist(): void {
   if (!transcriptEl) return;
-  // Under virtualization, transcriptEl only contains the current
-  // visible window + spacers — serializing innerHTML would freeze a
-  // partial snapshot that's wrong on reload. Save the transcriptStore's
-  // durable + pagination for the active chat instead; cold-load injects
-  // it into the store and the projection + reconciler render via the
-  // normal pipeline.
-  if (getVirtualizerSlot()) {
-    if (!viewedSessionIdRef) return;
-    const state = transcriptStore.getState(viewedSessionIdRef);
-    saveSnapshot(
-      { state: { durable: state.durable.slice(), pagination: { ...state.pagination } } },
-      viewedSessionIdRef,
-    ).catch((e) => diag(`chat.persist failed: ${e?.message || 'idb error'}`));
-    return;
-  }
   const clone = transcriptEl.cloneNode(true) as HTMLElement;
   clone.querySelectorAll('.activity-row').forEach((el) => el.remove());
   const html = clone.innerHTML;
@@ -1070,23 +1051,6 @@ export function onJumpToLatest(cb: () => void) {
  *  preserved at the top of the transcript. */
 export function prependHistory(renderFn: () => void) {
   if (!transcriptEl) { renderFn(); return; }
-  // Under virt the scrollHeight delta uses CACHE heights for newly-
-  // prepended (unmeasured) specs. Cache defaults underestimate by
-  // 50-100px each compared to actual measured heights, so the bump
-  // computed below leaves the user staring at a bubble 100s of px off
-  // their pre-prepend anchor. Use the virtualizer's DOM-truth anchor
-  // pair instead: capture {key, offsetPx} from the first-visible
-  // bubble, then restore against the same key after the prepend +
-  // rerender. The 2-rAF refinement in restoreAnchor measures actual
-  // heights and corrects any cache-driven drift.
-  const virt = getVirtualizer();
-  if (virt) {
-    const anchor = virt.getAnchor();
-    renderFn();
-    if (anchor) virt.restoreAnchor(anchor);
-    persist();
-    return;
-  }
   const oldScrollTop = transcriptEl.scrollTop;
   const oldScrollHeight = transcriptEl.scrollHeight;
   renderFn();
@@ -1132,19 +1096,10 @@ async function maybeLoadEarlier() {
  *  position — symmetric to prependHistory. renderFn should call
  *  addLine(..., {batch: true}) per message oldest→newest so the new rows
  *  land at the bottom in chronological order. Appending below the
- *  viewport doesn't move on-screen content, so (non-virt) scrollTop stays
- *  valid as-is; under virt we re-anchor to the first-visible bubble to
- *  absorb estimate→measure drift, same as prependHistory. */
+ *  viewport doesn't move on-screen content, so scrollTop stays
+ *  valid as-is. */
 export function appendHistory(renderFn: () => void) {
   if (!transcriptEl) { renderFn(); return; }
-  const virt = getVirtualizer();
-  if (virt) {
-    const anchor = virt.getAnchor();
-    renderFn();
-    if (anchor) virt.restoreAnchor(anchor);
-    persist();
-    return;
-  }
   renderFn();
   persist();
 }
