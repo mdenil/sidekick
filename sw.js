@@ -157,7 +157,21 @@ self.addEventListener('fetch', (e) => {
           caches.open(CACHE_NAME).then(cache => cache.put(e.request, clone));
         }
         return response;
-      }).catch(() => caches.match(e.request))
+      }).catch(async (err) => {
+        // A rejected /build/* fetch falls back to the cached bundle ONLY
+        // when genuinely offline. When online, a rejection is transient
+        // (flaky link, dropped connection) and serving the previous
+        // deploy's cached module silently boots STALE JS under a
+        // freshly-activated SW — the "header shows new version but old
+        // code runs until a manual cache-bust" symptom. Re-throw so the
+        // load fails loudly and the next reload pulls fresh, instead of
+        // pinning the app to an old bundle.
+        if (navigator.onLine === false) {
+          const cached = await caches.match(e.request);
+          if (cached) return cached;
+        }
+        throw err;
+      })
     );
     return;
   }
