@@ -36,7 +36,7 @@ import * as sessionDrawer from './sessionDrawer.ts';
 import * as backend from './backend.ts';
 import * as transcriptStore from './transcript/store.ts';
 import * as sessionCache from './sessionCache.ts';
-import { rerenderActive, getVirtualizer } from './transcript/index.ts';
+import { rerenderActive } from './transcript/index.ts';
 import { getScrollPosition } from './chatScrollPositions.ts';
 
 /** Persist the chat's now-grown in-memory transcript back to IDB so a
@@ -191,29 +191,6 @@ export function replaySessionMessages(
       target.classList.add('search-target-flash');
       const flashTarget = target;
       setTimeout(() => flashTarget.classList.remove('search-target-flash'), 1500);
-      return;
-    }
-    // Under virtualization, the target spec may be in the store but
-    // outside the visible window — scrollToKey expands the window
-    // to it; the next rAF has the bubble in DOM. The default path
-    // (no virtualizer) falls through to drillToOlderMessage as before.
-    const virt = getVirtualizer();
-    if (virt) {
-      virt.scrollToKey(targetMessageId, { block: 'center' });
-      requestAnimationFrame(() => requestAnimationFrame(() => {
-        const found = document.getElementById('transcript')?.querySelector(
-          `[data-key="${CSS.escape(targetMessageId)}"]`,
-        ) as HTMLElement | null;
-        if (found) {
-          chat.suppressLazyLoadFor(1200);
-          found.classList.add('search-target-flash');
-          drillScrollTo(found);
-          setTimeout(() => found.classList.remove('search-target-flash'), 1500);
-        } else {
-          log(`[cmdk] target ${targetMessageId} not in store under virt — driving load-earlier drill`);
-          void drillToOlderMessage(id, targetMessageId, pagination?.firstId ?? null, !!pagination?.hasMore);
-        }
-      }));
       return;
     }
     // Target ISN'T in the initial replay window — drive load-earlier
@@ -551,10 +528,6 @@ function drillViaAroundWindow(chatId: string, targetMessageId: string): Promise<
       // Persist is a no-op while the window floats (hasMoreNewer); it
       // only writes once loadLater connects the run to the tail.
       persistGrownTranscript(chatId);
-      // Scroll the target into view. Under virt the spec may be outside
-      // the rendered window — scrollToKey expands to it first.
-      const virt = getVirtualizer();
-      if (virt) virt.scrollToKey(targetMessageId, { block: 'center' });
       await new Promise<void>(r => requestAnimationFrame(() => requestAnimationFrame(() => r())));
       const found = transcriptEl.querySelector(
         `[data-key="${CSS.escape(targetMessageId)}"]`,
@@ -616,32 +589,6 @@ async function drillViaSerialOlderPages(
     } catch (e: any) {
       diag(`[cmdk] drill page ${i + 1} fetch failed: ${e?.message || e}`);
       return;
-    }
-    // Under virt the prepended messages are in the store but the slot
-    // only renders the ~30-spec window near the bottom — querySelector
-    // would miss every time. Check the virt spec list directly, then
-    // scrollToKey expands the window to the target before we look for
-    // the bubble in DOM. The default path keeps the original DOM-only
-    // check since all messages are in DOM there.
-    const virt = getVirtualizer();
-    if (virt) {
-      const specs = virt.getSpecs();
-      if (specs.some(s => s.key === targetMessageId)) {
-        virt.scrollToKey(targetMessageId, { block: 'center' });
-        await new Promise<void>(r => requestAnimationFrame(() => requestAnimationFrame(() => r())));
-        const found = transcriptEl.querySelector(
-          `[data-key="${CSS.escape(targetMessageId)}"]`,
-        ) as HTMLElement | null;
-        if (found) {
-          log(`[cmdk] drill found ${targetMessageId} under virt after ${i + 1} page(s)`);
-          chat.suppressLazyLoadFor(1200);
-          found.classList.add('search-target-flash');
-          drillScrollTo(found);
-          setTimeout(() => found.classList.remove('search-target-flash'), 1500);
-          return;
-        }
-      }
-      continue;
     }
     const target = transcriptEl.querySelector(
       `[data-key="${CSS.escape(targetMessageId)}"]`,
