@@ -3482,6 +3482,12 @@
   .composer .send-btn.active:hover { filter: brightness(1.08); }
   .composer .send-btn:disabled { opacity: 0.55; cursor: not-allowed; }
   .composer .send-btn svg { width: 18px; height: 18px; }
+  /* Batch-dictation: the relocated send button ends the recording and
+     drops the transcript into the composer without sending, so it wears
+     a checkmark (accept) instead of the paper-plane (send). */
+  .composer .send-btn [data-icon="accept"] { display: none; }
+  .composer .send-btn.accept-mode [data-icon="send"] { display: none; }
+  .composer .send-btn.accept-mode [data-icon="accept"] { display: inline-block; }
 
   /* Voice memo recording bar — replaces textarea when recording */
   .memo-bar {

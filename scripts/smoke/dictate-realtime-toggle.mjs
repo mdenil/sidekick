@@ -40,6 +40,9 @@ const composerValue = (page) =>
 const memoBarPresent = (page) =>
   page.evaluate(() => !!document.querySelector('.memo-bar'));
 
+const voiceMemoCardCount = (page) =>
+  page.evaluate(() => document.querySelectorAll('#transcript .memo-card').length);
+
 const userBubbleCount = (page, text) =>
   page.evaluate((t) =>
     Array.from(document.querySelectorAll('#transcript .line.s0'))
@@ -69,6 +72,14 @@ export default async function run({ page, log }) {
     'OFF: a mic tap with dictateRealtime=false must enter memo (batch) mode — the .memo-bar recording UI never appeared, so startDictate did not fork to startMemo.');
   log('OFF ✓ tap entered memo recording mode (.memo-bar present)');
 
+  // The relocated send button must wear the accept (checkmark) affordance,
+  // not the paper-plane — in batch dictation it drops the transcript into
+  // the composer without sending.
+  assert(await page.evaluate(() =>
+    document.getElementById('composer-send')?.classList.contains('accept-mode') === true),
+    'OFF: the batch-dictation send button must show the accept (checkmark) affordance — #composer-send is missing .accept-mode.');
+  log('OFF ✓ send button is in accept-mode (checkmark, not send)');
+
   // Let MediaRecorder capture a few hundred ms of (silent fake-device)
   // audio before stopping — an instant stop yields a null/empty blob and
   // handleMemoResult would have nothing to transcribe.
@@ -87,9 +98,14 @@ export default async function run({ page, log }) {
     'OFF: stopped batch recording should drop the transcript into the composer');
   assert((await userBubbleCount(page, TRANSCRIPT)) === 0,
     'OFF: batch dictation must NOT auto-send — no user bubble should appear');
+  // Dictation is ephemeral INPUT, not a message: the batch path must route
+  // through transcribeToComposer, which renders NO voice-memo card. A card
+  // here means startMemo wrongly fell back to handleMemoResult (the bug).
+  assert((await voiceMemoCardCount(page)) === 0,
+    'OFF: batch dictation must NOT render a voice-memo card in the transcript — it should be ephemeral composer input, not a message.');
   assert(!(await memoBarPresent(page)),
     'OFF: the memo bar should be torn down after the recording is sent');
-  log('OFF ✓ transcript landed in composer, not submitted');
+  log('OFF ✓ transcript landed in composer, no card, not submitted');
 
   // ── ON: tap routes to live streaming dictation — no memo bar ─────────
   // Clear the composer so a stray match can't pass the ON assertion.

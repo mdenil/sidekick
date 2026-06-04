@@ -607,7 +607,6 @@ export function hydrate(handlers: {
   const setMic = $sel('set-mic');
   const setStreamEngine = $sel('set-streaming-engine');
   const setAutoFallback = $inp('set-auto-fallback');
-  const setDictateRealtime = $inp('set-dictate-realtime');
   const setSttKeyterms = document.getElementById('set-stt-keyterms') as HTMLInputElement | null;
   const keytermsChips = document.getElementById('keyterms-chips');
   const setHotkeyCall = $inp('set-hotkey-call');
@@ -682,7 +681,6 @@ export function hydrate(handlers: {
   function applyToDOM() {
     if (setStreamEngine) setStreamEngine.value = current.streamingEngine;
     if (setAutoFallback) setAutoFallback.checked = current.autoFallback;
-    if (setDictateRealtime) setDictateRealtime.checked = current.dictateRealtime;
     if (setTtsEngine) setTtsEngine.value = current.ttsEngine;
     if (setAudioFeedback) setAudioFeedback.value = String(Math.round(current.audioFeedbackVolume * 100));
     if (setAudioFeedbackVal) setAudioFeedbackVal.textContent = audioFeedbackLabel(current.audioFeedbackVolume);
@@ -729,7 +727,6 @@ export function hydrate(handlers: {
     if (handlers.onStreamingEngineChange) handlers.onStreamingEngineChange();
   };
   if (setAutoFallback) setAutoFallback.onchange = () => { set('autoFallback', setAutoFallback.checked); };
-  if (setDictateRealtime) setDictateRealtime.onchange = () => { set('dictateRealtime', setDictateRealtime.checked); };
   // Keyterms: chip-based input, persisted PER USER server-side
   // (sidekick.db user_settings, via src/keyterms.ts) so the list syncs
   // across devices; IDB is a write-through offline mirror. On first boot

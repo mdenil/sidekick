@@ -2222,6 +2222,9 @@ async function boot() {
       actionsRightEl.appendChild(composerSend);
     }
     composerSend.onclick = sendTypedMessage;
+    // Revert the batch-dictation accept affordance (checkmark + tooltip).
+    composerSend.classList.remove('accept-mode');
+    composerSend.title = 'Send  ·  ⏎';
     // Clear voice-state classes on the mic button when memo dismisses.
     // .active is also flipped via voiceActive() polling indirectly, but
     // explicit removal here keeps the visual in sync without waiting.
@@ -2292,7 +2295,7 @@ async function boot() {
    *  in view; on memo completion the transcript appends at the cursor
    *  for autoSend=false, or appends + sends together for autoSend=true).
    *  The send button is moved into the memo bar so it stays right-anchored. */
-  async function startMemo(autoSend: boolean): Promise<void> {
+  async function startMemo(autoSend: boolean, dictateToComposer = false): Promise<void> {
     if (memoActive) return;
     if (dictateActive) await webrtcDictate.stop();
     if (webrtcControls.isOpen()) await webrtcControls.closeIfOpen();
@@ -2301,6 +2304,15 @@ async function boot() {
     audioSession.prepareForCapture();
     memoActive = true;
     log('[mic-diag] memoActive=true (startMemo)');
+    // Batch dictation (dictateToComposer): the relocated send button finishes
+    // the recording and drops the clean transcript into the composer — it
+    // does NOT send and never renders a voice-memo card. Swap to a checkmark
+    // + matching tooltip so the affordance reads "accept into composer", not
+    // "send". exitMemoMode reverts it.
+    if (dictateToComposer) {
+      composerSend.classList.add('accept-mode');
+      composerSend.title = 'Insert transcript into composer';
+    }
     updateSendButtonState();
     composerSend.onclick = async () => {
       if (composerSend.disabled) return;
@@ -2308,7 +2320,11 @@ async function boot() {
       try {
         const { audioBlob, durationMs } = await memo.stop();
         exitMemoMode();
-        await memoOutbox.handleMemoResult(audioBlob, durationMs, autoSend, 'composerSend.click');
+        if (dictateToComposer) {
+          await memoOutbox.transcribeToComposer(audioBlob, durationMs);
+        } else {
+          await memoOutbox.handleMemoResult(audioBlob, durationMs, autoSend, 'composerSend.click');
+        }
       } finally {
         composerSend.disabled = false;
       }
@@ -2328,7 +2344,11 @@ async function boot() {
       sendBtn: composerSend,
       onDone: (audioBlob) => {
         exitMemoMode();
-        memoOutbox.handleMemoResult(audioBlob, undefined, autoSend, 'memo.onDone');
+        if (dictateToComposer) {
+          void memoOutbox.transcribeToComposer(audioBlob, undefined);
+        } else {
+          memoOutbox.handleMemoResult(audioBlob, undefined, autoSend, 'memo.onDone');
+        }
       },
       onCancel: () => {
         exitMemoMode();
@@ -2360,7 +2380,7 @@ async function boot() {
     // startMemo(false) appends text and never submits. Fixes long-form
     // over-punctuation from per-pause streaming finals (#112).
     if (!settings.get().dictateRealtime) {
-      await startMemo(false);
+      await startMemo(false, /* dictateToComposer */ true);
       return;
     }
     // streamingEngine === 'local' uses browser Web Speech (Chrome/Safari);
@@ -2371,7 +2391,7 @@ async function boot() {
     const useLocalEngine = settings.get().streamingEngine === 'local';
     if (!navigator.onLine && !useLocalEngine) {
       status.setStatus('Offline — using memo mode', null);
-      await startMemo(false);
+      await startMemo(false, /* dictateToComposer */ true);
       return;
     }
     primeAudio(player);
@@ -3243,8 +3263,14 @@ async function boot() {
   const btnCallMode = document.getElementById('btn-call-mode') as HTMLButtonElement | null;
   const callModeMenu = document.getElementById('call-mode-menu') as HTMLElement | null;
   const callModeWrap = document.querySelector('.call-mode-wrap') as HTMLElement | null;
+  // Mic button regained a chevron menu (2026-06-03) holding its one
+  // preference: dictateRealtime. Same .mic-toggle-row machinery as the
+  // call menu, anchored right (see .mic-mode-menu in app.css).
+  const btnMicMode = document.getElementById('btn-mic-mode') as HTMLButtonElement | null;
+  const micModeMenu = document.getElementById('mic-mode-menu') as HTMLElement | null;
+  const micModeWrap = document.querySelector('.mic-mode-wrap') as HTMLElement | null;
 
-  type CallToggleKey = 'realtime' | 'tts';
+  type CallToggleKey = 'realtime' | 'tts' | 'dictateRealtime';
 
   // Hover-capable, fine-pointer devices (desktop, laptop, iPad+trackpad)
   // get .title tooltips on hover; touch-only devices (iPhone, iPad bare)
@@ -3261,9 +3287,11 @@ async function boot() {
   }
 
   function tooltipForCallToggle(key: CallToggleKey): string {
-    return key === 'realtime'
-      ? 'Realtime: ON = WebRTC duplex audio (low latency, lossy on flaky networks). OFF (default) = turn-based recording (full fidelity, sent on end-of-utterance).'
-      : 'Speak replies — TTS audio output during a call (talk mode vs. stream mode)';
+    if (key === 'realtime')
+      return 'Realtime: ON = WebRTC duplex audio (low latency, lossy on flaky networks). OFF (default) = turn-based recording (full fidelity, sent on end-of-utterance).';
+    if (key === 'dictateRealtime')
+      return 'Realtime dictation: ON (default) = live transcript into the composer as you speak. OFF = record the whole utterance, transcribe once on stop, drop the clean text in the composer without auto-send (better long-form punctuation).';
+    return 'Speak replies — TTS audio output during a call (talk mode vs. stream mode)';
   }
 
   function applyMenuRows(menu: HTMLElement | null, s: any): void {
@@ -3289,8 +3317,12 @@ async function boot() {
     // still keep streamingEngine=server AND turn-based mode (real
     // bridge, full-fidelity recording) by leaving Realtime OFF.
     applyMenuRows(callModeMenu, s);
+    applyMenuRows(micModeMenu, s);
     if (callModeWrap) {
       callModeWrap.dataset.mode = s.realtime ? 'realtime' : 'turn-based';
+    }
+    if (micModeWrap) {
+      micModeWrap.dataset.mode = s.dictateRealtime ? 'dictate' : 'memo';
     }
     // Dynamic call-button tooltip — only meaningful on hover devices
     // (setTooltip skips title= on touch). Includes the configured
@@ -3452,7 +3484,7 @@ async function boot() {
   // Mirror static composer aria-label → title for hover devices. iOS
   // touch path keeps title-less buttons (no long-press tooltip popup).
   if (isHoverDevice) {
-    for (const id of ['btn-mic', 'btn-call-mode']) {
+    for (const id of ['btn-mic', 'btn-call-mode', 'btn-mic-mode']) {
       const el = document.getElementById(id);
       const label = el?.getAttribute('aria-label');
       if (el && label) el.setAttribute('title', label);
@@ -3478,7 +3510,9 @@ async function boot() {
       if (engine === 'local') settings.set('streamingEngine', 'server');
     }
     applyMicModeUi();
-    const label = key === 'realtime' ? 'Realtime' : 'Speak replies';
+    const label = key === 'realtime' ? 'Realtime'
+      : key === 'dictateRealtime' ? 'Realtime dictation'
+      : 'Speak replies';
     const live = !!(settings.get() as any)[key];
     status.setStatus(`${label}: ${live ? 'on' : 'off'}`, null);
     // Flipping `realtime` ON while a turn-based Listen session is
@@ -3555,6 +3589,7 @@ async function boot() {
     }, true);
   }
   wireMenu(btnCallMode, callModeMenu, callModeWrap);
+  wireMenu(btnMicMode, micModeMenu, micModeWrap);
 
   // Send-button intercept — when dictate is active, clicking Send (or
   // pressing Enter to fire it) should send whatever's in the composer

@@ -282,6 +282,82 @@ async function renderMemoCard(audioBlob, durationMs, autoSend = false) {
   return { id, card };
 }
 
+/** Batch dictation (dictateRealtime=OFF, #112): POST the recorded utterance
+ *  to /transcribe ONCE and drop the clean transcript into the composer.
+ *
+ *  Crucially distinct from handleMemoResult: dictation is ephemeral INPUT,
+ *  not a message. So there is NO voice-memo card, NO IndexedDB queue, and
+ *  NO send — a silent / failed / offline transcribe leaves nothing behind
+ *  in the chat (the bug that prompted this path: the memo pipeline rendered
+ *  a "(no speech detected)" bubble in the transcript). Progress shows as a
+ *  ghost line under the composer (composer.setInterim) plus the header pill;
+ *  the text lands at the cursor on success. */
+export async function transcribeToComposer(audioBlob: Blob | null, _durationMs?: number): Promise<void> {
+  if (!audioBlob) return;
+  const MEMO_MAX_BYTES = 24 * 1024 * 1024;
+  if (audioBlob.size > MEMO_MAX_BYTES) {
+    const mb = (audioBlob.size / (1024 * 1024)).toFixed(1);
+    status.setStatus(`Recording too long (${mb}MB) — try shorter chunks.`, 'err');
+    try { playFeedback('error'); } catch {}
+    return;
+  }
+  if (navigator.onLine === false) {
+    status.setStatus('Offline — can’t transcribe dictation right now', 'err');
+    try { playFeedback('error'); } catch {}
+    return;
+  }
+  let kt: string[] = [];
+  try {
+    const { readList } = await import('./keyterms.ts');
+    kt = (await readList()) || [];
+  } catch {}
+  const url = kt.length
+    ? `/transcribe?${kt.map(t => 'keyterms=' + encodeURIComponent(t)).join('&')}`
+    : '/transcribe';
+  const timeoutMs = audioBlob.size > 1_000_000 ? 60_000 : 15_000;
+  // Composer-level progress (ghost line under the textarea) + header pill.
+  // uploadInFlightBytes drives the 2s refresher's "Uploading audio…" so it
+  // doesn't clobber the pill back to "Connected" mid-transcribe.
+  composer.setInterim('Transcribing…');
+  uploadInFlightBytes = audioBlob.size;
+  const kb = Math.round(audioBlob.size / 1024);
+  status.setStatus(`Transcribing audio (${kb} KB)…`, 'live');
+  let res;
+  try {
+    try {
+      res = await fetchWithTimeout(url, {
+        method: 'POST', headers: { 'Content-Type': audioBlob.type }, body: audioBlob,
+        timeoutMs,
+      });
+    } catch (e) {
+      log('dictate transcribe failed:', e instanceof Error ? e.message : String(e));
+      composer.clearInterim();
+      status.setStatus('Transcription failed — tap mic to retry', 'err');
+      try { playFeedback('error'); } catch {}
+      return;
+    }
+  } finally {
+    uploadInFlightBytes = null;
+  }
+  let data: any;
+  try { data = await res.json(); } catch { data = { ok: false }; }
+  if (!data.ok) {
+    composer.clearInterim();
+    status.setStatus('Transcription failed — tap mic to retry', 'err');
+    try { playFeedback('error'); } catch {}
+    return;
+  }
+  const text = (data.transcript || '').trim();
+  if (!text) {
+    // No bubble — just clear the progress line and tell the user softly.
+    composer.clearInterim();
+    status.setStatus('No speech detected', null);
+    return;
+  }
+  composer.appendText(text);  // clears the interim line itself
+  status.setStatus('', null);
+}
+
 export async function handleMemoResult(audioBlob: Blob, durationMs?: number, autoSend = false, path = 'unknown') {
   // Diagnostic for the iOS PTT auto-send bug — echoes the captured
   // autoSend flag + which release path triggered this finish, so

@@ -483,11 +483,6 @@
       <input type="checkbox" id="set-auto-fallback">
       <span class="hint">switch to browser STT on Deepgram stall — off keeps Deepgram reconnecting</span>
     </div>
-    <div class="row">
-      <label for="set-dictate-realtime">Realtime dictation</label>
-      <input type="checkbox" id="set-dictate-realtime">
-      <span class="hint">on = live transcript as you speak; off = transcribe the whole utterance on stop and drop it in the composer (better long-form punctuation, no auto-send)</span>
-    </div>
     <div class="row row-wide">
       <label>STT keyterms</label>
       <div class="keyterms-chips" id="keyterms-chips" aria-label="current keyterms"></div>
@@ -694,14 +689,33 @@
           </button>
           <!-- Mic button: tap = live dictation to composer cursor;
                press-and-hold = PTT memo (drag-right to send, drag-left
-               to discard). Gesture IS the affordance — no menu, no
-               toggles. Replaces the previous streaming + autoSend menu. -->
-          <button id="btn-mic" class="icon-btn-plain" aria-label="Tap to dictate, hold to record" title="Tap = dictate, hold = memo  ·  ⌘⇧D">
-            <svg data-icon="mic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
-            <svg data-icon="stop" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg>
-          </button>
+               to discard). Gesture IS the affordance. The chevron menu
+               holds the one mic preference — Realtime dictation (ON =
+               live streaming STT into the composer as you speak; OFF =
+               record the whole utterance, batch one /transcribe on stop,
+               drop the clean transcript into the composer without
+               auto-send — better long-form punctuation). -->
+          <div class="mic-mode-wrap">
+            <button id="btn-mic" class="icon-btn-plain" aria-label="Tap to dictate, hold to record" title="Tap = dictate, hold = memo  ·  ⌘⇧D">
+              <svg data-icon="mic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+              <svg data-icon="stop" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg>
+            </button>
+            <button id="btn-mic-mode" class="mic-mode-chevron" aria-label="Dictation options" aria-haspopup="true" aria-expanded="false">
+              <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 5 6 8 9 5"/></svg>
+            </button>
+            <div id="mic-mode-menu" class="mic-mode-menu" role="menu" aria-hidden="true" hidden>
+              <button type="button" class="mic-toggle-row" role="menuitemcheckbox" data-toggle="dictateRealtime" aria-checked="false">
+                <span class="mic-toggle-label">Realtime</span>
+                <span class="mic-toggle-switch" aria-hidden="true"><span class="mic-toggle-thumb"></span></span>
+              </button>
+            </div>
+          </div>
           <button id="composer-send" class="send-btn" title="Send  ·  ⏎" disabled>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+            <svg data-icon="send" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+            <!-- Shown only in batch-dictation mode (.accept-mode): clicking
+                 ends the recording and drops the transcript into the
+                 composer WITHOUT sending — a checkmark, not a paper plane. -->
+            <svg data-icon="accept" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
           </button>
         </div>
       </div>
