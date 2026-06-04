@@ -93,6 +93,7 @@ import { setStayAliveHint as setProxyStayAliveHint } from './proxyClient.ts';
 import * as listenReply from './listenReplyState.ts';
 import * as handlers from './backendEventHandlers.ts';
 import * as memoOutbox from './memoOutbox.ts';
+import { createVoiceController } from './voiceController.ts';
 
 // Card kind modules
 import imageCard from './cards/kinds/image.ts';
@@ -1589,36 +1590,9 @@ async function boot() {
   // will get full labels on the next render.
   populateMicPicker().catch(() => {});
 
-  // Release-all coordinator. Closes the active WebRTC call + tears down
-  // any in-progress voice memo. External call sites assign through this
-  // module-level handle so the closure references the right state.
-  releaseCaptureIfActive = () => {
-    if (webrtcControls.isOpen()) void webrtcControls.closeIfOpen();
-    if (webrtcDictate.isActive()) void webrtcDictate.stop();
-    if (memoActive) {
-      memo.cancel();
-      const bar = document.querySelector('.memo-bar');
-      if (bar) bar.remove();
-      memoActive = false;
-      log('[mic-diag] memoActive=false (releaseCaptureIfActive)');
-      // Textarea + btnMic stay visible during memo (bottom-row-only
-      // memo bar UX), so no display:'' to reset here. Restore the
-      // composer-actions row in case it was hidden during memo.
-      const composerEl3 = document.querySelector('.composer') as HTMLElement | null;
-      const actionsEl = composerEl3?.querySelector('.composer-actions') as HTMLElement | null;
-      if (actionsEl) actionsEl.style.display = '';
-    }
-    // Don't tear down Listen's mic here — Listen owns the capture
-    // across commit + reply + re-arm, by design. releaseCaptureIfActive
-    // fires from sendTypedMessage to clean up memo/dictate/webrtc
-    // captures the user might have started; pulling Listen's mic out
-    // mid-turn breaks the post-reply cooldown→armed transition
-    // (armRecorder rebuilds against a torn-down stream → teardown →
-    // idle, and the user is stranded after one turn).
-    if (capture.hasActive() && capture.currentOwner() !== 'listen') {
-      capture.release();
-    }
-  };
+  // releaseCaptureIfActive (release-all coordinator) is now provided by the
+  // voice controller, created below once composerSend + the mode start/stop
+  // fns exist; it's assigned to the module-level handle there.
 
   // ── Composer ────────────────────────────────────────────────────────────
   const composerInput = document.getElementById('composer-input') as HTMLTextAreaElement;
@@ -2647,70 +2621,34 @@ async function boot() {
     if (btnMic) btnMic.classList.remove('listening-armed', 'listening', 'active');
   }
 
-  /** Whether some voice path is currently active. Used by the click
-   *  toggle to decide start vs stop. */
-  function voiceActive(): boolean {
-    return memoActive || dictateActive || webrtcControls.isOpen() || listenActive;
-  }
-
-  /** Stop whichever voice path is active. Idempotent / safe to call
-   *  when nothing is running. */
-  async function stopVoice(): Promise<void> {
-    if (memoActive) {
-      // Mid-memo stop fires send (release-to-send PTT semantics) by
-      // clicking the composer-send. If the user wants to discard, they
-      // hit the trash button or Esc.
-      composerSend.click();
-      return;
-    }
-    if (dictateActive) {
-      await stopDictate();
-      return;
-    }
-    if (webrtcControls.isOpen()) {
-      await stopCallStream();
-      return;
-    }
-    if (listenActive) {
-      stopListen();
-      return;
-    }
-  }
-
-  /** Mic-button dispatch. Streaming ON → live STT into the composer
-   *  cursor (cursor-aware dictation). Streaming OFF (the default) → memo:
-   *  blob recorded locally, transcribed on stop, dropped into the
-   *  composer (or auto-sent if `micAutoSend` is on).
-   *
-   *  `initialCursor` (composer textarea selectionStart, captured at the
-   *  gesture site BEFORE focus shifted) is plumbed only to the dictate
-   *  path — it's the only mode that splices into the textarea at the
-   *  user's caret. */
-  /** Mic-button dispatch — gesture-driven (no settings).
-   *
-   *   gesture='tap'  → live streaming dictation into the composer at
-   *                    the captured cursor. Ends on second tap, Esc,
-   *                    or Send. No auto-send (text stays in composer
-   *                    for review; user submits manually).
-   *   gesture='hold' → PTT memo recording. Drag-right or release-in-
-   *                    place sends the audio blob; drag-left discards.
-   *                    Always sends — autoSend is implicit in the PTT
-   *                    gesture itself.
-   *
-   * Replaces the previous settings.streaming + settings.micAutoSend
-   * menu toggles. The gesture IS the affordance now. */
-  async function startMicMode(
-    gesture: 'tap' | 'hold',
-    initialCursor: number | null = null,
-  ): Promise<void> {
-    if (gesture === 'tap') {
-      await startDictate(initialCursor);
-    } else {
-      // PTT memo always sends on release (autoSend=true). Discard via
-      // the drag-off-bar gesture handler in the pointerup classifier.
-      await startMemo(true);
-    }
-  }
+  // Voice coordination layer (extracted to src/voiceController.ts). Created
+  // here — after composerSend + every mode start/stop fn exists — so the
+  // factory's deps are all in scope. The state flags stay boot-scope locals
+  // (mutated by many non-voice sites), read via live getters; memoActive is
+  // also written by releaseCaptureIfActive, so it's plumbed via a setter.
+  // Const-aliased back to the original names so every call site (all inside
+  // runtime callbacks, hence TDZ-safe) stays unchanged.
+  const voiceCtl = createVoiceController({
+    getMemoActive: () => memoActive,
+    setMemoActive: (v) => { memoActive = v; },
+    getDictateActive: () => dictateActive,
+    getListenActive: () => listenActive,
+    webrtcControls,
+    webrtcDictate,
+    memo,
+    capture,
+    composerSend,
+    stopDictate,
+    stopCallStream,
+    stopListen,
+    startDictate,
+    startMemo,
+    log,
+  });
+  const voiceActive = voiceCtl.voiceActive;
+  const stopVoice = voiceCtl.stopVoice;
+  const startMicMode = voiceCtl.startMicMode;
+  releaseCaptureIfActive = voiceCtl.releaseCaptureIfActive;
 
   // Test hook (mirrors window.__listen): lets smokes drive the mic
   // dispatch without synthesizing the pointer gesture. Used by
