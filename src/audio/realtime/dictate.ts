@@ -230,6 +230,14 @@ const ABANDON_PREFIX_MIN = 8;
  *  content-prefix suppression check. Cleared on reset. */
 let lastInterimText = '';
 
+/** The EXACT string we last wrote into the in-flight interim range
+ *  [anchor+committedLen, anchor+committedLen+interimLen] — i.e. the
+ *  leadingSpace-prefixed insert from spliceInterim, NOT the raw transcript.
+ *  Used by resyncIfAnchorStale() to detect that the textarea no longer
+ *  holds what we think it does (the buffer shifted under us via an edit
+ *  we never observed — see that function). '' whenever interimLen is 0. */
+let lastInterimWritten = '';
+
 /** Cursor position WE last placed via setCursor(). Used by
  *  onUserSelectionChange to detect user-driven caret moves with a
  *  strict equality check — the previous "is pos inside the utterance
@@ -353,7 +361,7 @@ export async function stop(): Promise<void> {
     return;
   }
   active = false;
-  // Mark the in-flight interim as abandoned BEFORE awaiting provider.stop().
+  // Mark the in-flight interim as abandoned BEFORE tearing down.
   // STT providers commonly flush a buffered final between the stop request
   // and its response; without this, that late final would splice into a
   // composer the caller has already cleared (sendTypedMessage clears the
@@ -366,11 +374,17 @@ export async function stop(): Promise<void> {
   }
   const provider = activeProvider;
   activeProvider = null;
-  try {
-    if (provider) await provider.stop();
-  } catch (e: any) {
-    diag('[dictate] stop err', e?.message);
-  }
+
+  // Release the user-facing state SYNCHRONOUSLY — before awaiting the
+  // provider's WebRTC teardown (ICE close is ~1-2s). Awaiting it first
+  // kept the "dictating" indicator lit and routed any late finals into
+  // the composer for that whole window, which read as a 1-2s talk→type
+  // gap. Unsubscribing here also stops transcript routing immediately, so
+  // a flush-final from the in-flight teardown can't splice (strictly
+  // better than the old order, which kept the subscription live across
+  // the await). The provider.stop() is still awaited below so callers
+  // that switch modes (startMemo/startListen/startCallStream) serialize
+  // the mic/WebRTC handoff and don't race a half-torn-down peer.
   if (activeUnsubscribe) {
     try { activeUnsubscribe(); } catch { /* ignore */ }
     activeUnsubscribe = null;
@@ -385,6 +399,12 @@ export async function stop(): Promise<void> {
   lastSetCursor = -1;
   initialCursor = null;
   notify(false);
+
+  try {
+    if (provider) await provider.stop();
+  } catch (e: any) {
+    diag('[dictate] stop err', e?.message);
+  }
 }
 
 // ── STT transcript routing ─────────────────────────────────────────────
@@ -402,6 +422,33 @@ function transcriptHandler(ev: TranscriptEvent): void {
 
 // ── State machine — voice events ───────────────────────────────────────
 
+/** Defense-in-depth against a user edit / caret move we never observed.
+ *  The splice model assumes the textarea still holds the exact text we
+ *  last wrote at [anchor+committedLen, anchor+committedLen+interimLen].
+ *  onUserInput / onUserSelectionChange normally null the anchor when the
+ *  user edits mid-utterance — but on iOS WKWebView those events can be
+ *  coalesced or arrive as composition/autocorrect mutations that never
+ *  surface as a plain `input`. When that happens the buffer shifts under
+ *  a still-live anchor, and the NEXT splice overwrites the wrong span —
+ *  leaving the old interim in place AND writing the new one, duplicating
+ *  the chunk between the old and new caret (the reported bug).
+ *
+ *  So before every splice, verify the interim range still holds what we
+ *  wrote. If not, the anchor is stale: reset (offsets only — reason
+ *  'anchor-stale' is intentionally NOT one of the suppression-arming
+ *  reasons, so voice keeps flowing) and let ensureAnchor() re-capture at
+ *  the user's live caret. */
+function resyncIfAnchorStale(): void {
+  if (anchor === null || !composerInput) return;
+  const at = anchor + committedLen;
+  if (composerInput.value.slice(at, at + interimLen) === lastInterimWritten) return;
+  dlog('anchor stale — buffer desynced, re-anchoring', {
+    expected: lastInterimWritten.slice(0, 40),
+    found: composerInput.value.slice(at, at + interimLen).slice(0, 40),
+  });
+  resetUtterance('anchor-stale');
+}
+
 function handleInterim(text: string): void {
   if (!composerInput) return;
   dlog('interim<-', { text: text.slice(0, 80) });
@@ -409,6 +456,7 @@ function handleInterim(text: string): void {
     dlog('interim drop (post-abandon)', { text });
     return;
   }
+  resyncIfAnchorStale();
   ensureAnchor();
   const stripped = stripCommittedPrefix(text);
   if (!stripped) {
@@ -433,6 +481,7 @@ function handleContentFinal(text: string): void {
     dlog('final drop (duplicate)', { text });
     return;
   }
+  resyncIfAnchorStale();
   ensureAnchor();
   const stripped = stripCommittedPrefix(text);
   if (!stripped) {
@@ -530,6 +579,7 @@ function ensureAnchor(): void {
   committedLen = 0;
   interimLen = 0;
   lastFinalText = '';
+  lastInterimWritten = '';
   // Refocus the textarea so the caret is VISIBLE as text streams in.
   // Without this, the user's gesture (e.g. clicking the mic button)
   // moved focus to the button; setSelectionRange on a non-focused
@@ -594,6 +644,7 @@ function spliceInterim(text: string): void {
   const insert = leadingSpace(at) + text;
   writeRange(at, at + interimLen, insert);
   interimLen = insert.length;
+  lastInterimWritten = insert;
   // Move cursor to the end of the in-flight text — matches user's
   // mental model of "the cursor follows what I'm saying." If they
   // pause, the cursor is sitting right after the last word; their
@@ -614,6 +665,7 @@ function spliceFinal(text: string): void {
   writeRange(at, at + interimLen, insert);
   committedLen += insert.length;
   interimLen = 0;
+  lastInterimWritten = '';
   lastFinalText = text;
   // Cursor sits at the end of committed text — same advancing-with-
   // speech invariant as the interim path. Text should land
@@ -639,6 +691,7 @@ function resetUtterance(reason: string): void {
   interimLen = 0;
   lastFinalText = '';
   lastInterimText = '';
+  lastInterimWritten = '';
   if (dictateDebugOn) dlog('reset', { reason });
 }
 
