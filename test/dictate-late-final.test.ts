@@ -322,6 +322,52 @@ describe('dictate — late final after user-driven reset', () => {
     assert.equal(countOccurrences(textarea.value, 'Hello world'), 1);
   });
 
+  it('re-anchors when the buffer shifts under a live anchor without a fired event (the dupe bug)', () => {
+    // Repro the reported "duplicate of the chunk between old and new
+    // cursor" bug. On iOS WKWebView a user edit / caret move can be
+    // coalesced or arrive as a composition/autocorrect mutation that
+    // never fires a plain `input`/`selectionchange`. The anchor stays
+    // live but the textarea content has shifted, so the next splice
+    // would overwrite the WRONG span — corrupting the front and leaving
+    // a duplicate.
+    userInterim(provider, 'Hello world');
+    assert.equal(textarea.value, 'Hello world');
+
+    // Simulate a content shift dictate NEVER observed: prepend text and
+    // move the caret to the end, WITHOUT dispatching input/selectionchange.
+    textarea.value = 'PREFIX ' + textarea.value; // "PREFIX Hello world"
+    textarea.selectionStart = textarea.value.length;
+    textarea.selectionEnd = textarea.value.length;
+
+    // Next interim arrives. The anchor (0) + interimLen (11) range now
+    // holds "PREFIX Hell" — NOT the "Hello world" we wrote. The guard
+    // must detect the desync, reset, and re-anchor at the live caret.
+    userInterim(provider, 'Hello world today');
+
+    // Front is intact (no corruption), original interim untouched, and
+    // the new utterance landed at the user's caret with a word-break.
+    assert.equal(
+      textarea.value,
+      'PREFIX Hello world Hello world today',
+      'stale anchor must be re-synced; the front of the buffer must not be overwritten',
+    );
+  });
+
+  it('does not re-anchor spuriously when the buffer is intact (no false positives)', () => {
+    // The guard must be a no-op on the happy path: interim → interim →
+    // final with no external mutation should track cleanly, never
+    // tripping resyncIfAnchorStale.
+    userInterim(provider, 'The quick');
+    userInterim(provider, 'The quick brown fox');
+    userFinal(provider, 'The quick brown fox');
+    assert.equal(textarea.value, 'The quick brown fox');
+    assert.equal(countOccurrences(textarea.value, 'The quick brown fox'), 1);
+    // A follow-on utterance in the same session continues correctly.
+    userInterim(provider, 'jumps over');
+    userFinal(provider, 'jumps over');
+    assert.equal(countOccurrences(textarea.value, 'jumps over'), 1);
+  });
+
   it('suppression window expires — new utterance after grace lands normally', async () => {
     userInterim(provider, 'First utterance.');
     // Trigger user-driven reset.
