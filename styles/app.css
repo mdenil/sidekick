@@ -1751,48 +1751,6 @@
   .line.agent.track-pointer { border-left-color: var(--muted); }
   .line.agent.track-pointer.track-cached { border-left-color: var(--primary); }
 
-  /* Per-reply playback bar — 24px-tall hit target with a 2px visible
-     bar painted inside via the child layers. Background is a nearly-
-     transparent fill (rgba(*,0.01)) — iOS Safari won't register taps
-     on a truly transparent element; this gives it something to hit
-     while staying invisible. touch-action:manipulation kills the 300ms
-     tap-delay iOS adds when it's deciding between tap and double-tap.
-     Child layers have pointer-events:none so clicks pass through. */
-  .line.agent .play-bar {
-    position: absolute;
-    top: -10px; left: 0; right: 0;
-    height: 24px;
-    cursor: pointer;
-    background: rgba(0,0,0,0.01);
-    touch-action: manipulation;
-    -webkit-tap-highlight-color: rgba(0,0,0,0);
-  }
-  .line.agent .play-bar-loaded,
-  .line.agent .play-bar-played {
-    position: absolute;
-    left: 0; top: 11px;
-    height: 2px;
-    width: 0;
-    transition: width 0.12s linear;
-    pointer-events: none;
-  }
-  .line.agent .play-bar-loaded { background: var(--primary-soft); }
-  .line.agent .play-bar-played { background: var(--primary); opacity: 0.9; }
-  /* Streaming: subtle animated shimmer on the loaded bar. Width still
-     reflects synthesizedChars / cumulativeChars (via load-progress),
-     so the bar grows proportionally, and the shimmer just signals
-     "still working." Removed when duration-known fires. */
-  .line.agent.tts-streaming .play-bar-loaded {
-    background: linear-gradient(90deg,
-      var(--primary-soft) 0%, var(--primary-glow) 50%, var(--primary-soft) 100%);
-    background-size: 200% 100%;
-    animation: play-bar-shimmer 1.4s ease-in-out infinite;
-  }
-  @keyframes play-bar-shimmer {
-    0%   { background-position: 200% 0; }
-    100% { background-position: -200% 0; }
-  }
-
   /* Play/pause/replay button — top-right corner next to the copy icon.
      Color encodes cache state:
        default (no cache)    — muted grey: "click to generate audio"
@@ -2707,10 +2665,6 @@
       color-mix(in srgb, var(--primary) 25%, transparent) 100%);
     background-size: 200% 100%;
     animation: play-bar-shimmer 1.4s ease-in-out infinite;
-    /* While loading we don't know the final width yet — fill the bar
-     * fully so the shimmer covers the whole row, then shrink to the
-     * actual ratio when loadedmetadata fires. */
-    width: 100%;
   }
   @keyframes play-bar-shimmer {
     0%   { background-position: 200% 0; }

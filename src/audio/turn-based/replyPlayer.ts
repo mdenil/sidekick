@@ -229,19 +229,28 @@ function onSynthStart({ replyId }: { replyId: string }) {
 }
 
 function onLoadProgress({ replyId, ratio }: { replyId: string; ratio: number }) {
-  getOrCreateState(replyId).loadedRatio = ratio;
+  const s = getOrCreateState(replyId);
+  s.loadedRatio = ratio;
+  // Reaching full synthesis is what ends the streaming/shimmer state — for
+  // the multi-chunk path this only happens once the LAST chunk has settled
+  // (load-progress climbs chunk-by-chunk), not when chunk 0's metadata
+  // lands. Single-blob/cache replies emit ratio:1 immediately, so they
+  // still clear streaming the instant the blob loads.
+  if (ratio >= 1) s.streaming = false;
   const bubble = findBubble(replyId);
   if (!bubble) return;
   setLoadedRatio(bubble, ratio);
+  if (ratio >= 1) bubble.classList.remove('tts-streaming');
 }
 
-function onDurationKnown({ replyId }: { replyId: string }) {
-  const s = getOrCreateState(replyId);
-  s.streaming = false; s.loadedRatio = 1;
-  const bubble = findBubble(replyId);
-  if (!bubble) return;
-  bubble.classList.remove('tts-streaming');
-  setLoadedRatio(bubble, 1);
+// `duration-known` is now only a scrub-timeline scale hint (whole-reply
+// duration; the played/loaded bars work in ratios and don't need it). It
+// must NOT clear the streaming state — for multi-chunk replies the first
+// chunk's metadata arrives long before synthesis finishes, and clearing
+// streaming here would stop the shimmer + freeze the grey bar early.
+// onLoadProgress owns the streaming→done transition (ratio >= 1).
+function onDurationKnown(_payload: { replyId: string; duration: number }) {
+  /* intentionally inert — see comment above */
 }
 
 function onPlayStart({ replyId }: { replyId: string }) {
