@@ -306,6 +306,14 @@ const DEFAULTS = {
   // The legacy 'server' value (reserved for a never-wired backend
   // sendword detector) is migrated to 'local' on first load.
   listenSttEngine: 'local' as 'local' | 'silence-only',
+  // Pinned sessions: a JSON-encoded ordered array of session ids, e.g.
+  // '["s_abc","s_def"]'. Synced (cross-device) and written
+  // programmatically — there's no Settings-pane row. Stored as a STRING
+  // because the prefs store is scalar-only (coerceValue handles
+  // string/number/boolean); src/sessionPins.ts owns the parse/serialize.
+  // Empty string = no pins. Order is landing order (index 0 = top, the
+  // cold-open default session when no deep-link target is present).
+  pinnedSessions: '',
 };
 
 /** Settings stored in localStorage rather than the yaml. See the

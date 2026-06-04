@@ -648,6 +648,75 @@
   .sess-menu button.danger { color: #e66; }
   .sess-menu button.danger:hover { background: rgba(230, 102, 102, 0.12); }
 
+  /* ── Pinned-session region (top of the list) ──
+   * Pinned rows get a faint tint so the region reads as "kept above the
+   * recency list" without a heavy header. The clickable pin icon on the
+   * right (.sess-pin-btn) IS the pinned-state indicator — no left accent
+   * or glyph. `cursor: grab` + suppressed text-selection signal that the
+   * row is draggable; order is user-controlled via drag-reorder. */
+  .sessions-list li.sess-pinned {
+    background: var(--surface-2);
+    cursor: grab;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  /* Drag-reorder is driven by SortableJS in forceFallback mode: the picked
+   * row is cloned into a floating element that tracks the pointer, while the
+   * original stays in flow as a placeholder so the slot never collapses and
+   * the siblings FLIP-shuffle around it. Four classes, mapped to Sortable's
+   * fallbackClass / ghostClass / chosenClass / dragClass options.
+   *
+   * The floating clone — lifts off the list: raised shadow + slight scale +
+   * grabbing cursor, above everything. (Sortable inline-sizes/positions it.) */
+  .sessions-list li.sess-drag-floating {
+    cursor: grabbing;
+    opacity: 0.98;
+    background: var(--surface-2);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+    transform: scale(1.03);
+    border-radius: 8px;
+    z-index: 50;
+  }
+  /* The in-list placeholder left behind: keeps its height so the slot stays
+   * open, dimmed with a dashed outline so it reads as "drop here". */
+  .sessions-list li.sess-drag-ghost {
+    opacity: 0.45;
+    background: var(--surface-1, rgba(255, 255, 255, 0.04));
+    outline: 1px dashed var(--border, rgba(255, 255, 255, 0.18));
+    outline-offset: -2px;
+    border-radius: 8px;
+  }
+  .sessions-list li.sess-drag-ghost > * { visibility: hidden; }
+  /* Brief press state when a pinned row is first picked up. */
+  .sessions-list li.sess-drag-chosen { cursor: grabbing; }
+  .sessions-list li.sess-drag-source { cursor: grabbing; }
+
+  /* Clickable pin icon — mirrors the per-message .pin-btn. Faint, fades
+   * in on row hover for unpinned rows so it's discoverable without
+   * cluttering every row; always visible + accent-coloured when pinned.
+   * Two SVGs in DOM (outline + filled); CSS swaps which shows via the
+   * .pinned class. */
+  .sess-pin-btn {
+    background: transparent; border: none; color: var(--muted);
+    cursor: pointer; padding: 2px 4px; border-radius: 4px; line-height: 1;
+    align-self: flex-start; flex-shrink: 0;
+    opacity: 0; transition: opacity 0.15s ease, color 0.15s ease;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .sess-pin-btn svg { width: 15px; height: 15px; }
+  .sessions-list li:hover .sess-pin-btn { opacity: 0.55; }
+  .sess-pin-btn:hover { opacity: 0.95 !important; color: var(--primary); }
+  .sess-pin-btn.pinned { opacity: 1; color: var(--primary); }
+  .sess-pin-btn .pin-filled { display: none; }
+  .sess-pin-btn.pinned .pin-outline { display: none; }
+  .sess-pin-btn.pinned .pin-filled { display: inline-block; }
+  /* Hairline between the pinned region and the recency list. */
+  .sessions-list .sess-pinned-divider {
+    height: 0; margin: 4px 0;
+    border-top: 1px solid var(--border, rgba(255,255,255,0.08));
+    list-style: none; padding: 0;
+  }
+
   /* ── Sessions section header (full-width filter input row) ──
    * The "Sessions" label was dropped per the Gemini-style redesign;
    * the magnifier moved to the sidebar-top header (#sb-search). The

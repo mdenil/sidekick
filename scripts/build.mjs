@@ -86,6 +86,18 @@ async function buildVendorBundles() {
     // shouldn't try to inline them into the JS bundle.
     loader: { '.wasm': 'file', '.onnx': 'file' },
   });
+  // SortableJS — pinned-session drag-reorder (sessionDrawer). Bundled to a
+  // single ESM, dynamic-imported lazily on first pinned row.
+  await esbuild.build({
+    entryPoints: [join(ROOT, 'src/vendor/sortable-entry.mjs')],
+    outfile: join(OUT, 'vendor/sortable.mjs'),
+    format: 'esm',
+    target: 'es2022',
+    bundle: true,
+    minify: true,
+    sourcemap: false,
+    logLevel: 'info',
+  });
 }
 
 async function build({ watch }) {

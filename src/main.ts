@@ -34,6 +34,7 @@ import { loadMutes } from './notifications/mutes.ts';
 import { initVisibilityReporting } from './notifications/visibility.ts';
 import * as status from './status.ts';
 import * as settings from './settings.ts';
+import * as sessionPins from './sessionPins.ts';
 import * as headphones from './audio/shared/headphones.ts';
 import * as vadRouting from './audio/shared/vadRouting.ts';
 import * as theme from './theme.ts';
@@ -303,6 +304,10 @@ async function boot() {
   // remaining per-device keys are read from localStorage in the same
   // call. Built-in DEFAULTS are the offline / proxy-down fallback.
   await settings.load();
+  // Pinned-session order rides the synced `pinnedSessions` setting, so
+  // hydrate it from the snapshot settings.load() just pulled — before
+  // the drawer's first render reads sessionPins.isPinned()/topPinned().
+  sessionPins.hydrate();
 
   // Load config from server (keys, gateway info)
   await loadConfig();
@@ -1159,7 +1164,18 @@ async function boot() {
           // conversationName ('sidekick-main' default) for the fresh
           // install path where no snapshot existed.
           const restoredSid = chat.getRestoredViewedSessionId();
-          const sid = urlChatId || restoredSid || backend.getCurrentSessionId?.();
+          // Landing priority (no deep-link target):
+          //   urlChatId  — a ?chat= deep link / notification tap (highest)
+          //   restoredSid — the session on screen at last reload, so a
+          //                 plain reload keeps your place (continuity wins)
+          //   pinnedTop  — the top pinned session as the "home base" on a
+          //                truly fresh open (no snapshot to restore)
+          //   getCurrentSessionId() — adapter default ('sidekick-main')
+          // The user controls the home-base landing purely by which pin
+          // sits at index 0 (drag-reorder); there's no separate default-
+          // session state.
+          const pinnedTop = sessionPins.topPinned();
+          const sid = urlChatId || restoredSid || pinnedTop || backend.getCurrentSessionId?.();
           let bootRendered = false;
           if (sid) {
             // Seed the drawer highlight immediately — before
@@ -1945,6 +1961,12 @@ async function boot() {
   composerInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       if (isIosComposer) return;        // default = newline; tap send
+      // While a memo (incl. batch dictate-to-composer) bar is up, Enter
+      // means "finish the memo + transcribe", NOT "send the typed text".
+      // The document-level memo keydown handler owns that (it calls
+      // composerSend.click()). Bail here so the existing composer text
+      // isn't fired off first — this listener runs before the doc one.
+      if (memoActive) return;
       e.preventDefault();
       sendTypedMessage();
     }

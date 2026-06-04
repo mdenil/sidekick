@@ -3,7 +3,7 @@
 A feature-level digest of work since the start of **May 2026**, distilled
 from ~600 commits. Granularity is weekly, grouped by theme rather than by
 commit. We don't cut formal versioned releases yet — the only version
-marker is `CACHE_NAME` in `sw.js` (currently **v0.565**); the approximate
+marker is `CACHE_NAME` in `sw.js` (currently **v0.570**); the approximate
 marker at each week's end is noted to track progression until we adopt
 proper versioning.
 
@@ -146,3 +146,30 @@ boot) — with the cross-backend conformance harness keeping the hermes and
 openclaw plugins in lockstep on the `/v1/*` contract.
 
 See [`docs/BARGE.md`](BARGE.md) for the full barge model.
+
+## Week of Jun 3–4 — pinned sessions, long-form dictation, update reliability  · v0.570
+
+- **Pin sessions to the top of the sidebar.** A subtle pin icon on the
+  right of each session row (fades in on hover; filled + accented when
+  pinned) lifts a chat into a distinct region above the recency list, so
+  the handful of chats you live in stay put instead of scrolling away. Pins
+  sync across devices over the existing prefs store — no new backend table.
+  Pinning is instant (optimistic repaint), and deleting a pinned chat
+  auto-unpins it.
+- **iOS-style drag-to-reorder** within the pinned region (powered by
+  SortableJS): press-and-hold lifts the row into a floating card that tracks
+  your finger while the slot below it holds open and the neighbours shuffle
+  around it — order persists across devices. Action buttons stay clickable
+  mid-list, and a pinned row can't be dragged out of the pinned region.
+- **Long-form dictation mode.** A "Realtime" toggle on the mic-button
+  chevron: leave it on for live streaming dictation, or turn it off to
+  record the whole utterance and transcribe it once into the composer on
+  stop — no per-pause over-punctuation, and it never auto-sends or leaves a
+  stray bubble. While dictating, hitting Enter now ends the memo and
+  transcribes (instead of sending whatever was already typed). The setting
+  syncs across devices.
+- **App-update reliability.** On a flaky link the service worker could
+  silently keep serving the previous deploy's bundle even after the new
+  version activated ("header says new, code is old"). The offline cache
+  fallback is now gated to actually-offline, so an online reload always
+  pulls fresh.

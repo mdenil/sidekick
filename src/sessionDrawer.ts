@@ -35,6 +35,7 @@ import * as activityStore from './notifications/activityStore.ts';
 import { showTranscriptLoading } from './transcript/index.ts';
 import * as switchCtl from './switchController.ts';
 import type { SwitchToken } from './switchController.ts';
+import * as sessionPins from './sessionPins.ts';
 
 let onResumeCb: ((id: string, messages: any[], pagination?: { firstId: number | null; hasMore: boolean }, inflight?: any[], targetMessageId?: string) => void) | null = null;
 
@@ -586,6 +587,15 @@ function setupUnreadListener(): void {
   // row drops. Without this, a cross-device delete leaves a straggler
   // row in the sidebar until the next poll.
   window.addEventListener('sidekick:server-conversation-deleted', () => scheduleRefresh());
+  // Pin/unpin/reorder repaints the drawer so the pinned region at the
+  // top reflects the new set + order. sessionPins emits this after it
+  // updates its in-memory order (the PUT to the synced setting is
+  // fire-and-forget). Repaint SYNCHRONOUSLY from cachedSessions — going
+  // through scheduleRefresh()/refresh() would block the visible reorder
+  // behind an in-flight server listSessions (3-4s on a slow link). The
+  // pinned set is read from the store, not the server, so the local
+  // repaint is fully authoritative.
+  window.addEventListener('sidekick:session-pins-changed', () => repaintSessionsLocal());
 }
 // Wire at module load — idempotent + no DOM lookup needed (event
 // listener attaches on window which exists in the PWA from the start).
@@ -853,6 +863,17 @@ async function runServerFilterReconcile(q: string) {
   }
 }
 
+/** Synchronous drawer repaint from the current cache — no server round
+ *  trip. Used by pin/unpin/reorder so the pinned region updates the
+ *  instant the store changes, instead of waiting on refresh()'s in-flight
+ *  listSessions. No-op if the list element isn't mounted yet. */
+function repaintSessionsLocal(): void {
+  if (typeof document === 'undefined') return;
+  const listEl = document.getElementById('sessions-list');
+  if (!listEl) return;
+  renderListFiltered(listEl, activeRowId());
+}
+
 /** Re-render the visible session list with the current filter applied. */
 function renderListFiltered(listEl: HTMLElement, activeId: string) {
   // Strip recently-deleted ids before merge. cachedSessions can briefly
@@ -905,14 +926,23 @@ let lastRenderFingerprint: string | null = null;
  *  activeId and the placeholder flag. Anything not in here can change
  *  without us noticing — keep it broad enough that legitimate updates
  *  still trigger a rebuild. */
-function renderListFingerprint(sessions: any[], activeId: string, showPlaceholder: boolean): string {
+function renderListFingerprint(sessions: any[], activeId: string, showPlaceholder: boolean, pinnedOrder: string[]): string {
   const rows = sessions.map(s =>
     `${s.id}|${s.title || ''}|${s.snippet || ''}|${s.messageCount || 0}|${s.lastMessageAt || ''}|${s.source || ''}`,
   ).join('\n');
-  return `${activeId}::${showPlaceholder ? 'p' : ''}::${rows}`;
+  // Fold the pinned set + order in: a pin/unpin/reorder doesn't change
+  // any row's fields or the incoming recency order, so without this the
+  // diff-bypass would skip the rebuild and the pinned region wouldn't
+  // move.
+  return `${activeId}::${showPlaceholder ? 'p' : ''}::pins=${pinnedOrder.join(',')}::${rows}`;
 }
 
 function renderList(listEl: HTMLElement, sessions: any[], activeId: string, isFresh = false) {
+  // Hold off any rebuild while a pinned row is being dragged — see
+  // pinDragActive. The drag mutates the DOM order directly; a rebuild
+  // here would detach the dragged node mid-gesture. The post-drop
+  // setOrder() repaint reconciles to the canonical order once released.
+  if (pinDragActive) return;
   // Optimistic placeholder: if the adapter's current session isn't in the
   // cached list yet (brand-new conversation, no turn persisted), show a
   // "New conversation" row at the top so the user has immediate visual
@@ -920,12 +950,27 @@ function renderList(listEl: HTMLElement, sessions: any[], activeId: string, isFr
   // row on the next refresh after a reply lands.
   const showPlaceholder = isFresh;
 
+  // Wire pinned drag-reorder once, lazily, against the stable list
+  // element (idempotent — guarded internally).
+  installPinnedDragReorder(listEl);
+
+  // Partition into a pinned region (rendered in pin-order at the top,
+  // exempt from recency) + the rest (incoming recency order). A pinned id
+  // absent from `sessions` — aged out of the recency slice, or filtered
+  // out by a search — simply doesn't render here; the store keeps the pin
+  // and it reappears when the session re-enters the list.
+  const pinnedOrder = sessionPins.listPinned();
+  const pinnedSet = new Set(pinnedOrder);
+  const byId = new Map(sessions.map((s: any) => [String(s.id), s]));
+  const pinnedRows = pinnedOrder.map(id => byId.get(id)).filter(Boolean);
+  const restRows = sessions.filter((s: any) => !pinnedSet.has(String(s.id)));
+
   // Diff-bypass: if nothing the user can see has changed, skip the DOM
   // rebuild entirely. refresh() naturally renders twice (cache + server);
   // most pairs reconcile to the same list and the second rebuild is pure
   // flicker. This one check eliminates ~half the drawer mutations under
   // normal use.
-  const fingerprint = renderListFingerprint(sessions, activeId, showPlaceholder);
+  const fingerprint = renderListFingerprint(sessions, activeId, showPlaceholder, pinnedOrder);
   if (fingerprint === lastRenderFingerprint) return;
 
   if (sessions.length === 0 && !showPlaceholder) {
@@ -935,12 +980,23 @@ function renderList(listEl: HTMLElement, sessions: any[], activeId: string, isFr
   }
   listEl.innerHTML = '';
   if (showPlaceholder) listEl.appendChild(renderPlaceholderRow(activeId));
-  for (const s of sessions) {
-    listEl.appendChild(renderRow(s, activeId));
+  for (const s of pinnedRows) {
+    listEl.appendChild(renderRow(s, activeId, true));
+  }
+  // Hairline divider between the pinned region and the recency list —
+  // only when both sides are non-empty.
+  if (pinnedRows.length && restRows.length) {
+    const sep = document.createElement('li');
+    sep.className = 'sess-pinned-divider';
+    sep.setAttribute('aria-hidden', 'true');
+    listEl.appendChild(sep);
+  }
+  for (const s of restRows) {
+    listEl.appendChild(renderRow(s, activeId, false));
   }
   // Refresh the visible-row order cache so range/keyboard handlers
-  // walk the same list the user sees.
-  visibleRowIds = sessions.map((s: any) => String(s.id));
+  // walk the same list the user sees — pinned region first, then rest.
+  visibleRowIds = [...pinnedRows, ...restRows].map((s: any) => String(s.id));
   // Re-paint multi-select highlights after the rebuild — renderRow
   // doesn't carry over the .multiselected class because each LI is
   // freshly created.
@@ -972,9 +1028,16 @@ function renderPlaceholderRow(id: string): HTMLLIElement {
   return li;
 }
 
-function renderRow(s: any, activeId: string): HTMLLIElement {
+function renderRow(s: any, activeId: string, pinned = false): HTMLLIElement {
   const li = document.createElement('li');
   if (s.id === activeId) li.classList.add('active');
+  // `.sess-pinned` styles the row as part of the top region and marks it
+  // as a drag-reorder target (see drag wiring). The dataset flag lets the
+  // pointer handler cheaply tell pinned rows apart without a store lookup.
+  if (pinned) {
+    li.classList.add('sess-pinned');
+    li.dataset.pinned = '1';
+  }
   // Per-chat unread indicator — `.unread` adds bold + a count chip
   // (see app.css). Source-of-truth is the in-memory badge map; we
   // re-render on `sidekick:unread-changed` events so toggling state
@@ -1109,6 +1172,26 @@ function renderRow(s: any, activeId: string): HTMLLIElement {
     toggleSelection(s.id);
   });
 
+  // Pin toggle — a subtle clickable icon on the right of the row (mirrors
+  // the per-message .pin-btn). The icon IS the pinned-state indicator:
+  // faint outline when unpinned, filled + accent when pinned. Clicking
+  // toggles instantly (sessionPins emits a change → synchronous local
+  // repaint, no server round-trip). Two SVGs in DOM; CSS swaps which
+  // shows based on the `.pinned` class.
+  const pinBtn = document.createElement('button');
+  pinBtn.className = 'sess-pin-btn';
+  pinBtn.innerHTML = `
+    <svg class="pin-icon pin-outline" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 10.76V4h6v6.76l3 1.74v2.5H6v-2.5z"/></svg>
+    <svg class="pin-icon pin-filled" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M12 17v5" stroke-linecap="round"/><path d="M9 10.76V4h6v6.76l3 1.74v2.5H6v-2.5z"/></svg>
+  `;
+  if (pinned) {
+    pinBtn.classList.add('pinned');
+    pinBtn.title = 'Unpin';
+  } else {
+    pinBtn.title = 'Pin to top';
+  }
+  pinBtn.onclick = (e) => { e.stopPropagation(); sessionPins.toggle(s.id); };
+
   // ⋮ menu — rename + delete. Tap opens a small popover; tap outside closes.
   const menuBtn = document.createElement('button');
   menuBtn.className = 'sess-menu-btn';
@@ -1117,6 +1200,7 @@ function renderRow(s: any, activeId: string): HTMLLIElement {
   menuBtn.onclick = (e) => { e.stopPropagation(); openMenu(li, s); };
 
   row.appendChild(body);
+  row.appendChild(pinBtn);
   row.appendChild(menuBtn);
   li.appendChild(row);
   return li;
@@ -1127,6 +1211,9 @@ function openMenu(li: HTMLLIElement, s: any) {
   document.querySelectorAll('.sess-menu').forEach(m => m.remove());
   const menu = document.createElement('div');
   menu.className = 'sess-menu';
+
+  // Pin/Unpin lives on the row's .sess-pin-btn icon (right side), not in
+  // this menu — mirrors the per-message pin affordance.
 
   const infoBtn = document.createElement('button');
   infoBtn.textContent = 'Info';
@@ -1292,6 +1379,11 @@ async function deleteSessionAtomic(id: string): Promise<void> {
   switchCtl.invalidate();
   if (switchCtl.optimisticId() === id) switchCtl.setOptimistic(null);
   if (switchCtl.viewedId() === id) switchCtl.setViewed(null);
+  // Drop the pin if this session was pinned — a dangling id in
+  // pinnedSessions would render nothing (it's filtered against the live
+  // list) but would still count as the landing default on cold-open.
+  // unpin() is a no-op when the id isn't pinned.
+  sessionPins.unpin(id);
   await backend.deleteSession(id);
   await sessionCache.removeMessagesCache(id);
   const cached = await sessionCache.getListCache();
@@ -1627,6 +1719,103 @@ function ensureFilterInput(): HTMLInputElement | null {
     }
   });
   return input;
+}
+
+/** Drag-reorder within the pinned region, powered by SortableJS. Wired
+ *  ONCE on the stable #sessions-list element (renderList replaces its
+ *  children, not the element itself, so one Sortable instance survives
+ *  every rebuild — it queries draggable rows at drag start).
+ *
+ *  iOS-style motif via Sortable's fallback mode (forceFallback): the
+ *  pressed row lifts into a floating clone (.sess-drag-floating) that
+ *  follows the pointer, the spot it left holds a placeholder gap
+ *  (.sess-drag-ghost) so the list doesn't collapse, and the siblings
+ *  animate out of the way (FLIP, `animation` ms). The drag is fenced to
+ *  the pinned region (onMove rejects any move whose neighbour isn't
+ *  pinned), so a pinned row can never cross the divider into recency.
+ *  Drop commits the new DOM order to sessionPins. */
+let pinnedDragWired = false;
+// True only while a pinned-row drag is mid-gesture. Drawer rebuilds
+// (renderList) bail out while it's set: a rebuild does innerHTML='',
+// which would yank the row out from under Sortable mid-drag. Released in
+// onEnd before the commit repaint.
+let pinDragActive = false;
+// Lazily-loaded Sortable ctor; bundled separately at build time.
+let sortableLib: typeof import('sortablejs') | null = null;
+const SORTABLE_BUNDLE_URL = '/build/vendor/sortable.mjs';
+
+function installPinnedDragReorder(listEl: HTMLElement): void {
+  if (pinnedDragWired) return;
+  pinnedDragWired = true;
+
+  // Swallow the click the browser fires right after a drag so a reorder
+  // never resumes a chat. Window-gated: only set on a real drag end, so a
+  // plain tap (no drag → no onEnd) still resumes normally.
+  let suppressClickUntil = 0;
+  listEl.addEventListener('click', (e: MouseEvent) => {
+    if (Date.now() > suppressClickUntil) return;
+    suppressClickUntil = 0;
+    e.preventDefault();
+    e.stopPropagation();
+  }, true);
+
+  const pinnedOrderFromDom = (): string[] =>
+    (Array.from(listEl.querySelectorAll('li.sess-pinned')) as HTMLElement[])
+      .map((li) => li.dataset.chatId || '')
+      .filter(Boolean);
+
+  void import(/* webpackIgnore: true */ SORTABLE_BUNDLE_URL)
+    .then((mod: any) => {
+      const Sortable = (mod?.default ?? mod) as typeof import('sortablejs');
+      sortableLib = Sortable;
+      Sortable.create(listEl, {
+        // Only pinned rows can be picked up; recency rows + the divider
+        // are static.
+        draggable: 'li.sess-pinned',
+        // Presses on the action buttons fall through to their handlers
+        // instead of starting a drag.
+        filter: '.sess-pin-btn, .sess-menu-btn, .sess-menu',
+        preventOnFilter: false,
+        // Fallback (a cloned floating element) instead of native HTML5
+        // DnD: native has no touch support and an unstyleable drag image.
+        // The clone is the element we style as the lifted card.
+        forceFallback: true,
+        fallbackOnBody: true,
+        fallbackClass: 'sess-drag-floating',
+        fallbackTolerance: 4,
+        animation: 180,
+        easing: 'cubic-bezier(0.2, 0, 0, 1)',
+        ghostClass: 'sess-drag-ghost',
+        chosenClass: 'sess-drag-chosen',
+        dragClass: 'sess-drag-source',
+        // Touch: long-press to pick up (so a tap still resumes and a
+        // vertical swipe still scrolls the list). Mouse: immediate.
+        delay: 160,
+        delayOnTouchOnly: true,
+        touchStartThreshold: 4,
+        // Fence the drag to the pinned region — reject any move that would
+        // place the row next to a non-pinned neighbour (recency / divider).
+        onMove: (evt: any) => {
+          const related = evt?.related as HTMLElement | null;
+          return !related || related.classList.contains('sess-pinned');
+        },
+        onStart: () => { pinDragActive = true; },
+        onEnd: () => {
+          // Release the rebuild lock BEFORE setOrder so its synchronous
+          // repaint isn't swallowed by the renderList guard.
+          pinDragActive = false;
+          suppressClickUntil = Date.now() + 350;
+          // Commit the live DOM order. setOrder filters to the current
+          // pinned set + emits a change → synchronous local repaint.
+          sessionPins.setOrder(pinnedOrderFromDom());
+        },
+      });
+    })
+    .catch((err: any) => {
+      diag(`sessionDrawer: Sortable load failed; pinned drag-reorder disabled: ${err?.message || err}`);
+      // Allow a later render to retry the wiring.
+      pinnedDragWired = false;
+    });
 }
 
 /** Public hook for the global `/` shortcut — focuses the inline filter. */

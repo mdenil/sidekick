@@ -76,6 +76,10 @@ export const FRONTEND_SETTINGS = {
   // drop the transcript into the composer without auto-send (long-form
   // punctuation fix). See src/settings.ts DEFAULTS.dictateRealtime.
   dictateRealtime:        { category: 'composer',        default: true },
+  // Pinned sessions: JSON-encoded ordered array of session ids, stored
+  // as a STRING (coerceValue is scalar-only). Written programmatically
+  // by src/sessionPins.ts; no Settings-pane row. '' = no pins.
+  pinnedSessions:         { category: 'composer',        default: '' },
 } as const;
 
 export type FrontendSettingKey = keyof typeof FRONTEND_SETTINGS;
