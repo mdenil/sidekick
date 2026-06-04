@@ -108,9 +108,16 @@ function setState(next: TtsState): void {
  *      order so playback resumes the instant the awaited chunk arrives. */
 interface ChunkSlot {
   text: string;
+  /** Char count of `text` — the unit the loaded (grey) bar fills against,
+   *  and the basis for the pre-synthesis duration estimate. */
+  chars: number;
   blob: Blob | null;
   done: boolean;
   error: boolean;
+  /** Real playback duration in seconds, learned from #player metadata the
+   *  first time this chunk is bound. null until then; the virtual timeline
+   *  uses a char-proportional estimate in the meantime. */
+  durationSec: number | null;
   waiters: Array<() => void>;
 }
 
@@ -127,6 +134,41 @@ interface ChunkPlayback {
   /** Object URL bound to #player for the currently-playing chunk, so we
    *  can revoke it before swapping in the next. */
   currentUrl: string | null;
+  /** Seconds-per-char used to ESTIMATE the duration of chunks that haven't
+   *  been played yet (so the playhead + scrub have a continuous timeline
+   *  before every chunk's real duration is known). Seeded from a speech-
+   *  rate default, then recalibrated from the first real chunk duration.
+   *  Estimates only ever apply to chunks AT OR AFTER the playhead — played
+   *  chunks carry their real durationSec — so the green bar never rewinds. */
+  secPerChar: number;
+}
+
+/** Default speech rate for the pre-synthesis duration estimate: Aura runs
+ *  ~18 chars/sec of synthesized speech. Recalibrated per-reply from the
+ *  first chunk whose real duration we learn. */
+const DEFAULT_SEC_PER_CHAR = 1 / 18;
+
+/** Effective duration of a chunk: its real (metadata) duration once known,
+ *  else a char-proportional estimate. */
+function chunkDuration(cp: ChunkPlayback, slot: ChunkSlot): number {
+  if (slot.durationSec != null && Number.isFinite(slot.durationSec)) return slot.durationSec;
+  return slot.chars * cp.secPerChar;
+}
+
+/** Sum of chunk durations before `idx` — the global-timeline offset at
+ *  which chunk `idx` begins. */
+function offsetBefore(cp: ChunkPlayback, idx: number): number {
+  let acc = 0;
+  for (let i = 0; i < idx && i < cp.slots.length; i++) acc += chunkDuration(cp, cp.slots[i]);
+  return acc;
+}
+
+/** Whole-reply duration across all chunks (real where known, estimated
+ *  for the not-yet-played tail). */
+function totalDuration(cp: ChunkPlayback): number {
+  let acc = 0;
+  for (const s of cp.slots) acc += chunkDuration(cp, s);
+  return acc;
 }
 
 /** Tracks the active fetch + playback so a follow-up reply can cancel
@@ -168,13 +210,27 @@ function ensurePlayerListenersAttached(player: HTMLAudioElement): void {
   player.addEventListener('loadedmetadata', () => {
     if (!activeReplyId) return;
     const dur = player.duration;
-    if (Number.isFinite(dur) && dur > 0) {
-      emit('duration-known', { replyId: activeReplyId, duration: dur });
-      // Blob URLs are 100% local — once metadata is in we know the
-      // file is fully loadable. Mark loaded ratio as 1 so the loaded
-      // bar can fill (replyPlayer translates load-progress).
-      emit('load-progress', { replyId: activeReplyId, ratio: 1 });
+    if (!Number.isFinite(dur) || dur <= 0) return;
+    // Multi-chunk: #player only holds the CURRENT chunk, so its metadata
+    // duration is this chunk's real duration — record it and recalibrate
+    // the estimate for the not-yet-played tail. The scrub timeline scale
+    // is the WHOLE reply's (estimated) total, not this chunk's. The loaded
+    // (grey) bar is driven separately by per-chunk load-progress, so we do
+    // NOT emit load-progress here (that would jump it to full on chunk 0).
+    if (active && active.kind === 'server' && active.audio === player && active.chunks) {
+      const cp = active.chunks;
+      const slot = cp.slots[cp.playIndex];
+      if (slot) {
+        slot.durationSec = dur;
+        if (slot.chars > 0) cp.secPerChar = dur / slot.chars;
+      }
+      emit('duration-known', { replyId: activeReplyId, duration: totalDuration(cp) });
+      return;
     }
+    // Single blob / cache hit: metadata duration IS the whole reply, and a
+    // local blob URL is fully loadable the instant metadata lands.
+    emit('duration-known', { replyId: activeReplyId, duration: dur });
+    emit('load-progress', { replyId: activeReplyId, ratio: 1 });
   });
   player.addEventListener('play', () => {
     if (!activeReplyId) return;
@@ -226,6 +282,18 @@ function ensurePlayerListenersAttached(player: HTMLAudioElement): void {
   });
   player.addEventListener('timeupdate', () => {
     if (!activeReplyId) return;
+    // Multi-chunk: report position on the WHOLE-reply timeline (offset of
+    // the current chunk + position within it) so the played bar is one
+    // continuous fill instead of resetting to 0 at every chunk boundary.
+    if (active && active.kind === 'server' && active.audio === player && active.chunks) {
+      const cp = active.chunks;
+      const slot = cp.slots[cp.playIndex];
+      const within = slot ? Math.min(player.currentTime, chunkDuration(cp, slot)) : player.currentTime;
+      const pos = offsetBefore(cp, cp.playIndex) + within;
+      const total = totalDuration(cp);
+      if (total > 0) emit('progress', { replyId: activeReplyId, position: pos, duration: total });
+      return;
+    }
     const dur = player.duration;
     const pos = player.currentTime;
     if (!Number.isFinite(dur) || dur <= 0) return;
@@ -310,6 +378,35 @@ export function seekTo(ratio: number): void {
   // Local engine has no seek — speechSynthesis is monolithic. No-op.
   if (active.kind !== 'server') return;
   const r = Math.max(0, Math.min(1, ratio));
+
+  // Multi-chunk: the scrub ratio is over the WHOLE reply, but #player only
+  // holds one chunk. Map the global position to (chunk index, offset within
+  // chunk); seek in place if it's the current chunk, else swap chunks and
+  // resume at the offset. Lets the user scrub across chunk boundaries as if
+  // it were one continuous track.
+  if (active.chunks) {
+    const cp = active.chunks;
+    const total = totalDuration(cp);
+    if (total <= 0) return;
+    const globalPos = r * total;
+    let idx = 0;
+    let acc = 0;
+    while (idx < cp.slots.length - 1 && acc + chunkDuration(cp, cp.slots[idx]) <= globalPos) {
+      acc += chunkDuration(cp, cp.slots[idx]);
+      idx += 1;
+    }
+    const within = Math.max(0, globalPos - acc);
+    // Jump the bar immediately on the global timeline.
+    if (activeReplyId) emit('seek', { replyId: activeReplyId, position: globalPos, duration: total });
+    if (idx === cp.playIndex) {
+      try { active.audio.currentTime = within; } catch { /* noop */ }
+    } else {
+      cp.playIndex = idx;
+      void playChunkAt(cp, within);
+    }
+    return;
+  }
+
   const dur = active.audio.duration;
   if (!Number.isFinite(dur) || dur <= 0) return;
   const pos = r * dur;
@@ -526,11 +623,15 @@ export async function playReplyTts(
     // playing chunk 0 the instant it lands — first-audio latency drops
     // from "whole-reply synth" to "one-chunk synth" (~1-3s).
     const cp: ChunkPlayback = {
-      slots: chunks.map((c) => ({ text: c, blob: null, done: false, error: false, waiters: [] })),
+      slots: chunks.map((c) => ({
+        text: c, chars: c.length, blob: null, done: false, error: false,
+        durationSec: null, waiters: [],
+      })),
       playIndex: 0,
       fullText: text,
       voice,
       currentUrl: null,
+      secPerChar: DEFAULT_SEC_PER_CHAR,
     };
     // Stash on the active session so cancel/replay/ended can reach it.
     if (active && active.kind === 'server') active.chunks = cp;
@@ -583,6 +684,16 @@ function startChunkFetches(cp: ChunkPlayback, voice: string, abort: AbortControl
     slot.done = true;
     const waiters = slot.waiters; slot.waiters = [];
     for (const fn of waiters) { try { fn(); } catch { /* noop */ } }
+    // Grow the loaded (grey) bar by synthesized fraction so it fills
+    // chunk-by-chunk as fetches land, instead of jumping to full on chunk
+    // 0. Char-weighted so a long chunk advances the bar more than a short
+    // one. Reaches 1 once every chunk has settled (success OR error), which
+    // is what flips the bubble out of the streaming/shimmer state.
+    if (activeReplyId && active && active.kind === 'server' && active.chunks === cp) {
+      const totalChars = cp.slots.reduce((a, s) => a + s.chars, 0) || 1;
+      const doneChars = cp.slots.reduce((a, s) => a + (s.done ? s.chars : 0), 0);
+      emit('load-progress', { replyId: activeReplyId, ratio: doneChars / totalChars });
+    }
   };
 
   const pump = () => {
@@ -631,7 +742,7 @@ function maybeBackfillCache(cp: ChunkPlayback): void {
  *  fetch to land (parking a waiter if it hasn't), then binds + plays it.
  *  Skips a chunk whose fetch errored so one bad chunk doesn't wedge the
  *  whole reply. The 'ended' listener calls back here to advance. */
-async function playChunkAt(cp: ChunkPlayback): Promise<void> {
+async function playChunkAt(cp: ChunkPlayback, seekWithinSec?: number): Promise<void> {
   // Bail if this session was cancelled/superseded out from under us.
   if (!active || active.kind !== 'server' || active.chunks !== cp) return;
   const player = active.audio;
@@ -676,6 +787,12 @@ async function playChunkAt(cp: ChunkPlayback): Promise<void> {
   audioSession.prepareForPlayback();
   try {
     await player.play();
+    // Honor an intra-chunk start offset from a cross-chunk seek. Applied
+    // after play() resolves so the freshly-bound blob has loaded enough to
+    // accept a currentTime set.
+    if (seekWithinSec != null && Number.isFinite(seekWithinSec) && seekWithinSec > 0) {
+      try { player.currentTime = seekWithinSec; } catch { /* noop */ }
+    }
   } catch (e: any) {
     if (e?.name === 'AbortError') return;
     diag(`[text-tts] chunk ${cp.playIndex} play failed: ${e?.message || e}`);
