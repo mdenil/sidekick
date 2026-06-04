@@ -98,6 +98,37 @@ function setState(next: TtsState): void {
 
 // ── Active session bookkeeping ───────────────────────────────────────
 
+/** Per-chunk synthesis slot for the streamed (multi-chunk) server path.
+ *  One slot per sentence-ish chunk of the reply, in playback order.
+ *    - `blob` is null until the fetch resolves (or stays null on error).
+ *    - `done` flips true once the fetch settles (success OR failure) so
+ *      the play queue knows whether to wait or skip.
+ *    - `waiters` are resolve-callbacks parked by the play queue when it
+ *      reached a chunk whose fetch hasn't landed yet — settled in arrival
+ *      order so playback resumes the instant the awaited chunk arrives. */
+interface ChunkSlot {
+  text: string;
+  blob: Blob | null;
+  done: boolean;
+  error: boolean;
+  waiters: Array<() => void>;
+}
+
+/** Streamed-playback bookkeeping carried on the active server session
+ *  when the reply was split into >1 chunk. `playIndex` is the chunk
+ *  currently bound to #player; the `ended` listener advances it. */
+interface ChunkPlayback {
+  slots: ChunkSlot[];
+  playIndex: number;
+  /** Whole-reply cleaned text + voice — the cache key we backfill once
+   *  every chunk has synthesized, so a replay is an instant cache hit. */
+  fullText: string;
+  voice: string;
+  /** Object URL bound to #player for the currently-playing chunk, so we
+   *  can revoke it before swapping in the next. */
+  currentUrl: string | null;
+}
+
 /** Tracks the active fetch + playback so a follow-up reply can cancel
  *  it. Module-level singleton — only one text-mode TTS plays at a time
  *  per page (call-mode TTS is owned separately by the WebRTC peer
@@ -105,11 +136,14 @@ function setState(next: TtsState): void {
  *
  *  Two branches:
  *    - HTTP /tts (server engine): `audio` is the shared #player element,
- *      `abort` cancels the fetch.
+ *      `abort` cancels the fetch(es). `chunks` is present when the reply
+ *      was streamed as multiple sentence chunks (see playReplyTts); a
+ *      single-chunk reply leaves it null and behaves exactly like the
+ *      pre-streaming path.
  *    - speechSynthesis (local engine): `utterance` is the live
  *      SpeechSynthesisUtterance. `audio`/`abort` are absent. */
 let active:
-  | { kind: 'server'; audio: HTMLAudioElement; abort: AbortController }
+  | { kind: 'server'; audio: HTMLAudioElement; abort: AbortController; chunks: ChunkPlayback | null }
   | { kind: 'local'; utterance: SpeechSynthesisUtterance }
   | null = null;
 
@@ -165,11 +199,25 @@ function ensurePlayerListenersAttached(player: HTMLAudioElement): void {
   });
   player.addEventListener('ended', () => {
     if (!activeReplyId) return;
+    // Multi-chunk reply: a chunk ending is NOT the end of the reply —
+    // advance to the next chunk instead of tearing down. Only the LAST
+    // chunk's `ended` falls through to the real end-of-reply handling.
+    if (active && active.kind === 'server' && active.audio === player && active.chunks) {
+      const cp = active.chunks;
+      if (cp.playIndex < cp.slots.length - 1) {
+        cp.playIndex += 1;
+        void playChunkAt(cp);
+        return;
+      }
+    }
     setState('ended');
     const id = activeReplyId;
     // Auto-clear active session so the next click on the same bubble
     // starts a fresh playback (not a resume-already-finished no-op).
     if (active && active.kind === 'server' && active.audio === player) {
+      if (active.chunks?.currentUrl) {
+        try { URL.revokeObjectURL(active.chunks.currentUrl); } catch { /* noop */ }
+      }
       active = null;
       activeReplyId = null;
     }
@@ -226,6 +274,19 @@ export async function resumeReplyTts(): Promise<void> {
 export async function replay(): Promise<boolean> {
   if (!active) return false;
   if (active.kind === 'server') {
+    // Multi-chunk: rewind the queue to chunk 0 and rebind #player to it.
+    // All chunks have already synthesized by replay time (replay is only
+    // reachable from state 'ended'), so this is an instant local replay.
+    if (active.chunks) {
+      try {
+        active.chunks.playIndex = 0;
+        setState('playing');
+        await playChunkAt(active.chunks);
+        return true;
+      } catch {
+        return false;
+      }
+    }
     try {
       active.audio.currentTime = 0;
       setState('playing');
@@ -275,8 +336,63 @@ function cleanForTts(text: string): string {
   t = t.replace(/\*/g, '');
   t = t.replace(/^[#\-\s]+$/gm, '');
   t = t.replace(/\s+/g, ' ').trim();
-  // /tts server caps at 2000 chars; stay under to leave headroom.
-  return t.slice(0, 1800);
+  // Overall sanity bound on the whole reply. Pre-streaming this was 1800
+  // (one /tts POST, server caps each request ~2000). Now the reply is
+  // split into ~CHUNK_TARGET-char chunks fetched independently, so the
+  // per-request cap no longer gates the whole reply — raise the overall
+  // ceiling to ~6000 chars (≈ a few long paragraphs of speech) so most
+  // replies play in full while still bounding a pathological wall of text.
+  return t.slice(0, MAX_REPLY_CHARS);
+}
+
+// ── Sentence chunking (streamed playback) ────────────────────────────
+
+/** Target chunk size in chars. ~260 keeps each /tts request small enough
+ *  that chunk 0 synthesizes in ~1-2s (vs ~30s for a whole multi-paragraph
+ *  reply), while staying large enough that we don't fan out into dozens
+ *  of tiny requests with audible seams between them. */
+const CHUNK_TARGET = 260;
+/** Hard ceiling for a single chunk — only hit when ONE sentence is longer
+ *  than this, in which case we hard-split mid-sentence on a space. */
+const CHUNK_MAX = 360;
+/** Capped in-flight /tts fetches. Small enough to be polite to the proxy
+ *  + Deepgram, large enough that later chunks synthesize while earlier
+ *  ones play, hiding their latency behind chunk-0 playback. */
+const FETCH_CONCURRENCY = 3;
+/** Overall whole-reply char bound (see cleanForTts). */
+const MAX_REPLY_CHARS = 6000;
+
+/** Split cleaned reply text into ordered, sentence-boundary chunks of
+ *  roughly CHUNK_TARGET chars. Never splits mid-word; a single sentence
+ *  longer than CHUNK_MAX is hard-split on the nearest space. Exported for
+ *  the unit test. */
+export function chunkForTts(text: string): string[] {
+  const t = (text || '').trim();
+  if (!t) return [];
+  // Split on sentence-final punctuation followed by whitespace, KEEPING
+  // the punctuation attached to the preceding sentence.
+  const sentences = t.match(/[^.!?]+[.!?]+(?:["')\]]+)?\s*|[^.!?]+$/g) || [t];
+  const chunks: string[] = [];
+  let buf = '';
+  const flush = () => { if (buf.trim()) chunks.push(buf.trim()); buf = ''; };
+
+  for (const raw of sentences) {
+    let s = raw;
+    // Over-long single sentence: hard-split on spaces into <=CHUNK_MAX
+    // pieces so no single /tts request blows the server cap.
+    while (s.length > CHUNK_MAX) {
+      let cut = s.lastIndexOf(' ', CHUNK_MAX);
+      if (cut <= 0) cut = CHUNK_MAX; // no space — split mid-word as last resort
+      flush();
+      chunks.push(s.slice(0, cut).trim());
+      s = s.slice(cut);
+    }
+    // Adding this sentence would overflow the target — flush first.
+    if (buf && (buf.length + s.length) > CHUNK_TARGET) flush();
+    buf += s;
+  }
+  flush();
+  return chunks.filter(Boolean);
 }
 
 /** Cancel any in-flight TTS fetch + playback. Safe to call when idle. */
@@ -288,7 +404,22 @@ export function cancelReplyTts(reason: string = 'cancel'): void {
   const id = activeReplyId;
   diag(`[reply-tts] cancel reason=${reason} prevReplyId=${id} prevState=${state} kind=${active.kind}`);
   if (active.kind === 'server') {
+    // Abort halts ALL in-flight chunk fetches at once (they share one
+    // controller) and unblocks any parked play-queue waiters via the
+    // fetch's catch → settleChunk path.
     try { active.abort.abort(); } catch { /* noop */ }
+    // Wake any play-queue waiter still parked on an unsettled chunk so
+    // the queue loop sees the aborted signal and bails (no orphaned
+    // promise pinning the cancelled session).
+    if (active.chunks) {
+      for (const slot of active.chunks.slots) {
+        const w = slot.waiters; slot.waiters = [];
+        for (const fn of w) { try { fn(); } catch { /* noop */ } }
+      }
+      if (active.chunks.currentUrl) {
+        try { URL.revokeObjectURL(active.chunks.currentUrl); } catch { /* noop */ }
+      }
+    }
     try {
       active.audio.pause();
       if (active.audio.src) {
@@ -345,20 +476,32 @@ export async function playReplyTts(
   ensurePlayerListenersAttached(player);
 
   const abort = new AbortController();
-  active = { kind: 'server', audio: player, abort };
+  active = { kind: 'server', audio: player, abort, chunks: null };
   activeReplyId = replyId || null;
   setState('loading');
 
   if (activeReplyId) emit('synth-start', { replyId: activeReplyId });
 
-  let blobUrl: string | null = null;
   try {
-    let blob = replyCache.get(text, voice);
-    if (!blob) {
+    // Fast path: whole-reply cache hit (e.g. a prior streamed playback
+    // backfilled the concatenated blob). Play it as one blob — identical
+    // to the pre-streaming behavior, so replay stays instant.
+    const cached = replyCache.get(text, voice);
+    if (cached) {
+      await playSingleBlob(player, cached);
+      log(`[text-tts] playing ${text.length} chars (cache hit)`);
+      return;
+    }
+
+    const chunks = chunkForTts(text);
+    // Single chunk (a short reply): behave EXACTLY like the pre-streaming
+    // path — one /tts POST, await the blob, cache it, play it.
+    if (chunks.length <= 1) {
+      const one = chunks[0] || text;
       const res = await fetch('/tts', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ text, model: voice }),
+        body: JSON.stringify({ text: one, model: voice }),
         signal: abort.signal,
       });
       if (!res.ok) {
@@ -371,23 +514,32 @@ export async function playReplyTts(
         cancelReplyTts('tts-http-error');
         return;
       }
-      blob = await res.blob();
+      const blob = await res.blob();
       if (abort.signal.aborted) return;
       replyCache.set(text, voice, blob);
+      await playSingleBlob(player, blob);
+      log(`[text-tts] playing ${text.length} chars`);
+      return;
     }
-    blobUrl = URL.createObjectURL(blob);
-    player.src = blobUrl;
-    // Drop any prior peer-track binding so the blob takes over.
-    player.srcObject = null;
-    // iOS: HTMLAudioElement.play() inherits the AVAudioSession category at
-    // play() time. Turn-mode TTS fires while the session is still
-    // 'play-and-record' (from the listen-mode mic capture), which routes
-    // output to the iPhone earpiece instead of connected BT — inaudible
-    // on a headset. Hint 'playback' first so it routes to BT A2DP. iOS
-    // keeps mic capture alive since the session started in play-and-record.
-    audioSession.prepareForPlayback();
-    await player.play();
-    log(`[text-tts] playing ${text.length} chars`);
+
+    // Multi-chunk path: fan out capped-concurrency /tts fetches and start
+    // playing chunk 0 the instant it lands — first-audio latency drops
+    // from "whole-reply synth" to "one-chunk synth" (~1-3s).
+    const cp: ChunkPlayback = {
+      slots: chunks.map((c) => ({ text: c, blob: null, done: false, error: false, waiters: [] })),
+      playIndex: 0,
+      fullText: text,
+      voice,
+      currentUrl: null,
+    };
+    // Stash on the active session so cancel/replay/ended can reach it.
+    if (active && active.kind === 'server') active.chunks = cp;
+
+    startChunkFetches(cp, voice, abort);
+    // Kick playback of chunk 0; awaits its arrival, then the 'ended'
+    // listener chains the rest in order.
+    await playChunkAt(cp);
+    log(`[text-tts] streaming ${chunks.length} chunks (${text.length} chars)`);
   } catch (e: any) {
     if (e?.name === 'AbortError') return;
     diag(`[text-tts] failed: ${e?.message || e}`);
@@ -397,6 +549,137 @@ export async function playReplyTts(
   // NOTE: do NOT clear `active` in a finally block. play() resolves
   // when audio STARTS, not when it ends. The 'ended' listener clears
   // active + activeReplyId on natural end.
+}
+
+/** Bind a finished blob to #player and start it — the shared tail of the
+ *  cache-hit and single-chunk paths. */
+async function playSingleBlob(player: HTMLAudioElement, blob: Blob): Promise<void> {
+  const blobUrl = URL.createObjectURL(blob);
+  player.src = blobUrl;
+  // Drop any prior peer-track binding so the blob takes over.
+  player.srcObject = null;
+  // iOS: HTMLAudioElement.play() inherits the AVAudioSession category at
+  // play() time. Turn-mode TTS fires while the session is still
+  // 'play-and-record' (from the listen-mode mic capture), which routes
+  // output to the iPhone earpiece instead of connected BT — inaudible
+  // on a headset. Hint 'playback' first so it routes to BT A2DP. iOS
+  // keeps mic capture alive since the session started in play-and-record.
+  audioSession.prepareForPlayback();
+  await player.play();
+}
+
+/** Fire the per-chunk /tts POSTs with a small in-flight cap. Resolves
+ *  each slot in arrival order (waking any parked play-queue waiter).
+ *  Once EVERY chunk has synthesized successfully, concatenate the blobs
+ *  and backfill the whole-reply cache key so a later replay is a single-
+ *  blob cache hit (preserving the instant-replay invariant). */
+function startChunkFetches(cp: ChunkPlayback, voice: string, abort: AbortController): void {
+  let next = 0;
+  let inFlight = 0;
+
+  const settleChunk = (slot: ChunkSlot, blob: Blob | null, error: boolean) => {
+    slot.blob = blob;
+    slot.error = error;
+    slot.done = true;
+    const waiters = slot.waiters; slot.waiters = [];
+    for (const fn of waiters) { try { fn(); } catch { /* noop */ } }
+  };
+
+  const pump = () => {
+    while (inFlight < FETCH_CONCURRENCY && next < cp.slots.length) {
+      const idx = next++;
+      const slot = cp.slots[idx];
+      inFlight += 1;
+      fetch('/tts', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ text: slot.text, model: voice }),
+        signal: abort.signal,
+      })
+        .then(async (res) => {
+          if (!res.ok) { settleChunk(slot, null, true); return; }
+          const blob = await res.blob();
+          if (abort.signal.aborted) { settleChunk(slot, null, true); return; }
+          settleChunk(slot, blob, false);
+        })
+        .catch(() => { settleChunk(slot, null, true); })
+        .finally(() => {
+          inFlight -= 1;
+          if (!abort.signal.aborted) pump();
+          maybeBackfillCache(cp);
+        });
+    }
+  };
+  pump();
+}
+
+/** Once every slot is done AND none errored, concatenate the chunk blobs
+ *  in order and cache them under the whole-reply key so replay is a hit. */
+function maybeBackfillCache(cp: ChunkPlayback): void {
+  if (!cp.slots.every((s) => s.done)) return;
+  if (cp.slots.some((s) => s.error || !s.blob)) return;
+  // Already backfilled? has() probe avoids re-concatenating on every
+  // finally callback after the last chunk lands.
+  if (replyCache.has(cp.fullText, cp.voice)) return;
+  try {
+    const whole = new Blob(cp.slots.map((s) => s.blob as Blob), { type: cp.slots[0].blob!.type || 'audio/mpeg' });
+    replyCache.set(cp.fullText, cp.voice, whole);
+  } catch { /* noop — replay just re-fetches */ }
+}
+
+/** Play the chunk at cp.playIndex on #player. Waits for that chunk's
+ *  fetch to land (parking a waiter if it hasn't), then binds + plays it.
+ *  Skips a chunk whose fetch errored so one bad chunk doesn't wedge the
+ *  whole reply. The 'ended' listener calls back here to advance. */
+async function playChunkAt(cp: ChunkPlayback): Promise<void> {
+  // Bail if this session was cancelled/superseded out from under us.
+  if (!active || active.kind !== 'server' || active.chunks !== cp) return;
+  const player = active.audio;
+  const abort = active.abort;
+
+  // Skip over errored chunks (and trailing empties) so a single failed
+  // synth doesn't stall the rest of the reply.
+  while (cp.playIndex < cp.slots.length) {
+    const slot = cp.slots[cp.playIndex];
+    if (!slot.done) {
+      // Park until this chunk's fetch settles (success or error).
+      await new Promise<void>((resolve) => {
+        if (slot.done) { resolve(); return; }
+        slot.waiters.push(resolve);
+      });
+    }
+    if (abort.signal.aborted) return;
+    if (!active || active.kind !== 'server' || active.chunks !== cp) return;
+    if (slot.error || !slot.blob) { cp.playIndex += 1; continue; }
+    break;
+  }
+
+  // Ran off the end skipping errors → treat as natural end of reply.
+  if (cp.playIndex >= cp.slots.length) {
+    const id = activeReplyId;
+    if (cp.currentUrl) { try { URL.revokeObjectURL(cp.currentUrl); } catch { /* noop */ } }
+    active = null;
+    activeReplyId = null;
+    setState('ended');
+    if (id) emit('ended', { replyId: id });
+    setState('idle');
+    return;
+  }
+
+  const slot = cp.slots[cp.playIndex];
+  // Revoke the previous chunk's URL before swapping in the new one.
+  if (cp.currentUrl) { try { URL.revokeObjectURL(cp.currentUrl); } catch { /* noop */ } }
+  const url = URL.createObjectURL(slot.blob as Blob);
+  cp.currentUrl = url;
+  player.src = url;
+  player.srcObject = null;
+  audioSession.prepareForPlayback();
+  try {
+    await player.play();
+  } catch (e: any) {
+    if (e?.name === 'AbortError') return;
+    diag(`[text-tts] chunk ${cp.playIndex} play failed: ${e?.message || e}`);
+  }
 }
 
 /** Local TTS via speechSynthesis. Runs entirely in-browser — no /tts
