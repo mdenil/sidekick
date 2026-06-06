@@ -138,6 +138,26 @@ export async function refreshFromServer(): Promise<void> {
       const item = normalizeItem(raw);
       if (item) next.set(item.id, item);
     }
+    // Preserve freshly-arrived, still-unresolved approvals the server
+    // snapshot doesn't know about yet. A pending approval is added to the
+    // local store SYNCHRONOUSLY by upsertNotification, but its POST to
+    // /api/sidekick/activity is fire-and-forget. The server ALSO emits an
+    // `activity_changed` cross-device sync the moment it records the
+    // approval, which fires `refreshFromServer` here. If this GET races
+    // ahead of our own POST (or of the server's own write), the snapshot
+    // lacks the approval — and the wholesale `itemsById.clear()` below
+    // would wipe the pending/actionable row out from under the user before
+    // they can tap Approve/Deny. Carrying the local-only pending approval
+    // into `next` keeps the row visible + actionable; the following
+    // refresh (after the POST round-trips) reconciles it from the server
+    // with consistent state. We only ever carry UNRESOLVED approvals: a
+    // resolved/dismissed row lives on the server and reflects normally, so
+    // this never resurrects a decided approval.
+    for (const [id, item] of itemsById) {
+      if (item.kind === 'approval' && !item.resolved && !next.has(id)) {
+        next.set(id, item);
+      }
+    }
     pruneSupersededApprovals(next);
     const firstServerHydrate = !serverHydrated;
     serverHydrated = true;
