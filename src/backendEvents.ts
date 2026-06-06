@@ -40,16 +40,23 @@ export function handleNotification({ chatId, kind, content, sidekickId, isReplay
     // tray with a pill, not deleted).
     activityStore.resolveApprovalsForChat(chatId, 'dismissed');
   }
-  if (!replay) {
-    activityStore.upsertNotification({
-      chatId: chatId || null,
-      kind: kind || '',
-      content: content || '',
-      sidekickId: typeof sidekickId === 'string' ? sidekickId : null,
-      urgent: kind === 'approval',
-      chatLabel: sessionDrawer.getTitleForChat?.(chatId) || null,
-    });
-  }
+  // Project into the Activity store on BOTH live and replay envelopes.
+  // Replay was previously skipped entirely, which silently dropped an
+  // approval that arrived as a push while the app was closed: on the
+  // next reconnect the approval only ever comes back as a replayed
+  // envelope, so it never landed in the tray and the user couldn't find
+  // it to act on later. The upsert is idempotent on sidekick_id and
+  // preserves prior read/resolved state, so re-projecting a replayed row
+  // is safe. The banner + badge bump below STAY replay-gated so a
+  // reconnect doesn't re-alert; only the recoverable tray row is added.
+  activityStore.upsertNotification({
+    chatId: chatId || null,
+    kind: kind || '',
+    content: content || '',
+    sidekickId: typeof sidekickId === 'string' ? sidekickId : null,
+    urgent: kind === 'approval',
+    chatLabel: sessionDrawer.getTitleForChat?.(chatId) || null,
+  });
   // Off-screen chat — bump the app-icon badge so the user notices
   // there's a new event waiting in another chat. clearUnread fires
   // from sessionDrawer.setViewed when they switch in. The system
