@@ -13,14 +13,44 @@ import * as chat from './chat.ts';
 import * as modelCaps from './modelCapabilities.ts';
 import { toast } from './toast.ts';
 
-/** Each pending attachment: { dataUrl, mimeType, fileName, size }. */
+/** Each pending attachment:
+ *  { file, dataUrl?, previewUrl, mimeType, fileName, size }.
+ *  `file` is the raw File (kept so large attachments can be streamed to
+ *  the upload endpoint without base64). `dataUrl` is only computed for
+ *  small files (the base64-in-JSON send path); large files leave it
+ *  unset and rely on `previewUrl` (an object URL) for the chip. */
 const pending = [];
-// Binding server-side limit. PDFs are rasterized server-side and the
-// backend caps the PDF on disk at SIDEKICK_PDF_MAX_BYTES (20 MB); images/
-// video ride the same base64-in-JSON body which the proxy + aiohttp both
-// cap at 50 MB. 20 MB is the smallest real ceiling, so gate there — the
-// old 5 MB cap silently rejected legitimate PDFs the backend could handle.
-const MAX_BYTES = 20_000_000;
+// Task #158: 100 MB ceiling. Large files no longer ride the base64-in-
+// JSON message body — anything over UPLOAD_THRESHOLD streams as raw
+// bytes to /api/sidekick/upload (no ~33% base64 inflation, no full
+// in-memory buffer) and is referenced by upload_id. The server caps the
+// staged file + rasterized PDF at 100 MB to match.
+const MAX_BYTES = 100_000_000;
+// Files at or below this ride the existing base64 data-URL path inside
+// the JSON message body. Above it, route through the streaming upload
+// endpoint. ~5 MB keeps the JSON body comfortably under the proxy's
+// 50 MB cap even after base64 inflation, while avoiding an extra HTTP
+// round-trip for the common small-photo case.
+const UPLOAD_THRESHOLD = 5_000_000;
+
+/** Stream a large file's raw bytes to the staging endpoint; returns the
+ *  upload_id the message send references. No base64, no multipart — the
+ *  File is sent as the raw request body (browsers stream File bodies off
+ *  disk, so a 57 MB PDF never inflates in JS memory). */
+async function uploadLarge(file: File): Promise<string> {
+  const res = await fetch(`${location.origin}/api/sidekick/upload`, {
+    method: 'POST',
+    headers: { 'content-type': file.type || 'application/octet-stream' },
+    body: file,
+  });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '');
+    throw new Error(`upload failed: HTTP ${res.status} ${detail.slice(0, 120)}`);
+  }
+  const j = await res.json().catch(() => ({}));
+  if (!j?.upload_id) throw new Error('upload response missing upload_id');
+  return j.upload_id as string;
+}
 
 /** Surface a rejection so it actually STAYS visible. The header status
  *  line is clobbered within ~2s by the memoOutbox network-status refresher,
@@ -47,23 +77,46 @@ export function hasPending() { return pending.length > 0; }
  *  to distinguish; gateways that only recognise 'image' will typically
  *  still pass the bytes through with the mimeType intact. Probing
  *  strategy — if this breaks for a specific model, we'll iterate. */
+/** Build the gateway-ready attachment payload. Async because large
+ *  files (over UPLOAD_THRESHOLD) are streamed to /api/sidekick/upload
+ *  first and referenced by `uploadId`; small files keep the inline
+ *  base64 `content`. Snapshots `pending` synchronously up front so a
+ *  caller that clears the composer right after this call can't mutate
+ *  the list out from under the in-flight uploads. */
 export function toSendPayload() {
-  return pending.map(a => ({
-    type: a.mimeType?.startsWith('video/') ? 'video' : 'image',
-    mimeType: a.mimeType,
-    fileName: a.fileName,
-    content: a.dataUrl,  // server strips the `data:...;base64,` prefix
+  const items = pending.slice();
+  return Promise.all(items.map(async (a) => {
+    const type = a.mimeType?.startsWith('video/') ? 'video' : 'image';
+    const base = { type, mimeType: a.mimeType, fileName: a.fileName };
+    if (a.size > UPLOAD_THRESHOLD) {
+      const uploadId = await uploadLarge(a.file);
+      return { ...base, uploadId };
+    }
+    // server strips the `data:...;base64,` prefix off `content`
+    return { ...base, content: a.dataUrl };
   }));
 }
 
-/** Used by the transcript renderer when echoing a user message with images. */
+/** Used by the transcript renderer when echoing a user message with
+ *  images. Large files have no base64 dataUrl — fall back to the object
+ *  URL preview so the optimistic bubble still shows something. */
 export function toChatEcho() {
   return pending.map(a => ({
-    dataUrl: a.dataUrl, mimeType: a.mimeType, fileName: a.fileName,
+    dataUrl: a.dataUrl || a.previewUrl, mimeType: a.mimeType, fileName: a.fileName,
   }));
+}
+
+/** Revoke an attachment's object-URL preview if it has one. data: URLs
+ *  (small-file previews) need no cleanup; blob: URLs (large-file
+ *  previews) leak until revoked. */
+function revokePreview(att) {
+  if (att?.previewUrl && att.previewUrl.startsWith('blob:')) {
+    try { URL.revokeObjectURL(att.previewUrl); } catch {}
+  }
 }
 
 export function clear() {
+  pending.forEach(revokePreview);
   pending.length = 0;
   renderChips();
   onChange();
@@ -98,13 +151,22 @@ export async function add(file) {
     return;
   }
   try {
-    const dataUrl = await readAsDataUrl(file);
     const kindLabel = isVideo ? 'video' : (isPdf ? 'document' : 'image');
     const ext = isPdf
       ? 'pdf'
       : (file.type.split('/')[1] || (isVideo ? 'mp4' : 'jpg')).split(';')[0];
+    // Large files skip base64 — reading a 57 MB PDF into a data URL
+    // would buffer ~76 MB of base64 in JS memory for nothing (it's
+    // streamed raw to the upload endpoint at send time). They get an
+    // object-URL preview instead; small files keep the data URL for
+    // the inline send path + a stable preview.
+    const isLarge = file.size > UPLOAD_THRESHOLD;
+    const dataUrl = isLarge ? undefined : await readAsDataUrl(file);
+    const previewUrl = dataUrl || URL.createObjectURL(file);
     pending.push({
+      file,
       dataUrl,
+      previewUrl,
       mimeType: file.type,
       fileName: file.name || `${kindLabel}-${Date.now()}.${ext}`,
       size: file.size,
@@ -144,7 +206,7 @@ function renderChips() {
     // happens server-side anyway. Image chips stay as <img>.
     if (att.mimeType?.startsWith('video/')) {
       const vid = document.createElement('video');
-      vid.src = att.dataUrl;
+      vid.src = att.previewUrl;
       vid.muted = true;
       vid.playsInline = true;
       vid.preload = 'metadata';
@@ -160,7 +222,7 @@ function renderChips() {
       chip.classList.add('chip-pdf');
     } else {
       const img = document.createElement('img');
-      img.src = att.dataUrl;
+      img.src = att.previewUrl;
       img.alt = att.fileName;
       chip.appendChild(img);
     }
@@ -170,7 +232,8 @@ function renderChips() {
     btn.title = 'Remove';
     btn.textContent = '×';
     btn.onclick = () => {
-      pending.splice(i, 1);
+      const [removed] = pending.splice(i, 1);
+      revokePreview(removed);
       renderChips();
       onChange();
     };
@@ -195,10 +258,11 @@ export function updateModelGate() {
   if (!modelCaps.capsKnownFor(modelCaps.currentModelId())) return;
   const canImage = modelCaps.canAttachFiles();
   const canPdf = modelCaps.canAttachPdf();
-  const kept = pending.filter(a =>
-    a.mimeType === 'application/pdf' ? canPdf : canImage);
+  const keep = (a) => (a.mimeType === 'application/pdf' ? canPdf : canImage);
+  const kept = pending.filter(keep);
   if (kept.length === pending.length) return;
   const dropped = pending.length - kept.length;
+  pending.filter(a => !keep(a)).forEach(revokePreview);
   pending.length = 0;
   pending.push(...kept);
   renderChips();

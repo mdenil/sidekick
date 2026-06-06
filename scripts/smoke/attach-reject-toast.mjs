@@ -8,7 +8,7 @@
 // timer and is never clobbered by the status refresher.
 //
 // Two rejection cases, both must surface a visible toast AND add no chip:
-//   A. oversized (> MAX_BYTES 20 MB) → "File too large" toast.
+//   A. oversized (> MAX_BYTES 100 MB) → "File too large" toast.
 //   B. unsupported type (text/plain) → "Only image, video, and PDF" toast.
 //
 // And one accept case (sanity): a small image is accepted (chip rendered,
@@ -52,7 +52,8 @@ export default async function run({ page, log }) {
   await waitForReady(page);
 
   // ── A: oversized → toast + no chip ──────────────────────────────────
-  await addFile(page, { bytes: 21 * 1000 * 1000, type: 'application/pdf', name: 'huge.pdf' });
+  // Over the 100 MB cap (task #158 raised MAX_BYTES from 20 → 100 MB).
+  await addFile(page, { bytes: 101 * 1000 * 1000, type: 'application/pdf', name: 'huge.pdf' });
   let t = await toastState(page);
   assert(t.present && t.visible, 'A: oversized rejection must show a visible toast');
   assert(t.err, 'A: rejection toast must use the err variant');

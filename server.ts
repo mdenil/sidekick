@@ -1060,6 +1060,12 @@ const server = createHttpServer(async (req, res) => {
     if (req.method === 'POST' && req.url === '/api/sidekick/messages') {
       return sidekick.handleSidekickMessage(req, res);
     }
+    // Large-file staging (task #158) — raw-bytes upload streamed to the
+    // upstream plugin; returns { upload_id } the PWA references on its
+    // next message. Match before the static fallback.
+    if (req.method === 'POST' && req.url === '/api/sidekick/upload') {
+      return sidekick.handleSidekickUpload(req, res);
+    }
     if (req.method === 'GET' && /^\/api\/sidekick\/stream(?:\?.*)?$/.test(req.url)) {
       return sidekick.handleSidekickStream(req, res);
     }

@@ -155,14 +155,15 @@ _CRON_RESPONSE_RE = re.compile(
 #  * 150 DPI keeps PNGs readable for body text without ballooning bytes.
 #  * 50-page cap avoids 100-page-deck wedge times (50 pages ≈ 10s).
 #  * 30s timeout is the hard ceiling per upload.
-#  * 20 MB file-size cap rejects abusive uploads before we shell out.
+#  * 100 MB file-size cap (task #158) rejects abusive uploads before we
+#    shell out; matches the client cap + the upload route ceiling.
 SIDEKICK_PDF_DPI = int(os.environ.get("SIDEKICK_PDF_DPI", "150"))
 SIDEKICK_PDF_MAX_PAGES = int(os.environ.get("SIDEKICK_PDF_MAX_PAGES", "50"))
 SIDEKICK_PDF_RASTERIZE_TIMEOUT_S = int(
     os.environ.get("SIDEKICK_PDF_RASTERIZE_TIMEOUT_S", "30")
 )
 SIDEKICK_PDF_MAX_BYTES = int(
-    os.environ.get("SIDEKICK_PDF_MAX_BYTES", str(20 * 1024 * 1024))
+    os.environ.get("SIDEKICK_PDF_MAX_BYTES", str(100 * 1024 * 1024))
 )
 
 # ── tool-event hook plumbing ──────────────────────────────────────────
@@ -485,11 +486,14 @@ class SidekickAdapter(BasePlatformAdapter):
         except (ConnectionRefusedError, OSError):
             pass  # port is free
 
-        # client_max_size lifted from aiohttp's 1 MiB default — phone
-        # photos attached via the PWA easily exceed that once base64-
-        # encoded inside the JSON envelope. Match sidekick proxy's
-        # MAX_BODY_BYTES so the bottleneck is consistent end-to-end.
-        self._app = web.Application(client_max_size=50 * 1024 * 1024)
+        # client_max_size lifted from aiohttp's 1 MiB default. Small
+        # attachments still ride the base64-in-JSON /v1/responses body
+        # (phone photos exceed the 1 MiB default once encoded). Large
+        # files (task #158) come as raw bytes on /v1/sidekick/upload,
+        # which needs ~100 MB headroom — so the app-wide limit is sized
+        # for the upload route (the JSON path stays well under it because
+        # the PWA routes anything over ~5 MB through the upload endpoint).
+        self._app = web.Application(client_max_size=110 * 1024 * 1024)
         # ── Sidekick supplemental store + plugin-owned push/unread/pins ──
         # See backends/hermes/plugin/sidekick_db.py + sidekick_routes.py.
         # When SIDEKICK_PUSH_OWNED_BY_PLUGIN=true, the proxy forwards
@@ -620,6 +624,16 @@ class SidekickAdapter(BasePlatformAdapter):
         self._app.router.add_get(
             "/v1/sidekick/model-capabilities",
             lambda r: _route_settings.handle_model_capabilities(self, r),
+        )
+        # Large-file staging (task #158). Raw-bytes upload → upload_id;
+        # the PWA references the id in its next turn's `attachments`
+        # entry instead of inlining a base64 `content`. See
+        # sidekick_route_upload + the upload_id branch in
+        # _materialize_attachments.
+        from . import sidekick_route_upload as _route_upload
+        self._app.router.add_post(
+            "/v1/sidekick/upload",
+            lambda r: _route_upload.handle_upload(self, r),
         )
         # Cross-conversation FTS5 search. Reads against the same
         # messages_fts virtual table hermes_state.SessionDB maintains
@@ -982,7 +996,10 @@ class SidekickAdapter(BasePlatformAdapter):
 
         The PWA sends each attachment as
         ``{type, mimeType, fileName, content}`` where ``content`` is a
-        full ``data:<mime>;base64,<payload>`` string. Hermes wants
+        full ``data:<mime>;base64,<payload>`` string — OR, for large
+        files (task #158), as ``{type, mimeType, fileName, uploadId}``
+        referencing a file already staged via ``/v1/sidekick/upload``
+        (handled by the ``uploadId`` branch below). Hermes wants
         on-disk paths in ``MessageEvent.media_urls`` (telegram adapter
         models this — it downloads photos to a cache dir, then sets
         media_urls to those paths). We mirror that contract for the
@@ -1009,11 +1026,41 @@ class SidekickAdapter(BasePlatformAdapter):
         import base64
         import tempfile
 
+        from . import sidekick_route_upload as _route_upload
+
         paths: List[str] = []
         mimes: List[str] = []
         kinds: List[str] = []
         for a in attachments:
             if not isinstance(a, dict):
+                continue
+            # Large-file path (task #158): the attachment references a
+            # previously-staged upload by id instead of inlining base64.
+            # Resolve the id to its on-disk staging path and run it
+            # through the same PDF-rasterize / image branches below.
+            upload_id = a.get("uploadId") or a.get("upload_id")
+            if upload_id:
+                staged = _route_upload.staged_path(str(upload_id))
+                if staged is None:
+                    logger.warning(
+                        "[sidekick] upload_id %r not found in staging", upload_id,
+                    )
+                    continue
+                mime = a.get("mimeType") or ""
+                if mime.lower() == "application/pdf":
+                    pages = self._rasterize_pdf(staged)
+                    try:
+                        staged.unlink()
+                    except OSError:
+                        pass
+                    for page in pages:
+                        paths.append(str(page))
+                        mimes.append("image/png")
+                        kinds.append("image")
+                else:
+                    paths.append(str(staged))
+                    mimes.append(mime)
+                    kinds.append(self._kind_for_mime(mime))
                 continue
             content = a.get("content")
             if not isinstance(content, str) or not content.startswith("data:"):

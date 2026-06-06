@@ -23,6 +23,7 @@ import { init as initNotifications } from './notifications/index.ts';
 import { HTTPAgentUpstream, type UpstreamAgent } from './upstream.ts';
 
 export { handleSidekickMessage } from './messages.ts';
+export { handleSidekickUpload } from './upload.ts';
 export {
   handleSidekickModelCapabilities,
   handleSidekickAuxiliaryModels,

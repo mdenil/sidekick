@@ -1825,7 +1825,6 @@ async function boot() {
         });
       }
       const sendOpts: Record<string, any> = { userMessageId };
-      if (hasAttachments) sendOpts.attachments = attachments.toSendPayload();
       // sendMessage is async (POST + await !res.ok rejection), so a
       // sync try/catch only catches the !connected synchronous throw.
       // Capture both via the promise's .catch — flips bubble → failed
@@ -1837,19 +1836,32 @@ async function boot() {
           transcriptStore.markPendingSendFailed(sendChatId, userMessageId);
         }
       };
-      try {
-        const sendPromise = backend.sendMessage(text, sendOpts);
-        if (sendPromise && typeof (sendPromise as any).catch === 'function') {
-          (sendPromise as Promise<unknown>).catch((e) => {
-            const msg = (e as Error)?.message || String(e);
-            failBubble(msg);
-          });
+      if (hasAttachments) {
+        // Large attachments (task #158) stream to the upload endpoint
+        // before send, so building the payload is async. toSendPayload
+        // snapshots the pending list synchronously, so the clear() below
+        // can't race the in-flight uploads. An upload failure flips the
+        // bubble to failed (Retry restores text + re-attaches nothing —
+        // the user re-picks the file, an acceptable edge for a rare
+        // upload error).
+        attachments.toSendPayload()
+          .then((att) => { sendOpts.attachments = att; return backend.sendMessage(text, sendOpts); })
+          .catch((e) => failBubble((e as Error)?.message || String(e)));
+      } else {
+        try {
+          const sendPromise = backend.sendMessage(text, sendOpts);
+          if (sendPromise && typeof (sendPromise as any).catch === 'function') {
+            (sendPromise as Promise<unknown>).catch((e) => {
+              const msg = (e as Error)?.message || String(e);
+              failBubble(msg);
+            });
+          }
+        } catch (e) {
+          const msg = (e as Error)?.message || String(e);
+          releaseCaptureIfActive();
+          failBubble(msg);
+          return;
         }
-      } catch (e) {
-        const msg = (e as Error)?.message || String(e);
-        releaseCaptureIfActive();
-        failBubble(msg);
-        return;
       }
       // Tear down any in-progress capture (dictation, memo, call) BEFORE
       // we clear the textarea. Otherwise an in-flight STT final lands
@@ -1940,14 +1952,25 @@ async function boot() {
         });
       }
       const opts: Record<string, any> = { userMessageId };
-      if (hasAtt) opts.attachments = attachments.toSendPayload();
-      try { backend.sendMessage(cmdText, opts); }
-      catch (e: any) {
+      const slashFail = (e: any) => {
         const msg = e?.message || String(e);
         diag(`slash sendMessage failed: ${msg}`);
         status.setStatus(`Send failed: ${msg}`, 'err');
-        releaseCaptureIfActive();
-        return;
+      };
+      if (hasAtt) {
+        // Async payload build (large attachments stream to upload first).
+        // Snapshot taken synchronously in toSendPayload, so the clear()
+        // below is safe.
+        attachments.toSendPayload()
+          .then((att) => { opts.attachments = att; return backend.sendMessage(cmdText, opts); })
+          .catch(slashFail);
+      } else {
+        try { backend.sendMessage(cmdText, opts); }
+        catch (e: any) {
+          slashFail(e);
+          releaseCaptureIfActive();
+          return;
+        }
       }
       attachments.clear();
       playFeedback('send');
