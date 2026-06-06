@@ -105,8 +105,11 @@ function maybeShow() {
 
 function position(rect: DOMRect) {
   if (!fab) return;
-  // Make it measurable before reading its size.
-  fab.style.display = 'block';
+  // Make it measurable before reading its size. Must be inline-flex (not
+  // block) so the .quote-fab CSS keeps its flex centering + gap — an inline
+  // `display: block` here overrides the class and drops the icon to baseline
+  // alignment (rides high, no gap).
+  fab.style.display = 'inline-flex';
   const fw = fab.offsetWidth;
   const fh = fab.offsetHeight;
   const gap = 8;
