@@ -99,7 +99,7 @@ export function capabilities() {
   return adapter?.capabilities ?? {
     streaming: false, sessions: false, models: false,
     toolEvents: false, history: false, attachments: false,
-    sessionBrowsing: false,
+    sessionBrowsing: false, persona: false,
   };
 }
 

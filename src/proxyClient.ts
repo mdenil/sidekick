@@ -708,6 +708,7 @@ export const proxyClientAdapter = {
     attachments: false,       // wire shape allows it, no PWA composer support yet
     sessionBrowsing: true,    // /api/sidekick/sessions
     slashCommands: true,      // gateway parses /new, /compress, /resume, /undo, /background
+    persona: false,           // RESERVED (inert): per-session persona prompt not wired yet
   },
 
   async connect(opts: any) {

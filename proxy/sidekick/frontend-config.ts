@@ -80,6 +80,10 @@ export const FRONTEND_SETTINGS = {
   // as a STRING (coerceValue is scalar-only). Written programmatically
   // by src/sessionPins.ts; no Settings-pane row. '' = no pins.
   pinnedSessions:         { category: 'composer',        default: '' },
+  // Per-session identity map (nickname + per-session TTS voice), JSON-
+  // encoded STRING. Written programmatically by src/sessionIdentity.ts;
+  // no Settings-pane row. '' = no identities.
+  sessionIdentities:      { category: 'composer',        default: '' },
 } as const;
 
 export type FrontendSettingKey = keyof typeof FRONTEND_SETTINGS;

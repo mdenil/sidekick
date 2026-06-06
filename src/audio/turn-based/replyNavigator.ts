@@ -23,7 +23,12 @@ let subscribed = false;
 async function resolveVoice(): Promise<string> {
   try {
     const settingsMod = await import('../../settings.ts');
-    const v = settingsMod.get?.()?.voice;
+    // BT skip-fwd/back navigates the viewed session's bubbles, so prefer
+    // that session's assigned voice (sessionIdentity) over the default.
+    const identMod = await import('../../sessionIdentity.ts');
+    const switchMod = await import('../../switchController.ts');
+    const sid = switchMod.viewedId?.() || '';
+    const v = identMod.voiceFor?.(sid) || settingsMod.get?.()?.voice;
     return typeof v === 'string' && v ? v : 'aura-2-thalia-en';
   } catch {
     return 'aura-2-thalia-en';

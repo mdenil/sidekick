@@ -625,6 +625,14 @@
     border-radius: 8px; background: var(--primary, #4a90e2); color: white;
     font-size: 10px; font-weight: 600; text-align: center;
   }
+  /* Per-session nickname chip — leads the snippet so a user-named session
+   * is recognizable at a glance, ahead of its auto title/snippet text. */
+  .sess-nickname {
+    display: inline-block; vertical-align: baseline; margin-right: 6px;
+    padding: 0 6px; border-radius: 4px;
+    background: var(--surface-2, rgba(127,127,127,0.15));
+    color: var(--fg); font-weight: 600; font-size: 12px;
+  }
   .sessions-list .sess-row { display: flex; align-items: flex-start; gap: 4px; }
   .sessions-list .sess-body { flex: 1; min-width: 0; }
   .sess-menu-btn {
@@ -1041,6 +1049,84 @@
     padding: 6px 14px; cursor: pointer; font: inherit;
   }
   .session-info-dialog form button:hover { background: var(--border-strong); }
+
+  /* ── Per-session identity sheet (nickname + voice) ── */
+  .session-identity-form { display: flex; flex-direction: column; gap: 14px; text-align: left; }
+  .session-identity-field { display: flex; flex-direction: column; gap: 5px; }
+  .session-identity-field > span {
+    color: var(--muted); font-size: 12px;
+    text-transform: uppercase; letter-spacing: 0.05em;
+  }
+  .session-identity-field input,
+  .session-identity-field select,
+  .session-identity-field textarea {
+    background: var(--surface-2); color: var(--fg);
+    border: 1px solid var(--border-strong); border-radius: 4px;
+    padding: 7px 9px; font: inherit; width: 100%; box-sizing: border-box;
+  }
+  .session-identity-field textarea { resize: vertical; }
+  .session-identity-actions {
+    display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px;
+  }
+  .session-identity-actions .ident-save {
+    background: var(--primary, #4a90e2); color: #fff; border-color: transparent;
+  }
+  .session-identity-actions .ident-save:hover { filter: brightness(1.08); background: var(--primary, #4a90e2); }
+
+  /* Announce-on-switch toast — a small bottom-center pill naming the
+   * session you just switched into (per-session nickname). Distinct from
+   * the top-anchored notification banner. */
+  .session-announce-toast {
+    position: fixed;
+    bottom: max(76px, calc(env(safe-area-inset-bottom, 0px) + 76px));
+    left: 50%; transform: translate(-50%, 8px);
+    z-index: 90;
+    max-width: min(70vw, 320px);
+    padding: 7px 14px;
+    background: color-mix(in srgb, var(--surface) 94%, transparent);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    box-shadow: 0 6px 18px rgba(0,0,0,0.16);
+    backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+    font-size: 13px; font-weight: 600; color: var(--fg);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    pointer-events: none;
+    opacity: 0;
+    transition: transform 0.2s ease, opacity 0.2s ease;
+  }
+  .session-announce-toast.visible { transform: translate(-50%, 0); opacity: 1; }
+
+  /* Generic toast (src/toast.ts) — same bubble as the announce toast,
+     used for notices that must outlive the clobbered header status line. */
+  .toast {
+    position: fixed;
+    bottom: max(76px, calc(env(safe-area-inset-bottom, 0px) + 76px));
+    left: 50%; transform: translate(-50%, 8px);
+    z-index: 90;
+    max-width: min(80vw, 360px);
+    padding: 9px 16px;
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    background: color-mix(in srgb, var(--surface) 94%, transparent);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: 0 6px 18px rgba(0,0,0,0.16);
+    backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+    font-size: 13px; font-weight: 600; color: var(--fg);
+    text-align: center;
+    white-space: normal; overflow: hidden;
+    pointer-events: none;
+    opacity: 0;
+    transition: transform 0.2s ease, opacity 0.2s ease;
+  }
+  .toast.visible { transform: translate(-50%, 0); opacity: 1; }
+  /* Accent icon carries the "error" semantic; body text stays high-contrast
+     (var(--fg)) for readability instead of being dyed the accent colour. */
+  .toast-icon { display: inline-flex; flex: 0 0 auto; }
+  .toast.err {
+    border-color: color-mix(in srgb, #e66 72%, var(--border));
+    color: var(--fg);
+  }
+  .toast.err .toast-icon { color: #ef6b6b; }
 
   /* ── Fake lock overlay ── */
   .fake-lock {
@@ -1657,6 +1743,56 @@
     contain-intrinsic-size: auto 100px;
   }
 
+  /* Markdown blockquotes inside bubbles — both agent markdown and
+     select-to-quote replies in user bubbles. A sage left rail + soft
+     indent so quoted passages read as set-apart from the surrounding text. */
+  .line .text blockquote {
+    margin: 6px 0;
+    padding: 2px 0 2px 10px;
+    border-left: 3px solid var(--primary);
+    color: var(--fg-muted, #aaa);
+  }
+  .line .text blockquote:first-child { margin-top: 0; }
+  .line .text blockquote:last-child { margin-bottom: 0; }
+
+  /* Floating "Quote" button (select-to-quote). position:fixed, placed off
+     the selection rect by selectToQuote.ts; high z-index so it floats over
+     transcript + composer.
+
+     Styled as a neutral floating toolbar, not an accent-fill CTA: a solid
+     sage pill read as a primary submit action and shouted over the muted
+     dark UI. This follows the Slack/Notion pattern — an elevated charcoal
+     chrome layer with a hairline border and lighter-weight text, with the
+     sage accent reserved for hover. */
+  .quote-fab {
+    position: fixed;
+    z-index: 9999;
+    display: inline-flex;
+    align-items: center;
+    gap: 4.5px;
+    padding: 7px 14px 7px 12px;
+    font-size: 13px;
+    font-weight: 500;
+    line-height: 1;
+    color: var(--fg);
+    background: var(--surface-2);
+    border: 1px solid var(--border-strong);
+    border-radius: 8px;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+    cursor: pointer;
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: manipulation;
+  }
+  /* Box-center the icon matches the span box-center, but the lowercase
+     "uote" mass sits at the x-height — optically below the box center —
+     so the icon reads slightly high. Nudge it down to the text's optical
+     center. */
+  .quote-fab svg { width: 15px; height: 15px; flex: 0 0 auto; color: var(--fg-muted, #aaa); position: relative; top: -0.5px; }
+  .quote-fab:hover { border-color: var(--primary); }
+  .quote-fab:hover svg { color: var(--primary); }
+  .quote-fab:active { background: var(--surface); }
+
   /* Atomic-bubble states (Q1). User bubbles start `.pending` after send
      and stay that way until the agent's first reply_delta or typing
      envelope arrives — visual cue that the message is in flight. On
@@ -1818,6 +1954,34 @@
   }
   .line .text pre { margin: 8px 0; padding: 10px; background: var(--bg); border-radius: 8px; overflow-x: auto; }
   .line .text pre code { padding: 0; background: none; }
+  /* Fenced code blocks: wrap long lines instead of clipping/scrolling, and
+     give them a head row with a language label + copy button. */
+  .line .text .code-block { margin: 8px 0; background: var(--bg); border-radius: 8px; overflow: hidden; }
+  .line .text .code-block-head {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 8px; padding: 4px 8px 4px 12px; min-height: 26px;
+    border-bottom: 1px solid var(--border);
+  }
+  .line .text .code-lang {
+    font-family: var(--font-mono); font-size: 0.78em; letter-spacing: 0.03em;
+    color: var(--fg-muted, #888); text-transform: lowercase;
+  }
+  .line .text .code-copy-btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    background: none; border: none; padding: 4px; margin: 0; cursor: pointer;
+    color: var(--fg-muted, #888); border-radius: 5px; line-height: 0;
+  }
+  /* Only real pointer devices get the hover fill. On touch the :hover
+     state sticks after a tap, leaving an ugly grey box parked on the
+     button (the "looks a bit shit" report). Touch users get a brighter
+     icon on :active instead, with no lingering background. */
+  @media (hover: hover) {
+    .line .text .code-copy-btn:hover { color: var(--fg); background: var(--surface); }
+  }
+  .line .text .code-copy-btn:active { color: var(--fg); }
+  .line .text .code-copy-btn.copied { color: var(--primary); }
+  .line .text .code-block pre { margin: 0; border-radius: 0; background: none; }
+  .line .text .code-block pre code { white-space: pre-wrap; word-break: break-word; }
   .line .text a { color: var(--primary); text-decoration: underline; }
   .line .text strong { font-weight: 600; }
   .line .text table {

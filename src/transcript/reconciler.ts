@@ -24,7 +24,7 @@
  */
 
 import * as chat from '../chat.ts';
-import { miniMarkdown } from '../util/markdown.ts';
+import { miniMarkdown, renderUserText } from '../util/markdown.ts';
 import { escapeHtml } from '../util/dom.ts';
 import * as settings from '../settings.ts';
 import { getAgentLabel } from '../config.ts';
@@ -290,7 +290,11 @@ function updateUser(el: HTMLElement, spec: UserBubbleSpec): void {
   // but the optimistic→echo round-trip can rewrite the text.
   const span = el.querySelector('.text') as HTMLElement | null;
   if (span) {
-    const want = escapeHtml(spec.text || '').replace(/\n/g, '<br>');
+    // renderUserText matches chat.addLine's create path: escape + <br> for
+    // newlines AND `> ` quote blocks → <blockquote>. Must mirror addLine or
+    // the optimistic→echo round-trip would wipe a select-to-quote reply's
+    // blockquote rendering.
+    const want = renderUserText(spec.text || '');
     if (span.innerHTML !== want) span.innerHTML = want;
   }
   updateTimestamp(el, spec.timestamp);

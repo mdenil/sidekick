@@ -4,7 +4,7 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { miniMarkdown } from '../src/util/markdown.ts';
+import { miniMarkdown, renderUserText } from '../src/util/markdown.ts';
 
 describe('miniMarkdown', () => {
   it('escapes HTML entities', () => {
@@ -161,5 +161,44 @@ describe('miniMarkdown', () => {
     assert.ok(!/\<p\>\s*\<ul\>/.test(miniMarkdown('- a\n- b')));
     assert.ok(!/\<p\>\s*\<ol\>/.test(miniMarkdown('1. a\n2. b')));
     assert.ok(!/\<p\>\s*\<h2\>/.test(miniMarkdown('## heading')));
+  });
+
+  it('groups consecutive `> ` lines into one <blockquote>', () => {
+    const result = miniMarkdown('> line one\n> line two');
+    assert.equal((result.match(/<blockquote>/g) || []).length, 1, `expected one blockquote, got: ${result}`);
+    assert.ok(result.includes('<blockquote>line one<br>line two</blockquote>'));
+  });
+
+  it('does not wrap a blockquote in <p>', () => {
+    assert.ok(!/\<p\>\s*\<blockquote\>/.test(miniMarkdown('> quoted')));
+  });
+});
+
+describe('renderUserText', () => {
+  it('escapes HTML', () => {
+    assert.ok(renderUserText('<b>hi</b>').includes('&lt;b&gt;'));
+  });
+
+  it('converts newlines between plain lines to <br>', () => {
+    assert.equal(renderUserText('line one\nline two'), 'line one<br>line two');
+  });
+
+  it('renders a `> ` quote as a blockquote', () => {
+    const result = renderUserText('> quoted passage\n\nmy reply');
+    assert.ok(result.includes('<blockquote>quoted passage</blockquote>'));
+    assert.ok(result.includes('my reply'));
+  });
+
+  it('does not emit <br> bordering a blockquote', () => {
+    // The blank line between quote and reply is absorbed by the block; only
+    // a <br> between the two reply lines should remain.
+    const result = renderUserText('> q\n\nreply line one\nreply line two');
+    assert.ok(result.includes('<blockquote>q</blockquote>reply line one<br>reply line two'),
+      `unexpected: ${result}`);
+  });
+
+  it('keeps multiple accumulated quotes as separate blockquotes', () => {
+    const result = renderUserText('> first\n\nreply a\n\n> second\n\nreply b');
+    assert.equal((result.match(/<blockquote>/g) || []).length, 2, `expected two blockquotes, got: ${result}`);
   });
 });

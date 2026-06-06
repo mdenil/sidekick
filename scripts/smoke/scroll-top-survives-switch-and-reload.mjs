@@ -69,13 +69,25 @@ async function snapScroll(page) {
 
 /** Use the real Playwright wheel API to scroll the transcript. Driving
  *  the input layer exercises the production save-on-scroll path exactly
- *  as a human triggers it. */
+ *  as a human triggers it.
+ *
+ *  page.mouse.wheel resolves when the event is DISPATCHED, not when the
+ *  scroll settles. Firing a tight burst lets headless Chrome's compositor
+ *  COALESCE the deltas — most get dropped and the transcript stalls
+ *  partway (the old 12×-1500 burst deterministically stuck at ~3441).
+ *  So wheel one tick at a time, yielding a frame between ticks so each
+ *  delta applies, and poll scrollTop until we actually reach the top
+ *  (mirrors a human flicking the wheel repeatedly). */
 async function wheelTowardTop(page) {
   const box = await page.locator('#transcript').boundingBox();
   if (!box) throw new Error('transcript bounding box missing');
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-  for (let i = 0; i < 12; i++) {
+  for (let i = 0; i < 60; i++) {
+    const top = await page.evaluate(
+      () => document.getElementById('transcript')?.scrollTop ?? 0);
+    if (top <= 50) break;
     await page.mouse.wheel(0, -1500);
+    await page.waitForTimeout(16);
   }
 }
 

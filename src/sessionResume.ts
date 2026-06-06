@@ -32,6 +32,7 @@
 import { log, diag } from './util/log.ts';
 import * as chat from './chat.ts';
 import * as replyNavigator from './audio/turn-based/replyNavigator.ts';
+import * as sessionAnnounce from './sessionAnnounce.ts';
 import * as sessionDrawer from './sessionDrawer.ts';
 import * as switchCtl from './switchController.ts';
 import * as backend from './backend.ts';
@@ -171,6 +172,12 @@ export function replaySessionMessages(
   // chat's content has been applied — this is the definitive "incoming
   // transcript is rendered" signal.
   document.getElementById('transcript')?.classList.remove('transcript-loading');
+
+  // Announce-on-switch: fires the toast + spoken nickname iff this render
+  // matches a user-armed drawer tap and it's a real different-session
+  // switch. Placed AFTER replyNavigator.reset() (line ~116) so the spoken
+  // nickname isn't immediately cancelled by the switch's TTS reset.
+  sessionAnnounce.consume(id, sameSession);
 
   chat.setPaginationState(pagination?.firstId ?? null, !!pagination?.hasMore);
   // If the resume was driven by a message-search hit, find the matching

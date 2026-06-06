@@ -11,10 +11,25 @@ import { log } from './util/log.ts';
 import * as settings from './settings.ts';
 import * as status from './status.ts';
 import * as chat from './chat.ts';
+import { toast } from './toast.ts';
 
 /** Each pending attachment: { dataUrl, mimeType, fileName, size }. */
 const pending = [];
-const MAX_BYTES = 5_000_000;  // matches openclaw gateway maxBytes
+// Binding server-side limit. PDFs are rasterized server-side and the
+// backend caps the PDF on disk at SIDEKICK_PDF_MAX_BYTES (20 MB); images/
+// video ride the same base64-in-JSON body which the proxy + aiohttp both
+// cap at 50 MB. 20 MB is the smallest real ceiling, so gate there — the
+// old 5 MB cap silently rejected legitimate PDFs the backend could handle.
+const MAX_BYTES = 20_000_000;
+
+/** Surface a rejection so it actually STAYS visible. The header status
+ *  line is clobbered within ~2s by the memoOutbox network-status refresher,
+ *  so a setStatus('…','err') flashes and vanishes — the user reads it as
+ *  "nothing happened". Route attachment errors through a toast instead. */
+function rejectAttachment(msg: string) {
+  toast(msg, 'err');
+  status.setStatus(msg, 'err');
+}
 
 /** Called after the pending list changes — main wires this to refresh the
  *  composer send-button enabled state. */
@@ -67,11 +82,12 @@ export async function add(file) {
   const isVideo = file.type.startsWith('video/');
   const isPdf = file.type === 'application/pdf';
   if (!isImage && !isVideo && !isPdf) {
-    status.setStatus('Only image, video, and PDF attachments are supported', 'err');
+    rejectAttachment('Only image, video, and PDF attachments are supported');
     return;
   }
   if (file.size > MAX_BYTES) {
-    status.setStatus(`File too large (${Math.round(file.size/1024)}KB > ${Math.round(MAX_BYTES/1024)}KB)`, 'err');
+    const mb = (n: number) => `${(n / 1_000_000).toFixed(n < 10_000_000 ? 1 : 0)}MB`;
+    rejectAttachment(`File too large — ${mb(file.size)} exceeds the ${mb(MAX_BYTES)} limit`);
     return;
   }
   try {

@@ -41,7 +41,7 @@ let uploadInFlightBytes: number | null = null;
 export async function flushOutbox() {
   const result = await queue.flush(
     async (text) => { backend.sendMessage(text); },
-    async (blob, mimeType, id, autoSend) => {
+    async (blob, mimeType, id, autoSend, toComposer) => {
       // Timeout scales with blob size: small memos under 1MB ≈ minute or
       // less of audio (Deepgram batch returns in 1-3s) get the snappy
       // 15s budget. Larger blobs get 60s — the upload alone for a 5MB
@@ -83,11 +83,18 @@ export async function flushOutbox() {
           if (e instanceof TimeoutError) {
             // Surface + chime; blob stays in queue for retry on next
             // reconnect. The card moves to queued(⏳) so the user sees
-            // something is pending.
+            // something is pending. Dictation (toComposer) has no card —
+            // the durable queue is what saves the bad-connection upload
+            // from evaporating, so we just narrate "will retry" and keep
+            // the blob; a poller drains it when signal returns.
             log('transcribe timeout — blob stays queued for retry');
-            const transcriptEl = document.getElementById('transcript');
-            const card = id && transcriptEl ? memoCard.find(transcriptEl, id) : null;
-            if (card) memoCard.update(card, { status: 'queued' });
+            if (toComposer) {
+              composer.setInterim('Dictation queued — will retry when connected');
+            } else {
+              const transcriptEl = document.getElementById('transcript');
+              const card = id && transcriptEl ? memoCard.find(transcriptEl, id) : null;
+              if (card) memoCard.update(card, { status: 'queued' });
+            }
             playFeedback('error');
           }
           throw e;  // re-throw so queue.flush keeps the item
@@ -111,11 +118,19 @@ export async function flushOutbox() {
         const isPermanent = /\b4\d\d\b|corrupt|unsupported|empty body/i.test(err);
         if (isPermanent) {
           log('transcribe: permanent failure, dropping blob:', err);
-          const transcriptEl = document.getElementById('transcript');
-          const card = id && transcriptEl ? memoCard.find(transcriptEl, id) : null;
-          const note = '(audio unprocessable)';
-          if (card) memoCard.update(card, { transcript: note, status: 'failed' });
-          try { await voiceMemos.update(id, { transcript: note, status: 'failed' }); } catch {}
+          if (toComposer) {
+            // Dictation has no card — just clear the progress line and
+            // narrate softly. The blob drops from the queue (return, no
+            // throw) since retrying a corrupt clip is futile.
+            composer.clearInterim();
+            status.setStatus('Dictation unprocessable — tap mic to retry', 'err');
+          } else {
+            const transcriptEl = document.getElementById('transcript');
+            const card = id && transcriptEl ? memoCard.find(transcriptEl, id) : null;
+            const note = '(audio unprocessable)';
+            if (card) memoCard.update(card, { transcript: note, status: 'failed' });
+            try { await voiceMemos.update(id, { transcript: note, status: 'failed' }); } catch {}
+          }
           playFeedback('error');
           return;  // don't throw — queue.flush will drop the item
         }
@@ -130,6 +145,13 @@ export async function flushOutbox() {
       // isn't left staring at an orphan row. Persist the status so a
       // reload doesn't restore it as pending again.
       if (!text) {
+        if (toComposer) {
+          // Dictation: no card to annotate — clear the ghost line and
+          // tell the user softly. Item drops from queue (return, no throw).
+          composer.clearInterim();
+          status.setStatus('No speech detected', null);
+          return;
+        }
         const note = '(no speech detected)';
         if (card) memoCard.update(card, { transcript: note, status: 'failed' });
         await voiceMemos.update(id, { transcript: note, status: 'failed' });
@@ -143,6 +165,17 @@ export async function flushOutbox() {
       // autoSend=false → just append, leaving the user to review +
       // send manually. Both paths converge through composer.appendText
       // → composer.submit, which is the same codepath as clicking Send.
+      if (toComposer) {
+        // Batch dictation: transcript is INPUT, not a message. appendText
+        // lands it at the cursor (preserving anything already typed) and
+        // clears the ghost interim line. No card, no voice-memo record, no
+        // submit, no chat bubble — exactly the ephemeral-input UX, but the
+        // blob rode the durable queue so a bad-connection upload retried
+        // here instead of evaporating.
+        composer.appendText(text);
+        status.setStatus('', null);
+        return;
+      }
       if (card) card.remove();
       await voiceMemos.remove(id);
       composer.appendText(text);
@@ -282,18 +315,28 @@ async function renderMemoCard(audioBlob, durationMs, autoSend = false) {
   return { id, card };
 }
 
-/** Batch dictation (dictateRealtime=OFF, #112): POST the recorded utterance
- *  to /transcribe ONCE and drop the clean transcript into the composer.
+/** Batch dictation (dictateRealtime=OFF, #112): persist the recorded
+ *  utterance to the durable outbox, then transcribe ONCE and drop the clean
+ *  transcript into the composer.
  *
- *  Crucially distinct from handleMemoResult: dictation is ephemeral INPUT,
- *  not a message. So there is NO voice-memo card, NO IndexedDB queue, and
- *  NO send — a silent / failed / offline transcribe leaves nothing behind
- *  in the chat (the bug that prompted this path: the memo pipeline rendered
- *  a "(no speech detected)" bubble in the transcript). Progress shows as a
- *  ghost line under the composer (composer.setInterim) plus the header pill;
- *  the text lands at the cursor on success. */
-export async function transcribeToComposer(audioBlob: Blob | null, _durationMs?: number): Promise<void> {
+ *  Distinct from handleMemoResult: dictation is ephemeral INPUT, not a
+ *  message. So there is NO voice-memo card and NO send — a silent / failed
+ *  transcribe leaves nothing in the chat (the bug that prompted this path:
+ *  the memo pipeline rendered a "(no speech detected)" bubble). But it DOES
+ *  ride the same IndexedDB queue as memos (toComposer:true), because the
+ *  fire-and-forget version evaporated long dictations on a bad connection:
+ *  a 4-minute clip timed out on upload and the whole transcript was lost.
+ *  Now the blob is persisted BEFORE any network attempt, so a timeout /
+ *  offline just leaves it queued; the background pollers (or the next
+ *  flushOutbox) retry it and the transcript lands in the composer whenever
+ *  signal returns. The toComposer flag keeps every flush branch
+ *  composer-bound (no card, no bubble, no submit). Progress shows as a ghost
+ *  line under the composer plus the header pill. */
+export async function transcribeToComposer(audioBlob: Blob | null, durationMs?: number): Promise<void> {
   if (!audioBlob) return;
+  // Same hard ceiling as memos: a too-big blob just retries forever and
+  // blocks the queue for everything behind it. Drop it up front rather
+  // than persisting it.
   const MEMO_MAX_BYTES = 24 * 1024 * 1024;
   if (audioBlob.size > MEMO_MAX_BYTES) {
     const mb = (audioBlob.size / (1024 * 1024)).toFixed(1);
@@ -301,61 +344,31 @@ export async function transcribeToComposer(audioBlob: Blob | null, _durationMs?:
     try { playFeedback('error'); } catch {}
     return;
   }
-  if (navigator.onLine === false) {
-    status.setStatus('Offline — can’t transcribe dictation right now', 'err');
-    try { playFeedback('error'); } catch {}
-    return;
-  }
-  let kt: string[] = [];
-  try {
-    const { readList } = await import('./keyterms.ts');
-    kt = (await readList()) || [];
-  } catch {}
-  const url = kt.length
-    ? `/transcribe?${kt.map(t => 'keyterms=' + encodeURIComponent(t)).join('&')}`
-    : '/transcribe';
-  const timeoutMs = audioBlob.size > 1_000_000 ? 60_000 : 15_000;
-  // Composer-level progress (ghost line under the textarea) + header pill.
-  // uploadInFlightBytes drives the 2s refresher's "Uploading audio…" so it
-  // doesn't clobber the pill back to "Connected" mid-transcribe.
+
+  // Durable-first: persist the blob to the outbox BEFORE touching the
+  // network. This is the whole point of the fix — if the upload times out
+  // or we're offline, the blob survives in IndexedDB and a poller retries
+  // it. toComposer:true routes every flush branch back to the composer.
+  await queue.enqueue({
+    type: 'audio', blob: audioBlob, mimeType: audioBlob.type, durationMs, toComposer: true,
+  });
+  log('dictate: queued audio blob (' + Math.round(audioBlob.size / 1024) + 'KB) toComposer');
+
   composer.setInterim('Transcribing…');
-  uploadInFlightBytes = audioBlob.size;
-  const kb = Math.round(audioBlob.size / 1024);
-  status.setStatus(`Transcribing audio (${kb} KB)…`, 'live');
-  let res;
-  try {
-    try {
-      res = await fetchWithTimeout(url, {
-        method: 'POST', headers: { 'Content-Type': audioBlob.type }, body: audioBlob,
-        timeoutMs,
-      });
-    } catch (e) {
-      log('dictate transcribe failed:', e instanceof Error ? e.message : String(e));
-      composer.clearInterim();
-      status.setStatus('Transcription failed — tap mic to retry', 'err');
-      try { playFeedback('error'); } catch {}
-      return;
-    }
-  } finally {
-    uploadInFlightBytes = null;
-  }
-  let data: any;
-  try { data = await res.json(); } catch { data = { ok: false }; }
-  if (!data.ok) {
-    composer.clearInterim();
-    status.setStatus('Transcription failed — tap mic to retry', 'err');
-    try { playFeedback('error'); } catch {}
+
+  const offline = navigator.onLine === false || !backend.isConnected();
+  if (offline) {
+    // Leave it queued; the periodic poller drains it on reconnect. Keep
+    // the ghost line so the user knows the dictation wasn't lost.
+    composer.setInterim('Dictation queued — will transcribe when connected');
+    status.setStatus('Dictation queued — will transcribe when connected');
     return;
   }
-  const text = (data.transcript || '').trim();
-  if (!text) {
-    // No bubble — just clear the progress line and tell the user softly.
-    composer.clearInterim();
-    status.setStatus('No speech detected', null);
-    return;
-  }
-  composer.appendText(text);  // clears the interim line itself
-  status.setStatus('', null);
+
+  // Online: drain now. flushOutbox handles success (appendText), timeout
+  // (keeps queued + "will retry" ghost line), permanent failure (drops +
+  // narrates), and empty transcript — all via the toComposer branches.
+  flushOutbox().catch(() => {});
 }
 
 export async function handleMemoResult(audioBlob: Blob, durationMs?: number, autoSend = false, path = 'unknown') {

@@ -36,6 +36,10 @@ import { showTranscriptLoading } from './transcript/index.ts';
 import * as switchCtl from './switchController.ts';
 import type { SwitchToken } from './switchController.ts';
 import * as sessionPins from './sessionPins.ts';
+import * as sessionIdentity from './sessionIdentity.ts';
+import * as sessionAnnounce from './sessionAnnounce.ts';
+import * as settings from './settings.ts';
+import { AURA_VOICES, voiceLabel } from './voices.ts';
 
 let onResumeCb: ((id: string, messages: any[], pagination?: { firstId: number | null; hasMore: boolean }, inflight?: any[], targetMessageId?: string) => void) | null = null;
 
@@ -596,6 +600,9 @@ function setupUnreadListener(): void {
   // pinned set is read from the store, not the server, so the local
   // repaint is fully authoritative.
   window.addEventListener('sidekick:session-pins-changed', () => repaintSessionsLocal());
+  // A nickname/voice edit repaints rows so the nickname chip appears
+  // immediately. Local repaint from cachedSessions — no server round-trip.
+  window.addEventListener('sidekick:session-identity-changed', () => repaintSessionsLocal());
 }
 // Wire at module load — idempotent + no DOM lookup needed (event
 // listener attaches on window which exists in the PWA from the start).
@@ -928,7 +935,7 @@ let lastRenderFingerprint: string | null = null;
  *  still trigger a rebuild. */
 function renderListFingerprint(sessions: any[], activeId: string, showPlaceholder: boolean, pinnedOrder: string[]): string {
   const rows = sessions.map(s =>
-    `${s.id}|${s.title || ''}|${s.snippet || ''}|${s.messageCount || 0}|${s.lastMessageAt || ''}|${s.source || ''}`,
+    `${s.id}|${s.title || ''}|${s.snippet || ''}|${s.messageCount || 0}|${s.lastMessageAt || ''}|${s.source || ''}|${sessionIdentity.nicknameFor(s.id) || ''}`,
   ).join('\n');
   // Fold the pinned set + order in: a pin/unpin/reorder doesn't change
   // any row's fields or the incoming recency order, so without this the
@@ -1057,8 +1064,20 @@ function renderRow(s: any, activeId: string, pinned = false): HTMLLIElement {
 
   const snippet = document.createElement('div');
   snippet.className = 'sess-snippet';
-  // Prefer user-set title; fall back to snippet; then the id.
-  snippet.textContent = s.title || s.snippet || s.id;
+  // A user-assigned nickname (per-session identity) takes visual
+  // precedence as a leading chip; the auto title/snippet still follows
+  // so the row keeps its conversational context.
+  const nick = sessionIdentity.nicknameFor(s.id);
+  if (nick) {
+    const nickEl = document.createElement('span');
+    nickEl.className = 'sess-nickname';
+    nickEl.textContent = nick;
+    snippet.appendChild(nickEl);
+    snippet.appendChild(document.createTextNode(s.title || s.snippet || s.id));
+  } else {
+    // Prefer user-set title; fall back to snippet; then the id.
+    snippet.textContent = s.title || s.snippet || s.id;
+  }
   if (unread > 0) {
     const chip = document.createElement('span');
     chip.className = 'sess-unread-chip';
@@ -1127,6 +1146,10 @@ function renderRow(s: any, activeId: string, pinned = false): HTMLLIElement {
       return;
     }
     if (multiSelect.size > 0) clearMultiSelect();
+    // Arm the announce-on-switch cue. consume() (end of the resume
+    // render) only fires it for a genuine different-session switch, so
+    // arming on a same-session re-tap is harmless.
+    sessionAnnounce.arm(s.id);
     // ── Click-trace instrumentation ──────────────────────────────────
     // Capture timing at every phase from this
     // click event through to the rendered transcript so the sidebar
@@ -1223,6 +1246,11 @@ function openMenu(li: HTMLLIElement, s: any) {
   renameBtn.textContent = 'Rename';
   renameBtn.onclick = (e) => { e.stopPropagation(); menu.remove(); promptRename(s); };
 
+  // Per-session identity — a friendly nickname + its own TTS voice.
+  const identityBtn = document.createElement('button');
+  identityBtn.textContent = 'Name & voice';
+  identityBtn.onclick = (e) => { e.stopPropagation(); menu.remove(); showIdentitySheet(s); };
+
   // Sticky mark-unread toggle — WhatsApp-style "come back to this".
   // Distinct from the natural unreadByChat counter that auto-clears
   // on chat focus; this flag survives focus + reload via IDB
@@ -1259,6 +1287,7 @@ function openMenu(li: HTMLLIElement, s: any) {
 
   menu.appendChild(infoBtn);
   menu.appendChild(renameBtn);
+  menu.appendChild(identityBtn);
   menu.appendChild(markBtn);
   menu.appendChild(muteBtn);
   menu.appendChild(deleteBtn);
@@ -1324,6 +1353,80 @@ function showInfo(s: any) {
   dialog.showModal();
 }
 
+/** Per-session identity editor — nickname + dedicated TTS voice. The
+ *  persona row is rendered only when the active backend advertises the
+ *  capability (inert in P1, so it stays hidden today). Saving writes
+ *  through sessionIdentity.set(); empty fields clear that field. */
+function showIdentitySheet(s: any) {
+  const ident = sessionIdentity.get(s.id) ?? {};
+  const curNick = ident.nickname ?? '';
+  const curVoice = ident.voice ?? '';
+  const personaEnabled = !!backend.capabilities().persona;
+  const curPersona = ident.persona ?? '';
+
+  const voiceOptions =
+    `<option value="">Default (${escHtml(voiceLabel(settingsDefaultVoice()))})</option>` +
+    AURA_VOICES.map(v =>
+      `<option value="${escHtml(v.value)}"${v.value === curVoice ? ' selected' : ''}>${escHtml(v.label)}</option>`
+    ).join('');
+
+  const dialog = document.createElement('dialog');
+  dialog.className = 'session-info-dialog session-identity-dialog';
+  dialog.innerHTML = `
+    <form method="dialog" class="session-identity-form">
+      <label class="session-identity-field">
+        <span>Nickname</span>
+        <input type="text" class="ident-nickname" maxlength="60"
+               placeholder="e.g. Acme client" value="${escHtml(curNick)}">
+      </label>
+      <label class="session-identity-field">
+        <span>Voice</span>
+        <select class="ident-voice">${voiceOptions}</select>
+      </label>
+      ${personaEnabled ? `
+      <label class="session-identity-field">
+        <span>Persona</span>
+        <textarea class="ident-persona" rows="3"
+                  placeholder="Optional per-session prompt">${escHtml(curPersona)}</textarea>
+      </label>` : ''}
+      <div class="session-identity-actions">
+        <button type="button" class="ident-cancel">Cancel</button>
+        <button type="submit" class="ident-save">Save</button>
+      </div>
+    </form>
+  `;
+
+  const close = () => dialog.close();
+  dialog.querySelector<HTMLButtonElement>('.ident-cancel')!.onclick = close;
+  // The voice <select> isn't selected on first render; reflect the current
+  // value (the AURA option's `selected` attr handles non-default voices,
+  // but an empty curVoice must land on the Default option explicitly).
+  const voiceSel = dialog.querySelector<HTMLSelectElement>('.ident-voice')!;
+  voiceSel.value = curVoice;
+
+  dialog.querySelector<HTMLFormElement>('.session-identity-form')!.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const nickname = dialog.querySelector<HTMLInputElement>('.ident-nickname')!.value.trim();
+    const voice = voiceSel.value;
+    const patch: sessionIdentity.SessionIdentity = { nickname, voice };
+    if (personaEnabled) {
+      patch.persona = dialog.querySelector<HTMLTextAreaElement>('.ident-persona')!.value.trim();
+    }
+    sessionIdentity.set(s.id, patch);
+    dialog.close();
+  });
+
+  dialog.addEventListener('close', () => dialog.remove());
+  document.body.appendChild(dialog);
+  dialog.showModal();
+}
+
+/** The global default TTS voice (synced setting), shown as the label of
+ *  the "Default" option so the user knows what picking it yields. */
+function settingsDefaultVoice(): string {
+  try { return (settings.get() as any).voice || ''; } catch { return ''; }
+}
+
 function escHtml(s: string): string {
   return String(s).replace(/[&<>"']/g, (c) => (
     { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string
@@ -1384,6 +1487,9 @@ async function deleteSessionAtomic(id: string): Promise<void> {
   // list) but would still count as the landing default on cold-open.
   // unpin() is a no-op when the id isn't pinned.
   sessionPins.unpin(id);
+  // Drop any per-session identity (nickname/voice) so a recycled id
+  // doesn't inherit a stale name/voice. No-op if none was set.
+  sessionIdentity.remove(id);
   await backend.deleteSession(id);
   await sessionCache.removeMessagesCache(id);
   const cached = await sessionCache.getListCache();

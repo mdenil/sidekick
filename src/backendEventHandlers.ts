@@ -18,6 +18,7 @@ import * as backend from './backend.ts';
 import * as sessionDrawer from './sessionDrawer.ts';
 import * as switchCtl from './switchController.ts';
 import * as settings from './settings.ts';
+import * as sessionIdentity from './sessionIdentity.ts';
 import * as activityStore from './notifications/activityStore.ts';
 import * as badge from './notifications/badge.ts';
 import * as turnbased from './audio/turn-based/turnbased.ts';
@@ -352,7 +353,10 @@ export function handleReplyFinal({ replyId, text, content = [], conversation, me
       const ttsReplyId = messageId || replyId;
       listenReply.consumeReply(conversation as string);
       listenReply.claimOwnership(ttsReplyId);
-      void playReplyTts(finalText, settings.get().voice, ttsReplyId).catch(() => {
+      // Per-session voice: this reply belongs to `conversation`, so prefer
+      // its assigned voice (sessionIdentity) over the global default.
+      const replyVoice = sessionIdentity.voiceFor(conversation as string) ?? settings.get().voice;
+      void playReplyTts(finalText, replyVoice, ttsReplyId).catch(() => {
         listenReply.releaseOwnership();
         try { turnbased.notifyReplyPlayback(false); } catch {}
       });

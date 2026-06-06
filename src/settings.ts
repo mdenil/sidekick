@@ -314,6 +314,13 @@ const DEFAULTS = {
   // Empty string = no pins. Order is landing order (index 0 = top, the
   // cold-open default session when no deep-link target is present).
   pinnedSessions: '',
+  // Per-session identity: a JSON-encoded map of session id →
+  // { nickname?, voice?, persona? } giving each session a friendly name
+  // and its own TTS voice. Synced (cross-device) and written
+  // programmatically — no Settings-pane row. Stored as a STRING for the
+  // same scalar-only reason as pinnedSessions; src/sessionIdentity.ts owns
+  // the parse/serialize. Empty string = no identities.
+  sessionIdentities: '',
 };
 
 /** Settings stored in localStorage rather than the yaml. See the

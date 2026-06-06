@@ -11,7 +11,7 @@
  * network-first, so first-load pulls anything missed and caches on the
  * way through.
  */
-const CACHE_NAME = 'v0.572';
+const CACHE_NAME = 'v0.579';
 
 // Dedicated cache for VAD assets. Key insight: VAD assets are 14.7 MB
 // and don't change with every app deploy — the Silero model is
@@ -176,7 +176,31 @@ self.addEventListener('fetch', (e) => {
     return;
   }
 
-  // App shell (HTML, CSS, icons, manifest) — cache-first, fall back to
+  // /styles/* — NETWORK-FIRST. The stylesheet changes every deploy just
+  // like /build/* JS, so cache-first stale-while-revalidate guaranteed one
+  // stale paint after each deploy: the new SW activates, the header shows
+  // the new CACHE_NAME, but app.css was served from the old cache bucket
+  // until a SECOND reload (the "I deployed but it looks unchanged" symptom).
+  // Network-first pulls fresh CSS on every reload, falling back to cache
+  // only when genuinely offline.
+  if (url.pathname.startsWith('/styles/')) {
+    e.respondWith(
+      fetch(e.request).then(response => {
+        if (response.ok) {
+          const clone = response.clone();
+          caches.open(CACHE_NAME).then(cache => cache.put(e.request, clone));
+        }
+        return response;
+      }).catch(async () => {
+        const cached = await caches.match(e.request);
+        if (cached) return cached;
+        throw new Error('styles fetch failed and no cache');
+      })
+    );
+    return;
+  }
+
+  // App shell (HTML, icons, manifest) — cache-first, fall back to
   // network. These rarely change relative to JS modules so the offline
   // benefit outweighs staleness risk.
   e.respondWith(

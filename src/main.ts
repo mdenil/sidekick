@@ -35,6 +35,7 @@ import { initVisibilityReporting } from './notifications/visibility.ts';
 import * as status from './status.ts';
 import * as settings from './settings.ts';
 import * as sessionPins from './sessionPins.ts';
+import * as sessionIdentity from './sessionIdentity.ts';
 import * as headphones from './audio/shared/headphones.ts';
 import * as vadRouting from './audio/shared/vadRouting.ts';
 import * as theme from './theme.ts';
@@ -78,6 +79,7 @@ import * as memoCard from './memoCard.ts';
 import * as attachments from './attachments.ts';
 import * as draft from './draft.ts';
 import * as composer from './composer.ts';
+import * as selectToQuote from './selectToQuote.ts';
 import * as slashCommands from './slashCommands.ts';
 import * as webrtcControls from './audio/realtime/controls.ts';
 import * as webrtcConnection from './audio/realtime/realtime.ts';
@@ -309,6 +311,10 @@ async function boot() {
   // hydrate it from the snapshot settings.load() just pulled — before
   // the drawer's first render reads sessionPins.isPinned()/topPinned().
   sessionPins.hydrate();
+  // Per-session identity (nickname + voice) rides the synced
+  // `sessionIdentities` setting — hydrate from the same snapshot before
+  // the drawer's first render reads nicknameFor()/voiceFor().
+  sessionIdentity.hydrate();
 
   // Load config from server (keys, gateway info)
   await loadConfig();
@@ -965,7 +971,10 @@ async function boot() {
   if (transcriptEl) {
     replyPlayer.init({
       transcriptEl,
-      resolveVoice: () => settings.get().voice,
+      // Per-session voice: per-bubble replay/play acts on the viewed
+      // session's bubbles, so prefer that session's assigned voice.
+      resolveVoice: () =>
+        sessionIdentity.voiceFor(switchCtl.viewedId() || '') ?? settings.get().voice,
     });
   }
 
@@ -1707,6 +1716,22 @@ async function boot() {
     for (const f of mediaFiles) await attachments.add(f);
   });
 
+  // Copy button on rendered code blocks (miniMarkdown emits .code-copy-btn).
+  // Delegated at document level so it works for every transcript/card/pin
+  // block without per-render wiring. Reads the sibling <code> textContent
+  // (unescaped source) and flashes a brief "copied" state.
+  document.addEventListener('click', (e) => {
+    const btn = (e.target as HTMLElement)?.closest?.('.code-copy-btn') as HTMLElement | null;
+    if (!btn) return;
+    const code = btn.closest('.code-block')?.querySelector('code');
+    const text = code?.textContent ?? '';
+    if (!text || !navigator.clipboard?.writeText) return;
+    navigator.clipboard.writeText(text).then(() => {
+      btn.classList.add('copied');
+      setTimeout(() => btn.classList.remove('copied'), 1200);
+    }).catch(() => {});
+  });
+
   function sendTypedMessage() {
     const text = composerInput.value.trim();
     const hasAttachments = attachments.hasPending();
@@ -1857,6 +1882,13 @@ async function boot() {
     onChange: updateSendButtonState,
     onSubmit: sendTypedMessage,
   });
+  // Select-to-quote: selecting transcript text floats a "Quote" button that
+  // inserts the selection as a markdown blockquote into the composer for
+  // reply (accumulating multiple quote+reply pairs into one message).
+  selectToQuote.init({
+    transcriptEl: document.getElementById('transcript'),
+    onQuote: composer.appendQuote,
+  });
   // Retry-send wire-up (Crack A): reconciler renders a Retry button
   // on a `.failed` user bubble and dispatches `sidekick:retry-send`
   // on click. Restore the composer with the original text + drop
@@ -2004,6 +2036,24 @@ async function boot() {
   // pointer truly exits the area.
   const mainDropZone = document.querySelector('.main') as HTMLElement | null;
   if (mainDropZone) {
+    // Wheel over the dark side gutters (the .main area flanking the
+    // centered .chat-column) scrolls the transcript, so the user doesn't
+    // have to land the cursor on the narrow text column to scroll. The
+    // gutters only exist on wide viewports where .chat-column hits its
+    // max-width; on mobile the column fills the width so this never fires.
+    const chatColumn = mainDropZone.querySelector('.chat-column');
+    mainDropZone.addEventListener('wheel', (e: WheelEvent) => {
+      // Only forward from the gutters; inside the column the transcript
+      // and composer scroll/behave natively.
+      if (chatColumn && chatColumn.contains(e.target as Node)) return;
+      const transcriptEl = document.getElementById('transcript');
+      if (!transcriptEl) return;
+      // deltaMode 1 = lines (Firefox); approximate a line as 16px.
+      const factor = e.deltaMode === 1 ? 16 : 1;
+      transcriptEl.scrollTop += e.deltaY * factor;
+      e.preventDefault();
+    }, { passive: false });
+
     let dragDepth = 0;
     const hasFiles = (e: DragEvent): boolean => {
       const types = e.dataTransfer?.types;

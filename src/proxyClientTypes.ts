@@ -260,6 +260,10 @@ export interface SearchOpts {
  *   Supports `listSessions` / `resumeSession`. UI renders a session drawer when
  *   true. Distinct from `sessions`: that flag is about model-override scope,
  *   this flag is about a browsable list of past conversations.
+ * @property {boolean} [persona]
+ *   RESERVED (inert): backend accepts a per-session prepended persona prompt.
+ *   No adapter sets this true yet; the per-session identity sheet gates the
+ *   persona field on it so the feature can ship later without a data migration.
  */
 
 /**

@@ -137,6 +137,41 @@ export function appendText(text: string) {
   diag('composer append:', JSON.stringify({ len: t.length, text: t.slice(0, 60) }));
 }
 
+/** Build the markdown-quote insertion for a selected passage. Each line of
+ *  `quoted` is prefixed with `> ` (so multi-line selections become one
+ *  blockquote), then a blank line is appended so the caret lands BELOW the
+ *  quote ready for the reply. When the composer already has content, the
+ *  new block is separated from it by a blank line — so accumulating several
+ *  quote+reply pairs keeps them as distinct blockquotes rather than merging.
+ *  Returns the full new textarea value and the caret offset to place after.
+ *  Exported for unit testing. */
+export function formatQuoteBlock(quoted: string, existing: string): { value: string, caret: number } {
+  const lines = quoted.replace(/\r\n?/g, '\n').split('\n');
+  const block = lines.map(l => '> ' + l).join('\n') + '\n\n';
+  // Separate from existing content with a blank line, unless the composer
+  // is empty or already ends with one.
+  const sep = existing.length === 0 ? '' : (/\n\n$/.test(existing) ? '' : (/\n$/.test(existing) ? '\n' : '\n\n'));
+  const value = existing + sep + block;
+  return { value, caret: value.length };
+}
+
+/** Insert a selected passage as a markdown blockquote and park the caret
+ *  below it for the reply. Trims the selection, formats via formatQuoteBlock,
+ *  updates the textarea, focuses it, and fires 'input' so autoResize +
+ *  send-button-state react as if typed. Used by select-to-quote. */
+export function appendQuote(quoted: string) {
+  if (!inputEl) return;
+  const t = quoted.trim();
+  if (!t) return;
+  const { value, caret } = formatQuoteBlock(t, inputEl.value);
+  inputEl.value = value;
+  inputEl.focus();
+  inputEl.setSelectionRange(caret, caret);
+  inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+  onChange();
+  diag('composer quote:', JSON.stringify({ len: t.length, text: t.slice(0, 60) }));
+}
+
 /** Show an interim (non-final) STT preview just below the composer. No-op
  *  if the interim element isn't wired (inline preview is optional). */
 export function setInterim(text: string) {

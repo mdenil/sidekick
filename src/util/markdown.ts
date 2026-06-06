@@ -6,10 +6,38 @@
 
 import { escapeHtml } from './dom.ts';
 
+// Inline SVG for the per-block copy button (two overlapping rounded
+// rects). Kept tiny + currentColor so it inherits the muted head color.
+const COPY_ICON =
+  '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" ' +
+  'stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" ' +
+  'stroke-linecap="round">' +
+  '<rect x="5.8" y="5.8" width="7.7" height="7.7" rx="2"/>' +
+  '<path d="M3.2 10.2A1.3 1.3 0 0 1 2.5 9V3.8a1.3 1.3 0 0 1 1.3-1.3H9a1.3 1.3 0 0 1 1.2.8"/>' +
+  '</svg>';
+
 export function miniMarkdown(s) {
   let t = escapeHtml(s);
-  // Code blocks
-  t = t.replace(/```([\s\S]*?)```/g, (_, c) => `<pre><code>${c}</code></pre>`);
+  // Fenced code blocks. Extract them FIRST and swap in a block-level
+  // placeholder so their content is immune to every downstream line-based
+  // rule (paragraph splitting on blank lines, list/table parsing). The
+  // placeholder is a <div> so BLOCK_OPENER leaves it unwrapped; we restore
+  // the real markup at the very end. An optional language token on the
+  // opening fence (```markdown) becomes a label, not body text.
+  const codeBlocks = [];
+  t = t.replace(/```([\s\S]*?)```/g, (_, raw) => {
+    let lang = '';
+    let body = raw;
+    const nl = raw.indexOf('\n');
+    if (nl >= 0) {
+      const first = raw.slice(0, nl).trim();
+      if (/^[a-z0-9_+#.-]{1,20}$/i.test(first)) { lang = first; body = raw.slice(nl + 1); }
+    }
+    body = body.replace(/\n+$/, '');
+    const idx = codeBlocks.length;
+    codeBlocks.push({ lang, body });
+    return `\n<div data-code="${idx}"></div>\n`;
+  });
   // Tables — GFM-style pipe syntax. Must run BEFORE paragraph wrapping
   // and other line-sensitive steps. Matches a header row + separator
   // row (--- / :--- / ---: / :---:) + body rows.
@@ -36,6 +64,10 @@ export function miniMarkdown(s) {
   // non-numbered line, so the v13-spine outline rendered as a stack of
   // single-item <ol>s — every item shown as "1."
   t = renderLists(t);
+  // Blockquotes — group consecutive `> ` lines into a <blockquote>. Runs
+  // after lists/inline rules so quoted text keeps its inline formatting,
+  // and before paragraph wrapping (BLOCK_OPENER leaves <blockquote> alone).
+  t = renderBlockquotes(t);
   // Markdown links
   t = t.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
   // Angle-bracketed URLs: <url> → escaped as &lt;url&gt; by escapeHtml
@@ -56,7 +88,21 @@ export function miniMarkdown(s) {
   t = t.split(/\n\n+/).map(p =>
     BLOCK_OPENER.test(p) ? p : `<p>${p.replace(/\n/g, '<br>')}</p>`
   ).join('');
+  // Restore extracted code blocks now that all line-based rules are done.
+  t = t.replace(/<div data-code="(\d+)"><\/div>/g, (_, i) => renderCodeBlock(codeBlocks[+i]));
   return t;
+}
+
+/** Render an extracted fenced code block: a head row carrying the optional
+ *  language label + a copy button, then the (already-escaped) code body.
+ *  The copy button is wired by a delegated listener (see src/main.ts). */
+function renderCodeBlock({ lang, body }) {
+  const label = lang ? `<span class="code-lang">${lang}</span>` : '<span class="code-lang"></span>';
+  return '<div class="code-block">' +
+    `<div class="code-block-head">${label}` +
+    '<button class="code-copy-btn" type="button" aria-label="Copy code" title="Copy">' +
+    COPY_ICON + '</button></div>' +
+    `<pre><code>${body}</code></pre></div>`;
 }
 
 /** Line-based list renderer for bullet (`-`/`*`) and ordered (`\d+.`) lists.
@@ -114,6 +160,56 @@ function renderLists(text) {
     i = j;
   }
   return out.join('\n');
+}
+
+/** Group consecutive `> ` lines into a single <blockquote>. Runs after
+ *  escapeHtml, so the leading `>` arrives as `&gt;` — the matcher targets
+ *  that. Inner lines keep their already-applied inline formatting; a single
+ *  optional space after the marker is consumed. Non-quote lines pass through. */
+function renderBlockquotes(text) {
+  const Q = /^&gt;\s?/;
+  const lines = text.split('\n');
+  const out = [];
+  let i = 0;
+  while (i < lines.length) {
+    if (!Q.test(lines[i])) {
+      out.push(lines[i]);
+      i++;
+      continue;
+    }
+    const inner = [];
+    while (i < lines.length && Q.test(lines[i])) {
+      inner.push(lines[i].replace(Q, ''));
+      i++;
+    }
+    out.push('<blockquote>' + inner.join('<br>') + '</blockquote>');
+  }
+  return out.join('\n');
+}
+
+/** Render user-authored message text. Unlike miniMarkdown (full md→HTML for
+ *  agent transcripts and the markdown card), user text is escaped and gets
+ *  ONLY blockquote grouping + <br> for newlines — so a quoted reply renders
+ *  as an indented block while everything else the user typed stays literal.
+ *  Newlines that border a <blockquote> are absorbed by the block element;
+ *  only newlines between two non-quote lines become <br>. */
+export function renderUserText(s) {
+  const grouped = renderBlockquotes(escapeHtml(s)).split('\n');
+  const isBq = (l) => l !== undefined && l.startsWith('<blockquote>');
+  // Drop blank lines that border a blockquote — the block element supplies
+  // its own vertical spacing, so the quote-block's trailing blank separator
+  // shouldn't also render as a <br>. Blank lines between plain text survive
+  // (so multi-paragraph prompts keep their spacing, as before).
+  const pieces = grouped.filter((l, k) =>
+    !(l === '' && (isBq(grouped[k - 1]) || isBq(grouped[k + 1]))));
+  let html = '';
+  for (let k = 0; k < pieces.length; k++) {
+    // No <br> separator around a blockquote; a single <br> between any other
+    // adjacent lines (an empty line yields a second <br> → paragraph gap).
+    if (k > 0 && !isBq(pieces[k]) && !isBq(pieces[k - 1])) html += '<br>';
+    html += pieces[k];
+  }
+  return html;
 }
 
 /** GFM pipe-table renderer. Scans for a header row + separator row + one
