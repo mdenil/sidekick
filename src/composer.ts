@@ -110,6 +110,37 @@ export function getLastCaret(): number | null { return lastKnownCaret; }
  *  the cursor is right after a non-whitespace character, so words don't
  *  concatenate ("hellohow" → "hello how"). Dispatches 'input' so the
  *  auto-resize + send-button-state listeners fire as if the user typed. */
+/** Insert `text` at the composer's current caret/selection while preserving
+ *  the textarea's native undo stack. A raw `inputEl.value = …` assignment
+ *  wipes undo history — and when a range is selected it silently overwrites it
+ *  with no way to Cmd+Z the original text back. That's why dictation + quote
+ *  inserts used to be non-undoable (and why dictation could eat a selection).
+ *  execCommand('insertText') routes through the browser's own edit pipeline:
+ *  it replaces the current selection undoably, parks the caret after the
+ *  inserted text, and dispatches its own 'input' event. Falls back to direct
+ *  assignment when execCommand is unavailable (jsdom in tests, or a future
+ *  engine that drops it); `fallbackCaret` is the absolute caret for that path. */
+function insertAtCursor(text: string, fallbackCaret: number) {
+  const el = inputEl;
+  if (!el) return;
+  el.focus();
+  let ok = false;
+  try {
+    ok = document.execCommand('insertText', false, text);
+  } catch {
+    ok = false;
+  }
+  if (!ok) {
+    const val = el.value;
+    const start = el.selectionStart ?? val.length;
+    const end = el.selectionEnd ?? val.length;
+    el.value = val.slice(0, start) + text + val.slice(end);
+    el.setSelectionRange(fallbackCaret, fallbackCaret);
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+  onChange();
+}
+
 export function appendText(text: string) {
   if (!inputEl) return;
   const t = text.trim();
@@ -127,13 +158,8 @@ export function appendText(text: string) {
   const needTrail = after.length > 0 && !/^\s/.test(after);
   const insert = (needLead ? ' ' : '') + t + (needTrail ? ' ' : ' ');
 
-  inputEl.value = before + insert + after;
-  const newPos = before.length + insert.length;
-  inputEl.setSelectionRange(newPos, newPos);
-  // Fire input event so autoResize + updateSendButtonState react.
-  inputEl.dispatchEvent(new Event('input', { bubbles: true }));
   clearInterim();
-  onChange();
+  insertAtCursor(insert, before.length + insert.length);
   diag('composer append:', JSON.stringify({ len: t.length, text: t.slice(0, 60) }));
 }
 
@@ -163,12 +189,14 @@ export function appendQuote(quoted: string) {
   if (!inputEl) return;
   const t = quoted.trim();
   if (!t) return;
-  const { value, caret } = formatQuoteBlock(t, inputEl.value);
-  inputEl.value = value;
+  const existing = inputEl.value;
+  const { value } = formatQuoteBlock(t, existing);
+  const insert = value.slice(existing.length); // separator + blockquote
+  // Append at the end: park the caret after any existing content so
+  // execCommand inserts the quote block there (preserving undo).
   inputEl.focus();
-  inputEl.setSelectionRange(caret, caret);
-  inputEl.dispatchEvent(new Event('input', { bubbles: true }));
-  onChange();
+  inputEl.setSelectionRange(existing.length, existing.length);
+  insertAtCursor(insert, value.length);
   diag('composer quote:', JSON.stringify({ len: t.length, text: t.slice(0, 60) }));
 }
 
