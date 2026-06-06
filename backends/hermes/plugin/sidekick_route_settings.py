@@ -565,6 +565,7 @@ async def handle_model_capabilities(adapter, request: "web.Request") -> "web.Res
     try:
         from agent.models_dev import (
             get_model_capabilities,
+            get_model_info,
             PROVIDER_TO_MODELS_DEV,
         )
         if provider:
@@ -590,6 +591,16 @@ async def handle_model_capabilities(adapter, request: "web.Request") -> "web.Res
             {"provider": provider or None, "model": model, "known": False},
             status=200,
         )
+    # PDF intake is a separate modality from vision: a model can accept
+    # images yet reject native PDF (and vice-versa). `ModelCapabilities`
+    # doesn't carry it, but `ModelInfo.supports_pdf()` reads the same
+    # models.dev `modalities.input` list — fetch it here so the client can
+    # gate PDF attachments without a core-capability change.
+    try:
+        info = get_model_info(resolved_provider, model) if resolved_provider else None
+        accepts_pdf = bool(info and info.supports_pdf())
+    except Exception:
+        accepts_pdf = False
     return web.json_response({
         "provider": resolved_provider,
         "model": model,
@@ -597,6 +608,7 @@ async def handle_model_capabilities(adapter, request: "web.Request") -> "web.Res
         "supports_vision": caps.supports_vision,
         "supports_tools": caps.supports_tools,
         "supports_reasoning": caps.supports_reasoning,
+        "accepts_pdf": accepts_pdf,
         "context_window": caps.context_window,
         "max_output_tokens": caps.max_output_tokens,
         "model_family": caps.model_family,

@@ -25,6 +25,11 @@
 export interface ModelCaps {
   known: boolean;
   supports_vision: boolean;
+  // True when the model accepts PDF natively (models.dev `modalities.input`
+  // lists "pdf"). Distinct from supports_vision: a PDF can still be sent to a
+  // vision-only model by rasterizing server-side, but a native-PDF model
+  // takes the document bytes directly. See attachmentTier().
+  accepts_pdf: boolean;
   supports_tools: boolean;
   supports_reasoning: boolean;
   context_window: number;
@@ -94,6 +99,7 @@ export async function fetchModelCaps(modelId: string): Promise<ModelCaps | null>
       const caps: ModelCaps = {
         known: !!body.known,
         supports_vision: !!body.supports_vision,
+        accepts_pdf: !!body.accepts_pdf,
         supports_tools: !!body.supports_tools,
         supports_reasoning: !!body.supports_reasoning,
         context_window: typeof body.context_window === 'number' ? body.context_window : 0,
@@ -131,6 +137,44 @@ export function isVisionCapableModel(modelId: string): boolean {
  *  drag-drop handler. Future role checks / feature flags fold in here. */
 export function canAttachFiles(): boolean {
   return isVisionCapableModel(getCurrentModelIdRef());
+}
+
+/** The model id the gate currently resolves against (the injected
+ *  accessor). Empty string before init. */
+export function currentModelId(): string {
+  return getCurrentModelIdRef();
+}
+
+/** True once we have a cached capability answer for a model — i.e. the
+ *  per-model fetch has resolved. Callers that DROP user data on a
+ *  capability verdict (e.g. clearing pending attachments on model switch)
+ *  gate on this so a transient cache miss never wrongly discards a file
+ *  before the real answer lands. */
+export function capsKnownFor(modelId: string): boolean {
+  return !!modelId && capsByModel.has(modelId);
+}
+
+/** Which attachment pathway the given model supports:
+ *   - 'pdf-native': accepts PDF document bytes directly (models.dev "pdf").
+ *   - 'image': no native PDF, but vision-capable (directly or via the
+ *     auxiliary fallback) — PDFs reach it by server-side rasterization,
+ *     images/video ride through as-is.
+ *   - 'none': neither; attachments would be silently dropped by the
+ *     gateway, so the client rejects them up front.
+ *  Conservative on cache miss (treats unknown native-PDF as not-native);
+ *  the vision branch still folds in the auxiliary fallback. */
+export function attachmentTier(modelId: string): 'pdf-native' | 'image' | 'none' {
+  const caps = capsByModel.get(modelId);
+  if (caps && caps.known && caps.accepts_pdf) return 'pdf-native';
+  if (isVisionCapableModel(modelId)) return 'image';
+  return 'none';
+}
+
+/** True if the current model can accept a PDF — natively or via the
+ *  rasterize (vision) path. Read by attachments.add() to reject PDFs the
+ *  model can't use, instead of letting the gateway drop them silently. */
+export function canAttachPdf(): boolean {
+  return attachmentTier(getCurrentModelIdRef()) !== 'none';
 }
 
 /** Update btn-attach + btn-camera disabled state + tooltips based on

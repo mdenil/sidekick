@@ -8,9 +8,9 @@
  */
 
 import { log } from './util/log.ts';
-import * as settings from './settings.ts';
 import * as status from './status.ts';
 import * as chat from './chat.ts';
+import * as modelCaps from './modelCapabilities.ts';
 import { toast } from './toast.ts';
 
 /** Each pending attachment: { dataUrl, mimeType, fileName, size }. */
@@ -83,6 +83,13 @@ export async function add(file) {
   const isPdf = file.type === 'application/pdf';
   if (!isImage && !isVideo && !isPdf) {
     rejectAttachment('Only image, video, and PDF attachments are supported');
+    return;
+  }
+  // A PDF only reaches the model if it's pdf-native or rasterize-capable
+  // (vision, incl. the auxiliary fallback). On a model that's neither, the
+  // gateway would silently discard it — reject up front so the user knows.
+  if (isPdf && !modelCaps.canAttachPdf()) {
+    rejectAttachment("Current model can't accept PDF attachments");
     return;
   }
   if (file.size > MAX_BYTES) {
@@ -172,24 +179,31 @@ function renderChips() {
   });
 }
 
-/** Enable/disable composer attach + camera buttons based on whether the
- *  active model supports image input. Server drops non-supported
- *  attachments silently, so we gate client-side for clarity. */
+/** React to a model change. Button enable/disable + tooltips are owned by
+ *  modelCapabilities (single source: the plugin's models.dev-backed
+ *  capability endpoint, which is fallback-aware — a text-only primary with
+ *  an auxiliary vision model can still take attachments). This module
+ *  previously set the buttons too, off settings.getCurrentModelEntry().input,
+ *  which disagreed with the fallback path. Delegate the button state and
+ *  keep only the pending-queue side effect here. */
 export function updateModelGate() {
-  const entry = settings.getCurrentModelEntry?.();
-  const canImage = Array.isArray(entry?.input) && entry.input.includes('image');
-  for (const id of ['btn-attach', 'btn-camera']) {
-    const btn = document.getElementById(id) as HTMLButtonElement | null;
-    if (!btn) continue;
-    btn.disabled = !canImage;
-    btn.title = canImage
-      ? (id === 'btn-camera' ? 'Camera (image)' : 'Attach image')
-      : 'Current model does not support images';
-  }
-  // Drop pending items the new model can't use. Safer than letting the
-  // gateway silently drop them; the user sees the chips disappear + a notice.
-  if (!canImage && pending.length > 0) {
-    clear();
-    chat.addSystemLine('Attachments cleared — current model does not support images');
-  }
+  modelCaps.updateAttachButtonsState();
+  if (pending.length === 0) return;
+  // Only drop pending items once we actually KNOW the new model's
+  // capabilities — a transient cache miss must not discard valid files
+  // before the real verdict lands.
+  if (!modelCaps.capsKnownFor(modelCaps.currentModelId())) return;
+  const canImage = modelCaps.canAttachFiles();
+  const canPdf = modelCaps.canAttachPdf();
+  const kept = pending.filter(a =>
+    a.mimeType === 'application/pdf' ? canPdf : canImage);
+  if (kept.length === pending.length) return;
+  const dropped = pending.length - kept.length;
+  pending.length = 0;
+  pending.push(...kept);
+  renderChips();
+  onChange();
+  chat.addSystemLine(
+    `${dropped > 1 ? 'Attachments' : 'Attachment'} cleared — current model can't use ${dropped > 1 ? 'them' : 'it'}`,
+  );
 }
