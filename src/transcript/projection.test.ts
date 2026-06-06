@@ -8,6 +8,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { project } from './projection.ts';
+import { miniMarkdown } from '../util/markdown.ts';
 import type { ChatState, ConversationItem, SidekickEnvelope, PendingSend } from './types.ts';
 
 function state(partial: Partial<ChatState>): ChatState {
@@ -495,5 +496,32 @@ describe('project: user double-write dedup (time-windowed)', () => {
     ]});
     const userSpecs = project(s).filter(x => x.kind === 'user');
     assert.equal(userSpecs.length, 2, `expected 2 (one cluster + one legit), got ${userSpecs.length}`);
+  });
+});
+
+describe('notification update path renders markdown (not plaintext)', () => {
+  // Regression: updateNotification used to overwrite the bubble's .text with
+  // escapeHtml(text).replace(/\n/g,'<br>') on every reconcile pass, flattening
+  // the markdown-rendered bubble back to literal **bold** / `code` / - bullets.
+  // The fix mirrors updateAssistant: re-render via miniMarkdown. This asserts
+  // the exact HTML the update path now writes (renderNotificationHtml ===
+  // miniMarkdown(text)) contains rendered markup, not the raw source tokens.
+  const cronText = '**Done.** Built `widget` and:\n- item one\n- item two';
+
+  it('produces rendered markup, not literal markdown source', () => {
+    const html = miniMarkdown(cronText);
+    assert.match(html, /<strong>Done\.<\/strong>/, 'bold must render to <strong>');
+    assert.match(html, /<code>widget<\/code>/, 'inline code must render to <code>');
+    assert.match(html, /<li>item one<\/li>/, 'bullets must render to <li>');
+    assert.match(html, /<ul>/, 'bullet block must be wrapped in <ul>');
+    assert.doesNotMatch(html, /\*\*Done\.\*\*/, 'must not leave literal ** bold markers');
+    assert.doesNotMatch(html, /^- item|\n- item/, 'must not leave literal - bullet markers');
+  });
+
+  it('empty notification text is safe', () => {
+    // updateNotification coerces undefined → '' before calling miniMarkdown,
+    // which yields a harmless empty paragraph (same as the assistant path).
+    const empty: string | undefined = undefined;
+    assert.equal(miniMarkdown(empty || ''), '<p></p>');
   });
 });

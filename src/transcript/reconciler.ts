@@ -347,6 +347,14 @@ function updateAssistant(el: HTMLElement, spec: AssistantBubbleSpec): void {
   updateTimestamp(el, spec.timestamp);
 }
 
+/** Markdown→HTML for a notification bubble's body. Exported so the
+ *  update-path rendering can be unit-tested without a DOM. Notifications
+ *  (incl. cron) carry real markdown, so this mirrors the assistant path
+ *  rather than emitting escaped plaintext. */
+export function renderNotificationHtml(text: string | undefined): string {
+  return miniMarkdown(text || '');
+}
+
 function updateNotification(el: HTMLElement, spec: NotificationBubbleSpec): void {
   applyNotificationKindClass(el, spec.notificationKind || 'notification');
   const speaker = el.querySelector('.speaker') as HTMLElement | null;
@@ -356,8 +364,15 @@ function updateNotification(el: HTMLElement, spec: NotificationBubbleSpec): void
   if (speaker) speaker.textContent = `${notificationEmoji(spec.notificationKind)} ${label}`;
   const span = el.querySelector('.text') as HTMLElement | null;
   if (span) {
-    const want = escapeHtml(spec.text || '').replace(/\n/g, '<br>');
-    if (span.innerHTML !== want) span.innerHTML = want;
+    const rendered = renderNotificationHtml(spec.text);
+    if (span.innerHTML !== rendered) {
+      span.innerHTML = rendered;
+      // Re-stamp anchor target/rel — miniMarkdown emits raw <a>.
+      span.querySelectorAll('a').forEach(a => {
+        a.target = '_blank';
+        (a as HTMLAnchorElement).rel = 'noopener';
+      });
+    }
   }
   updateTimestamp(el, spec.timestamp);
 }
