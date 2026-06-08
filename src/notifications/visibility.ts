@@ -27,6 +27,7 @@
 // blocking the PWA's main thread or spamming the console.
 
 import { log } from '../util/log.ts';
+import { apiUrl } from '../apiBase.ts';
 
 type VisibilityState = 'visible' | 'hidden';
 
@@ -92,7 +93,7 @@ function syncHeartbeat(): void {
 
 async function postVisibility(state: VisibilityState, chatId: string): Promise<void> {
   try {
-    await fetch('/api/sidekick/notifications/visibility', {
+    await fetch(apiUrl('/api/sidekick/notifications/visibility'), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ state, chat_id: chatId || undefined }),

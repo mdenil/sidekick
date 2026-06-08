@@ -37,6 +37,7 @@
  */
 
 import { diag } from './util/log.ts';
+import { apiUrl } from './apiBase.ts';
 
 interface CommandDef {
   name: string;
@@ -291,7 +292,7 @@ export function init(opts: {
  *  popover without a page reload. */
 export async function refresh(): Promise<void> {
   try {
-    const r = await fetch('/api/sidekick/commands', {
+    const r = await fetch(apiUrl('/api/sidekick/commands'), {
       credentials: 'same-origin',
     });
     if (r.status === 404) {

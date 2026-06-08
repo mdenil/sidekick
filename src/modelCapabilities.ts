@@ -22,6 +22,8 @@
 // the fallback. That's why the gate stays enabled when the fallback
 // is configured — sending images IS supported, just via an extra hop.
 
+import { apiUrl } from './apiBase.ts';
+
 export interface ModelCaps {
   known: boolean;
   supports_vision: boolean;
@@ -65,7 +67,7 @@ function ensureAuxiliaryFetched(): Promise<void> {
   if (auxiliaryReady && visionFallbackModel !== null) return auxiliaryReady;
   auxiliaryReady = (async () => {
     try {
-      const res = await fetch('/api/sidekick/auxiliary-models', { cache: 'no-store' });
+      const res = await fetch(apiUrl('/api/sidekick/auxiliary-models'), { cache: 'no-store' });
       if (!res.ok) return;
       const body = await res.json() as { vision?: string | null };
       if (typeof body?.vision === 'string' || body?.vision === null) {
@@ -91,7 +93,7 @@ export async function fetchModelCaps(modelId: string): Promise<ModelCaps | null>
   const p = (async () => {
     try {
       const res = await fetch(
-        `/api/sidekick/model-capabilities?model=${encodeURIComponent(modelId)}`,
+        apiUrl(`/api/sidekick/model-capabilities?model=${encodeURIComponent(modelId)}`),
         { cache: 'no-store' },
       );
       if (!res.ok) return null;

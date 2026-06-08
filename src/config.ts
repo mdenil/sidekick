@@ -12,6 +12,8 @@
  * @property {string} [backend] - Which BackendAdapter to load ('openclaw', 'openai-compat', ...).
  * @property {string} [openaiCompatModel] - Model string for the openai-compat backend.
  */
+import { apiUrl, apiHost } from './apiBase.ts';
+
 /** @type {RuntimeConfig | null} */
 let cfg = null;
 
@@ -19,7 +21,7 @@ export async function loadConfig() {
   const { fetchWithTimeout } = await import('./util/fetchWithTimeout.ts');
   // 8s — /config is a file read on the server, should return instantly.
   // Longer stalls mean the gateway isn't running; better to bail fast.
-  const r = await fetchWithTimeout('/config', { timeoutMs: 8_000 });
+  const r = await fetchWithTimeout(apiUrl('/config'), { timeoutMs: 8_000 });
   cfg = await r.json();
   return cfg;
 }
@@ -29,9 +31,10 @@ export function getConfig() {
   return cfg;
 }
 
-/** Gateway WS URL derived from the current page hostname. */
+/** Gateway WS URL derived from the API host (the remote host in the CAP
+ *  local-asset shell; the page hostname in a browser PWA). */
 export function gwWsUrl() {
-  return `wss://${location.hostname}:18789/ws`;
+  return `wss://${apiHost()}:18789/ws`;
 }
 
 /** Agent's display name (shown in bubble speaker, MediaSession metadata,

@@ -32,6 +32,7 @@
  */
 
 import { log, diag } from '../../util/log.ts';
+import { apiUrl } from '../../apiBase.ts';
 import { logAudioState } from '../shared/headphones.ts';
 import { playFeedback, haptic } from '../shared/feedback.ts';
 import * as audioPlatform from '../shared/platform.ts';
@@ -866,7 +867,7 @@ export async function open(
   let answer: { peer_id: string; sdp: string; type: string } | null = null;
   try {
     const tPostStart = performance.now();
-    const res = await fetch('/api/rtc/offer', {
+    const res = await fetch(apiUrl('/api/rtc/offer'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(offerPayload),
@@ -935,7 +936,7 @@ async function postIce(peerId: string, candidate: RTCIceCandidate) {
         sdpMLineIndex: candidate.sdpMLineIndex,
       },
     });
-    const res = await fetch('/api/rtc/ice', {
+    const res = await fetch(apiUrl('/api/rtc/ice'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body,
@@ -999,7 +1000,7 @@ export async function close(
   if (session.peerId) {
     try {
       const tPostStart = performance.now();
-      const res = await fetch('/api/rtc/close', {
+      const res = await fetch(apiUrl('/api/rtc/close'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ peer_id: session.peerId }),

@@ -20,6 +20,7 @@
 // have to await a fetch. Mutated only via server-driven refresh.
 
 import { log } from '../util/log.ts';
+import { apiUrl } from '../apiBase.ts';
 
 export interface PinnedItem {
   chatId: string;
@@ -61,7 +62,7 @@ function notifyPinError(message: string): void {
  *  refreshFromServer (Mac WindowServer repaint-storm guard). */
 async function refreshFromServer(): Promise<void> {
   try {
-    const r = await fetch('/api/sidekick/pins');
+    const r = await fetch(apiUrl('/api/sidekick/pins'));
     if (!r.ok) return;
     const data: any = await r.json();
     const next = new Map<string, PinnedItem>();
@@ -122,7 +123,7 @@ export async function pinMessage(item: Omit<PinnedItem, 'pinnedAt'>): Promise<vo
   pinsByKey.set(key(item.chatId, item.msgId), full);
   notifyChange();
   try {
-    const r = await fetch('/api/sidekick/pins', {
+    const r = await fetch(apiUrl('/api/sidekick/pins'), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -155,7 +156,7 @@ export async function unpinMessage(chatId: string, msgId: string): Promise<void>
   notifyChange();
   try {
     const r = await fetch(
-      `/api/sidekick/pins/${encodeURIComponent(chatId)}/${encodeURIComponent(msgId)}`,
+      apiUrl(`/api/sidekick/pins/${encodeURIComponent(chatId)}/${encodeURIComponent(msgId)}`),
       { method: 'DELETE' },
     );
     if (!r.ok) {
@@ -182,7 +183,7 @@ export async function clearAllPins(): Promise<void> {
   notifyChange();
   log(`[pins] clearAllPins — ${entries.length} pin(s)`);
   await Promise.all(entries.map((p) =>
-    fetch(`/api/sidekick/pins/${encodeURIComponent(p.chatId)}/${encodeURIComponent(p.msgId)}`, {
+    fetch(apiUrl(`/api/sidekick/pins/${encodeURIComponent(p.chatId)}/${encodeURIComponent(p.msgId)}`), {
       method: 'DELETE',
     }).catch(() => {}),
   ));

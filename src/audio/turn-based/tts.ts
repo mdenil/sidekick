@@ -27,6 +27,7 @@
  */
 
 import { log, diag } from '../../util/log.ts';
+import { apiUrl } from '../../apiBase.ts';
 import * as replyCache from './replyCache.ts';
 import * as settings from '../../settings.ts';
 import * as audioSession from '../shared/session.ts';
@@ -595,7 +596,7 @@ export async function playReplyTts(
     // path — one /tts POST, await the blob, cache it, play it.
     if (chunks.length <= 1) {
       const one = chunks[0] || text;
-      const res = await fetch('/tts', {
+      const res = await fetch(apiUrl('/tts'), {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ text: one, model: voice }),
@@ -701,7 +702,7 @@ function startChunkFetches(cp: ChunkPlayback, voice: string, abort: AbortControl
       const idx = next++;
       const slot = cp.slots[idx];
       inFlight += 1;
-      fetch('/tts', {
+      fetch(apiUrl('/tts'), {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ text: slot.text, model: voice }),

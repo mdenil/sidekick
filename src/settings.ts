@@ -14,6 +14,7 @@ import {
 } from './notifications/index.ts';
 import { clearAllUnread, totalUnreadCount } from './notifications/badge.ts';
 import * as activityStore from './notifications/activityStore.ts';
+import { apiUrl } from './apiBase.ts';
 
 const STORAGE_KEY = 'sidekick.settings.v2';
 
@@ -476,7 +477,7 @@ export async function load() {
   let dbOk = false;
   const dbSettings: Record<string, any> = {};
   try {
-    const r = await fetch('/api/sidekick/prefs', { cache: 'no-store' });
+    const r = await fetch(apiUrl('/api/sidekick/prefs'), { cache: 'no-store' });
     if (r.ok) {
       dbOk = true;
       const j = await r.json() as { settings?: Record<string, any> };
@@ -503,7 +504,7 @@ export async function load() {
   );
   if (missing.length) {
     try {
-      const r = await fetch('/api/sidekick/config', { cache: 'no-store' });
+      const r = await fetch(apiUrl('/api/sidekick/config'), { cache: 'no-store' });
       if (r.ok) {
         const j = await r.json() as { settings?: Record<string, any> };
         const cfg = j?.settings || {};
@@ -569,7 +570,7 @@ export function get() { return current; }
  *  failure the local cache keeps the user's value and the next load()
  *  resyncs from the DB. */
 function putServerSetting(key: string, value: any): void {
-  void fetch(`/api/sidekick/prefs/${encodeURIComponent(key)}`, {
+  void fetch(apiUrl(`/api/sidekick/prefs/${encodeURIComponent(key)}`), {
     method: 'PUT',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ value }),
@@ -927,7 +928,7 @@ export function hydrate(handlers: {
   // make this safe).
   async function loadPrefsUi(): Promise<void> {
     try {
-      const r = await fetch('/api/sidekick/notifications/preferences');
+      const r = await fetch(apiUrl('/api/sidekick/notifications/preferences'));
       if (!r.ok) return;
       const prefs = await r.json();
       const qh = prefs?.quiet_hours;
@@ -950,7 +951,7 @@ export function hydrate(handlers: {
   void loadPrefsUi();
   async function pushPrefs(update: any): Promise<void> {
     try {
-      const r = await fetch('/api/sidekick/notifications/preferences', {
+      const r = await fetch(apiUrl('/api/sidekick/notifications/preferences'), {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(update),
@@ -1007,7 +1008,7 @@ export function hydrate(handlers: {
     setPushTest.setAttribute('disabled', 'true');
     if (setPushTestHint) setPushTestHint.textContent = 'sending…';
     try {
-      const r = await fetch('/api/sidekick/notifications/test', {
+      const r = await fetch(apiUrl('/api/sidekick/notifications/test'), {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
@@ -1044,7 +1045,7 @@ export function hydrate(handlers: {
     if (!setPushDiagnosticsOut) return;
     setPushDiagnosticsOut.textContent = 'loading…';
     try {
-      const r = await fetch('/api/sidekick/notifications/diagnostics?limit=10');
+      const r = await fetch(apiUrl('/api/sidekick/notifications/diagnostics?limit=10'));
       if (!r.ok) {
         setPushDiagnosticsOut.textContent = `error: HTTP ${r.status}`;
         return;

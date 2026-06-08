@@ -43,6 +43,7 @@
  */
 
 import { log, diag } from './util/log.ts';
+import { apiOrigin } from './apiBase.ts';
 import * as conversations from './conversations.ts';
 import * as sessionCache from './sessionCache.ts';
 import { markRecentlyDeleted, isRecentlyDeleted } from './sessionOps.ts';
@@ -109,7 +110,7 @@ function replyIdFor(env: any, chatId: string): string {
 }
 
 function apiBase(): string {
-  return `${location.origin}/api/sidekick`;
+  return `${apiOrigin()}/api/sidekick`;
 }
 
 async function fetchSessionMessages(id: string, logPrefix = 'proxy-client.fetchSessionMessages', limit?: number) {

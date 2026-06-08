@@ -1,4 +1,5 @@
 import { log } from '../util/log.ts';
+import { apiUrl } from '../apiBase.ts';
 
 export type ActivityKind = 'approval' | 'cron' | 'agent_reply' | 'notification';
 export type ActivityResolution = 'approved' | 'approved_session' | 'denied' | 'dismissed' | 'stale';
@@ -116,7 +117,7 @@ function payloadForServer(item: ActivityItem): Record<string, unknown> {
 
 async function postJson(path: string, body: Record<string, unknown>): Promise<void> {
   try {
-    const r = await fetch(path, {
+    const r = await fetch(apiUrl(path), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
@@ -130,7 +131,7 @@ async function postJson(path: string, body: Record<string, unknown>): Promise<vo
 export async function refreshFromServer(): Promise<void> {
   hydrate();
   try {
-    const r = await fetch('/api/sidekick/activity?limit=200', { cache: 'no-store' });
+    const r = await fetch(apiUrl('/api/sidekick/activity?limit=200'), { cache: 'no-store' });
     if (!r.ok) return;
     const data = await r.json();
     const next = new Map<string, ActivityItem>();
@@ -349,7 +350,7 @@ export function dismissApprovalsForChat(chatId: string): void {
     if (item.chatId !== chatId || item.kind !== 'approval' || item.resolved) continue;
     itemsById.delete(id);
     changed = true;
-    void fetch(`/api/sidekick/activity/${encodeURIComponent(id)}`, { method: 'DELETE' }).catch(() => {});
+    void fetch(apiUrl(`/api/sidekick/activity/${encodeURIComponent(id)}`), { method: 'DELETE' }).catch(() => {});
   }
   if (changed) {
     persist();
@@ -460,7 +461,7 @@ export function dismissActivity(id: string): void {
   if (!itemsById.delete(id)) return;
   persist();
   notifyChange();
-  void fetch(`/api/sidekick/activity/${encodeURIComponent(id)}`, { method: 'DELETE' }).catch(() => {});
+  void fetch(apiUrl(`/api/sidekick/activity/${encodeURIComponent(id)}`), { method: 'DELETE' }).catch(() => {});
 }
 
 export function clearResolved(): void {

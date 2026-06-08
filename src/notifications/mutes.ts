@@ -11,6 +11,7 @@
 // UX-driven cache + write-through.
 
 import { log } from '../util/log.ts';
+import { apiUrl } from '../apiBase.ts';
 
 const muted = new Set<string>();
 let loaded = false;
@@ -25,7 +26,7 @@ export function loadMutes(): Promise<void> {
   if (loadPromise) return loadPromise;
   loadPromise = (async () => {
     try {
-      const r = await fetch('/api/sidekick/notifications/mutes');
+      const r = await fetch(apiUrl('/api/sidekick/notifications/mutes'));
       if (r.ok) {
         const body = await r.json();
         const arr: string[] = Array.isArray(body?.muted_chats) ? body.muted_chats : [];
@@ -64,7 +65,7 @@ export async function setMuted(chatId: string, nextMuted: boolean): Promise<void
   // Optimistic local update.
   if (nextMuted) muted.add(chatId); else muted.delete(chatId);
   try {
-    const r = await fetch('/api/sidekick/notifications/mute', {
+    const r = await fetch(apiUrl('/api/sidekick/notifications/mute'), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ chat_id: chatId, muted: nextMuted }),

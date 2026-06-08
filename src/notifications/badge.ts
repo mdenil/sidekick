@@ -18,6 +18,7 @@
 // badge, push eligibility) derive structurally and can't disagree.
 
 import { log } from '../util/log.ts';
+import { apiUrl } from '../apiBase.ts';
 import * as activityStore from './activityStore.ts';
 
 // Read-through cache. The Map values are the per-chat unread counts
@@ -82,7 +83,7 @@ async function closeAllSwNotifications(): Promise<void> {
  *  remains diff-gated to avoid repaint storms on large session lists. */
 async function refreshFromServer(): Promise<void> {
   try {
-    const r = await fetch('/api/sidekick/notifications/unread');
+    const r = await fetch(apiUrl('/api/sidekick/notifications/unread'));
     if (!r.ok) return;
     const data: any = await r.json();
     const nextCounts = new Map<string, number>();
@@ -154,7 +155,7 @@ export function incrementUnread(_chatId: string, _delta: number = 1): void {
 export async function clearUnread(chatId: string): Promise<void> {
   if (!chatId) return;
   try {
-    await fetch('/api/sidekick/notifications/seen', {
+    await fetch(apiUrl('/api/sidekick/notifications/seen'), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ chat_id: chatId }),
@@ -166,7 +167,7 @@ export async function clearUnread(chatId: string): Promise<void> {
 export async function markUnread(chatId: string): Promise<void> {
   if (!chatId || markedUnread.has(chatId)) return;
   try {
-    await fetch('/api/sidekick/notifications/mark', {
+    await fetch(apiUrl('/api/sidekick/notifications/mark'), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ chat_id: chatId, marked: true }),
@@ -179,7 +180,7 @@ export async function markUnread(chatId: string): Promise<void> {
 export async function unmarkUnread(chatId: string): Promise<void> {
   if (!chatId) return;
   try {
-    await fetch('/api/sidekick/notifications/mark', {
+    await fetch(apiUrl('/api/sidekick/notifications/mark'), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ chat_id: chatId, marked: false }),
@@ -198,7 +199,7 @@ export async function clearAllUnread(): Promise<void> {
   const markedList = Array.from(markedUnread);
   const all = new Set([...seenList, ...markedList]);
   await Promise.all(Array.from(all).map((chatId) =>
-    fetch('/api/sidekick/notifications/seen', {
+    fetch(apiUrl('/api/sidekick/notifications/seen'), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ chat_id: chatId }),

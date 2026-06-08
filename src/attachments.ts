@@ -8,6 +8,7 @@
  */
 
 import { log } from './util/log.ts';
+import { apiUrl } from './apiBase.ts';
 import * as status from './status.ts';
 import * as chat from './chat.ts';
 import * as modelCaps from './modelCapabilities.ts';
@@ -38,7 +39,7 @@ const UPLOAD_THRESHOLD = 5_000_000;
  *  File is sent as the raw request body (browsers stream File bodies off
  *  disk, so a 57 MB PDF never inflates in JS memory). */
 async function uploadLarge(file: File): Promise<string> {
-  const res = await fetch(`${location.origin}/api/sidekick/upload`, {
+  const res = await fetch(apiUrl('/api/sidekick/upload'), {
     method: 'POST',
     headers: { 'content-type': file.type || 'application/octet-stream' },
     body: file,

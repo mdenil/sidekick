@@ -31,6 +31,7 @@
 // resolved when called inside event handlers (after both modules
 // finish loading).
 import { log } from './log.ts';
+import { apiUrl } from '../apiBase.ts';
 
 /** True when dev mode is active. Computed at module load — refresh
  *  via hard reload after toggling, the same as URL flags. */
@@ -145,7 +146,7 @@ export function emitMark(label: string): void {
   try {
     const sid = sessionStorage.getItem('sidekick_debug_relay_sid') || 'unknown';
     const line = `[${new Date().toTimeString().slice(0, 8)}] [test-matrix] ===== ${label} =====\n`;
-    fetch('/api/debug/logs', {
+    fetch(apiUrl('/api/debug/logs'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sid, lines: [line] }),

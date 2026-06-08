@@ -21,6 +21,7 @@
 // wire dispatch on the server side.
 
 import { log } from '../util/log.ts';
+import { apiUrl } from '../apiBase.ts';
 
 /** Feature probe — `serviceWorker` + `PushManager` + `Notification`
  *  all need to exist. iOS Safari only exposes these inside an installed
@@ -75,7 +76,7 @@ export async function subscribe(): Promise<PushSubscription> {
   // 1. Fetch the VAPID public key. 503 from this endpoint means the
   //    server-side env isn't configured — present as a clear error
   //    rather than a generic "subscribe failed".
-  const vapidRes = await fetch('/api/sidekick/notifications/vapid-public-key');
+  const vapidRes = await fetch(apiUrl('/api/sidekick/notifications/vapid-public-key'));
   if (vapidRes.status === 503) {
     throw new Error('Server not configured for push (VAPID keys missing)');
   }
@@ -103,7 +104,7 @@ export async function subscribe(): Promise<PushSubscription> {
     keys: json.keys,
     userAgent: navigator.userAgent,
   };
-  const res = await fetch('/api/sidekick/notifications/subscribe', {
+  const res = await fetch(apiUrl('/api/sidekick/notifications/subscribe'), {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
@@ -130,7 +131,7 @@ export async function unsubscribe(): Promise<void> {
   // Tell the server first so we don't leave a stale row if the local
   // unsubscribe fails (less harmful direction than the opposite).
   try {
-    await fetch('/api/sidekick/notifications/unsubscribe', {
+    await fetch(apiUrl('/api/sidekick/notifications/unsubscribe'), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ endpoint }),

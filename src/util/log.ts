@@ -38,6 +38,7 @@ let debugEl = null;
 // of their individual URL/localStorage flags. URL flags still work for
 // surgical desktop debugging (one-shot ?debug=1 without dev mode).
 import { isDevMode } from './devMode.ts';
+import { apiUrl } from '../apiBase.ts';
 
 const debugOn = (() => {
   if (isDevMode()) return true;
@@ -146,9 +147,9 @@ async function flushRelay(useBeacon = false): Promise<void> {
       // For pagehide / beforeunload — keepalive: true on fetch is
       // unreliable on iOS Safari; sendBeacon is the spec-blessed path.
       const blob = new Blob([body], { type: 'application/json' });
-      navigator.sendBeacon('/api/debug/logs', blob);
+      navigator.sendBeacon(apiUrl('/api/debug/logs'), blob);
     } else {
-      await fetch('/api/debug/logs', {
+      await fetch(apiUrl('/api/debug/logs'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body,

@@ -5,6 +5,7 @@
 
 import { loadConfig, getConfig, gwWsUrl, getAppName, applySkinning } from './config.ts';
 import { log, diag, setDebugElement } from './util/log.ts';
+import { apiUrl } from './apiBase.ts';
 import { mountDevPill, isDevMode } from './util/devMode.ts';
 import {
   waitForSwActivation,
@@ -2584,7 +2585,7 @@ async function boot() {
         // composer.submit — same canonical send path as the user typing
         // a message + hitting Enter. Auto-send is ALWAYS on for Listen.
         try {
-          const res = await fetch('/transcribe', {
+          const res = await fetch(apiUrl('/transcribe'), {
             method: 'POST',
             headers: { 'Content-Type': blob.type || 'audio/webm' },
             body: blob,
