@@ -18,6 +18,9 @@ import {
   getScrollPosition,
 } from './chatScrollPositions.ts';
 import { isPinned as isPinMsg, pinMessage, unpinMessage, hydrate as hydratePins } from './pins/store.ts';
+import { markUnread as markChatUnread } from './notifications/badge.ts';
+import { markUnreadForMessage } from './notifications/activityStore.ts';
+import { toast } from './toast.ts';
 import * as backend from './backend.ts';
 import { rerenderActive } from './transcript/index.ts';
 import * as transcriptStore from './transcript/store.ts';
@@ -671,6 +674,99 @@ function formatTime(ts: number | Date | string): string {
   return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
 }
 
+/** Open the per-message action menu anchored to `line`. The menu reuses the
+ *  existing copy/pin/play buttons (kept in the DOM but hidden via CSS) by
+ *  synthesizing `.click()` on them — so all their handler logic, the
+ *  pins-changed listener, and the replyPlayer delegation keep working
+ *  untouched. Only "Mark unread" carries its own logic. */
+function openMsgMenu(line: HTMLElement): void {
+  closeAllMsgMenus();
+  const menu = document.createElement('div');
+  menu.className = 'msg-menu';
+  const isAgent = line.classList.contains('agent');
+  const playBtn = line.querySelector<HTMLButtonElement>('.play-btn');
+  const pinBtn = line.querySelector<HTMLButtonElement>('.pin-btn');
+  const copyBtn = line.querySelector<HTMLButtonElement>('.copy-btn');
+  const msgId = line.dataset.messageId || '';
+
+  // The menu overflows the bubble box; `.line { content-visibility: auto }`
+  // (a scroll-jank mitigation) implies paint containment that would clip it
+  // to the bubble. `.menu-open` lifts that containment for the open bubble
+  // only. Cleared on every close path via closeMsgMenu.
+  const closeMsgMenu = () => { menu.remove(); line.classList.remove('menu-open'); };
+
+  // Icon glyphs mirror the in-bubble buttons so the menu reads with the
+  // same visual vocabulary. `active` paints the icon sage (--primary) to
+  // carry the same state the standalone buttons did: a cached/playable
+  // reply and a pinned message go green; everything else stays muted grey.
+  const ICON = {
+    play: `<svg viewBox="0 0 16 16" fill="none"><polygon points="5 3 13 8 5 13 5 3" fill="currentColor"/></svg>`,
+    pause: `<svg viewBox="0 0 16 16" fill="none"><rect x="4" y="3" width="3" height="10" fill="currentColor"/><rect x="9" y="3" width="3" height="10" fill="currentColor"/></svg>`,
+    pinOutline: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 10.76V4h6v6.76l3 1.74v2.5H6v-2.5z"/></svg>`,
+    pinFilled: `<svg viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M12 17v5" stroke-linecap="round"/><path d="M9 10.76V4h6v6.76l3 1.74v2.5H6v-2.5z"/></svg>`,
+    copy: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M3.5 10.5V3.5a1.5 1.5 0 0 1 1.5-1.5h7"/></svg>`,
+    unread: `<svg viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="4" fill="currentColor"/></svg>`,
+  };
+
+  const addItem = (label: string, iconSvg: string, onClick: () => void, active = false) => {
+    const b = document.createElement('button');
+    const icon = document.createElement('span');
+    icon.className = active ? 'mi-icon mi-active' : 'mi-icon';
+    icon.innerHTML = iconSvg;
+    const text = document.createElement('span');
+    text.className = 'mi-label';
+    text.textContent = label;
+    b.append(icon, text);
+    b.onclick = (e) => { e.stopPropagation(); closeMsgMenu(); onClick(); };
+    menu.appendChild(b);
+  };
+
+  if (isAgent && playBtn) {
+    const playing = line.classList.contains('tts-playing');
+    const cached = line.classList.contains('tts-cached');
+    addItem(playing ? 'Pause' : 'Play', playing ? ICON.pause : ICON.play,
+      () => playBtn.click(), cached);
+  }
+  if (pinBtn) {
+    const pinned = line.classList.contains('pinned');
+    addItem(pinned ? 'Unpin' : 'Pin', pinned ? ICON.pinFilled : ICON.pinOutline,
+      () => pinBtn.click(), pinned);
+  }
+  if (copyBtn) addItem('Copy', ICON.copy, () => copyBtn.click());
+  if (isAgent && msgId) {
+    addItem('Mark unread', ICON.unread, () => {
+      const chatId = viewedSessionIdRef || backend.getCurrentSessionId?.() || null;
+      const liveText = line.dataset.text
+        || (line.querySelector('.text') as HTMLElement | null)?.textContent || '';
+      const ts = Number(line.dataset.ts) || Date.now();
+      markUnreadForMessage({ chatId, messageId: msgId, text: liveText.slice(0, 500), createdAt: ts });
+      if (chatId) void markChatUnread(chatId);
+      toast('Marked unread');
+    });
+  }
+
+  menu.addEventListener('click', (e) => e.stopPropagation());
+  line.classList.add('menu-open');
+  line.appendChild(menu);
+  setTimeout(() => {
+    const closer = (e: MouseEvent) => {
+      if (menu.contains(e.target as Node)) return;
+      closeMsgMenu();
+      document.removeEventListener('click', closer);
+    };
+    document.addEventListener('click', closer);
+  }, 0);
+}
+
+/** Remove any open per-message menus and clear their `.menu-open` flag.
+ *  Used on open (to dismiss a sibling menu) and by the caret toggle. */
+function closeAllMsgMenus(): void {
+  document.querySelectorAll('.msg-menu').forEach((m) => {
+    m.closest('.line')?.classList.remove('menu-open');
+    m.remove();
+  });
+}
+
 /** Append (or prepend) a line to the transcript. Returns the rendered
  *  `<div>` so callers can attach pending/failed state. Returns `null`
  *  if the transcript element hasn't been wired via `init()` yet. */
@@ -731,6 +827,7 @@ export function addLine(speaker: string, text: string, cls = '', opts: {
 
   // Timestamp — top-right, left of the copy icon
   const ts = opts.timestamp ?? Date.now();
+  div.dataset.ts = String(ts);  // epoch, read by the Mark-unread action
   const tsEl = document.createElement('span');
   tsEl.className = 'line-ts';
   tsEl.textContent = formatTime(ts);
@@ -876,6 +973,24 @@ export function addLine(speaker: string, text: string, cls = '', opts: {
     bar.innerHTML = `<div class="play-bar-loaded"></div><div class="play-bar-played"></div>`;
     div.appendChild(bar);
   }
+
+  // Action caret — a single hover affordance in the bubble corner that
+  // opens a popover (Play/Pin/Copy/Mark-unread). The copy/pin/play buttons
+  // above stay in the DOM but are hidden via CSS; the menu synthesizes
+  // clicks on them so all their wiring (pin store, replyPlayer delegation,
+  // copy feedback) keeps working untouched. Only Mark-unread is bespoke.
+  const caretBtn = document.createElement('button');
+  caretBtn.className = 'msg-caret';
+  caretBtn.title = 'Message actions';
+  caretBtn.setAttribute('aria-label', 'Message actions');
+  caretBtn.innerHTML = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6l4 4 4-4"/></svg>`;
+  caretBtn.onclick = (e) => {
+    e.stopPropagation();
+    const existing = div.querySelector('.msg-menu');
+    if (existing) { closeAllMsgMenus(); return; }  // toggle closed
+    openMsgMenu(div);
+  };
+  div.appendChild(caretBtn);
 
   // All links in rendered markdown open in new tab
   if (opts.markdown) {

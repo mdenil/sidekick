@@ -133,6 +133,17 @@ export default async function run({ page, log, fail, url, mock }) {
   }, null, { timeout: 5_000, polling: 100 });
   log('nexttrack → activeReplyId = m-r2');
 
+  // nexttrack kicks off playNext → playReplyTts, which fetches /tts
+  // (async) BEFORE calling player.play(). Wait for playback to actually
+  // start (paused → false via the stub) so the pause action below has a
+  // live reply to pause — otherwise pause/resume race the startup fetch
+  // and flake intermittently.
+  await page.waitForFunction(() => {
+    const player = document.getElementById('player');
+    return player && player.paused === false;
+  }, null, { timeout: 5_000, polling: 100 });
+  log('m-r2 playback started (player.paused = false)');
+
   // ── 4. pause flips player.paused = true ─────────────────────────
   await page.evaluate(() => (window).__audioSessionTest.fireAction('pause'));
   await page.waitForFunction(() => {

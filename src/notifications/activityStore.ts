@@ -301,6 +301,46 @@ export function markRead(id: string): void {
   void postJson('/api/sidekick/activity', payloadForServer(next));
 }
 
+/** Flip a specific message back to unread in the activity tray. Used by the
+ *  per-message "Mark unread" caret action: the user glanced at a reply but
+ *  can't action it yet and wants it to resurface as a "New" tray row.
+ *
+ *  If an activity item already exists for this message (its `id` is the
+ *  message's sidekick id for agent_reply rows) we just clear `read`.
+ *  Otherwise we synthesize an `agent_reply` row so the message HAS a tray
+ *  presence to come back to — e.g. a reply that arrived while the chat was
+ *  focused never became a notification, so no row exists yet. */
+export function markUnreadForMessage(args: {
+  chatId: string | null;
+  messageId: string;
+  text?: string;
+  createdAt?: number;
+  chatLabel?: string | null;
+}): void {
+  hydrate();
+  const id = args.messageId;
+  if (!id) return;
+  const prev = itemsById.get(id);
+  const item: ActivityItem = prev
+    ? { ...prev, read: false, resolved: undefined }
+    : {
+        id,
+        chatId: args.chatId,
+        kind: 'agent_reply',
+        title: titleFor('agent_reply', args.chatLabel || undefined),
+        body: args.text || '',
+        createdAt: args.createdAt || Date.now(),
+        urgent: false,
+        read: false,
+        messageId: id,
+        resolved: undefined,
+      };
+  itemsById.set(id, item);
+  persist();
+  notifyChange();
+  void postJson('/api/sidekick/activity', payloadForServer(item));
+}
+
 export function dismissApprovalsForChat(chatId: string): void {
   hydrate();
   if (!chatId) return;

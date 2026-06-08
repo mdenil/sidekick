@@ -101,7 +101,15 @@ export default async function run({ page, log, fail, url, mock }) {
   });
 
   // ── 1. Click the play-btn → /tts gets POSTed ────────────────────
-  await page.click('#transcript .line.agent[data-reply-id="m-rp1"] .play-btn');
+  // The play-btn is hidden (its control lives in the per-message caret
+  // menu, #154) but stays in the DOM so the transcript delegation still
+  // fires. dispatch the click in-page rather than page.click (which is
+  // visibility-gated). This smoke pins the delegation; the menu path has
+  // its own coverage in message-action-menu.mjs.
+  await page.evaluate(() => {
+    document.querySelector('#transcript .line.agent[data-reply-id="m-rp1"] .play-btn')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+  });
   await page.waitForFunction(
     () => /* poll until ttsCalls capture races */ true,
     null,
@@ -137,7 +145,10 @@ export default async function run({ page, log, fail, url, mock }) {
   log('glyph swap: play hidden, pause visible while .tts-playing ✓');
 
   // ── 4. Second click pauses ──────────────────────────────────────
-  await page.click('#transcript .line.agent[data-reply-id="m-rp1"] .play-btn');
+  await page.evaluate(() => {
+    document.querySelector('#transcript .line.agent[data-reply-id="m-rp1"] .play-btn')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+  });
   await page.waitForFunction(() => {
     const b = document.querySelector('#transcript .line.agent[data-reply-id="m-rp1"]');
     return b && b.classList.contains('tts-paused') && !b.classList.contains('tts-playing');

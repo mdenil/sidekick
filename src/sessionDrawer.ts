@@ -30,7 +30,7 @@ import { markRecentlyDeleted, isRecentlyDeleted, recentlyDeletedSize } from './s
 import * as badge from './notifications/badge.ts';
 import { isMuted as isChatMuted, setMuted as setChatMuted } from './notifications/mutes.ts';
 import { reportChatSwitch } from './notifications/visibility.ts';
-import { unreadFor, markUnread as markChatUnread, unmarkUnread as unmarkChatUnread, isMarkedUnread } from './notifications/badge.ts';
+import { unreadFor } from './notifications/badge.ts';
 import * as activityStore from './notifications/activityStore.ts';
 import { showTranscriptLoading } from './transcript/index.ts';
 import * as switchCtl from './switchController.ts';
@@ -1251,20 +1251,6 @@ function openMenu(li: HTMLLIElement, s: any) {
   identityBtn.textContent = 'Name & voice';
   identityBtn.onclick = (e) => { e.stopPropagation(); menu.remove(); showIdentitySheet(s); };
 
-  // Sticky mark-unread toggle — WhatsApp-style "come back to this".
-  // Distinct from the natural unreadByChat counter that auto-clears
-  // on chat focus; this flag survives focus + reload via IDB
-  // (badge.ts persists through unreadStore.ts).
-  const markBtn = document.createElement('button');
-  const marked = isMarkedUnread(s.id);
-  markBtn.textContent = marked ? 'Mark as read' : 'Mark as unread';
-  markBtn.onclick = (e) => {
-    e.stopPropagation();
-    menu.remove();
-    if (marked) unmarkChatUnread(s.id);
-    else markChatUnread(s.id);
-  };
-
   // Per-chat push-notification mute. Label reflects current state via
   // the in-memory mutes cache (loaded at boot). Toggle does optimistic
   // local update + POST to the proxy; on failure the mutes module
@@ -1288,7 +1274,6 @@ function openMenu(li: HTMLLIElement, s: any) {
   menu.appendChild(infoBtn);
   menu.appendChild(renameBtn);
   menu.appendChild(identityBtn);
-  menu.appendChild(markBtn);
   menu.appendChild(muteBtn);
   menu.appendChild(deleteBtn);
   // Swallow clicks on the menu container itself (e.g. padding between
