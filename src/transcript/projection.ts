@@ -225,6 +225,11 @@ export function project(state: ChatState): BubbleSpec[] {
         const row = ensureActivityRow(activityByKey, specs, currentTurnKey, currentTurnTs || inflightTs, /*complete*/ false);
         if (!row.tools.find(t => t.callId === env.call_id)) {
           row.tools.push({ callId: env.call_id, name: normalizeToolName(env.tool_name), args: env.args });
+          // A NEW call on a row rebuilt as "complete" from durable means
+          // the turn is still going — flip back to in-progress. A
+          // re-delivered call we already know adds nothing and must not
+          // regress a finalized row (replayInflight after reply_final).
+          row.complete = false;
         }
         break;
       }
@@ -243,6 +248,9 @@ export function project(state: ChatState): BubbleSpec[] {
             result: env.result,
             durationMs: env.duration_ms,
           });
+          // New call we've never seen (result-before-call edge) → the
+          // turn is mid-flight. Known calls don't flip — see tool_call.
+          row.complete = false;
         }
         break;
       }
@@ -496,11 +504,14 @@ function ensureActivityRow(
     };
     byKey.set(key, row);
     specs.push(row);
-  } else if (!completeDefault) {
-    // An inflight envelope after a durable turn was rebuilt as
-    // "complete" — flip it back to in-progress since more is coming.
-    row.complete = false;
   }
+  // NOTE: an existing row's `complete` is NOT flipped here. Whether an
+  // inflight tool envelope means "more work coming" depends on whether
+  // it introduces a NEW call — the call sites decide (markInProgress).
+  // Flipping on every inflight envelope made re-delivered envelopes
+  // (replayInflight on a cache-match switch-back, SSE ring replay)
+  // regress a finalized row back to an in-progress spinner when they
+  // landed after reply_final.
   return row;
 }
 

@@ -155,8 +155,38 @@ export function replaySessionMessages(
   // would vanish on switch-back. The full server-fetch re-render
   // normally repopulates, but the cache-match optimization doesn't
   // always re-paint cleanly.
+  // Staleness guard: a server fetch races the live SSE stream — its
+  // inflight snapshot reflects REQUEST time, and by the time the
+  // response lands the stream may already have delivered reply_final
+  // for the turn. Applying such a snapshot wipes the final from the
+  // store: the reply bubble vanishes and the turn's tool activity row
+  // regresses from 'complete' back to an in-progress spinner until the
+  // post-final durable refresh repairs it (~1s of visible rollback;
+  // deterministic flake in mid-turn-switch-tools-survive). If the
+  // incoming snapshot would LOSE a reply_final the store currently
+  // holds, it's provably stale — keep the newer live state. An empty
+  // incoming inflight still applies when we hold no reply_final (the
+  // reconnect-after-gap drain path relies on that).
   if (Array.isArray(inflight)) {
-    transcriptStore.setInflight(id, inflight);
+    const incomingFinals = new Set(
+      inflight
+        .filter((e: any) => e?.type === 'reply_final')
+        .map((e: any) => e.message_id),
+    );
+    const losesFinal = transcriptStore.getState(id).inflight.some(
+      (e: any) =>
+        e.type === 'reply_final' &&
+        (e as { message_id?: string }).message_id &&
+        !incomingFinals.has((e as { message_id?: string }).message_id),
+    );
+    if (losesFinal) {
+      diag(
+        `[chat-resume] skipping stale inflight snapshot chat=${id} ` +
+        `incoming=${inflight.length} (would drop a live reply_final)`,
+      );
+    } else {
+      transcriptStore.setInflight(id, inflight);
+    }
   }
 
   // Force a render — setViewed may have flipped during a notify pass
