@@ -1032,8 +1032,49 @@ function handleRtcProxy(req, res) {
   else upReq.end();
 }
 
+// ── CORS for the Capacitor local-asset shell ────────────────────────────
+// The native iOS shell serves its assets from capacitor://localhost and
+// reaches this proxy cross-origin (see src/apiBase.ts). Browsers gate those
+// calls behind CORS, so we must echo Access-Control-* headers. We do NOT
+// open this up to `*`: the proxy is an authenticated gateway to the agent,
+// and a blanket allow would let any website a user visits script requests to
+// their host. Instead we allow only the known native-shell origins. The web
+// PWA is same-origin with the proxy, so it never needs these headers.
+//
+// Auth is bearer/token-based and the one cross-origin-relevant client fetch
+// uses credentials:'same-origin' (i.e. omitted cross-origin), so we don't
+// send Access-Control-Allow-Credentials.
+const CORS_ALLOWED_ORIGINS = new Set([
+  'capacitor://localhost',
+  'ionic://localhost',
+  'http://localhost',
+  'https://localhost',
+]);
+
+/** Set CORS response headers when the request comes from an allowed
+ *  native-shell origin. Uses res.setHeader so the values merge into every
+ *  downstream res.writeHead (Node gives writeHead precedence only on
+ *  conflicting keys — no handler sets Access-Control-* itself). */
+function applyCors(req: http.IncomingMessage, res: http.ServerResponse): void {
+  const origin = req.headers.origin;
+  if (origin && CORS_ALLOWED_ORIGINS.has(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+  }
+}
+
 const server = createHttpServer(async (req, res) => {
-  if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
+  applyCors(req, res);
+  if (req.method === 'OPTIONS') {
+    const origin = req.headers.origin;
+    if (origin && CORS_ALLOWED_ORIGINS.has(origin)) {
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+      const reqHeaders = req.headers['access-control-request-headers'];
+      res.setHeader('Access-Control-Allow-Headers', reqHeaders || 'Content-Type, Authorization');
+      res.setHeader('Access-Control-Max-Age', '86400');
+    }
+    res.writeHead(204); res.end(); return;
+  }
   // Health probe for the native (Capacitor) bootstrap in mobile/webdir.
   // Returns a READABLE, CORS-enabled sentinel so the app can verify a host
   // is actually running THIS stack before redirecting to it. A bare socket
