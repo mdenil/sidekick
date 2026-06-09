@@ -17,6 +17,11 @@ import * as activityStore from './notifications/activityStore.ts';
 import { apiUrl } from './apiBase.ts';
 
 const STORAGE_KEY = 'sidekick.settings.v2';
+// Last-good snapshot of the SYNCED settings (sidekick.db-backed). Written
+// after every successful /prefs read so the next boot can hydrate synced
+// values synchronously from localStorage instead of awaiting the network —
+// see load() / revalidate().
+const SYNCED_CACHE_KEY = 'sidekick.synced.cache.v1';
 
 // Model state — tracked separately from user settings (lives in openclaw
 // config on the gateway, not in localStorage). Re-fetched on panel open
@@ -445,14 +450,9 @@ function migrateMicCallToButtonSplit(snapshot: Record<string, any>): void {
   delete (current as any).hotkeyAutoSend;
 }
 
-/** Pull the current snapshot from the server (sidekick.db-backed
- *  synced values, seeded once from YAML) and merge with localStorage
- *  (per-device values). Synchronous fallback if the fetch fails.
- *  Idempotent — call again on Refresh or after the user closes the
- *  panel. */
-export async function load() {
-  // Per-device first — these are guaranteed available even if the
-  // proxy is unreachable.
+/** Apply per-device values (localStorage) — guaranteed available even
+ *  when the proxy is unreachable. Synchronous. */
+function applyPerDevice(): void {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
@@ -472,67 +472,140 @@ export async function load() {
     (current as any).listenSttEngine = 'local';
     save();
   }
-  // Synced settings: sidekick.db `user_settings` (GET /api/sidekick/prefs)
-  // is the source of truth. We apply every synced key the DB carries.
-  let dbOk = false;
-  const dbSettings: Record<string, any> = {};
-  try {
-    const r = await fetch(apiUrl('/api/sidekick/prefs'), { cache: 'no-store' });
-    if (r.ok) {
-      dbOk = true;
-      const j = await r.json() as { settings?: Record<string, any> };
-      const s = j?.settings || {};
-      for (const k of syncedKeys()) {
-        if (Object.prototype.hasOwnProperty.call(s, k)) {
-          dbSettings[k] = s[k];
-          (current as any)[k] = s[k];
-        }
-      }
-    }
-  } catch {
-    // DB unreachable — fall through to the YAML read below so the UI
-    // still renders, but DON'T seed: a transient /prefs failure must
-    // not clobber DB-resident settings with stale YAML defaults.
-  }
+}
 
-  // YAML (sidekick.config.yaml, GET /api/sidekick/config) survives ONLY
-  // as a one-time read-only seed. Any synced key absent from the DB is
-  // backfilled from the YAML value, then the DB wins forever after. Once
-  // every synced key has a DB row, YAML is never read again.
-  const missing = syncedKeys().filter(
-    k => !Object.prototype.hasOwnProperty.call(dbSettings, k),
-  );
-  if (missing.length) {
-    try {
-      const r = await fetch(apiUrl('/api/sidekick/config'), { cache: 'no-store' });
-      if (r.ok) {
-        const j = await r.json() as { settings?: Record<string, any> };
-        const cfg = j?.settings || {};
-        for (const k of missing) {
-          if (!Object.prototype.hasOwnProperty.call(cfg, k)) continue;
-          (current as any)[k] = cfg[k];
-          // Backfill the DB once — but only when we KNOW the DB genuinely
-          // lacked the key (successful /prefs read). On a failed DB read
-          // we apply the YAML value to the UI but leave the DB untouched.
-          if (dbOk) putServerSetting(k, cfg[k]);
-        }
-        // Legacy-key migrations read the YAML snapshot directly (those
-        // keys never move into the DB). Idempotent — no-ops once migrated.
-        migrateLegacyHandsfreeKeys(cfg);
-        migrateMicCallToButtonSplit(cfg);
+/** Apply the last-good synced snapshot (written by revalidate() after each
+ *  successful /prefs read) so boot hydrates synced values synchronously
+ *  from localStorage instead of blocking on the network. */
+function applyCachedSynced(): void {
+  try {
+    const raw = localStorage.getItem(SYNCED_CACHE_KEY);
+    if (!raw) return;
+    const cached = JSON.parse(raw) as Record<string, any>;
+    for (const k of syncedKeys()) {
+      if (Object.prototype.hasOwnProperty.call(cached, k)) {
+        (current as any)[k] = cached[k];
       }
-    } catch {
-      // Offline / proxy down — `current` keeps DEFAULTS or DB values.
-      // The Refresh button will retry.
     }
-  }
+  } catch {}
+}
+
+/** Persist the current synced values so the next boot can hydrate them
+ *  synchronously. Called only after a successful DB read so we never
+ *  freeze DEFAULTS/YAML as if they were authoritative. */
+function persistSyncedCache(): void {
+  try {
+    const slice: Record<string, any> = {};
+    for (const k of syncedKeys()) {
+      if (Object.prototype.hasOwnProperty.call(current, k)) {
+        slice[k] = (current as any)[k];
+      }
+    }
+    localStorage.setItem(SYNCED_CACHE_KEY, JSON.stringify(slice));
+  } catch {}
+}
+
+/** Hydrate settings for boot — CACHE-FIRST and NON-BLOCKING. Per-device
+ *  values and the last-good synced snapshot are applied synchronously from
+ *  localStorage, so boot never awaits the network here (the old blocking
+ *  `await fetch('/prefs')` was the dominant relaunch stall). The server is
+ *  revalidated in the background; when fresh values land, a
+ *  `sidekick:settings-changed` event re-syncs the UI. Use reload() when you
+ *  need to AWAIT fresh server values (the Refresh button). */
+export async function load() {
+  applyPerDevice();
+  applyCachedSynced();
+  void revalidate();
   return current;
 }
 
-/** Re-fetch yaml-backed settings from the proxy. Same as load() but
- *  named for clarity in the Refresh-button call site. */
+let revalidateInFlight: Promise<void> | null = null;
+
+/** Pull synced settings from the server and reconcile `current`. On a
+ *  successful DB read, persist the synced snapshot for the next cache-first
+ *  boot and broadcast `sidekick:settings-changed` so live UI re-syncs.
+ *  Single-flight: concurrent callers share the in-flight fetch. */
+async function revalidate(): Promise<void> {
+  if (revalidateInFlight) return revalidateInFlight;
+  revalidateInFlight = (async () => {
+    // Synced settings: sidekick.db `user_settings` (GET /api/sidekick/prefs)
+    // is the source of truth. We apply every synced key the DB carries.
+    let dbOk = false;
+    const dbSettings: Record<string, any> = {};
+    try {
+      const r = await fetch(apiUrl('/api/sidekick/prefs'), { cache: 'no-store' });
+      if (r.ok) {
+        dbOk = true;
+        const j = await r.json() as { settings?: Record<string, any> };
+        const s = j?.settings || {};
+        for (const k of syncedKeys()) {
+          if (Object.prototype.hasOwnProperty.call(s, k)) {
+            dbSettings[k] = s[k];
+            (current as any)[k] = s[k];
+          }
+        }
+      }
+    } catch {
+      // DB unreachable — fall through to the YAML read below so the UI
+      // still renders, but DON'T seed: a transient /prefs failure must
+      // not clobber DB-resident settings with stale YAML defaults.
+    }
+
+    // YAML (sidekick.config.yaml, GET /api/sidekick/config) survives ONLY
+    // as a one-time read-only seed. Any synced key absent from the DB is
+    // backfilled from the YAML value, then the DB wins forever after. Once
+    // every synced key has a DB row, YAML is never read again.
+    const missing = syncedKeys().filter(
+      k => !Object.prototype.hasOwnProperty.call(dbSettings, k),
+    );
+    if (missing.length) {
+      try {
+        const r = await fetch(apiUrl('/api/sidekick/config'), { cache: 'no-store' });
+        if (r.ok) {
+          const j = await r.json() as { settings?: Record<string, any> };
+          const cfg = j?.settings || {};
+          for (const k of missing) {
+            if (!Object.prototype.hasOwnProperty.call(cfg, k)) continue;
+            (current as any)[k] = cfg[k];
+            // Backfill the DB once — but only when we KNOW the DB genuinely
+            // lacked the key (successful /prefs read). On a failed DB read
+            // we apply the YAML value to the UI but leave the DB untouched.
+            if (dbOk) putServerSetting(k, cfg[k]);
+          }
+          // Legacy-key migrations read the YAML snapshot directly (those
+          // keys never move into the DB). Idempotent — no-ops once migrated.
+          migrateLegacyHandsfreeKeys(cfg);
+          migrateMicCallToButtonSplit(cfg);
+        }
+      } catch {
+        // Offline / proxy down — `current` keeps cached or DEFAULT values.
+        // The Refresh button will retry.
+      }
+    }
+
+    // Cache the reconciled synced values for the next cache-first boot, but
+    // only when the DB read actually succeeded.
+    if (dbOk) persistSyncedCache();
+    // Re-sync any live UI bound to settings (idempotent listeners — the
+    // hydrate() handler re-applies form controls + visuals).
+    try {
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('sidekick:settings-changed'));
+      }
+    } catch {}
+  })();
+  try {
+    await revalidateInFlight;
+  } finally {
+    revalidateInFlight = null;
+  }
+}
+
+/** Re-fetch synced settings from the proxy and AWAIT them — the
+ *  Refresh-button call site wants fresh server values, not the cache. */
 export async function reload() {
-  return load();
+  await revalidate();
+  return current;
 }
 
 // Cross-tab sync for per-device keys (the yaml-backed ones round-

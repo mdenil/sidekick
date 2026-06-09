@@ -668,6 +668,22 @@ async function boot() {
       chat.addSystemLine('The session you were viewing was deleted. Started a fresh chat.');
     },
   });
+  // Cache-first sidebar paint (Path B). loadAdapter() is a local dynamic
+  // import (no network) — once it resolves, capabilities() reports
+  // sessionBrowsing and refresh() renders the IDB session-list cache
+  // immediately, then revalidates from the server in the background.
+  // Without this, the first sidebar paint waited on backend.connect()'s
+  // SSE handshake — the bulk of the ~10s relaunch stall.
+  void backend.loadAdapter().then(() => sessionDrawer.refresh());
+  // A cache-first boot may paint synced-pref-backed drawer state (pin
+  // order, per-session nicknames) from a slightly stale snapshot. When the
+  // background settings revalidation lands, re-hydrate those stores and
+  // repaint so a change made on another device catches up without a reload.
+  window.addEventListener('sidekick:settings-changed', () => {
+    sessionPins.hydrate();
+    sessionIdentity.hydrate();
+    sessionDrawer.scheduleRefresh();
+  });
   // Cmd+K palette — instant session filter + debounced messages_fts
   // search. Resume hits funnel through replaySessionMessages so behavior
   // matches a normal drawer tap.
