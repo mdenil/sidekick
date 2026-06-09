@@ -8,19 +8,25 @@
 //   DELETE /api/sidekick/pins/{chat}/{msg}
 //
 // Cross-device sync rides the `pins_changed` envelope that proxyClient
-// observes on /api/sidekick/stream — when it arrives, the listener
-// calls `requestRefresh()` to pull the new state.
+// observes on /api/sidekick/stream — when it arrives, the base store's
+// serverChangeEvent listener fires a debounced refresh.
 //
-// Why server-driven (mirror of badge.ts's history): IDB-side pins
-// were strictly per-device — pins created on desktop were not visible
-// on mobile. Server SSOT fixes this structurally.
+// Why server-driven (mirror of badge.ts's history): IDB-side pins were
+// strictly per-device — pins created on desktop were not visible on
+// mobile. Server SSOT fixes this structurally.
 //
-// In-memory cache (`pinsByKey`) is a SYNC mirror of the server-returned
-// state so chat.ts's `isPinned()` check on every bubble render doesn't
-// have to await a fetch. Mutated only via server-driven refresh.
+// localStorage perf cache (via ServerBackedStore): pins now persist to
+// localStorage so a cold relaunch rehydrates the pin drawer INSTANTLY
+// instead of leaving it empty until the network /pins GET returns
+// (the device-relaunch regression). The server remains SSOT — the cache
+// is only a first-paint accelerator that the background refresh
+// reconciles against.
 
 import { log } from '../util/log.ts';
 import { apiUrl } from '../apiBase.ts';
+import { ServerBackedStore } from '../util/serverBackedStore.ts';
+
+const PINS_ENDPOINT = '/api/sidekick/pins';
 
 export interface PinnedItem {
   chatId: string;
@@ -31,11 +37,7 @@ export interface PinnedItem {
   pinnedAt: number;   // when the user pinned it (for sort order)
 }
 
-// Read-through cache. Mutated only by refreshFromServer; NEVER write
-// directly from user action paths — go through the server.
-const pinsByKey = new Map<string, PinnedItem>();
-let refreshDebounce: number | null = null;
-let hydrated = false;
+const STORAGE_KEY = 'sidekick.pins.items.v1';
 
 const key = (chatId: string, msgId: string) => `${chatId}|${msgId}`;
 
@@ -47,6 +49,18 @@ function normalizeEpochMs(value: unknown, fallback = Date.now()): number {
   return value < 10_000_000_000 ? value * 1000 : value;
 }
 
+function parsePin(p: any): PinnedItem | null {
+  if (typeof p?.chatId !== 'string' || typeof p?.msgId !== 'string') return null;
+  return {
+    chatId: p.chatId,
+    msgId: p.msgId,
+    role: typeof p.role === 'string' ? p.role : 'user',
+    text: typeof p.text === 'string' ? p.text : '',
+    timestamp: normalizeEpochMs(p.timestamp),
+    pinnedAt: normalizeEpochMs(p.pinnedAt),
+  };
+}
+
 function notifyPinError(message: string): void {
   try {
     if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
@@ -55,75 +69,49 @@ function notifyPinError(message: string): void {
   } catch { /* non-DOM hosts (test runner) */ }
 }
 
-/** Fetch the canonical pin set from the server and update the cache.
- *  Diff-aware: only fires `notifyChange()` (which triggers the
- *  pin-drawer repaint + per-bubble `.pinned` reflow) when the cache
- *  actually changed. Same mitigation pattern as badge.ts's
- *  refreshFromServer (Mac WindowServer repaint-storm guard). */
-async function refreshFromServer(): Promise<void> {
-  try {
-    const r = await fetch(apiUrl('/api/sidekick/pins'));
-    if (!r.ok) return;
-    const data: any = await r.json();
-    const next = new Map<string, PinnedItem>();
-    for (const p of (data?.pins ?? [])) {
-      if (typeof p?.chatId !== 'string' || typeof p?.msgId !== 'string') continue;
-      next.set(key(p.chatId, p.msgId), {
-        chatId: p.chatId,
-        msgId: p.msgId,
-        role: typeof p.role === 'string' ? p.role : 'user',
-        text: typeof p.text === 'string' ? p.text : '',
-        timestamp: normalizeEpochMs(p.timestamp),
-        pinnedAt: normalizeEpochMs(p.pinnedAt),
-      });
+const store = new ServerBackedStore<PinnedItem>({
+  storageKey: STORAGE_KEY,
+  endpoint: PINS_ENDPOINT,
+  extract: (data) => (data?.pins ?? []),
+  parse: parsePin,
+  idOf: (item) => key(item.chatId, item.msgId),
+  changeEvent: 'sidekick:pins-changed',
+  serverChangeEvent: 'sidekick:server-pins-changed',
+  // Foreground refresh — iOS PWA can come back after long background.
+  refreshOnVisible: true,
+  // Pin mutations are typically user-initiated singletons, not
+  // cron-triggered cascades, so a shorter debounce than badge's is fine.
+  debounceMs: 800,
+  log: (m) => log(`[pins] ${m}`),
+  // Diff only on the fields the drawer renders + sorts by; ignore
+  // incidental field churn so a no-op server snapshot doesn't trigger a
+  // repaint storm (mirror of badge.ts's Mac WindowServer guard).
+  equal: (a, b) => {
+    if (a.size !== b.size) return false;
+    for (const [k, v] of a) {
+      const o = b.get(k);
+      if (!o || o.pinnedAt !== v.pinnedAt || o.text !== v.text) return false;
     }
-    if (!mapsEqual(pinsByKey, next)) {
-      pinsByKey.clear();
-      for (const [k, v] of next) pinsByKey.set(k, v);
-      notifyChange();
-    }
-  } catch { /* swallow — pins are best-effort */ }
-}
-
-function mapsEqual(a: Map<string, PinnedItem>, b: Map<string, PinnedItem>): boolean {
-  if (a.size !== b.size) return false;
-  for (const [k, v] of a) {
-    const o = b.get(k);
-    if (!o || o.pinnedAt !== v.pinnedAt || o.text !== v.text) return false;
-  }
-  return true;
-}
-
-/** Debounced refresh — coalesces bursts of server-pins-changed
- *  envelopes into one fetch. 800ms is shorter than badge's 1500ms
- *  because pin mutations are typically user-initiated singletons,
- *  not cron-triggered cascades. */
-function requestRefresh(): void {
-  if (refreshDebounce != null) return;
-  refreshDebounce = (globalThis as any).setTimeout(() => {
-    refreshDebounce = null;
-    void refreshFromServer();
-  }, 800);
-}
+    return true;
+  },
+});
 
 /** Boot-time hydrate. Stable name kept for existing call sites. Idempotent. */
 export async function hydrate(): Promise<void> {
-  if (hydrated) return;
-  hydrated = true;
-  await refreshFromServer();
+  store.hydrate();
 }
 
-/** Add a pin. Optimistic local update for instant UI feedback, then
- *  POST to server. The server emits `pins_changed` which triggers a
- *  background re-fetch to reconcile (so the local optimistic write
- *  gets overwritten by the canonical state). */
+/** Add a pin. Optimistic local update for instant UI feedback (and an
+ *  immediate localStorage write so a relaunch keeps it), then POST to
+ *  server. The server emits `pins_changed` which triggers a background
+ *  re-fetch to reconcile. */
 export async function pinMessage(item: Omit<PinnedItem, 'pinnedAt'>): Promise<void> {
   if (!item.chatId || !item.msgId) return;
   const full: PinnedItem = { ...item, pinnedAt: Date.now() };
-  pinsByKey.set(key(item.chatId, item.msgId), full);
-  notifyChange();
+  store.items.set(key(item.chatId, item.msgId), full);
+  store.commit();
   try {
-    const r = await fetch(apiUrl('/api/sidekick/pins'), {
+    const r = await fetch(apiUrl(PINS_ENDPOINT), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -146,17 +134,17 @@ export async function pinMessage(item: Omit<PinnedItem, 'pinnedAt'>): Promise<vo
     log(`[pins] POST failed: ${e?.message ?? e}`);
     notifyPinError('Could not pin this message.');
   }
-  void refreshFromServer();
+  void store.refreshFromServer();
 }
 
 /** Remove a pin. Optimistic local delete + DELETE on server. */
 export async function unpinMessage(chatId: string, msgId: string): Promise<void> {
   if (!chatId || !msgId) return;
-  if (!pinsByKey.delete(key(chatId, msgId))) return;
-  notifyChange();
+  if (!store.items.delete(key(chatId, msgId))) return;
+  store.commit();
   try {
     const r = await fetch(
-      apiUrl(`/api/sidekick/pins/${encodeURIComponent(chatId)}/${encodeURIComponent(msgId)}`),
+      `${apiUrl(PINS_ENDPOINT)}/${encodeURIComponent(chatId)}/${encodeURIComponent(msgId)}`,
       { method: 'DELETE' },
     );
     if (!r.ok) {
@@ -169,75 +157,53 @@ export async function unpinMessage(chatId: string, msgId: string): Promise<void>
     log(`[pins] DELETE failed: ${e?.message ?? e}`);
     notifyPinError('Could not unpin this message.');
   }
-  void refreshFromServer();
+  void store.refreshFromServer();
 }
 
-/** Wipe every pin across every chat. No batch endpoint server-side
- *  yet; fan out one DELETE per pin. Pin counts are typically small
- *  (single-digit to dozens) so the round-trip cost is fine. Promote
- *  to /v1/pins/clear if it becomes hot. */
+/** Wipe every pin across every chat. No batch endpoint server-side yet;
+ *  fan out one DELETE per pin. Pin counts are typically small
+ *  (single-digit to dozens) so the round-trip cost is fine. */
 export async function clearAllPins(): Promise<void> {
-  if (pinsByKey.size === 0) return;
-  const entries = Array.from(pinsByKey.values());
-  pinsByKey.clear();
-  notifyChange();
+  if (store.items.size === 0) return;
+  const entries = Array.from(store.items.values());
+  store.items.clear();
+  store.commit();
   log(`[pins] clearAllPins — ${entries.length} pin(s)`);
   await Promise.all(entries.map((p) =>
-    fetch(apiUrl(`/api/sidekick/pins/${encodeURIComponent(p.chatId)}/${encodeURIComponent(p.msgId)}`), {
+    fetch(`${apiUrl(PINS_ENDPOINT)}/${encodeURIComponent(p.chatId)}/${encodeURIComponent(p.msgId)}`, {
       method: 'DELETE',
     }).catch(() => {}),
   ));
-  void refreshFromServer();
+  void store.refreshFromServer();
 }
 
 /** Sync pin check — drives the per-bubble + per-row UI repaint after
  *  hydrate() resolves. */
 export function isPinned(chatId: string, msgId: string): boolean {
   if (!chatId || !msgId) return false;
-  return pinsByKey.has(key(chatId, msgId));
+  return store.items.has(key(chatId, msgId));
 }
 
 /** All pins across every chat, sorted newest-first by pinnedAt.
  *  Backs the right-side pin drawer. */
 export function listAllPins(): PinnedItem[] {
-  return Array.from(pinsByKey.values()).sort((a, b) => b.pinnedAt - a.pinnedAt);
+  return Array.from(store.items.values()).sort((a, b) => b.pinnedAt - a.pinnedAt);
 }
 
 /** Synchronous count across all chats. Used by the right-drawer
  *  toggle button's banner. */
 export function totalPinCount(): number {
-  return pinsByKey.size;
+  return store.items.size;
 }
 
-/** Pins for one chat — used if we ever want a per-chat sub-list or
- *  badge on the row. Not used by the drawer (which aggregates) but
- *  cheap to expose. */
+/** Pins for one chat — cheap to expose; not used by the aggregating
+ *  drawer. */
 export function pinsForChat(chatId: string): PinnedItem[] {
   const out: PinnedItem[] = [];
-  for (const item of pinsByKey.values()) {
+  for (const item of store.items.values()) {
     if (item.chatId === chatId) out.push(item);
   }
   return out.sort((a, b) => b.pinnedAt - a.pinnedAt);
-}
-
-function notifyChange(): void {
-  try {
-    if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
-      window.dispatchEvent(new CustomEvent('sidekick:pins-changed'));
-    }
-  } catch { /* non-DOM hosts (test runner) */ }
-}
-
-// Cross-device sync — proxyClient observes `pins_changed` envelopes
-// on /api/sidekick/stream and dispatches `sidekick:server-pins-changed`.
-// Re-fetch on every notification (debounced).
-if (typeof window !== 'undefined') {
-  window.addEventListener('sidekick:server-pins-changed', () => requestRefresh());
-  // Foreground refresh — iOS PWA can come back after long background;
-  // pull fresh on visibility change. Mirrors badge.ts's pattern.
-  document?.addEventListener?.('visibilitychange', () => {
-    if (document.visibilityState === 'visible') requestRefresh();
-  });
 }
 
 // Test-only window-exposed seam — lets smokes read the in-memory pin
@@ -245,8 +211,8 @@ if (typeof window !== 'undefined') {
 // never references this.
 if (typeof window !== 'undefined') {
   (window as any).__pinsDebug = {
-    size: () => pinsByKey.size,
-    snapshot: () => Array.from(pinsByKey.entries()),
-    clearForTest: () => { pinsByKey.clear(); },
+    size: () => store.items.size,
+    snapshot: () => Array.from(store.items.entries()),
+    clearForTest: () => { store.items.clear(); },
   };
 }
