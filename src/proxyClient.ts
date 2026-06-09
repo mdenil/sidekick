@@ -288,6 +288,19 @@ function startStreamChannel(): void {
                    'conversation_deleted']) {
     streamES.addEventListener(t, onEvent as any);
   }
+  // Stream-open is the source of truth for "connected" (see connect()):
+  // the EventSource successfully opening means the gateway is reachable
+  // AND its ring replay is now flowing, so this is the moment to report
+  // connected and let the shell resume/replay. Transition-guarded so a
+  // forceReconnect re-open doesn't re-fire onStatus (and re-trigger a
+  // full resume) when we were already connected.
+  streamES.onopen = () => {
+    log('proxy-client: stream channel open');
+    if (!connected) {
+      connected = true;
+      subs?.onStatus?.(true);
+    }
+  };
   streamES.onerror = (e) => {
     // EventSource auto-reconnects on transient errors (DNS hiccup,
     // brief WiFi gap) using the server's `retry: 5000` hint, so we
@@ -295,8 +308,14 @@ function startStreamChannel(): void {
     // would defeat native retry. The OS-lifecycle listeners
     // (visibility/online/pageshow) are the belt-and-suspenders path
     // for the mobile-Safari background-kill case where native retry
-    // doesn't fire at all.
-    diag(`proxy-client: stream errored (will retry): ${(e as any)?.message || ''}`);
+    // doesn't fire at all. Only a HARD close (readyState CLOSED, not the
+    // CONNECTING retry state) flips status to disconnected, so a WiFi
+    // hiccup doesn't flap the pill while native retry is in flight.
+    if (streamES?.readyState === EventSource.CLOSED && connected) {
+      connected = false;
+      subs?.onStatus?.(false);
+    }
+    diag(`proxy-client: stream errored (readyState=${streamES?.readyState}): ${(e as any)?.message || ''}`);
   };
 }
 
@@ -723,25 +742,37 @@ export const proxyClientAdapter = {
       diag(`proxy-client: getActive failed: ${e.message}`);
       activeChatId = null;
     }
-    const probe = await probeSessions();
-    connected = probe.ok;
-    opts.onStatus?.(probe.ok);
-    if (probe.ok) {
-      if (probe.unconfigured) {
-        log('proxy-client: connected (proxy reports SIDEKICK_PLATFORM_TOKEN unset — sends will 503)');
-      } else {
-        log('proxy-client: connected');
-      }
-    } else {
-      log('proxy-client: probe failed — is the proxy running?');
-    }
-    startHealthPoll();
+    // Open the stream channel FIRST and let its onopen drive "connected".
+    // We deliberately do NOT `await probeSessions()` here: on a cold
+    // device relaunch that fetch blocked connect ~14s (measured
+    // 2026-06-09 via boot-timing marks), and since onStatus(connected)
+    // is what triggers the transcript resume/replay, the whole live UI
+    // waited behind it. The EventSource open is both the truthful
+    // connectivity signal and the ring-replay source, so it's the right
+    // thing to gate "connected" on — and it starts at ~boot instead of
+    // after a multi-second probe round-trip.
     startStreamChannel();
+    startHealthPoll();
     // OS-lifecycle hardening: visibility/online/pageshow trigger a
     // forceReconnect because mobile-Safari silently kills the
     // EventSource on background / radio suspend / network handoff
     // without firing onerror. Bound once per page lifetime.
     bindLifecycleHandlers();
+    // Non-blocking probe — purely a health/degraded check now, never the
+    // boot-gating path. Surfaces the SIDEKICK_PLATFORM_TOKEN-unset
+    // "connected-but-degraded" hint, and gives an EARLY disconnected
+    // signal if the gateway is outright unreachable (the stream would
+    // otherwise sit silently in CONNECTING retry). Never sets
+    // connected=true — the stream owns that, so this can't trigger a
+    // premature resume.
+    void probeSessions().then(({ ok, unconfigured }) => {
+      if (!ok && !connected) {
+        opts.onStatus?.(false);
+        log('proxy-client: initial probe failed — is the proxy running?');
+      } else if (ok && unconfigured) {
+        log('proxy-client: connected (proxy reports SIDEKICK_PLATFORM_TOKEN unset — sends will 503)');
+      }
+    });
   },
 
   disconnect() {
