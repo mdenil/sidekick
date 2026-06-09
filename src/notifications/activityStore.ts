@@ -279,7 +279,9 @@ export function dismissApprovalsForChat(chatId: string): void {
     if (item.chatId !== chatId || item.kind !== 'approval' || item.resolved) continue;
     store.items.delete(id);
     changed = true;
-    void fetch(apiUrl(`/api/sidekick/activity/${encodeURIComponent(id)}`), { method: 'DELETE' }).catch(() => {});
+    void store.trackWrite(() =>
+      fetch(apiUrl(`/api/sidekick/activity/${encodeURIComponent(id)}`), { method: 'DELETE' }),
+    ).catch(() => {});
   }
   if (changed) store.commit();
 }
@@ -373,7 +375,9 @@ export function dismissActivity(id: string): void {
   store.hydrate();
   if (!store.items.delete(id)) return;
   store.commit();
-  void fetch(apiUrl(`/api/sidekick/activity/${encodeURIComponent(id)}`), { method: 'DELETE' }).catch(() => {});
+  void store.trackWrite(() =>
+    fetch(apiUrl(`/api/sidekick/activity/${encodeURIComponent(id)}`), { method: 'DELETE' }),
+  ).catch(() => {});
 }
 
 export function clearResolved(): void {

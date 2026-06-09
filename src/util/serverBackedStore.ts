@@ -80,6 +80,28 @@ export class ServerBackedStore<T> {
   private hydrated = false;
   private serverHydrated = false;
   private refreshTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Stale-snapshot guards. A server snapshot that raced a local write is
+   *  STALE — applying it resurrects a just-deleted item (or undoes a
+   *  just-made edit) into memory + localStorage. Worse: if the page
+   *  reloads right after, the zombie row hydrates from cache against a
+   *  now-empty server and the firstServerHydrate migration pushes it back
+   *  UP, permanently un-deleting it server-side (observed: activity
+   *  dismiss racing the debounced refresh GET). Three windows to cover:
+   *  - GET issued BEFORE the local commit → mutationEpoch (bumped by
+   *    commit()) differs by response time.
+   *  - GET still in flight while a POST/DELETE is in flight →
+   *    pendingWrites > 0 at response time (all writes must go through
+   *    postJson/trackWrite).
+   *  - GET's snapshot taken before a write applied server-side, but its
+   *    response arrives AFTER that write already settled (observed: mock
+   *    snapshots the GET, applies the DELETE, then delivers both
+   *    responses — pendingWrites is back to 0) → writesSettled changed
+   *    during the GET's flight.
+   *  Either way refreshFromServer discards the response and reschedules,
+   *  converging once writes go quiet. */
+  private mutationEpoch = 0;
+  private pendingWrites = 0;
+  private writesSettled = 0;
   private readonly cfg: ServerBackedStoreConfig<T>;
 
   constructor(cfg: ServerBackedStoreConfig<T>) {
@@ -135,10 +157,17 @@ export class ServerBackedStore<T> {
    *  guard). */
   async refreshFromServer(): Promise<void> {
     this.ensureLocal();
+    const epochAtFetch = this.mutationEpoch;
+    const settledAtFetch = this.writesSettled;
     try {
       const r = await fetch(apiUrl(this.cfg.endpoint), this.cfg.fetchInit);
       if (!r.ok) return;
       const data = await r.json();
+      if (this.mutationEpoch !== epochAtFetch || this.pendingWrites > 0 || this.writesSettled !== settledAtFetch) {
+        this.cfg.log?.(`refresh discarded: raced a local write (epoch ${epochAtFetch}→${this.mutationEpoch}, pendingWrites ${this.pendingWrites}, settled ${settledAtFetch}→${this.writesSettled})`);
+        this.requestRefresh();
+        return;
+      }
       const next = new Map<string, T>();
       for (const raw of this.cfg.extract(data)) {
         const item = this.cfg.parse(raw);
@@ -148,6 +177,7 @@ export class ServerBackedStore<T> {
       this.serverHydrated = true;
       if (this.cfg.reconcile?.(next, this.items, { firstServerHydrate }) === 'skip') return;
       if (this.isEqual(this.items, next)) return;
+      this.cfg.log?.(`refresh applied: ${this.items.size} → ${next.size} item(s)`);
       this.items.clear();
       for (const [k, v] of next) this.items.set(k, v);
       this.persist();
@@ -170,6 +200,7 @@ export class ServerBackedStore<T> {
   /** Persist the perf cache + fire the change event. Call after a direct
    *  (optimistic) mutation of `items`. */
   commit(): void {
+    this.mutationEpoch++;
     this.persist();
     this.notifyChange();
   }
@@ -182,19 +213,35 @@ export class ServerBackedStore<T> {
     } catch { /* non-DOM hosts (test runner) */ }
   }
 
+  /** Run a server write under the pendingWrites counter so a refresh
+   *  snapshot that raced it gets discarded (see the guard above). EVERY
+   *  server mutation a domain module makes — including bespoke fetches
+   *  like a DELETE with custom error UX — must go through this. */
+  async trackWrite<R>(fn: () => Promise<R>): Promise<R> {
+    this.pendingWrites++;
+    try {
+      return await fn();
+    } finally {
+      this.pendingWrites--;
+      this.writesSettled++;
+    }
+  }
+
   /** Convenience POST helper for domain mutation paths that mirror to the
    *  server fire-and-forget. */
   async postJson(path: string, body: Record<string, unknown>): Promise<void> {
-    try {
-      const r = await fetch(apiUrl(path), {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      if (!r.ok) this.cfg.log?.(`POST ${path} failed: HTTP ${r.status}`);
-    } catch (e: any) {
-      this.cfg.log?.(`POST ${path} failed: ${e?.message ?? e}`);
-    }
+    await this.trackWrite(async () => {
+      try {
+        const r = await fetch(apiUrl(path), {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (!r.ok) this.cfg.log?.(`POST ${path} failed: HTTP ${r.status}`);
+      } catch (e: any) {
+        this.cfg.log?.(`POST ${path} failed: ${e?.message ?? e}`);
+      }
+    });
   }
 
   private persist(): void {

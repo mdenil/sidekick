@@ -111,7 +111,7 @@ export async function pinMessage(item: Omit<PinnedItem, 'pinnedAt'>): Promise<vo
   store.items.set(key(item.chatId, item.msgId), full);
   store.commit();
   try {
-    const r = await fetch(apiUrl(PINS_ENDPOINT), {
+    const r = await store.trackWrite(() => fetch(apiUrl(PINS_ENDPOINT), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -121,7 +121,7 @@ export async function pinMessage(item: Omit<PinnedItem, 'pinnedAt'>): Promise<vo
         text: item.text,
         timestamp: item.timestamp,
       }),
-    });
+    }));
     if (!r.ok) {
       let detail = '';
       try { detail = await r.text(); } catch { /* ignore */ }
@@ -143,10 +143,10 @@ export async function unpinMessage(chatId: string, msgId: string): Promise<void>
   if (!store.items.delete(key(chatId, msgId))) return;
   store.commit();
   try {
-    const r = await fetch(
+    const r = await store.trackWrite(() => fetch(
       `${apiUrl(PINS_ENDPOINT)}/${encodeURIComponent(chatId)}/${encodeURIComponent(msgId)}`,
       { method: 'DELETE' },
-    );
+    ));
     if (!r.ok) {
       let detail = '';
       try { detail = await r.text(); } catch { /* ignore */ }
@@ -169,11 +169,11 @@ export async function clearAllPins(): Promise<void> {
   store.items.clear();
   store.commit();
   log(`[pins] clearAllPins — ${entries.length} pin(s)`);
-  await Promise.all(entries.map((p) =>
+  await store.trackWrite(() => Promise.all(entries.map((p) =>
     fetch(`${apiUrl(PINS_ENDPOINT)}/${encodeURIComponent(p.chatId)}/${encodeURIComponent(p.msgId)}`, {
       method: 'DELETE',
     }).catch(() => {}),
-  ));
+  )));
   void store.refreshFromServer();
 }
 
