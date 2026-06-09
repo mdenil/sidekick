@@ -27,6 +27,9 @@ import * as voiceMemos from './voiceMemos.ts';
 import * as memoCard from './memoCard.ts';
 import * as webrtcControls from './audio/realtime/controls.ts';
 import { playFeedback } from './audio/shared/feedback.ts';
+import {
+  needsChunking, decodeToMono16k, slicePcm, encodeWav, stitchTranscripts,
+} from './audio/shared/chunkedTranscribe.ts';
 
 // Tracks the in-flight /transcribe upload size (bytes) so the periodic
 // status refresher can surface "Uploading audio (NKB)…" while the
@@ -37,19 +40,78 @@ import { playFeedback } from './audio/shared/feedback.ts';
 // back to its normal connected/stalled narrative.
 let uploadInFlightBytes: number | null = null;
 
+// Per-chunk progress line for the chunked path ("Transcribing audio
+// (2/4)…"). The 2s status refresher prefers this over the generic
+// "Uploading audio (NKB)…" while an upload is in flight, so the chunk
+// counter survives the refresher's ticks. Cleared alongside
+// uploadInFlightBytes.
+let uploadStatusLabel: string | null = null;
+
+/** Marker for unprocessable-blob failures (Deepgram 400 / corrupt /
+ *  unsupported) — caught at the item level to run the drop-from-queue
+ *  narration instead of retrying forever. */
+class PermanentTranscribeError extends Error {}
+
+const isPermanentErr = (err: string) => /\b4\d\d\b|corrupt|unsupported|empty body/i.test(err);
+
+/** POST one body to /transcribe and return the transcript string.
+ *  Throws PermanentTranscribeError for unprocessable blobs, plain
+ *  Error (or TimeoutError) for transient failures. */
+async function postTranscribe(url: string, body: Blob, mimeType: string, timeoutMs: number): Promise<string> {
+  const res = await fetchWithTimeout(url, {
+    method: 'POST', headers: { 'Content-Type': mimeType }, body,
+    timeoutMs,
+  });
+  const data = await res.json();
+  if (!data.ok) {
+    // Distinguish PERMANENT failures (corrupt blob, unsupported
+    // format, Deepgram 400) from TRANSIENT (network, 5xx, timeout).
+    // Permanent: drop from queue so we don't retry forever.
+    // Transient: throw, queue.flush keeps the item for next round.
+    //
+    // Symptom: queued audio memos all fail with "deepgram 400
+    // corrupt or unsupported data" on each retry — typically
+    // blobs recorded while the iOS mic-perm dialog was up
+    // (silent / partial). Without this guard the outbox grows
+    // unbounded.
+    const err = String(data.error || 'transcription failed');
+    if (isPermanentErr(err)) throw new PermanentTranscribeError(err);
+    throw new Error(err);
+  }
+  return (data.transcript || '').trim();
+}
+
+/** Chunked path for long clips: decode the stored blob to 16k mono PCM,
+ *  slice with overlap, transcribe each slice as a WAV, stitch with seam
+ *  dedup. Returns null when the blob can't be decoded (caller falls back
+ *  to single-shot). Chunk-level transient failures throw — the whole
+ *  item stays queued and is redone from chunk 0 next flush (chunks are
+ *  fast, partial-progress persistence isn't worth the state). */
+async function chunkedTranscribe(blob: Blob, url: string, toComposer: boolean): Promise<string | null> {
+  let pcm: Float32Array;
+  try {
+    pcm = await decodeToMono16k(blob);
+  } catch (e) {
+    log('chunked transcribe: decode failed, falling back to single-shot:', (e as Error)?.message);
+    return null;
+  }
+  const slices = slicePcm(pcm);
+  const parts: string[] = [];
+  for (let i = 0; i < slices.length; i++) {
+    const label = `Transcribing audio (${i + 1}/${slices.length})…`;
+    uploadStatusLabel = label;
+    status.setStatus(label, 'live');
+    if (toComposer) composer.setInterim(`Transcribing… (${i + 1}/${slices.length})`);
+    parts.push(await postTranscribe(url, encodeWav(slices[i]), 'audio/wav', 60_000));
+  }
+  return stitchTranscripts(parts);
+}
+
 /** Flush queued audio items — update the corresponding memo cards with transcripts. */
 export async function flushOutbox() {
   const result = await queue.flush(
     async (text) => { backend.sendMessage(text); },
-    async (blob, mimeType, id, autoSend, toComposer) => {
-      // Timeout scales with blob size: small memos under 1MB ≈ minute or
-      // less of audio (Deepgram batch returns in 1-3s) get the snappy
-      // 15s budget. Larger blobs get 60s — the upload alone for a 5MB
-      // webm over Tailscale can take 5-10s, plus Deepgram batch latency
-      // grows roughly with audio length. Earlier 15s flat ceiling
-      // wedged 3-minute memos in permanent-retry: each attempt timed
-      // out before Deepgram could respond, queue never drained.
-      const timeoutMs = blob.size > 1_000_000 ? 60_000 : 15_000;
+    async (blob, mimeType, id, autoSend, toComposer, durationMs) => {
       // Per-user keyterm biasing for batch transcribe. Same IDB list the
       // WebRTC offer ships; bridge accepts repeated `?keyterms=…&keyterms=…`
       // and merges into the Deepgram spec like the streaming path does.
@@ -63,7 +125,7 @@ export async function flushOutbox() {
       const url = kt.length
         ? `/transcribe?${kt.map(t => 'keyterms=' + encodeURIComponent(t)).join('&')}`
         : '/transcribe';
-      let res;
+      let text = '';
       // Surface "Uploading audio (NKB)…" immediately + via the
       // periodic refresher (which prefers uploadInFlightBytes when
       // set). Cleared in finally so success/timeout/error all reset
@@ -75,10 +137,35 @@ export async function flushOutbox() {
       status.setStatus(`Uploading audio (${kb} KB)…`, 'live');
       try {
         try {
-          res = await fetchWithTimeout(url, {
-            method: 'POST', headers: { 'Content-Type': mimeType }, body: blob,
-            timeoutMs,
-          });
+          // Long clips (> ~2.5 min) go through the chunked path: each
+          // ~80s slice is its own bounded round-trip, so a 5-minute
+          // dictation can't blow a single timeout budget and wedge in
+          // permanent-retry (the 2026-06-09 "Transcribing… forever"
+          // incident). Chunking happens HERE at flush time, so blobs
+          // already sitting in the outbox get the new path on their
+          // next flush. Decode failure → single-shot fallback below.
+          let chunked: string | null = null;
+          if (needsChunking(durationMs, blob.size)) {
+            chunked = await chunkedTranscribe(blob, url, toComposer);
+          }
+          if (chunked != null) {
+            text = chunked;
+          } else {
+            // Timeout scales with blob size: small memos under 1MB ≈
+            // minute or less of audio (Deepgram batch returns in 1-3s)
+            // get the snappy 15s budget. Larger blobs get 60s — the
+            // upload alone for a 5MB webm over Tailscale can take
+            // 5-10s, plus Deepgram batch latency grows roughly with
+            // audio length. Earlier 15s flat ceiling wedged 3-minute
+            // memos in permanent-retry: each attempt timed out before
+            // Deepgram could respond, queue never drained. Long clips
+            // that couldn't decode for chunking get 120s — better one
+            // slow attempt than a guaranteed-too-short loop.
+            const timeoutMs = blob.size > 1_000_000
+              ? (needsChunking(durationMs, blob.size) ? 120_000 : 60_000)
+              : 15_000;
+            text = await postTranscribe(url, blob, mimeType, timeoutMs);
+          }
         } catch (e) {
           if (e instanceof TimeoutError) {
             // Surface + chime; blob stays in queue for retry on next
@@ -99,24 +186,9 @@ export async function flushOutbox() {
           }
           throw e;  // re-throw so queue.flush keeps the item
         }
-      } finally {
-        uploadInFlightBytes = null;
-      }
-      const data = await res.json();
-      if (!data.ok) {
-        // Distinguish PERMANENT failures (corrupt blob, unsupported
-        // format, Deepgram 400) from TRANSIENT (network, 5xx, timeout).
-        // Permanent: drop from queue so we don't retry forever.
-        // Transient: throw, queue.flush keeps the item for next round.
-        //
-        // Symptom: queued audio memos all fail with "deepgram 400
-        // corrupt or unsupported data" on each retry — typically
-        // blobs recorded while the iOS mic-perm dialog was up
-        // (silent / partial). Without this guard the outbox grows
-        // unbounded.
-        const err = String(data.error || 'transcription failed');
-        const isPermanent = /\b4\d\d\b|corrupt|unsupported|empty body/i.test(err);
-        if (isPermanent) {
+      } catch (e) {
+        if (e instanceof PermanentTranscribeError) {
+          const err = e.message;
           log('transcribe: permanent failure, dropping blob:', err);
           if (toComposer) {
             // Dictation has no card — just clear the progress line and
@@ -134,9 +206,11 @@ export async function flushOutbox() {
           playFeedback('error');
           return;  // don't throw — queue.flush will drop the item
         }
-        throw new Error(err);  // transient → keep in queue
+        throw e;  // transient → keep in queue
+      } finally {
+        uploadInFlightBytes = null;
+        uploadStatusLabel = null;
       }
-      const text = (data.transcript || '').trim();
       const transcriptEl = document.getElementById('transcript');
       const card = id && transcriptEl ? memoCard.find(transcriptEl, id) : null;
 
@@ -240,8 +314,14 @@ export function startBackgroundPollers(): void {
       // refresher would clobber the "Uploading…" pill back to
       // "Connected" within a tick.
       if (uploadInFlightBytes != null) {
-        const kb = Math.round(uploadInFlightBytes / 1024);
-        status.setStatus(`Uploading audio (${kb} KB)…`, 'live');
+        if (uploadStatusLabel) {
+          // Chunked path — keep the "Transcribing audio (2/4)…" counter
+          // instead of clobbering it back to the generic upload line.
+          status.setStatus(uploadStatusLabel, 'live');
+        } else {
+          const kb = Math.round(uploadInFlightBytes / 1024);
+          status.setStatus(`Uploading audio (${kb} KB)…`, 'live');
+        }
       } else if (!gwConnected) {
         status.setState('reconnecting', { queuedCount: summary.count, queuedAudioMs: summary.totalAudioMs });
       } else if (msIdle > WEAK_SIGNAL_MS && summary.count > 0) {
