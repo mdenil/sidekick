@@ -32,12 +32,14 @@ async function startDigestRig() {
   notif.__resetForTest();
   dispatch.__resetDispatchForTest();
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'sidekick-digest-test-'));
-  await notif.init({
+  const configured = await notif.init({
     publicKey: TEST_VAPID_PUBLIC,
     privateKey: TEST_VAPID_PRIVATE,
     subject: TEST_VAPID_SUBJECT,
     dataDir,
   });
+  assert.equal(configured, true,
+    'digest rig init must win — a false here means the harness env-init raced the reset');
   const sent: Array<{ body: any }> = [];
   dispatch.__setSenderForTest(async (_target, body) => {
     sent.push({ body: JSON.parse(body) });
@@ -56,9 +58,17 @@ async function startDigestRig() {
     sent,
     async pushEnv(env: Record<string, any>) {
       const stream = await import('../stream.ts');
+      const before = sent.length;
       stream.pushEnvelope(env as any);
-      await new Promise<void>((r) => setImmediate(r));
-      await new Promise<void>((r) => setTimeout(r, 5));
+      // Dispatch is async fire-and-forget; poll for the send rather than
+      // sleeping a fixed interval (a 5ms sleep flaked under full-suite CPU
+      // contention — sent was still empty at assert time). Every push in
+      // this file expects exactly one send, so growth is the settle signal;
+      // the deadline only guards against a genuinely dropped dispatch.
+      const deadline = Date.now() + 2_000;
+      while (sent.length === before && Date.now() < deadline) {
+        await new Promise<void>((r) => setTimeout(r, 2));
+      }
     },
     async stop() {
       await rig.stop();

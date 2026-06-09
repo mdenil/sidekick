@@ -345,6 +345,14 @@ export async function startRig(opts: { mode?: FakeMode } = {}): Promise<ProxyRig
   // this — it's the test-isolation seam.
   stream.__resetForTest();
   sidekick.init({ token: 'test-token', url: fakeAgent.url });
+  // sidekick.init fires an env-based notifications init without awaiting
+  // it. Wait for it to settle BEFORE returning the rig: a test's
+  // notifications __resetForTest + explicit init({testKeys}) sequence
+  // racing that in-flight init gets silently short-circuited (ready=true,
+  // vapid=null) and every push the test makes skips as vapid_unconfigured.
+  // Flaked under full-suite CPU contention (digest per-chat test,
+  // 2026-06-09).
+  await sidekick.whenNotificationsInitSettled();
 
   const proxyServer = http.createServer(async (req, res) => {
     const url = new URL(req.url || '/', 'http://x');

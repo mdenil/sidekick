@@ -70,38 +70,8 @@ const store = new ServerBackedStore<ActivityItem>({
   persistCap: 200,
   persistSort: (a, b) => b.createdAt - a.createdAt,
   log: (m) => log(`[activity] ${m}`),
-  reconcile: (next, current, { firstServerHydrate }) => {
-    // Preserve freshly-arrived, still-unresolved approvals the server
-    // snapshot doesn't know about yet. A pending approval is added to the
-    // local store SYNCHRONOUSLY by upsertNotification, but its POST to
-    // /api/sidekick/activity is fire-and-forget. The server ALSO emits an
-    // `activity_changed` cross-device sync the moment it records the
-    // approval, which fires a refresh here. If this GET races ahead of our
-    // own POST (or of the server's own write), the snapshot lacks the
-    // approval — and the wholesale replace below would wipe the
-    // pending/actionable row out from under the user before they can tap
-    // Approve/Deny. Carrying the local-only pending approval into `next`
-    // keeps the row visible + actionable; the following refresh (after the
-    // POST round-trips) reconciles it from the server with consistent
-    // state. We only ever carry UNRESOLVED approvals: a resolved/dismissed
-    // row lives on the server and reflects normally, so this never
-    // resurrects a decided approval.
-    for (const [id, item] of current) {
-      if (item.kind === 'approval' && !item.resolved && !next.has(id)) {
-        next.set(id, item);
-      }
-    }
-    pruneSupersededApprovals(next);
-    // First server hydrate against an empty server but non-empty local
-    // cache = a never-synced profile; push local rows UP and skip the
-    // apply so we don't wipe them. The next refresh reconciles.
-    if (firstServerHydrate && next.size === 0 && current.size > 0) {
-      for (const item of current.values()) {
-        void store.postJson('/api/sidekick/activity', payloadForServer(item));
-      }
-      return 'skip';
-    }
-  },
+  reconcile: (next, current, ctx) =>
+    reconcileActivity(next, current, ctx, (path, body) => void store.postJson(path, body)),
   onFirstHydrate: () => {
     // Periodic stale-approval check (every 60s). Production threshold is
     // 30 min; the tick interval is much smaller so a freshly-staled
@@ -125,7 +95,51 @@ export function refreshFromServer(): Promise<void> {
   return store.refreshFromServer();
 }
 
-function pruneSupersededApprovals(items: Map<string, ActivityItem>): void {
+/** Server-write callback for the pure reconcile helpers — injected so unit
+ *  tests can capture the POSTs instead of hitting the module singleton. */
+export type ActivityPost = (path: string, body: Record<string, unknown>) => void;
+
+/** Domain reconcile for the activity snapshot (pure over `post`; exported
+ *  for deterministic unit tests of its preconditions). */
+export function reconcileActivity(
+  next: Map<string, ActivityItem>,
+  current: Map<string, ActivityItem>,
+  ctx: { firstServerHydrate: boolean },
+  post: ActivityPost,
+): 'skip' | void {
+  // Preserve freshly-arrived, still-unresolved approvals the server
+  // snapshot doesn't know about yet. A pending approval is added to the
+  // local store SYNCHRONOUSLY by upsertNotification, but its POST to
+  // /api/sidekick/activity is fire-and-forget. The server ALSO emits an
+  // `activity_changed` cross-device sync the moment it records the
+  // approval, which fires a refresh here. If this GET races ahead of our
+  // own POST (or of the server's own write), the snapshot lacks the
+  // approval — and the wholesale replace below would wipe the
+  // pending/actionable row out from under the user before they can tap
+  // Approve/Deny. Carrying the local-only pending approval into `next`
+  // keeps the row visible + actionable; the following refresh (after the
+  // POST round-trips) reconciles it from the server with consistent
+  // state. We only ever carry UNRESOLVED approvals: a resolved/dismissed
+  // row lives on the server and reflects normally, so this never
+  // resurrects a decided approval.
+  for (const [id, item] of current) {
+    if (item.kind === 'approval' && !item.resolved && !next.has(id)) {
+      next.set(id, item);
+    }
+  }
+  pruneSupersededApprovals(next, post);
+  // First server hydrate against an empty server but non-empty local
+  // cache = a never-synced profile; push local rows UP and skip the
+  // apply so we don't wipe them. The next refresh reconciles.
+  if (ctx.firstServerHydrate && next.size === 0 && current.size > 0) {
+    for (const item of current.values()) {
+      post('/api/sidekick/activity', payloadForServer(item));
+    }
+    return 'skip';
+  }
+}
+
+function pruneSupersededApprovals(items: Map<string, ActivityItem>, post: ActivityPost): void {
   // "Agent moved on" — any unresolved approval that has a newer
   // non-approval item for the same chat gets resolved as 'dismissed'.
   // Marks resolved (not delete) so the user can still see "we asked for
@@ -141,7 +155,7 @@ function pruneSupersededApprovals(items: Map<string, ActivityItem>): void {
     const newer = newestByChat.get(item.chatId) ?? 0;
     if (newer > item.createdAt) {
       items.set(id, { ...item, read: true, resolved: 'dismissed' });
-      void store.postJson('/api/sidekick/activity/resolve', { id, resolution: 'dismissed' });
+      post('/api/sidekick/activity/resolve', { id, resolution: 'dismissed' });
     }
   }
 }

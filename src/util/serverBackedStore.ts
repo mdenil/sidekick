@@ -30,6 +30,10 @@ export interface ServerBackedStoreConfig<T> {
   endpoint: string;
   /** Optional fetch init for the GET (e.g. { cache: 'no-store' }). */
   fetchInit?: RequestInit;
+  /** Injection seam so unit tests can hold GET/write responses open and
+   *  force each stale-snapshot race window deterministically (the smoke
+   *  only hit them probabilistically). Default: global fetch. */
+  fetchImpl?: typeof fetch;
   /** Pull the array of raw records out of the server JSON response. */
   extract: (data: any) => any[];
   /** Normalize + validate a raw record (from server OR localStorage) into
@@ -160,7 +164,7 @@ export class ServerBackedStore<T> {
     const epochAtFetch = this.mutationEpoch;
     const settledAtFetch = this.writesSettled;
     try {
-      const r = await fetch(apiUrl(this.cfg.endpoint), this.cfg.fetchInit);
+      const r = await (this.cfg.fetchImpl ?? fetch)(apiUrl(this.cfg.endpoint), this.cfg.fetchInit);
       if (!r.ok) return;
       const data = await r.json();
       if (this.mutationEpoch !== epochAtFetch || this.pendingWrites > 0 || this.writesSettled !== settledAtFetch) {
@@ -232,7 +236,7 @@ export class ServerBackedStore<T> {
   async postJson(path: string, body: Record<string, unknown>): Promise<void> {
     await this.trackWrite(async () => {
       try {
-        const r = await fetch(apiUrl(path), {
+        const r = await (this.cfg.fetchImpl ?? fetch)(apiUrl(path), {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify(body),

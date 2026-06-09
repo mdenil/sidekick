@@ -79,9 +79,25 @@ export function init(opts: { token: string; url: string }): void {
   // subscribe calls during the (sub-millisecond) init window get a
   // clean 503 rather than crashing. Storage init is what makes this
   // async (mkdir + cache prime); VAPID env-read is sync.
-  initNotifications().catch((e) => {
-    console.warn('[sidekick] notifications init failed:', e?.message ?? e);
-  });
+  notificationsInitSettled = initNotifications().then(
+    () => {},
+    (e) => {
+      console.warn('[sidekick] notifications init failed:', e?.message ?? e);
+    },
+  );
+}
+
+// Settled-handle for the fire-and-forget notifications init above. The
+// test harness awaits this before handing a rig to a test: the env-based
+// init sets the module's `ready` flag, and a test's __resetForTest +
+// explicit init({testKeys}) racing it could be silently short-circuited
+// (init saw ready=true, kept vapid=null → every push skipped as
+// vapid_unconfigured; flaked under full-suite CPU contention 2026-06-09).
+// Production never needs to await it.
+let notificationsInitSettled: Promise<void> = Promise.resolve();
+
+export function whenNotificationsInitSettled(): Promise<void> {
+  return notificationsInitSettled;
 }
 
 /** Returns the upstream singleton, or null if SIDEKICK_PLATFORM_TOKEN
