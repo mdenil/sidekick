@@ -13,13 +13,14 @@
  * little longer on touch so the magnifier/callout animation finishes);
  * hide when the selection collapses, on scroll, and on resize.
  *
- * Gate: only fire for selections that live inside the transcript element,
- * so selecting composer text or UI chrome doesn't pop the button.
+ * Gate: only fire for selections that live inside a registered quote root
+ * (the transcript, or the pinned-messages list), so selecting composer text
+ * or UI chrome doesn't pop the button.
  */
 
 import { diag } from './util/log.ts';
 
-let transcriptEl: HTMLElement | null = null;
+let roots: HTMLElement[] = [];
 let onQuote: (text: string) => void = () => {};
 let fab: HTMLButtonElement | null = null;
 // The selected text captured at show-time. The button's pointerdown reads
@@ -29,11 +30,13 @@ let capturedText = '';
 
 export function init(opts: {
   transcriptEl: HTMLElement | null,
+  extraEls?: (HTMLElement | null)[],
   onQuote: (text: string) => void,
 }) {
-  transcriptEl = opts.transcriptEl;
+  roots = [opts.transcriptEl, ...(opts.extraEls ?? [])]
+    .filter((el): el is HTMLElement => !!el);
   onQuote = opts.onQuote;
-  if (!transcriptEl) return;
+  if (!roots.length) return;
 
   fab = document.createElement('button');
   fab.className = 'quote-fab';
@@ -85,12 +88,12 @@ export function init(opts: {
   window.addEventListener('resize', hide);
 }
 
-function selectionInTranscript(sel: Selection): boolean {
-  if (!transcriptEl || sel.rangeCount === 0) return false;
+function selectionInRoots(sel: Selection): boolean {
+  if (!roots.length || sel.rangeCount === 0) return false;
   const range = sel.getRangeAt(0);
   const node = range.commonAncestorContainer;
   const el = node.nodeType === Node.ELEMENT_NODE ? node as Element : node.parentElement;
-  return !!el && transcriptEl.contains(el);
+  return !!el && roots.some((root) => root.contains(el));
 }
 
 function maybeShow() {
@@ -98,7 +101,7 @@ function maybeShow() {
   if (!sel || sel.isCollapsed || sel.rangeCount === 0) { hide(); return; }
   const text = sel.toString().trim();
   if (!text) { hide(); return; }
-  if (!selectionInTranscript(sel)) { hide(); return; }
+  if (!selectionInRoots(sel)) { hide(); return; }
   capturedText = text;
   position(sel.getRangeAt(0).getBoundingClientRect());
 }

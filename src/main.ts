@@ -291,6 +291,18 @@ async function populateMicPicker() {
 // ─── Boot ───────────────────────────────────────────────────────────────────
 
 async function boot() {
+  // ── Boot-phase timing (temporary instrumentation, #171 follow-up) ──
+  // Pinpoints which boot phase eats wall-clock on a cold CAP relaunch.
+  // Surfaces via log() → disk relay (/tmp/sidekick-debug/latest.log) when
+  // dev mode / ?debug-relay=1 is on. perfNow() is relative to navigation
+  // start, so the first mark also shows pre-boot bundle parse/eval time.
+  const perfNow = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+  const __bootT0 = perfNow();
+  const bootMark = (label: string) => {
+    log(`[boot-timing] ${label} +${Math.round(perfNow() - __bootT0)}ms (since-nav ${Math.round(perfNow())}ms)`);
+  };
+  bootMark('start');
+
   // Platform gating runs FIRST so settings.load() and downstream
   // wiring see the post-gate DOM. Otherwise settings.ts's
   // `document.getElementById('set-reset-server')` returns the
@@ -309,6 +321,7 @@ async function boot() {
   // remaining per-device keys are read from localStorage in the same
   // call. Built-in DEFAULTS are the offline / proxy-down fallback.
   await settings.load();
+  bootMark('settings.load done');
   // Pinned-session order rides the synced `pinnedSessions` setting, so
   // hydrate it from the snapshot settings.load() just pulled — before
   // the drawer's first render reads sessionPins.isPinned()/topPinned().
@@ -336,6 +349,7 @@ async function boot() {
     }
     throw e;
   }
+  bootMark('loadConfig done');
   const cfg = getConfig();
   // Apply per-install skinning (app name, subtitle, theme color) before the
   // rest of the UI renders so branding is consistent from boot.
@@ -869,6 +883,7 @@ async function boot() {
   // boot's load and now (e.g. a backend.connect() that called
   // settings.set()).
   await settings.load();
+  bootMark('settings.load #2 done');
   settings.applyVisuals();
   settings.hydrate({
     onThemeChange: () => theme.applyTheme(settings.get().theme),
@@ -927,6 +942,7 @@ async function boot() {
   // Chat
   const transcriptEl = document.getElementById('transcript');
   const chatRestored = await chat.init(transcriptEl);
+  bootMark('chat.init done');
   chat.onLoadEarlier(loadEarlierHistory);
   chat.onLoadLater(loadLaterHistory);
   chat.onJumpToLatest(jumpToLatest);
@@ -1174,9 +1190,11 @@ async function boot() {
   // for a minimal cloud-LLM deploy, future: geminilive) — same interface.
   // Tool events including canvas.show flow through the regular SSE
   // stream; the shell subscribes via onToolEvent below.
+  bootMark('pre backend.connect');
   await backend.connect({
     onStatus: async (connected) => {
       if (connected) {
+        bootMark('onStatus connected');
         status.setStatus('Gateway: connected', 'ok');
         // For backends that browse sessions (hermes), resume the adapter's
         // default conversation on boot. If it's empty (fresh install),
@@ -1300,6 +1318,7 @@ async function boot() {
         } else {
           await backfillHistory();
         }
+        bootMark('resume/replay done');
         await memoOutbox.flushOutbox();
         if (settings.refreshModels) settings.refreshModels().catch(() => {});
         // Eager schema fetch so consumers depending on agent settings
@@ -1933,6 +1952,7 @@ async function boot() {
   // reply (accumulating multiple quote+reply pairs into one message).
   selectToQuote.init({
     transcriptEl: document.getElementById('transcript'),
+    extraEls: [document.getElementById('pin-drawer-list')],
     onQuote: composer.appendQuote,
   });
   // Retry-send wire-up (Crack A): reconciler renders a Retry button
