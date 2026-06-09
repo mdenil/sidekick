@@ -34,8 +34,11 @@ export default {
     container.appendChild(div);
 
     // Preflight via oEmbed — if the track/album doesn't exist, degrade gracefully
-    import('../../util/fetchWithTimeout.ts').then(({ fetchWithTimeout }) =>
-      fetchWithTimeout(`/spotify-check?url=${encodeURIComponent(p.url)}`, { timeoutMs: 10_000 }))
+    Promise.all([
+      import('../../util/fetchWithTimeout.ts'),
+      import('../../apiBase.ts'),
+    ]).then(([{ fetchWithTimeout }, { apiUrl }]) =>
+      fetchWithTimeout(apiUrl(`/spotify-check?url=${encodeURIComponent(p.url)}`), { timeoutMs: 10_000 }))
       .then(r => r.json())
       .then(data => {
         if (data.ok) {

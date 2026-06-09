@@ -194,7 +194,8 @@ function renderPreviewBody(link, host) {
 async function fetchAndDecorate(anchor, url, host, tryIframe, container) {
   try {
     const { fetchWithTimeout } = await import('../../util/fetchWithTimeout.ts');
-    const r = await fetchWithTimeout(`/link-preview?url=${encodeURIComponent(url)}`, { timeoutMs: 10_000 });
+    const { apiUrl } = await import('../../apiBase.ts');
+    const r = await fetchWithTimeout(apiUrl(`/link-preview?url=${encodeURIComponent(url)}`), { timeoutMs: 10_000 });
     const og = await r.json();
 
     // Use OG image if available; fall back to Chromium screenshot for sites

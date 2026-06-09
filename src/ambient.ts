@@ -13,6 +13,7 @@
 
 import { escapeHtml } from './util/dom.ts';
 import { log } from './util/log.ts';
+import { apiUrl } from './apiBase.ts';
 
 const WEATHER_TTL_MS = 15 * 60 * 1000;
 
@@ -81,7 +82,7 @@ async function loadWeather() {
   try {
     const { fetchWithTimeout } = await import('./util/fetchWithTimeout.ts');
     const qs = BROWSER_TZ ? `?tz=${encodeURIComponent(BROWSER_TZ)}` : '';
-    const r = await fetchWithTimeout(`/weather${qs}`, { timeoutMs: 10_000 });
+    const r = await fetchWithTimeout(apiUrl(`/weather${qs}`), { timeoutMs: 10_000 });
     weatherCache = await r.json();
     weatherFetchedAt = now;
   } catch (e) {

@@ -14,6 +14,8 @@
  * chip UI mutates the whole list.
  */
 
+import { apiUrl } from './apiBase.ts';
+
 const DB_NAME = 'sidekick-keyterms';
 const STORE = 'keyterms';
 const DB_VERSION = 1;
@@ -100,7 +102,7 @@ async function idbWrite(terms: string[]): Promise<void> {
 async function serverGet(): Promise<string[] | null> {
   try {
     const { fetchWithTimeout } = await import('./util/fetchWithTimeout.ts');
-    const r = await fetchWithTimeout(PREFS_URL, { timeoutMs: 5_000 });
+    const r = await fetchWithTimeout(apiUrl(PREFS_URL), { timeoutMs: 5_000 });
     if (!r.ok) return null;
     const body: any = await r.json();
     if (Array.isArray(body?.value)) return body.value.map((v: any) => String(v));
@@ -116,7 +118,7 @@ async function serverGet(): Promise<string[] | null> {
 async function serverPut(terms: string[]): Promise<boolean> {
   try {
     const { fetchWithTimeout } = await import('./util/fetchWithTimeout.ts');
-    const r = await fetchWithTimeout(PREFS_URL, {
+    const r = await fetchWithTimeout(apiUrl(PREFS_URL), {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ value: terms.slice() }),
@@ -178,7 +180,7 @@ export async function loadOrSeed(): Promise<string[]> {
   let seeded: string[] = [];
   try {
     const { fetchWithTimeout } = await import('./util/fetchWithTimeout.ts');
-    const r = await fetchWithTimeout('/api/keyterms', { timeoutMs: 5_000 });
+    const r = await fetchWithTimeout(apiUrl('/api/keyterms'), { timeoutMs: 5_000 });
     if (r.ok) seeded = parseSeedBody(await r.text());
   } catch (e) {
     console.warn('[keyterms] seed fetch failed:', e);
@@ -198,7 +200,7 @@ export async function rehydrateFromSeed(): Promise<string[]> {
   let serverSeed: string[] = [];
   try {
     const { fetchWithTimeout } = await import('./util/fetchWithTimeout.ts');
-    const r = await fetchWithTimeout('/api/keyterms', { timeoutMs: 5_000 });
+    const r = await fetchWithTimeout(apiUrl('/api/keyterms'), { timeoutMs: 5_000 });
     if (!r.ok) return existing;
     serverSeed = parseSeedBody(await r.text());
   } catch (e) {

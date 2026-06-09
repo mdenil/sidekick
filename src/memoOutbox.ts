@@ -30,6 +30,8 @@ import { playFeedback } from './audio/shared/feedback.ts';
 import {
   needsChunking, decodeToMono16k, slicePcm, encodeWav, stitchTranscripts,
 } from './audio/shared/chunkedTranscribe.ts';
+import { postTranscribe, PermanentTranscribeError } from './audio/shared/postTranscribe.ts';
+import { apiUrl } from './apiBase.ts';
 
 // Tracks the in-flight /transcribe upload size (bytes) so the periodic
 // status refresher can surface "Uploading audio (NKB)…" while the
@@ -47,38 +49,12 @@ let uploadInFlightBytes: number | null = null;
 // uploadInFlightBytes.
 let uploadStatusLabel: string | null = null;
 
-/** Marker for unprocessable-blob failures (Deepgram 400 / corrupt /
- *  unsupported) — caught at the item level to run the drop-from-queue
- *  narration instead of retrying forever. */
-class PermanentTranscribeError extends Error {}
-
-const isPermanentErr = (err: string) => /\b4\d\d\b|corrupt|unsupported|empty body/i.test(err);
-
-/** POST one body to /transcribe and return the transcript string.
- *  Throws PermanentTranscribeError for unprocessable blobs, plain
- *  Error (or TimeoutError) for transient failures. */
-async function postTranscribe(url: string, body: Blob, mimeType: string, timeoutMs: number): Promise<string> {
-  const res = await fetchWithTimeout(url, {
-    method: 'POST', headers: { 'Content-Type': mimeType }, body,
-    timeoutMs,
-  });
-  const data = await res.json();
-  if (!data.ok) {
-    // Distinguish PERMANENT failures (corrupt blob, unsupported
-    // format, Deepgram 400) from TRANSIENT (network, 5xx, timeout).
-    // Permanent: drop from queue so we don't retry forever.
-    // Transient: throw, queue.flush keeps the item for next round.
-    //
-    // Symptom: queued audio memos all fail with "deepgram 400
-    // corrupt or unsupported data" on each retry — typically
-    // blobs recorded while the iOS mic-perm dialog was up
-    // (silent / partial). Without this guard the outbox grows
-    // unbounded.
-    const err = String(data.error || 'transcription failed');
-    if (isPermanentErr(err)) throw new PermanentTranscribeError(err);
-    throw new Error(err);
-  }
-  return (data.transcript || '').trim();
+// Per-chunk /transcribe budget. 60s in production; the failure-path smoke
+// shrinks it so the chunk-timeout path runs in milliseconds instead of
+// requiring a 60s stall.
+let chunkTimeoutMs = 60_000;
+export function setChunkTimeoutMsForTest(ms: number): void {
+  if (typeof ms === 'number' && ms > 0) chunkTimeoutMs = ms;
 }
 
 /** Chunked path for long clips: decode the stored blob to 16k mono PCM,
@@ -105,7 +81,7 @@ async function chunkedTranscribe(blob: Blob, url: string, toComposer: boolean): 
     const wav = encodeWav(slices[i]);
     const t0 = Date.now();
     log(`chunked transcribe: chunk ${i + 1}/${slices.length} (${Math.round(wav.size / 1024)}KB)…`);
-    parts.push(await postTranscribe(url, wav, 'audio/wav', 60_000));
+    parts.push(await postTranscribe(url, wav, 'audio/wav', chunkTimeoutMs));
     log(`chunked transcribe: chunk ${i + 1}/${slices.length} ok in ${Date.now() - t0}ms`);
   }
   return stitchTranscripts(parts);
@@ -126,9 +102,15 @@ export async function flushOutbox() {
         const { readList } = await import('./keyterms.ts');
         kt = (await readList()) || [];
       } catch {}
-      const url = kt.length
+      // apiUrl: in the CAP local-asset shell the page origin is
+      // capacitor://localhost, where a relative fetch never reaches the
+      // server — WebKit rejects it pre-network with "SyntaxError: The
+      // string did not match the expected pattern" (the 2026-06-09
+      // "stalled forever" device wedge; browser PWAs were unaffected
+      // because location.origin == server there).
+      const url = apiUrl(kt.length
         ? `/transcribe?${kt.map(t => 'keyterms=' + encodeURIComponent(t)).join('&')}`
-        : '/transcribe';
+        : '/transcribe');
       let text = '';
       // Surface "Uploading audio (NKB)…" immediately + via the
       // periodic refresher (which prefers uploadInFlightBytes when
