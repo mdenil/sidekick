@@ -17,13 +17,54 @@ import { apiUrl, apiHost } from './apiBase.ts';
 /** @type {RuntimeConfig | null} */
 let cfg = null;
 
+/** localStorage key for the last-good /config snapshot. Lets the app boot
+ *  from cache when the backend is unreachable (CAP local-asset shell), so
+ *  the user can still interact locally while deciding whether to reconnect
+ *  or re-point at a new host. */
+const CONFIG_CACHE_KEY = 'sidekick_config_cache';
+
+/** Optional hook fired when the live /config fetch fails. Lets the shell
+ *  surface a reconnect affordance without config.ts importing UI code. */
+let unreachableHandler: ((err: Error) => void) | null = null;
+export function onConfigUnreachable(fn: (err: Error) => void) {
+  unreachableHandler = fn;
+}
+
+function readCachedConfig() {
+  try {
+    const raw = localStorage.getItem(CONFIG_CACHE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
+
+/**
+ * Load runtime config. Cache-first: if a prior snapshot exists, the app can
+ * boot from it immediately and the network result refreshes it. The network
+ * fetch still gates the FIRST cold boot (no cache yet). On failure with a
+ * cache present, we keep serving the cache and fire `onConfigUnreachable` so
+ * the shell can offer to reconnect — boot proceeds instead of dying.
+ */
 export async function loadConfig() {
   const { fetchWithTimeout } = await import('./util/fetchWithTimeout.ts');
-  // 8s — /config is a file read on the server, should return instantly.
-  // Longer stalls mean the gateway isn't running; better to bail fast.
-  const r = await fetchWithTimeout(apiUrl('/config'), { timeoutMs: 8_000 });
-  cfg = await r.json();
-  return cfg;
+  try {
+    // 8s — /config is a file read on the server, should return instantly.
+    // Longer stalls mean the gateway isn't running; better to bail fast.
+    const r = await fetchWithTimeout(apiUrl('/config'), { timeoutMs: 8_000 });
+    cfg = await r.json();
+    try { localStorage.setItem(CONFIG_CACHE_KEY, JSON.stringify(cfg)); } catch { /* private mode etc */ }
+    return cfg;
+  } catch (err) {
+    const cached = readCachedConfig();
+    if (cached) {
+      cfg = cached;
+      // Notify the shell the backend is down so it can prompt a reconnect,
+      // but let boot continue from the cached snapshot.
+      try { unreachableHandler?.(err instanceof Error ? err : new Error(String(err))); } catch { /* noop */ }
+      return cfg;
+    }
+    // Truly cold (first launch offline / no cache) — can't proceed.
+    throw err;
+  }
 }
 
 export function getConfig() {

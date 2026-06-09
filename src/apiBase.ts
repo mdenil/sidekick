@@ -28,9 +28,13 @@ export const SERVER_URL_KEY = 'sidekick_server_url';
 /** True when the page is served by the local CAP shell rather than over the
  *  network. In that case relative URLs resolve to the local bundle, so API
  *  calls need an explicit remote origin. */
-function isLocalShell(): boolean {
-  const p = location.protocol;
-  return p === 'capacitor:' || p === 'file:';
+export function isLocalShell(): boolean {
+  try {
+    const p = location.protocol;
+    return p === 'capacitor:' || p === 'file:';
+  } catch {
+    return false;
+  }
 }
 
 /** Origin that hosts the server API. location.origin in a browser PWA /
@@ -40,7 +44,11 @@ export function apiOrigin(): string {
     const saved = localStorage.getItem(SERVER_URL_KEY);
     if (saved) return saved.replace(/\/+$/, '');
   }
-  return location.origin;
+  try {
+    return location.origin;
+  } catch {
+    return '';
+  }
 }
 
 /** Build an absolute server URL from an app-absolute path (must start with

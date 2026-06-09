@@ -12,6 +12,7 @@
   },
   "scripts": {
     "build": "node scripts/build.mjs",
+    "build:cap": "node scripts/build.mjs && node scripts/build-cap.mjs",
     "watch": "node scripts/build.mjs --watch",
     "start": "npm run build && node scripts/start-all.mjs",
     "start:proxy": "npm run build && node --experimental-strip-types --disable-warning=ExperimentalWarning server.ts",

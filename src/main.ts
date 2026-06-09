@@ -3,9 +3,10 @@
  * No logic lives here — just imports + initialization + cross-module callbacks.
  */
 
-import { loadConfig, getConfig, gwWsUrl, getAppName, applySkinning } from './config.ts';
+import { loadConfig, getConfig, gwWsUrl, getAppName, applySkinning, onConfigUnreachable } from './config.ts';
 import { log, diag, setDebugElement } from './util/log.ts';
-import { apiUrl } from './apiBase.ts';
+import { apiUrl, isLocalShell } from './apiBase.ts';
+import { showReconnectModal } from './reconnectModal.ts';
 import { mountDevPill, isDevMode } from './util/devMode.ts';
 import {
   waitForSwActivation,
@@ -317,8 +318,24 @@ async function boot() {
   // the drawer's first render reads nicknameFor()/voiceFor().
   sessionIdentity.hydrate();
 
-  // Load config from server (keys, gateway info)
-  await loadConfig();
+  // Load config from server (keys, gateway info). In the CAP local-asset
+  // shell the app boots from bundled assets and only reaches the backend
+  // over the network — so if the saved host is down, surface a dismissible
+  // reconnect prompt instead of stranding the user. loadConfig() falls back
+  // to the last-good cached snapshot when present (boot continues); it only
+  // throws on a truly cold first-launch-offline, where we show the prompt
+  // over a bare shell.
+  if (isLocalShell()) onConfigUnreachable(() => showReconnectModal());
+  try {
+    await loadConfig();
+  } catch (e: any) {
+    if (isLocalShell()) {
+      log(`boot: config unreachable and no cache (${e?.message || e}); awaiting reconnect`);
+      showReconnectModal();
+      return;
+    }
+    throw e;
+  }
   const cfg = getConfig();
   // Apply per-install skinning (app name, subtitle, theme color) before the
   // rest of the UI renders so branding is consistent from boot.

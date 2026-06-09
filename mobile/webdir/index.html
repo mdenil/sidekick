@@ -27,24 +27,21 @@
     min-height: 100vh;
     min-height: 100dvh;
   }
-  /* Body stays hidden until JS picks a view (connecting splash or the
-     form). Background stays dark so the briefly-empty page blends with
-     the next destination — no white flash on relaunch. */
+  /* Body stays hidden until JS decides whether to show the form or boot
+     straight into the local app. Dark background so the briefly-empty
+     page blends with the next destination — no white flash on relaunch. */
   body { visibility: hidden; }
-  body.show-connecting, body.show-form {
+  body.show-form {
     visibility: visible;
     padding: max(env(safe-area-inset-top), 24px) 18px max(env(safe-area-inset-bottom), 24px);
     display: flex; flex-direction: column; align-items: center;
     justify-content: center; gap: 28px;
   }
-  /* Two mutually-exclusive views. Only the one matching the body class
-     paints. */
-  #connecting-view, #form-view {
+  #form-view {
     display: none;
     flex-direction: column; align-items: center; gap: 28px;
     width: 100%;
   }
-  body.show-connecting #connecting-view { display: flex; }
   body.show-form #form-view { display: flex; }
 
   .logo {
@@ -108,39 +105,9 @@
     padding: 1px 5px; border-radius: 4px;
   }
 
-  /* Connecting splash — shown while we probe the saved URL on launch.
-     A spinner + the host being tried + a "Change server" escape so a
-     dead/migrated host is never a one-way trip into a black screen. */
-  .spinner {
-    width: 28px; height: 28px;
-    border: 3px solid rgba(255,255,255,0.15);
-    border-top-color: var(--primary);
-    border-radius: 50%;
-    animation: spin 0.8s linear infinite;
-  }
-  @keyframes spin { to { transform: rotate(360deg); } }
-  .link-btn {
-    width: auto;
-    background: none; color: var(--muted);
-    font-size: 14px; font-weight: 500;
-    padding: 8px 12px;
-    text-decoration: underline;
-  }
-  .link-btn:hover { color: var(--fg); }
-  #connecting-status {
-    color: var(--fg); font-family: var(--font-mono); font-size: 13px;
-    word-break: break-all;
-  }
 </style>
 </head>
 <body>
-
-<div id="connecting-view">
-  <div class="logo">sidekick</div>
-  <div class="spinner"></div>
-  <p id="connecting-status">Connecting…</p>
-  <button type="button" id="change-server" class="link-btn">Change server</button>
-</div>
 
 <div id="form-view">
   <div class="logo">sidekick</div>
@@ -180,32 +147,15 @@
   const STORAGE_KEY = 'sidekick_server_url';
   const QS = new URLSearchParams(location.search);
   const FORCE_CONFIG = QS.get('config') === '1';
-  // Boot-probe timeout. Shorter than the manual-connect probe (8s) so a
-  // dead/migrated host drops us to the form within a few seconds instead
-  // of hanging the WebView on a black screen. The happy path (server up)
-  // resolves in one round-trip, well under this.
-  const BOOT_PROBE_MS = 5000;
 
   const $url = document.getElementById('url');
   const $btn = document.getElementById('connect');
   const $status = document.getElementById('status');
   const $form = document.getElementById('form');
-  const $connectingStatus = document.getElementById('connecting-status');
-  const $changeServer = document.getElementById('change-server');
-
-  // Set true if the user taps "Change server" mid-probe, so a late-
-  // resolving probe doesn't redirect out from under them.
-  let cancelledBoot = false;
 
   function setStatus(text, kind) {
     $status.textContent = text || '';
     $status.className = 'status' + (kind ? ' ' + kind : '');
-  }
-
-  function showConnecting(host) {
-    $connectingStatus.textContent = 'Connecting to ' + host + ' …';
-    document.body.classList.remove('show-form');
-    document.body.classList.add('show-connecting');
   }
 
   function showForm(prefill, errMsg) {
@@ -267,7 +217,18 @@
     }
   }
 
+  // Load the LOCAL bundled app. Assets ship inside the .ipa and serve from
+  // capacitor://localhost/app.html — no network round-trip, native-fast
+  // cold boot. The app reaches the saved remote host only for API calls
+  // (via src/apiBase.ts, which reads the same STORAGE_KEY).
+  function loadApp() {
+    location.href = './app.html';
+  }
+
   async function commit(url) {
+    // First-run / reconfigure: probe to validate the typed URL (catch
+    // typos + confirm it's a sidekick host) BEFORE saving and booting the
+    // local app.
     setStatus('Checking ' + url + ' …', null);
     $btn.disabled = true;
     const res = await probe(url, 8000);
@@ -278,42 +239,20 @@
     }
     try { localStorage.setItem(STORAGE_KEY, url); } catch (_) { /* private mode etc */ }
     setStatus('Connected. Loading …', 'ok');
-    // Small delay so the user sees the success state before the
-    // WebView swaps origins. Cap WebViews preserve the AVAudioSession
-    // and getUserMedia permission state across this redirect (same
-    // process, same WKWebView instance).
-    setTimeout(() => { location.href = url + '/'; }, 200);
-    // (intentionally don't re-enable the button on success — redirecting)
+    // Small delay so the user sees the success state before we swap to the
+    // local app. (intentionally don't re-enable the button — navigating)
+    setTimeout(loadApp, 200);
   }
 
-  // Launch path with a saved URL: probe BEFORE redirecting. Previously
-  // this did a blind `location.href = saved + '/'`, which stranded the
-  // WebView on a black screen whenever the saved host was unreachable —
-  // e.g. after a backend host migration or simply opening the app
-  // offline. Now we show a "Connecting…"
-  // splash, probe with a timeout, redirect on success, and on
-  // failure/timeout fall back to the form. Crucially we NEVER clear the
-  // saved URL on a failed probe — airplane mode or a transient outage
-  // must not force the user to look the URL up again; it's pre-filled so
-  // they can just retry (or edit to a new host).
-  async function bootRedirect(saved) {
-    showConnecting(saved);
-    const res = await probe(saved, BOOT_PROBE_MS);
-    if (cancelledBoot) return;            // user tapped "Change server"
-    if (res.ok) {
-      location.href = saved + '/';
-      return;
-    }
-    showForm(saved, 'Could not reach ' + saved + ' — ' + res.err + '. Retry, or enter a new server URL.');
+  // Launch path with a saved URL: load the local app IMMEDIATELY — no
+  // network probe. Assets are bundled, so cold boot doesn't wait on the
+  // network. If the saved host is unreachable, the app surfaces its own
+  // reconnect path (and `capacitor://localhost/?config=1` always returns
+  // here to re-pick the host). We NEVER clear the saved URL.
+  function bootLocal(saved) {
+    void saved;
+    loadApp();
   }
-
-  // Manual escape from the connecting splash — for when the user already
-  // knows the saved host is gone and doesn't want to wait out the probe.
-  $changeServer.addEventListener('click', () => {
-    cancelledBoot = true;
-    const saved = (() => { try { return localStorage.getItem(STORAGE_KEY); } catch (_) { return null; } })();
-    showForm(saved || '', null);
-  });
 
   $form.addEventListener('submit', (e) => {
     e.preventDefault();
@@ -330,9 +269,8 @@
   })();
 
   if (saved && !FORCE_CONFIG) {
-    // Probe-gated auto-redirect (see bootRedirect). Body shows the
-    // connecting splash, not a black screen.
-    void bootRedirect(saved);
+    // Saved host → boot the local bundled app immediately (no probe).
+    bootLocal(saved);
     return;
   }
 

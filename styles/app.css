@@ -4298,3 +4298,101 @@
   color: var(--fg);
   border-color: var(--border-strong);
 }
+
+/* ── Reconnect pop-up (CAP local-asset shell) ──────────────────────────
+   Shown when the saved host is unreachable. Dismissible overlay — the app
+   stays interactive behind it (browse cached sessions, dictate a memo). */
+#reconnect-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(0, 0, 0, 0.55);
+  align-items: center;
+  justify-content: center;
+  padding: max(env(safe-area-inset-top), 24px) 18px max(env(safe-area-inset-bottom), 24px);
+}
+#reconnect-overlay.on { display: flex; }
+.reconnect-card {
+  width: 100%;
+  max-width: 420px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  padding: 22px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+}
+.reconnect-card h2 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--fg);
+}
+.reconnect-host {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--fg);
+  word-break: break-all;
+}
+.reconnect-sub {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+.reconnect-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg);
+  margin-top: 4px;
+}
+#reconnect-url {
+  width: 100%;
+  padding: 12px 14px;
+  font-size: 16px;
+  font-family: var(--font-mono);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--fg);
+}
+#reconnect-url:focus {
+  outline: none;
+  border-color: var(--primary);
+  background: var(--primary-soft);
+}
+.reconnect-status {
+  min-height: 18px;
+  font-size: 12px;
+  font-family: var(--font-mono);
+}
+.reconnect-status.ok { color: var(--primary); }
+.reconnect-status.err { color: var(--danger); }
+.reconnect-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 4px;
+}
+.reconnect-actions button {
+  flex: 1;
+  padding: 12px 16px;
+  font-size: 15px;
+  font-weight: 600;
+  border-radius: 10px;
+  cursor: pointer;
+  border: 1px solid var(--border-strong);
+}
+.reconnect-dismiss {
+  background: transparent;
+  color: var(--muted);
+}
+.reconnect-dismiss:hover { color: var(--fg); }
+.reconnect-go {
+  background: var(--primary);
+  color: var(--primary-fg);
+  border-color: var(--primary);
+}
