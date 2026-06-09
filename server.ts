@@ -672,11 +672,17 @@ async function handleTranscribe(req, res) {
   let size = 0;
   req.on('data', (chunk) => {
     size += chunk.length;
-    if (size > 25 * 1024 * 1024) { req.destroy(); return; }
+    if (size > 25 * 1024 * 1024) { console.error('transcribe: body over 25MB cap — destroying request'); req.destroy(); return; }
     chunks.push(chunk);
   });
+  const startedAt = Date.now();
   req.on('end', async () => {
     const body = Buffer.concat(chunks);
+    // Request log (one line per upload, low volume) — the device-side
+    // failure mode here is SILENT (client swallows transient errors), so
+    // this is the ground truth for "did the POST arrive and how far did
+    // it get" when debugging mobile upload wedges.
+    console.log(`transcribe: ${Math.round(body.length / 1024)}KB ${contentType} origin=${req.headers.origin || '-'} recv=${Date.now() - startedAt}ms`);
     if (!body.length) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: false, error: 'empty body' }));
@@ -690,10 +696,13 @@ async function handleTranscribe(req, res) {
       // empty query and falls back to the configured base spec.
       const incomingQuery = req.url.includes('?') ? req.url.slice(req.url.indexOf('?') + 1) : '';
       if (incomingQuery) upstream.search = incomingQuery;
+      // Bounded: a hung bridge otherwise holds this connection open
+      // forever and the client's retry loop never gets an answer.
       const bridgeRes = await fetch(upstream.toString(), {
         method: 'POST',
         headers: { 'Content-Type': contentType },
         body,
+        signal: AbortSignal.timeout(120_000),
       });
       const data = await bridgeRes.json().catch(() => ({}));
       if (!bridgeRes.ok) {
@@ -704,15 +713,19 @@ async function handleTranscribe(req, res) {
         return;
       }
       const transcript = (data && data.transcript) || '';
+      console.log(`transcribe: ok ${transcript.length} chars in ${Date.now() - startedAt}ms`);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true, transcript }));
     } catch (e) {
-      console.error('transcribe proxy error:', e);
+      const timedOut = e?.name === 'TimeoutError' || e?.name === 'AbortError';
+      console.error(`transcribe proxy error after ${Date.now() - startedAt}ms:`, e);
       if (!res.headersSent) res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: false, error: e.message }));
+      res.end(JSON.stringify({ ok: false, error: timedOut ? 'bridge timeout' : e.message }));
     }
   });
-  req.on('error', () => {
+  req.on('error', (e) => {
+    // Half-received uploads land here (client abort, dead radio mid-body).
+    console.error(`transcribe: request stream error after ${Date.now() - startedAt}ms at ${Math.round(size / 1024)}KB:`, e?.message);
     if (!res.headersSent) res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: false, error: 'upstream error' }));
   });

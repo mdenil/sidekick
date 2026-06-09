@@ -102,7 +102,11 @@ async function chunkedTranscribe(blob: Blob, url: string, toComposer: boolean): 
     uploadStatusLabel = label;
     status.setStatus(label, 'live');
     if (toComposer) composer.setInterim(`Transcribing… (${i + 1}/${slices.length})`);
-    parts.push(await postTranscribe(url, encodeWav(slices[i]), 'audio/wav', 60_000));
+    const wav = encodeWav(slices[i]);
+    const t0 = Date.now();
+    log(`chunked transcribe: chunk ${i + 1}/${slices.length} (${Math.round(wav.size / 1024)}KB)…`);
+    parts.push(await postTranscribe(url, wav, 'audio/wav', 60_000));
+    log(`chunked transcribe: chunk ${i + 1}/${slices.length} ok in ${Date.now() - t0}ms`);
   }
   return stitchTranscripts(parts);
 }
@@ -164,9 +168,17 @@ export async function flushOutbox() {
             const timeoutMs = blob.size > 1_000_000
               ? (needsChunking(durationMs, blob.size) ? 120_000 : 60_000)
               : 15_000;
+            log(`transcribe: single-shot ${Math.round(blob.size / 1024)}KB ${mimeType} timeout=${timeoutMs}ms`);
             text = await postTranscribe(url, blob, mimeType, timeoutMs);
           }
         } catch (e) {
+          // Non-timeout transient failures were previously SILENT here
+          // (re-thrown into queue.flush's bare catch), which made a
+          // fast-failing device upload look like a frozen "Stalled" pill
+          // with an empty log — undebuggable from the field.
+          if (!(e instanceof TimeoutError) && !(e instanceof PermanentTranscribeError)) {
+            log(`transcribe failed (transient, will retry): ${(e as Error)?.name ?? ''} ${(e as Error)?.message ?? e}`);
+          }
           if (e instanceof TimeoutError) {
             // Surface + chime; blob stays in queue for retry on next
             // reconnect. The card moves to queued(⏳) so the user sees
