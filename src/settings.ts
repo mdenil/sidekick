@@ -824,6 +824,13 @@ export function hydrate(handlers: {
   // chip removes.
   if (setSttKeyterms && keytermsChips) {
     let terms: string[] = [];
+    // Bumped on every local chip mutation. loadKeyterms() snapshots it
+    // before its async read and discards the result if it changed —
+    // otherwise a slow in-flight loadOrSeed() (panel open fires one)
+    // resolves with a pre-edit server snapshot and clobbers a chip the
+    // user just added (stale-snapshot race, same family as
+    // serverBackedStore's mutationEpoch).
+    let editEpoch = 0;
     const renderChips = () => {
       keytermsChips.innerHTML = '';
       for (const t of terms) {
@@ -835,15 +842,18 @@ export function hydrate(handlers: {
         x.className = 'kt-chip-x';
         x.setAttribute('aria-label', `remove ${t}`);
         x.textContent = '×';
-        x.onclick = () => { terms = terms.filter(v => v !== t); renderChips(); saveKeyterms(); };
+        x.onclick = () => { editEpoch++; terms = terms.filter(v => v !== t); renderChips(); saveKeyterms(); };
         chip.appendChild(x);
         keytermsChips.appendChild(chip);
       }
     };
     async function loadKeyterms() {
       const { loadOrSeed } = await import('./keyterms.ts');
+      const epoch = editEpoch;
       try {
-        terms = await loadOrSeed();
+        const fresh = await loadOrSeed();
+        if (epoch !== editEpoch) return; // a local edit raced this read; the edit wins
+        terms = fresh;
         renderChips();
       } catch {}
     }
@@ -855,6 +865,7 @@ export function hydrate(handlers: {
       const t = setSttKeyterms.value.trim().replace(/,$/, '').trim();
       if (!t) { setSttKeyterms.value = ''; return; }
       if (!terms.some(v => v.toLowerCase() === t.toLowerCase())) {
+        editEpoch++;
         terms.push(t);
         renderChips();
         saveKeyterms();
@@ -865,7 +876,7 @@ export function hydrate(handlers: {
       if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); commit(); }
       else if (e.key === 'Backspace' && !setSttKeyterms.value && terms.length) {
         // Backspace on empty input removes the last chip (standard chip UX).
-        terms.pop(); renderChips(); saveKeyterms();
+        editEpoch++; terms.pop(); renderChips(); saveKeyterms();
       }
     });
     setSttKeyterms.addEventListener('blur', () => { if (setSttKeyterms.value.trim()) commit(); });
