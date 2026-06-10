@@ -166,6 +166,23 @@ export async function writeList(terms: string[]): Promise<void> {
     terms.length ? terms.slice(0, 5).join(', ') + (terms.length > 5 ? ` (+${terms.length - 5})` : '') : '(empty)');
 }
 
+/** Latency-sensitive read for voice paths (WebRTC offer, transcribe
+ *  flush): returns the IDB mirror immediately when present and
+ *  revalidates from the server in the background so the NEXT read sees
+ *  fresh terms. STT bias terms tolerate staleness, but the network-first
+ *  readList() blocks up to its 5s fetch timeout on a slow link — paid
+ *  serially BEFORE the offer/transcribe POST it decorates. Falls back to
+ *  the full loadOrSeed() only when no mirror exists yet (very first boot,
+ *  before settings init has seeded it). */
+export async function readListFast(): Promise<string[]> {
+  const cached = await idbRead();
+  if (cached !== null) {
+    void readList().catch(() => {});
+    return cached;
+  }
+  return loadOrSeed();
+}
+
 /** First-boot seed: returns the saved list, or fetches the server seed
  *  file and persists it once. The fetched list is then returned so the
  *  caller can render chips immediately. Failures (offline, server down)

@@ -841,17 +841,21 @@ export async function open(
   // now (see dictation.ts). The bridge stays a thin transcript pipe
   // and dispatches only when the PWA sends {type:'dispatch', text}
   // over the data channel.
-  // Use loadOrSeed instead of readList so that if the user starts a call
-  // BEFORE ever opening the settings panel, the seed file still
-  // populates IDB and reaches the bridge. readList alone returned null
-  // on first-boot (settings panel hadn't been opened yet to seed IDB),
-  // so the offer went out with keyterms=[] and STT ran un-biased.
+  // readListFast: IDB-mirror-first so a slow link can't stall call setup
+  // behind a keyterms GET (network-first readList blocked up to 5s here,
+  // serially before the offer POST). Bias terms tolerate staleness; the
+  // background revalidate freshens the mirror for the next call. Still
+  // seeds via loadOrSeed when no mirror exists (call before settings ever
+  // loaded), so a first-boot offer doesn't ship keyterms=[].
   let keyterms: string[] = [];
+  const tKt = performance.now();
   try {
-    const { loadOrSeed } = await import('../../keyterms.ts');
-    keyterms = (await loadOrSeed()) || [];
+    const { readListFast } = await import('../../keyterms.ts');
+    keyterms = (await readListFast()) || [];
   } catch {}
-  log('[webrtc] offer keyterms=', keyterms.length, keyterms.length ? `(first: ${keyterms[0]})` : '');
+  log('[webrtc] offer keyterms=', keyterms.length,
+    keyterms.length ? `(first: ${keyterms[0]})` : '',
+    `+${Math.round(performance.now() - tKt)}ms`);
   // Barge detection runs client-side (BargeWindow over the mic
   // AnalyserNode). The user's `bargeIn` toggle + sensitivity are read
   // locally by realtimeBarge.ts on every frame.

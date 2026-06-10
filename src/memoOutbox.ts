@@ -97,10 +97,12 @@ export async function flushOutbox() {
       // and merges into the Deepgram spec like the streaming path does.
       // Without this, memo-mode transcription runs un-biased even if the
       // user has chips configured (was the case for "clawdian" miss).
+      // readListFast: mirror-first — a flaky link must not stall each
+      // flush attempt 5s on a keyterms GET before the audio POST.
       let kt: string[] = [];
       try {
-        const { readList } = await import('./keyterms.ts');
-        kt = (await readList()) || [];
+        const { readListFast } = await import('./keyterms.ts');
+        kt = (await readListFast()) || [];
       } catch {}
       // apiUrl: in the CAP local-asset shell the page origin is
       // capacitor://localhost, where a relative fetch never reaches the
