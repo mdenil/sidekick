@@ -650,9 +650,12 @@ async function warmPrefetch(top: any[]): Promise<void> {
       if (page.length > 0) {
         const cacheFuller = !!existing && existing.messages.length > page.length;
         const merged = cacheFuller ? sessionCache.mergeNewestPage(existing!.messages, page) : page;
+        // `partial: true` — this is a tiny prefetch window, not a full
+        // newest page. Delta resume (#191) must not use it as a tail
+        // cursor or a 12-row cache would render as the whole transcript.
         const pagination = cacheFuller
           ? existing!.pagination
-          : { firstId: r.firstId ?? null, hasMore: !!r.hasMore };
+          : { firstId: r.firstId ?? null, hasMore: !!r.hasMore, partial: true };
         const capped = sessionCache.capTranscript(merged, pagination);
         await sessionCache.putMessagesCache(s.id, capped.messages, capped.pagination);
       }

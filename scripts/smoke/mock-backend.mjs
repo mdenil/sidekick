@@ -342,6 +342,11 @@ export async function installMockBackend(page) {
       const page = newer.slice(0, limit);
       const lastId = page.length > 0 ? page[page.length - 1].id : null;
       const hasMoreNewer = page.length < newer.length;
+      // Mirror the real proxy (history.ts): an after-page that reaches
+      // the live tail (hasMoreNewer=false) is a delta-resume snapshot
+      // (#191) and carries the in-flight envelopes; intermediate pages
+      // stay bare.
+      const afterInflight = !hasMoreNewer ? (inflightByChat.get(chatId) || []) : [];
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -349,6 +354,7 @@ export async function installMockBackend(page) {
           messages: page,
           lastId: typeof lastId === 'number' ? lastId : null,
           hasMoreNewer,
+          ...(afterInflight.length > 0 ? { inflight: afterInflight } : {}),
         }),
       });
       return;

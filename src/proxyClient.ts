@@ -140,6 +140,82 @@ async function fetchSessionMessages(id: string, logPrefix = 'proxy-client.fetchS
   }
 }
 
+/** Newest row id usable as a `?after=` cursor. state.db ids are
+ *  integers (B2 read path, cache schema v4); scan from the tail past
+ *  any row whose id isn't digit-shaped. */
+function newestNumericId(messages: any[] | null | undefined): number | null {
+  if (!Array.isArray(messages)) return null;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const id = messages[i]?.id;
+    if (typeof id === 'number' && Number.isFinite(id)) return id;
+    if (typeof id === 'string' && /^\d+$/.test(id)) return parseInt(id, 10);
+  }
+  return null;
+}
+
+/** Bound on forward delta paging. Each page is a server-default window
+ *  (~200 rows); a cache more than ~3 pages behind the tail is cheaper
+ *  to refresh with one full newest-page fetch than to walk forward. */
+const MAX_DELTA_PAGES = 3;
+
+/** Delta-aware transcript fetch: when the IDB cache holds a tail for
+ *  this chat, fetch only the rows AFTER the cached tail (`?after=`)
+ *  and merge — a few KB when the cache is fresh, vs ~750KB-1MB for the
+ *  full newest page (the 28.5s "resume/replay done" on cellular,
+ *  2026-06-09 device boot log). The tail page also carries `inflight`
+ *  (proxy attaches it when hasMoreNewer=false) so mid-turn catch-up
+ *  works exactly like the full-page resume.
+ *
+ *  Falls back to the full-page fetch when: no usable cache; the cache
+ *  is a `partial` boot-prefetch window (a ~12-row slice — using its
+ *  tail as the cursor would pass off the slice as the whole
+ *  transcript); the server doesn't acknowledge the cursor
+ *  (`hasMoreNewer` absent — deleted/unknown chat, unconfigured proxy,
+ *  or a backend without forward paging), so deleted-chat probes still
+ *  see an empty transcript; the delta spans more than MAX_DELTA_PAGES;
+ *  or anything errors.
+ *
+ *  Tradeoff: rows already cached are NOT re-fetched, so server-side
+ *  edits to old rows aren't picked up on this path — live SSE /
+ *  session_changed / CACHE_SCHEMA_VERSION bumps carry those. */
+async function fetchSessionMessagesDelta(id: string, logPrefix: string) {
+  let cached: Awaited<ReturnType<typeof sessionCache.getMessagesCache>> = null;
+  try { cached = await sessionCache.getMessagesCache(id); } catch { /* IDB unavailable */ }
+  const tailId = newestNumericId(cached?.messages);
+  if (!cached || cached.pagination.partial || tailId == null) return fetchSessionMessages(id, logPrefix);
+  try {
+    let merged = cached.messages;
+    let cursor = tailId;
+    let fetchedRows = 0;
+    for (let page = 0; page < MAX_DELTA_PAGES; page++) {
+      const r = await fetch(
+        `${apiBase()}/sessions/${encodeURIComponent(id)}/messages?after=${encodeURIComponent(String(cursor))}`,
+      );
+      if (!r.ok) break;
+      const d = await r.json();
+      if (typeof d.hasMoreNewer !== 'boolean') break;
+      const rows = Array.isArray(d.messages) ? d.messages : [];
+      fetchedRows += rows.length;
+      merged = sessionCache.mergeNewestPage(merged, rows);
+      if (!d.hasMoreNewer) {
+        const inflight = Array.isArray(d.inflight) ? d.inflight : [];
+        log(`${logPrefix}: delta resume — ${fetchedRows} new rows after id=${tailId} onto ${cached.messages.length} cached, ${inflight.length} inflight`);
+        return {
+          messages: merged,
+          firstId: cached.pagination.firstId ?? null,
+          hasMore: !!cached.pagination.hasMore,
+          inflight,
+        };
+      }
+      if (d.lastId == null) break;
+      cursor = d.lastId;
+    }
+  } catch (e: any) {
+    diag(`${logPrefix}: delta resume failed (${e?.message || e}), falling back to full fetch`);
+  }
+  return fetchSessionMessages(id, logPrefix);
+}
+
 function firstUserSnippet(messages: any[]): string {
   const row = messages.find((m) => m?.role === 'user' && typeof m.content === 'string' && m.content.trim());
   return row ? String(row.content).slice(0, 80) : '';
@@ -1153,8 +1229,9 @@ export const proxyClientAdapter = {
     // full transcript. On any failure (proxy down, unconfigured token,
     // unknown chat_id) we return an empty transcript and let the user
     // continue the chat — better than a hard error toast for what is
-    // strictly enrichment.
-    return fetchSessionMessages(id, 'proxy-client.resumeSession');
+    // strictly enrichment. Delta-aware: with a cached tail in IDB only
+    // the rows past it are fetched (#191).
+    return fetchSessionMessagesDelta(id, 'proxy-client.resumeSession');
   },
 
   /** Fetch a session transcript without changing activeChatId or IDB
@@ -1162,9 +1239,11 @@ export const proxyClientAdapter = {
    *  reply_final, the shell wants a fresh durable snapshot so the
    *  transcript store can drain completed inflight envelopes, but it
    *  must not steal focus if the user switches chats while the request
-   *  is in flight. */
+   *  is in flight. Delta-aware (#191): the post-final refresh fires
+   *  after EVERY reply, so with a warm cache it pulls just the new
+   *  turn's rows instead of the full ~1MB newest page. */
   async fetchSessionMessages(id: string) {
-    return fetchSessionMessages(id);
+    return fetchSessionMessagesDelta(id, 'proxy-client.fetchSessionMessages');
   },
 
   /** Tiny newest-page fetch used ONLY to warm the IDB cache at boot

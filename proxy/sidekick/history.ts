@@ -116,10 +116,16 @@ async function handleSessionMessagesViaUpstream(
     // finalized-items merge (which dropped message_id on the in-flight
     // assistant, causing visible double-renders on reload).
     //
-    // Skip on `before`/`after`-cursor paging (a cursor page can't be the
-    // resume snapshot that carries in-flight). Empty array when no turn
-    // is active.
-    const inflightEnvelopes = before === null && after === null ? r.inflight : [];
+    // Skip on `before`-cursor paging (an older-history page can't be the
+    // resume snapshot that carries in-flight). `after` pages DO carry
+    // inflight — but only when the page reaches the live tail
+    // (has_more_newer === false): that's the delta-resume snapshot
+    // (#191, the PWA catching up from its cached tail), which needs
+    // mid-turn envelopes for streaming-bubble catch-up exactly like the
+    // first-page resume. Intermediate after-pages stay bare. Empty
+    // array when no turn is active.
+    const reachesTail = after === null || r.has_more_newer === false;
+    const inflightEnvelopes = before === null && reachesTail ? r.inflight : [];
     trace('serialize-start');
     const body = JSON.stringify({
       messages,

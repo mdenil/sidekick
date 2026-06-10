@@ -49,7 +49,14 @@ const DB_VERSION = 1;
 //        under V1 is id-space-incompatible with B2: mergeNewestPage finds no
 //        id matches → appends all B2 rows to V1 cache → hybrid transcript →
 //        pickUserDuplicateLosers / userKeys dedup drops message bubbles.
-export const CACHE_SCHEMA_VERSION = 4;
+//   v5 — bumped 2026-06-10 (#191 delta resume). pagination grows
+//        `partial: true` on records written by the drawer's tiny
+//        (12-row) boot prefetch. Delta resume must NOT use a partial
+//        record as its tail cursor — it would treat the 12-row window
+//        as the whole transcript and skip the full newest-page fetch.
+//        v4 prefetch records are unflagged and indistinguishable from
+//        full pages, so they must be dropped.
+export const CACHE_SCHEMA_VERSION = 5;
 
 /** True when a stored cache record's shape is current. A missing or
  *  mismatched `schemaVersion` means the record was written by an older
@@ -114,9 +121,21 @@ export async function putListCache(sessions: any[]): Promise<void> {
   } catch {}
 }
 
+/** `partial: true` marks a record written by the drawer's tiny boot
+ *  prefetch (a ~12-row newest window, NOT a full newest page). Partial
+ *  records are fine as instant-paint material but must never serve as
+ *  the delta-resume tail cursor — see fetchSessionMessagesDelta. The
+ *  resume reconcile rewrites the record unflagged once a full page has
+ *  merged in. */
+export interface TranscriptPagination {
+  firstId: number | null;
+  hasMore: boolean;
+  partial?: boolean;
+}
+
 export interface CachedMessages {
   messages: any[];
-  pagination: { firstId: number | null; hasMore: boolean };
+  pagination: TranscriptPagination;
   updatedAt: number;
 }
 
@@ -143,7 +162,7 @@ export async function getMessagesCache(id: string): Promise<CachedMessages | nul
 export async function putMessagesCache(
   id: string,
   messages: any[],
-  pagination: { firstId: number | null; hasMore: boolean } = { firstId: null, hasMore: false },
+  pagination: TranscriptPagination = { firstId: null, hasMore: false },
 ): Promise<void> {
   try {
     const db = await openDB();
@@ -194,8 +213,8 @@ export function mergeNewestPage(cached: any[], page: any[]): any[] {
  *  correctly past the trim boundary. No-op below the ceiling. */
 export function capTranscript(
   messages: any[],
-  pagination: { firstId: number | null; hasMore: boolean },
-): { messages: any[]; pagination: { firstId: number | null; hasMore: boolean } } {
+  pagination: TranscriptPagination,
+): { messages: any[]; pagination: TranscriptPagination } {
   if (messages.length <= MAX_CACHED_MESSAGES) return { messages, pagination };
   const kept = messages.slice(messages.length - MAX_CACHED_MESSAGES);
   const oldest = kept[0];
