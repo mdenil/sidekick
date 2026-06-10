@@ -45,7 +45,7 @@ import { playFeedback } from '../shared/feedback.ts';
 import * as sendwordDetector from './sendwordDetector.ts';
 import { SilenceWindow, getHandsfreeConfig } from '../shared/handsfree.ts';
 import { BargeDetector } from '../shared/bargeDetector.ts';
-import { getBargeThreshold } from '../../voiceTuning.ts';
+import { getBargeThreshold, getBargeDetectorTuning } from '../../voiceTuning.ts';
 import * as recorderBar from '../shared/recorderBar.ts';
 import { BrowserSTTProvider, isSupported as isBrowserSttSupported } from '../streaming/browserDictate.ts';
 import type { STTProvider, TranscriptEvent } from '../shared/stt-provider.ts';
@@ -526,6 +526,9 @@ function startBargeLoop(): void {
     return;
   }
   const threshold = typeof _settings.bargeVadThreshold === 'number' ? _settings.bargeVadThreshold : 0.5;
+  // Device anti-echo tuning (iOS: warmup + minPeak gate). Omitting this
+  // let speaker TTS self-barge through the bare detector (2026-06-10).
+  const tuning = getBargeDetectorTuning();
   bargeDetector = new BargeDetector();
   void bargeDetector.start({
     micStream: mediaStream,
@@ -533,8 +536,12 @@ function startBargeLoop(): void {
     isEnabledCb: () => !!(settings.get() as any).bargeIn,
     onFire: () => { try { opts?.onBarge?.(); } catch (e: any) { diag('listen: onBarge threw', e?.message); } },
     positiveSpeechThreshold: threshold,
+    ...tuning,
   });
-  log('[turnbased-barge] started');
+  log('[turnbased-barge] started',
+    `warmupMs=${tuning.warmupMs ?? 'default'}`,
+    `minSpeechMs=${tuning.minSpeechMs ?? 'default'}`,
+    `minPeak=${tuning.minPeak ?? 'none'}`);
 }
 
 function stopBargeLoop(): void {

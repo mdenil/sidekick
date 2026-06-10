@@ -124,3 +124,20 @@ export const DEVICE_DEFAULTS: Record<DeviceClass, {
 export function getBargeThreshold(): number {
   return DEVICE_DEFAULTS[detectDeviceClass()].bargeThreshold;
 }
+
+/** Anti-echo tuning for a BargeDetector, per device class. EVERY barge
+ *  path must spread this into its detector opts — the 2026-06-10
+ *  self-barge happened because turnbased built a bare BargeDetector and
+ *  the iOS warmup/minPeak calibration silently applied to realtime only. */
+export function getBargeDetectorTuning(deviceClass: DeviceClass = detectDeviceClass()): {
+  warmupMs?: number;
+  minSpeechMs?: number;
+  minPeak?: number;
+} {
+  const dev = DEVICE_DEFAULTS[deviceClass];
+  return {
+    warmupMs: dev.bargeWarmupMs,
+    minSpeechMs: dev.bargeMinSpeechMs,
+    minPeak: dev.bargeMinPeak,
+  };
+}

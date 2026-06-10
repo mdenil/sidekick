@@ -18,7 +18,7 @@ import { BargeDetector } from '../shared/bargeDetector.ts';
 import { isOnSpeaker } from '../shared/headphones.ts';
 import { chooseVadStrategy, effectiveBargeThreshold, makeVadSource } from '../shared/vadRouting.ts';
 import * as settings from '../../settings.ts';
-import { detectDeviceClass, DEVICE_DEFAULTS } from '../../voiceTuning.ts';
+import { getBargeDetectorTuning } from '../../voiceTuning.ts';
 
 let detector: BargeDetector | null = null;
 
@@ -39,20 +39,16 @@ export function start(
   const userThreshold = typeof s.bargeVadThreshold === 'number' ? s.bargeVadThreshold : 0.5;
   const onSpeaker = isOnSpeaker();
   const threshold = effectiveBargeThreshold(userThreshold, onSpeaker);
-  // Per-device warmup + minSpeechMs overrides — iOS bumps both because
-  // Apple's AEC needs ~1 s to settle at TTS-start and Silero would
-  // otherwise fire on the residual. Other platforms get BargeDetector
-  // defaults (500 ms / 400 ms).
-  const dev = DEVICE_DEFAULTS[detectDeviceClass()];
+  const tuning = getBargeDetectorTuning();
   const vadStrategy = chooseVadStrategy();
   log('[audio-state] realtimeBarge.start',
     `bargeIn=true`,
     `userThreshold=${userThreshold}`,
     `effectiveThreshold=${threshold}`,
     `onSpeaker=${onSpeaker}`,
-    `warmupMs=${dev.bargeWarmupMs ?? 'default'}`,
-    `minSpeechMs=${dev.bargeMinSpeechMs ?? 'default'}`,
-    `minPeak=${dev.bargeMinPeak ?? 'none'}`,
+    `warmupMs=${tuning.warmupMs ?? 'default'}`,
+    `minSpeechMs=${tuning.minSpeechMs ?? 'default'}`,
+    `minPeak=${tuning.minPeak ?? 'none'}`,
     `vad=${vadStrategy}`);
   detector = new BargeDetector();
   void detector.start({
@@ -61,9 +57,7 @@ export function start(
     isEnabledCb: () => !!(settings.get() as any).bargeIn,
     onFire,
     positiveSpeechThreshold: threshold,
-    warmupMs: dev.bargeWarmupMs,
-    minSpeechMs: dev.bargeMinSpeechMs,
-    minPeak: dev.bargeMinPeak,
+    ...tuning,
     vadSource: makeVadSource(vadStrategy),
   });
   log('[realtime-barge] started');

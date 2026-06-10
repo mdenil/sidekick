@@ -327,7 +327,12 @@ export class BargeDetector {
     // caller synchronously invokes something that loops back here)
     // can't double-fire.
     this.cooldownUntil = now + o.cooldownMs;
-    log(`[barge-detector] fire (cooldown ${o.cooldownMs}ms)`);
+    // Peak in the fire log is forensic: the 2026-06-10 realtime self-barge
+    // passed the 0.15 gate but the log couldn't say by how much.
+    const firePeak = speechPeakOverride
+      ? speechPeakOverride()
+      : (this.vadSource?.getRecentPeak() ?? 0);
+    log(`[barge-detector] fire (cooldown ${o.cooldownMs}ms, peak ${firePeak.toFixed(3)}, minPeak ${o.minPeak ?? 'none'})`);
     if (!o.silentFire) {
       try { playFeedback('barge'); } catch { /* noop */ }
     }
