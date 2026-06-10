@@ -11,7 +11,7 @@
  * network-first, so first-load pulls anything missed and caches on the
  * way through.
  */
-const CACHE_NAME = 'v0.593';
+const CACHE_NAME = 'v0.594';
 
 // Dedicated cache for VAD assets. Key insight: VAD assets are 14.7 MB
 // and don't change with every app deploy — the Silero model is
@@ -26,6 +26,20 @@ const CACHE_NAME = 'v0.593';
 // the old VAD cache and the next call re-fetches. This is rare;
 // ~once per quarter at most.
 const VAD_CACHE = 'vad-assets-v4';
+
+// Dedicated cache for content-hashed build modules (#182 / Path C2).
+// build.mjs renames each compiled module foo.mjs → foo.<sha10>.mjs and
+// the generated build/index.html maps bare /build/*.mjs specifiers to
+// the hashed names via an import map. A hashed URL's content can never
+// change (new content ⇒ new name), so these are safe to serve
+// CACHE-FIRST forever — that's what makes cold boot on a spotty link
+// skip the network for every unchanged module. Like VAD_CACHE, this
+// cache survives CACHE_NAME bumps: a deploy only re-fetches the files
+// whose hashes actually changed (+ index.html). Eviction is handled by
+// the page, not activate: after boot it posts 'prune-build-cache' with
+// the current import map's URLs and we drop everything else.
+const BUILD_CACHE = 'build-hashed-v1';
+const HASHED_BUILD_RE = /^\/build\/.+\.[0-9a-f]{10}\.mjs$/;
 
 // Minimum viable shell for offline boot. Bundle JS modules used to be
 // listed here too — that was the source of the 2026-05-01 cache.addAll
@@ -80,10 +94,11 @@ self.addEventListener('install', (e) => {
 });
 
 self.addEventListener('activate', (e) => {
-  // Prune old caches BUT preserve VAD_CACHE — VAD assets survive app
-  // version bumps (see VAD_CACHE docstring). Whitelist both the
-  // current app cache + the VAD cache; everything else gets evicted.
-  const keep = new Set([CACHE_NAME, VAD_CACHE]);
+  // Prune old caches BUT preserve VAD_CACHE + BUILD_CACHE — both survive
+  // app version bumps (see their docstrings; BUILD_CACHE entries are
+  // content-addressed so they can't go stale, and the page prunes
+  // orphans via 'prune-build-cache'). Everything else gets evicted.
+  const keep = new Set([CACHE_NAME, VAD_CACHE, BUILD_CACHE]);
   e.waitUntil(
     caches.keys().then(keys =>
       Promise.all(keys.filter(k => !keep.has(k)).map(k => caches.delete(k)))
@@ -138,6 +153,24 @@ self.addEventListener('fetch', (e) => {
   if (url.pathname === '/build/vendor/vad-web.mjs') {
     e.respondWith(
       caches.open(VAD_CACHE).then(cache =>
+        cache.match(e.request).then(cached => {
+          if (cached) return cached;
+          return fetch(e.request).then(response => {
+            if (response.ok) cache.put(e.request, response.clone());
+            return response;
+          });
+        }),
+      ),
+    );
+    return;
+  }
+  // Content-hashed build modules — CACHE-FIRST against BUILD_CACHE,
+  // immutable by construction (see BUILD_CACHE docstring). The stale-
+  // module hazard that forced /build/* to network-first can't occur
+  // here: a deploy changes the hash, which changes the URL.
+  if (HASHED_BUILD_RE.test(url.pathname)) {
+    e.respondWith(
+      caches.open(BUILD_CACHE).then(cache =>
         cache.match(e.request).then(cached => {
           if (cached) return cached;
           return fetch(e.request).then(response => {
@@ -229,6 +262,20 @@ self.addEventListener('message', (e) => {
   // honour the message so users can unstick a stale install.
   if (e.data?.type === 'SKIP_WAITING') {
     self.skipWaiting();
+  }
+  // BUILD_CACHE garbage collection. The page (index.html SW bootstrap)
+  // posts the current import map's hashed URLs ~15s after boot; every
+  // cached module NOT in that set belongs to a previous deploy and is
+  // dropped. Keeps the cache bounded at exactly one deploy's worth of
+  // modules without coupling eviction to CACHE_NAME bumps.
+  if (e.data?.type === 'prune-build-cache' && Array.isArray(e.data.keep)) {
+    const keep = new Set(e.data.keep.map(u => new URL(u, self.location.origin).href));
+    e.waitUntil?.(
+      caches.open(BUILD_CACHE).then(async cache => {
+        const reqs = await cache.keys();
+        await Promise.all(reqs.filter(r => !keep.has(r.url)).map(r => cache.delete(r)));
+      }),
+    );
   }
 });
 

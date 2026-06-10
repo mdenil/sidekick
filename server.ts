@@ -166,12 +166,30 @@ async function serveStatic(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
   let filePath = url.pathname;
   if (filePath === '/' || filePath === '') filePath = '/index.html';
+  if (filePath === '/index.html') {
+    // Hashed-asset build (#182): build.mjs writes build/index.html with the
+    // import map + hashed entry script injected. Prefer it; fall back to
+    // the tracked root index.html for unhashed dev/watch builds.
+    try {
+      const data = await fs.readFile(path.join(__dirname, 'build/index.html'));
+      res.writeHead(200, { 'Content-Type': MIME['.html'], 'Cache-Control': 'no-cache' });
+      res.end(data);
+      return;
+    } catch { /* no hashed build present */ }
+  }
   const full = path.join(__dirname, filePath);
   if (!full.startsWith(__dirname)) { res.writeHead(403); res.end('forbidden'); return; }
   try {
     const data = await fs.readFile(full);
     const ext = path.extname(full).toLowerCase();
-    res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream', 'Cache-Control': 'no-cache' });
+    // Content-hashed modules never change under the same URL — let HTTP
+    // caches keep them. Everything else stays no-cache (the SW owns
+    // offline caching policy).
+    const immutable = /\.[0-9a-f]{10}\.mjs$/.test(filePath);
+    res.writeHead(200, {
+      'Content-Type': MIME[ext] || 'application/octet-stream',
+      'Cache-Control': immutable ? 'public, max-age=31536000, immutable' : 'no-cache',
+    });
     res.end(data);
   } catch (e) {
     res.writeHead(404); res.end('not found');

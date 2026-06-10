@@ -11,9 +11,10 @@
  */
 
 import * as esbuild from 'esbuild';
-import { readdir, rm, copyFile, readFile, writeFile } from 'node:fs/promises';
+import { readdir, rm, rename, copyFile, readFile, writeFile } from 'node:fs/promises';
 import { join, dirname, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
 
 const ROOT = dirname(fileURLToPath(import.meta.url)) + '/..';
 const SRC = join(ROOT, 'src');
@@ -100,6 +101,82 @@ async function buildVendorBundles() {
   });
 }
 
+/**
+ * Content-hash the compiled modules (#182 / Path C2) so the service worker
+ * can cache them immutably — unchanged modules are never re-downloaded
+ * across deploys (the old network-first /build/* strategy re-fetched all
+ * ~144 modules on every reload, painful on cellular).
+ *
+ * Design: filenames get a hash suffix (`main.mjs` → `main.<sha>.mjs`) but
+ * module CODE is untouched — import specifiers still say `./foo.mjs`. An
+ * import map (injected into build/index.html by writeHashedIndex) remaps
+ * each unhashed URL to its hashed file at resolution time. This keeps every
+ * file's hash independent: a leaf-module change invalidates ONE file + the
+ * index, instead of cascading new hashes up the whole importer chain (which
+ * is what rewriting specifiers in-place would cause). It also means runtime
+ * code and smoke tests that `import('/build/foo.mjs')` by unhashed path
+ * keep working — the document's import map resolves them to the same
+ * (singleton) hashed module.
+ *
+ * Excluded from hashing:
+ *  - vendor/ — vad-web.mjs is versioned via the SW's VAD_CACHE (bumped only
+ *    on lib upgrades) and both vendor bundles are dynamic-imported via
+ *    runtime-computed URLs; they change ~never, so hashing buys nothing.
+ *  - sourcemaps (.map) — left unrenamed; the renamed module's relative
+ *    `sourceMappingURL=foo.mjs.map` comment still resolves in the same dir.
+ *  - audio-processor.js — worklet loaded out-of-band (.js, not .mjs).
+ */
+const HASH_LEN = 10;
+
+async function hashBuildAssets() {
+  async function collect(dir, acc = []) {
+    for (const e of await readdir(dir, { withFileTypes: true })) {
+      const p = join(dir, e.name);
+      if (e.isDirectory()) await collect(p, acc);
+      else if (e.isFile() && e.name.endsWith('.mjs')) acc.push(p);
+    }
+    return acc;
+  }
+  const files = (await collect(OUT))
+    .filter(p => !relative(OUT, p).startsWith('vendor/'))
+    .sort();
+  const imports = {};
+  for (const p of files) {
+    const rel = relative(OUT, p);
+    const hash = createHash('sha256').update(await readFile(p)).digest('hex').slice(0, HASH_LEN);
+    const hashedRel = rel.replace(/\.mjs$/, `.${hash}.mjs`);
+    await rename(p, join(OUT, hashedRel));
+    imports[`/build/${rel}`] = `/build/${hashedRel}`;
+  }
+  // Manifest for tooling/diagnostics; the page reads the inline import map.
+  await writeFile(join(OUT, 'importmap.json'), JSON.stringify({ imports }, null, 1));
+  return imports;
+}
+
+/**
+ * Write build/index.html: the root index.html with (a) the import map
+ * injected directly above the entry script — import maps must precede the
+ * first module load and cannot be external files — and (b) the entry
+ * `src` rewritten to the hashed main module (script[src] does not resolve
+ * through import maps).
+ *
+ * The tracked root index.html stays pristine (it keeps working against an
+ * unhashed `--watch` dev build); server.ts serves build/index.html when it
+ * exists, and build-cap.mjs prefers it for the CAP app.html.
+ */
+async function writeHashedIndex(imports) {
+  const html = await readFile(join(ROOT, 'index.html'), 'utf8');
+  const entry = '<script type="module" src="/build/main.mjs">';
+  if (!html.includes(entry) || !imports['/build/main.mjs']) {
+    throw new Error('[build] index.html entry script or hashed main.mjs missing — cannot write hashed index');
+  }
+  const mapTag = `<script type="importmap">${JSON.stringify({ imports })}</script>`;
+  await writeFile(
+    join(OUT, 'index.html'),
+    html.replace(entry, `${mapTag}\n<script type="module" src="${imports['/build/main.mjs']}">`),
+  );
+}
+
 async function build({ watch }) {
   await rm(OUT, { recursive: true, force: true });
   const entries = await collectSources(SRC);
@@ -123,7 +200,9 @@ async function build({ watch }) {
     await copyAssets();
     await rewriteImportExtensions(OUT);
     await buildVendorBundles();
-    console.log(`[build] compiled ${entries.length} files → ${relative(ROOT, OUT)}/`);
+    const imports = await hashBuildAssets();
+    await writeHashedIndex(imports);
+    console.log(`[build] compiled ${entries.length} files → ${relative(ROOT, OUT)}/ (${Object.keys(imports).length} hashed + import map)`);
   }
 }
 

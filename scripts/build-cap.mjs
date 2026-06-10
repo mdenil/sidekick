@@ -42,7 +42,11 @@ async function main() {
   }
 
   // The real app's HTML ships as app.html (index.html is the host-picker).
-  await copyFile(join(ROOT, 'index.html'), join(WEBDIR, 'app.html'));
+  // Prefer the hashed-build index (build/index.html — import map + hashed
+  // entry, written by build.mjs); fall back to the vanilla root index.html
+  // for unhashed dev builds.
+  await copyFile(join(ROOT, 'build/index.html'), join(WEBDIR, 'app.html'))
+    .catch(() => copyFile(join(ROOT, 'index.html'), join(WEBDIR, 'app.html')));
 
   for (const d of DIRS) {
     await cp(join(ROOT, d), join(WEBDIR, d), { recursive: true });

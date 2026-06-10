@@ -786,6 +786,21 @@
         if (v) setVersion(v);
       }).catch(() => {});
     }
+
+    // Retire superseded hashed build modules from the SW's immutable cache.
+    // The import map (injected by build.mjs) lists the current generation
+    // of /build/*.<hash>.mjs files; anything else in the hashed cache came
+    // from an older deploy and will never be requested again. Delayed so it
+    // never competes with boot; no-op on unhashed dev builds (no map).
+    const im = document.querySelector('script[type="importmap"]');
+    if (im) {
+      try {
+        const keep = Object.values(JSON.parse(im.textContent).imports || {});
+        setTimeout(() => {
+          navigator.serviceWorker.controller?.postMessage({ type: 'prune-build-cache', keep });
+        }, 15000);
+      } catch {}
+    }
   });
 })();
 </script>
