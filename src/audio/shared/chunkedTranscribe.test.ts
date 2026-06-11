@@ -119,6 +119,32 @@ describe('stitchTranscripts', () => {
     assert.equal(stitchTranscripts([]), '');
   });
 
+  it('dedups digit runs the two STT passes formatted differently (device regression)', () => {
+    // Cold-start splice on device: head from batch /transcribe, tail from
+    // the streaming bridge — counted digits got collapsed into single
+    // number tokens with different boundaries, hiding the overlap.
+    const out = stitchTranscripts([
+      '1234567.',
+      '34567, No need to reply.',
+    ]);
+    assert.equal(out, '1234567. No need to reply.');
+  });
+
+  it('matches digit overlap across different groupings', () => {
+    const out = stitchTranscripts([
+      'meet at 10 30 am',
+      '1030 am sounds good',
+    ]);
+    assert.equal(out, 'meet at 10 30 am sounds good');
+  });
+
+  it('never cuts in the middle of a number token', () => {
+    // "34" overlaps the head of "3456" but dropping it would also drop
+    // the non-overlapping "56" — must plain-join instead.
+    const out = stitchTranscripts(['one two 34', '3456 seven']);
+    assert.equal(out, 'one two 34 3456 seven');
+  });
+
   it('never matches seams shorter than 3 words (false-positive guard)', () => {
     // A 2-word coincidence ("three four") must NOT trigger dedup — plain
     // join is the safe failure mode.

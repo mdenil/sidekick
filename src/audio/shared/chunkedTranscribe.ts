@@ -129,12 +129,29 @@ const SEAM_WINDOW_WORDS = 24;
  *  the aligned words agree instead of demanding an exact run. */
 const SEAM_MATCH_RATIO = 0.75;
 
+/** Expand words into comparison tokens, splitting digit runs into single
+ *  digits. Two STT passes can format the same spoken digits differently
+ *  ("1234567." vs "34567,"), hiding the seam overlap inside one token —
+ *  per-digit tokens make it visible again. owner[i] = source word index,
+ *  so a match can be mapped back to whole words. */
+function expandForSeam(words: string[]): { toks: string[]; owner: number[] } {
+  const toks: string[] = [];
+  const owner: number[] = [];
+  for (let i = 0; i < words.length; i++) {
+    const norm = normalizeWord(words[i]);
+    const parts = norm.match(/\d|\D+/g) ?? [''];
+    for (const t of parts) { toks.push(t); owner.push(i); }
+  }
+  return { toks, owner };
+}
+
 /** Join per-chunk transcripts, removing the words duplicated by the audio
  *  overlap at each seam. For each adjacent pair, find the longest n
- *  (3..SEAM_WINDOW_WORDS) where the last n words of the left part align
- *  with the first n words of the right part at ≥ SEAM_MATCH_RATIO; drop
- *  the right part's first n words. No acceptable alignment → plain join
- *  (better a rare doubled word than a dropped one). */
+ *  (3..window) where the left part's last n seam tokens align with the
+ *  right part's first n at ≥ SEAM_MATCH_RATIO, with the cut landing on a
+ *  word boundary of the right part; drop those right-part words. No
+ *  acceptable alignment → plain join (better a rare doubled word than a
+ *  dropped one). */
 export function stitchTranscripts(parts: string[]): string {
   const nonEmpty = parts.map(p => (p || '').trim()).filter(Boolean);
   if (nonEmpty.length === 0) return '';
@@ -143,17 +160,21 @@ export function stitchTranscripts(parts: string[]): string {
     const right = nonEmpty[p];
     const accWords = acc.split(/\s+/);
     const rightWords = right.split(/\s+/);
-    const maxN = Math.min(SEAM_WINDOW_WORDS, accWords.length, rightWords.length);
-    let cut = 0;
+    const left = expandForSeam(accWords.slice(-SEAM_WINDOW_WORDS));
+    const rightExp = expandForSeam(rightWords.slice(0, SEAM_WINDOW_WORDS));
+    const maxN = Math.min(left.toks.length, rightExp.toks.length);
+    let cutWords = 0;
     for (let n = maxN; n >= 3; n--) {
-      const tail = accWords.slice(-n);
+      // Never cut mid-word (e.g. inside a multi-digit number).
+      if (n < rightExp.toks.length && rightExp.owner[n] === rightExp.owner[n - 1]) continue;
+      const tail = left.toks.slice(-n);
       let matches = 0;
       for (let i = 0; i < n; i++) {
-        if (normalizeWord(tail[i]) === normalizeWord(rightWords[i])) matches++;
+        if (tail[i] === rightExp.toks[i]) matches++;
       }
-      if (matches / n >= SEAM_MATCH_RATIO) { cut = n; break; }
+      if (matches / n >= SEAM_MATCH_RATIO) { cutWords = rightExp.owner[n - 1] + 1; break; }
     }
-    const remainder = rightWords.slice(cut).join(' ');
+    const remainder = rightWords.slice(cutWords).join(' ');
     acc = remainder ? `${acc} ${remainder}` : acc;
   }
   return acc;
