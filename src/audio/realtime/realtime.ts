@@ -37,7 +37,7 @@ import { logAudioState } from '../shared/headphones.ts';
 import { playFeedback, haptic } from '../shared/feedback.ts';
 import * as audioPlatform from '../shared/platform.ts';
 import * as settings from '../../settings.ts';
-import * as ocSpike from './ocSpike.ts';
+import * as callCapture from './callCapture.ts';
 import type {
   STTProvider,
   TranscriptEvent as STTTranscriptEvent,
@@ -555,10 +555,10 @@ export async function open(
   logAudioState('post-getUserMedia');
   phase('mic');
 
-  // OC Phase-0 spike (dev-mode only): parallel MediaRecorder on the
-  // same mic track for the whole call — answers the WKWebView
-  // coexistence question before any optimistic-capture work lands.
-  try { ocSpike.maybeStart(micStream); } catch (e: any) { diag('[oc-spike] start threw', e?.message); }
+  // Optimistic call capture: parallel recorder on the same mic track,
+  // started before the SDP handshake so speech during connection
+  // setup is recoverable (cold-start splice at first dispatch).
+  try { callCapture.start(micStream); } catch (e: any) { diag('[call-capture] start threw', e?.message); }
 
   // T3 — warm AEC reference path with silence on iOS, talk mode only.
   // Stream mode runs AEC=off so there's nothing to converge.
@@ -976,9 +976,9 @@ export async function close(
   const silent = opts?.silent === true || reconnecting;
   const closeT0 = performance.now();
   setState('closing');
-  // OC spike must stop BEFORE the mic release below kills the track,
+  // Capture must stop BEFORE the mic release below kills the track,
   // or the recorder's final chunk never flushes.
-  try { ocSpike.stop(reason); } catch { /* ignore */ }
+  try { callCapture.stop(reason); } catch { /* ignore */ }
   const session = active;
   active = null;
   // Per-step timing inside `local` — surfaces any unexpectedly slow

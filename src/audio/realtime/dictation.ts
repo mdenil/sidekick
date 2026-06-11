@@ -26,9 +26,16 @@
  */
 
 import * as conn from './realtime.ts';
+import * as callCapture from './callCapture.ts';
 import { playFeedback } from '../shared/feedback.ts';
 import { matchSendword, getHandsfreeConfig } from '../shared/handsfree.ts';
+import { stitchTranscripts } from '../shared/chunkedTranscribe.ts';
 import { log, diag } from '../../util/log.ts';
+
+/** Cap on how long the FIRST dispatch of a call waits for the
+ *  cold-start head transcript. Past this, dispatch un-spliced —
+ *  better a clipped message than a stuck one. */
+const HEAD_WAIT_MS = 4000;
 
 let buffer: string[] = [];
 let silenceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -70,7 +77,7 @@ export function reset(): void {
   }
 }
 
-function dispatchNow(): void {
+async function dispatchNow(): Promise<void> {
   if (silenceTimer !== null) {
     clearTimeout(silenceTimer);
     silenceTimer = null;
@@ -78,16 +85,29 @@ function dispatchNow(): void {
   const utterance = buffer.join(' ').trim();
   buffer = [];
   if (!utterance) return;
-  log('[dictation] dispatch:', utterance.slice(0, 120));
+  // Cold-start splice: speech from before the bridge's STT pipe went
+  // hot lives only in the parallel call recorder. takeHead is
+  // single-consume (first dispatch of the call) and resolves '' on
+  // any failure or after HEAD_WAIT_MS — every degraded path is just
+  // an un-spliced dispatch. The splice happens BEFORE bubble +
+  // dispatch so both carry identical text. The interim-streamed
+  // bubble already exists during the wait, so the UI never stalls.
+  let head = '';
+  try { head = await callCapture.takeHead(HEAD_WAIT_MS); } catch { /* un-spliced */ }
+  const text = head ? stitchTranscripts([head, utterance]) : utterance;
+  if (head) {
+    log('[dictation] cold-start splice:', `head="${head.slice(0, 80)}"`, `→ "${text.slice(0, 120)}"`);
+  }
+  log('[dictation] dispatch:', text.slice(0, 120));
   // Snag the userMessageId BEFORE invoking onUserBubble — the bubble
   // handler may consume + clear the provider's state when it
   // finalizes (next utterance mints fresh). Same id rides the wire
   // so the server's user_message echo collapses idempotently.
   const userMessageId = userMessageIdProvider ? userMessageIdProvider() : undefined;
   if (onUserBubble) {
-    try { onUserBubble(utterance); } catch (e: any) { diag('[dictation] bubble handler err', e?.message); }
+    try { onUserBubble(text); } catch (e: any) { diag('[dictation] bubble handler err', e?.message); }
   }
-  const ok = conn.dispatch(utterance, userMessageId);
+  const ok = conn.dispatch(text, userMessageId);
   if (!ok) {
     diag('[dictation] dispatch send failed (channel not open?)');
     return;
@@ -112,7 +132,7 @@ function armSilenceTimer(): void {
   if (silenceSec <= 0) return;  // 0 = disabled (sendword-only mode).
   silenceTimer = setTimeout(() => {
     silenceTimer = null;
-    dispatchNow();
+    void dispatchNow();
   }, silenceSec * 1000);
 }
 
@@ -140,7 +160,7 @@ export function handleUserFinal(text: string): void {
     // round-trips — pairs with the 'send' chime in dispatchNow().
     try { playFeedback('commit'); } catch { /* feedback is best-effort */ }
     buffer = m.cleaned ? [m.cleaned] : [];
-    dispatchNow();
+    void dispatchNow();
     return;
   }
   buffer.push(trimmed);
