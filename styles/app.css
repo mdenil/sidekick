@@ -3545,21 +3545,6 @@
     0%, 100% { opacity: 1; }
     50% { opacity: 0.45; }
   }
-  /* Cold-start capturing: the parallel call recorder is rolling but the
-     bridge STT pipe isn't hot yet — speech is being captured for the
-     splice, so the user may talk freely. Pulsing orange, deliberately
-     warmer than reconnecting's amber and slower than its panic pulse.
-     Cleared by the call's first `listening` envelope (main.ts). */
-  .composer #btn-call.capturing {
-    color: #fff;
-    background: #e07020;
-    border-radius: 50%;
-    animation: call-capturing-pulse 1.6s ease-in-out infinite;
-  }
-  @keyframes call-capturing-pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.6; }
-  }
   /* Disabled during transient WebRTC handshake states (requesting-mic /
      connecting / closing) so rapid double-taps can't race the call open.
      Visual cue (dim + not-allowed cursor) tells the user why the tap

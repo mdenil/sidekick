@@ -86,7 +86,6 @@ import * as slashCommands from './slashCommands.ts';
 import * as webrtcControls from './audio/realtime/controls.ts';
 import * as webrtcConnection from './audio/realtime/realtime.ts';
 import * as webrtcDictation from './audio/realtime/dictation.ts';
-import * as webrtcCallCapture from './audio/realtime/callCapture.ts';
 import * as webrtcDictate from './audio/realtime/dictate.ts';
 import * as browserDictate from './audio/streaming/browserDictate.ts';
 import * as webrtcSuppress from './audio/realtime/suppress.ts';
@@ -1441,16 +1440,6 @@ async function boot() {
   // composer mic owns the call open/close lifecycle; controls.ts
   // exports toggleCall / openCall / closeIfOpen for the dispatcher
   // to invoke.
-  // Orange "Capturing…" indicator: the parallel call recorder is
-  // rolling (callCapture starts right after mic acquire) but the
-  // bridge's STT pipe isn't hot yet — anything said now WILL be heard
-  // via the cold-start splice. Latched off by the call's first
-  // `listening` envelope (see the data-channel listener below).
-  let preListeningCapture = false;
-  function setCapturingVisual(on: boolean): void {
-    preListeningCapture = on;
-    document.getElementById('btn-call')?.classList.toggle('capturing', on);
-  }
   webrtcControls.init({
     getSessionId: () => switchCtl.viewedId() || backend.getCurrentSessionId?.() || null,
     onStatus: (msg, kind) => status.setStatus(msg, kind ?? null),
@@ -1461,19 +1450,6 @@ async function boot() {
       // A new call attempt supersedes a stale "Call dropped" banner.
       if (state === 'requesting-mic' || state === 'connecting' || state === 'connected') {
         hideCallDroppedBanner();
-      }
-      // Capturing visual: on from the recorder's start (the mic is
-      // acquired during requesting-mic → recorder runs by
-      // 'connecting') until the first listening envelope; off on any
-      // teardown state so it can't leak across calls. Reconnects
-      // restart the recorder, so the latch re-arms there too.
-      if (state === 'connecting') setCapturingVisual(true);
-      else if (state === 'idle' || state === 'closing' || state === 'failed' || state === 'reconnecting') setCapturingVisual(false);
-      if (preListeningCapture && (state === 'connecting' || state === 'connected')) {
-        // controls.ts fires its own onStatus AFTER this callback —
-        // defer a microtask so "Capturing…" wins over Connecting…/On
-        // call while the latch is up.
-        queueMicrotask(() => { if (preListeningCapture) status.setStatus('Capturing…', 'live'); });
       }
     },
     // Network dropped a connected call (not a user hangup) — show a
@@ -1617,14 +1593,6 @@ async function boot() {
       // else on the client.
       log('[bubble-diag] listening envelope received from bridge');
       try { playFeedback('listening'); } catch { /* ignore */ }
-      // First listening of the call: callCapture latches the cold-start
-      // gap and kicks off head transcription for the splice; the orange
-      // "Capturing…" indicator hands back to the normal call status.
-      try { webrtcCallCapture.markListening(); } catch { /* ignore */ }
-      if (preListeningCapture) {
-        setCapturingVisual(false);
-        status.setStatus(webrtcConnection.currentMode() === 'stream' ? 'Streaming' : 'On call', 'ok');
-      }
       // Authoritative "TTS audio done" signal — flips the realtime
       // BargeWindow's playback gate off. Without this the gate was
       // tied to suppress.isSuppressing() (a SHORT transcript-grace
