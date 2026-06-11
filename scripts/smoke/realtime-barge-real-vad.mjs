@@ -45,7 +45,11 @@ export default async function run({ page, log, mock }) {
         (window).__TEST_FAKE_PC__ = this;
       }
       addTrack() {}
-      addTransceiver() {}
+      // realtime.ts uses addTransceiver (not addTrack) so the mic can be
+      // attached later via sender.replaceTrack (#197 parallel warmup).
+      addTransceiver() {
+        return { direction: 'sendrecv', sender: { replaceTrack: async () => {} } };
+      }
       createDataChannel(label) {
         const dc = new EventTarget();
         dc.readyState = 'open';

@@ -267,6 +267,16 @@ export function notifyReplyPlayback(playing: boolean): void {
 export async function start(o: ListenOpts): Promise<boolean> {
   if (state !== 'idle') return true;
   opts = o;
+  // Phase timing — turn-based mirror of realtime's [webrtc-timing].
+  // Everything here is local (no signaling), so the only expected real
+  // cost is the mic grant; these lines prove/disprove that on device.
+  const startT0 = performance.now();
+  let phaseT = startT0;
+  const phase = (label: string) => {
+    const now = performance.now();
+    log(`[listen-timing] ${label} +${Math.round(now - phaseT)}ms (total ${Math.round(now - startT0)}ms)`);
+    phaseT = now;
+  };
   // Reuse the shared AudioContext primed by the caller's gesture.
   const ctx = audioPlatform.getSharedAudioCtx();
   if (!ctx) {
@@ -276,6 +286,7 @@ export async function start(o: ListenOpts): Promise<boolean> {
   if (ctx.state !== 'running') {
     try { await ctx.resume(); } catch { /* ignore */ }
   }
+  phase('ctx');
   try {
     // Match realtime talk's DSP triple (echoCancellation=true, NS+AGC=false).
     // Pairs with the TTS-via-Web-
@@ -292,6 +303,7 @@ export async function start(o: ListenOpts): Promise<boolean> {
     teardown();
     return false;
   }
+  phase('mic');
   // Audio-session diag: confirms
   // the prime ran (track label after prime should resemble BT when one
   // is connected; iPhone Mic when not) and the route is settled.
@@ -330,9 +342,11 @@ export async function start(o: ListenOpts): Promise<boolean> {
     });
   }
   await armRecorder();
+  phase('recorder-armed');
   // "Listening" chime — same audible cue memo uses, so the user gets a
   // consistent "we're hearing you" signal across the two modes.
   try { playFeedback('listening'); } catch { /* noop */ }
+  phase('chime');
   installTestHooksIfRequested();
   return true;
 }

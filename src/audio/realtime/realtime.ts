@@ -14,14 +14,14 @@
  * Lifecycle:
  *
  *   open(mode)
- *     1. getUserMedia({ audio: true })
- *     2. new RTCPeerConnection
- *     3. addTrack(localMicTrack)
- *     4. ontrack -> bind to <audio> sink for talk mode
- *     5. createOffer / setLocalDescription
- *     6. POST /api/rtc/offer { sdp, type, mode } -> answer
- *     7. setRemoteDescription(answer)
- *     8. trickle ICE: onicecandidate -> POST /api/rtc/ice
+ *     1. getUserMedia({ audio: true })  — kicked off, NOT awaited (#197)
+ *     2. new RTCPeerConnection + addTransceiver('audio', sendrecv)
+ *     3. ontrack -> bind to <audio> sink for talk mode
+ *     4. createOffer / setLocalDescription
+ *     5. POST /api/rtc/offer { sdp, type, mode } -> answer
+ *     6. setRemoteDescription(answer)
+ *     7. trickle ICE: onicecandidate -> POST /api/rtc/ice
+ *     ∥. mic resolves in parallel → sender.replaceTrack(micTrack)
  *
  *   close()
  *     - close PC, stop tracks, POST /api/rtc/close
@@ -73,7 +73,11 @@ export type CallState =
 interface CallSession {
   pc: RTCPeerConnection;
   mode: CallMode;
-  micStream: MediaStream;
+  /** Live mic stream. Null while getUserMedia is still in flight — mic
+   *  acquisition runs in parallel with signaling/ICE (#197), so the
+   *  session can briefly exist (even reach 'connected') before the mic
+   *  lands. Consumers (controls barge loop, fakeLock meter) handle null. */
+  micStream: MediaStream | null;
   peerId: string | null;
   /** Hidden <audio> element playing the remote (TTS) audio track —
    *  fallback only. Used when Web Audio routing is unavailable. */
@@ -509,54 +513,29 @@ export async function open(
   };
 
   setState('requesting-mic');
-  let micStream: MediaStream;
-  try {
-    // DSP constraints:
-    //   - talk mode:   AEC ON (suppress speaker→mic bleed of TTS),
-    //                  NS off, AGC off (both can defeat barge).
-    //   - stream mode: AEC OFF (no peer-track TTS to bleed),
-    //                  NS off, AGC off.
-    const useAec = (mode === 'talk');
-    // [audio-state] checkpoint before mic acquisition. iOS audio-
-    // session category SHOULD be playAndRecord by here for AEC to
-    // engage. If it's still 'playback' we'll see it in the trace.
-    logAudioState('pre-getUserMedia');
-    micStream = await audioPlatform.getMicStream('webrtc', {
-      echoCancellation: useAec,
-      noiseSuppression: false,
-      autoGainControl: false,
-    });
-  } catch (e: any) {
-    log('[webrtc] getUserMedia failed',
-      `name=${e?.name ?? 'Unknown'}`,
-      `message=${e?.message ?? '(none)'}`);
-    logAudioState('on-getUserMedia-failed');
-    setState('failed');
-    throw e;
-  }
-  // [audio-state] post-acquisition. The track.getSettings() readout
-  // tells us whether the OS honored the echoCancellation constraint.
-  // iOS Safari can silently drop AEC if the audio-session category
-  // isn't right at acquisition time — we want to catch that here.
-  try {
-    const tracks = micStream.getAudioTracks();
-    if (tracks.length > 0) {
-      const s = tracks[0].getSettings ? tracks[0].getSettings() : {};
-      log('[audio-state] track.getSettings()',
-        `aec=${(s as any).echoCancellation}`,
-        `ns=${(s as any).noiseSuppression}`,
-        `agc=${(s as any).autoGainControl}`,
-        `rate=${(s as any).sampleRate}`,
-        `channelCount=${(s as any).channelCount}`,
-        `deviceId=${((s as any).deviceId || '').slice(0, 8)}`);
-    }
-  } catch (e: any) { diag('[audio-state] track.getSettings threw', e?.message); }
-  logAudioState('post-getUserMedia');
-  phase('mic');
-
-  // T3 — warm AEC reference path with silence on iOS, talk mode only.
-  // Stream mode runs AEC=off so there's nothing to converge.
-  if (mode === 'talk') warmAecReferencePathIOS();
+  // Fast warmup (#197): mic acquisition (iOS AVAudioSession prime +
+  // getUserMedia, ~200-700ms) runs CONCURRENTLY with the offer/
+  // signaling/ICE chain instead of serially before it. The offer
+  // advertises a sendrecv audio transceiver with no track; the live
+  // track is attached via sender.replaceTrack() when the mic lands
+  // (handler installed after `active` is created, below). Net effect:
+  // tap→listening ≈ max(mic, signal+ice) instead of mic+signal+ice.
+  //
+  // DSP constraints:
+  //   - talk mode:   AEC ON (suppress speaker→mic bleed of TTS),
+  //                  NS off, AGC off (both can defeat barge).
+  //   - stream mode: AEC OFF (no peer-track TTS to bleed),
+  //                  NS off, AGC off.
+  const useAec = (mode === 'talk');
+  // [audio-state] checkpoint before mic acquisition. iOS audio-
+  // session category SHOULD be playAndRecord by here for AEC to
+  // engage. If it's still 'playback' we'll see it in the trace.
+  logAudioState('pre-getUserMedia');
+  const micPromise = audioPlatform.getMicStream('webrtc', {
+    echoCancellation: useAec,
+    noiseSuppression: false,
+    autoGainControl: false,
+  });
 
   setState('connecting');
 
@@ -567,10 +546,10 @@ export async function open(
   // Omitting STUN keeps the ICE candidate set minimal.
   const pc = new RTCPeerConnection({ iceServers: [] });
 
-  // Add the mic track (sendrecv direction).
-  for (const t of micStream.getAudioTracks()) {
-    pc.addTrack(t, micStream);
-  }
+  // Mic audio uplink — addTransceiver (not addTrack) so the m=audio
+  // sendrecv section is in the offer before the mic stream exists.
+  // micPromise's handler below attaches the real track.
+  const audioTransceiver = pc.addTransceiver('audio', { direction: 'sendrecv' });
 
   // For talk mode the server adds an outbound track; in stream mode
   // we tell the server "recvonly" by adding a recvonly transceiver.
@@ -695,10 +674,17 @@ export async function open(
   dataChannel.addEventListener('close', () => {
     log('[webrtc] data channel close');
   });
-  dataChannel.addEventListener('message', (ev: MessageEvent) => {
-    if (typeof ev.data !== 'string') return;
+  // Envelope delivery is held until the mic track is attached. Normally
+  // the mic resolves long before the data channel opens, so nothing
+  // queues — the guard matters when ICE wins the race (e.g. the user is
+  // staring at a first-run permission prompt): without it the bridge's
+  // 'listening' envelope would chime "your turn" while the mic is still
+  // ungranted, and anything said would be silently lost.
+  let micAttached = false;
+  const heldDcMessages: string[] = [];
+  const deliverDcMessage = (data: string) => {
     let parsed: any;
-    try { parsed = JSON.parse(ev.data); }
+    try { parsed = JSON.parse(data); }
     catch (e: any) { diag('[webrtc] dc bad json:', e?.message); return; }
     if (!parsed || typeof parsed.type !== 'string') return;
     for (const tap of internalEnvelopeTaps) {
@@ -709,12 +695,17 @@ export async function open(
       try { onDataChannelEvent(parsed as DataChannelEvent); }
       catch (e: any) { diag('[webrtc] dc listener threw:', e?.message); }
     }
+  };
+  dataChannel.addEventListener('message', (ev: MessageEvent) => {
+    if (typeof ev.data !== 'string') return;
+    if (!micAttached) { heldDcMessages.push(ev.data); return; }
+    deliverDcMessage(ev.data);
   });
 
   active = {
     pc,
     mode,
-    micStream,
+    micStream: null,
     peerId: null,
     remoteAudio: pendingRemoteAudio ?? remoteAudio,
     remoteSourceNode,
@@ -723,6 +714,73 @@ export async function open(
     pendingCandidates: [],
   };
   pendingRemoteAudio = null;
+
+  // Mic landing/failure — concurrent with the signaling chain below.
+  void micPromise.then(async (micStream) => {
+    // [audio-state] post-acquisition. The track.getSettings() readout
+    // tells us whether the OS honored the echoCancellation constraint.
+    // iOS Safari can silently drop AEC if the audio-session category
+    // isn't right at acquisition time — we want to catch that here.
+    try {
+      const tracks = micStream.getAudioTracks();
+      if (tracks.length > 0) {
+        const s = tracks[0].getSettings ? tracks[0].getSettings() : {};
+        log('[audio-state] track.getSettings()',
+          `aec=${(s as any).echoCancellation}`,
+          `ns=${(s as any).noiseSuppression}`,
+          `agc=${(s as any).autoGainControl}`,
+          `rate=${(s as any).sampleRate}`,
+          `channelCount=${(s as any).channelCount}`,
+          `deviceId=${((s as any).deviceId || '').slice(0, 8)}`);
+      }
+    } catch (e: any) { diag('[audio-state] track.getSettings threw', e?.message); }
+    logAudioState('post-getUserMedia');
+    // Standalone line (not phase()) — mic runs parallel to the
+    // signal/ice chain, so it must not reset phaseT for those lines.
+    log(`[webrtc-timing] mic +${Math.round(performance.now() - callT0)}ms (parallel)`);
+    if (!active || active.pc !== pc) {
+      // Call torn down while the mic prompt was pending. close()'s
+      // releaseMicStream no-op'd (nothing was held yet) — release here
+      // so the live mic track doesn't leak.
+      try { audioPlatform.releaseMicStream('webrtc'); } catch { /* ignore */ }
+      return;
+    }
+    active.micStream = micStream;
+    try {
+      await audioTransceiver.sender.replaceTrack(micStream.getAudioTracks()[0] ?? null);
+    } catch (e: any) {
+      log('[webrtc] replaceTrack failed',
+        `name=${e?.name ?? 'Unknown'}`,
+        `message=${e?.message ?? '(none)'}`);
+      setState('failed');
+      void close('setup-failed');
+      return;
+    }
+    // T3 — warm AEC reference path with silence on iOS, talk mode only.
+    // Stream mode runs AEC=off so there's nothing to converge.
+    if (mode === 'talk') warmAecReferencePathIOS();
+    micAttached = true;
+    for (const d of heldDcMessages.splice(0)) deliverDcMessage(d);
+    // If ICE won the race, 'connected' was emitted while getMicStream()
+    // was still null and controls skipped starting the barge loop.
+    // Re-emit so it attaches now (realtimeBarge.start() is stop-first,
+    // so the common mic-first order sees no double loop).
+    if (active.state === 'connected') setState('connected');
+  }, (e: any) => {
+    log('[webrtc] getUserMedia failed',
+      `name=${e?.name ?? 'Unknown'}`,
+      `message=${e?.message ?? '(none)'}`);
+    logAudioState('on-getUserMedia-failed');
+    if (!active || active.pc !== pc) return;
+    if (reconnecting) {
+      // Mirror attemptReopen's signaling-failure path: tear this attempt
+      // down quietly and retry within the reconnect window.
+      void close('net-failed', { silent: true }).then(() => scheduleReconnectAttempt());
+      return;
+    }
+    setState('failed');
+    void close('setup-failed');
+  });
 
   // Trickle ICE: queue candidates until we have a peer_id, then POST each.
   pc.addEventListener('icecandidate', (ev) => {
