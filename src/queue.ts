@@ -63,8 +63,8 @@ let isFlushing = false;
  * Flush pending items in order. Stops on first failure to preserve ordering.
  * Concurrent calls skip (second caller returns skipped=true); the in-flight
  * flush will cover whatever was pending when it started.
- * @param {(text: string, source: string) => Promise<void>} sendTextFn
- * @param {(blob: Blob, mimeType: string, id: string, autoSend: boolean, toComposer: boolean, durationMs?: number) => Promise<void>} transcribeAndSendFn
+ * @param {(text: string, source: string, item?: any) => Promise<void>} sendTextFn
+ * @param {(blob: Blob, mimeType: string, id: string, autoSend: boolean, toComposer: boolean, durationMs?: number, item?: any) => Promise<void>} transcribeAndSendFn
  *   autoSend is the per-memo flag captured at record time — true means
  *   transcribe-then-dispatch as a chat message, false means land in the
  *   composer for review. toComposer marks a batch-DICTATION item: the
@@ -72,6 +72,8 @@ let isFlushing = false;
  *   blob still rides this durable queue so a bad-connection upload retries
  *   instead of evaporating). Both flags are stored on the queue item so a
  *   periodic retry long after recording still routes the way the user chose.
+ *   The raw item is passed last for routes with richer state (listen turns
+ *   carry listenTurn/commitReason/chatId — see memoOutbox.transcribeListenTurn).
  * @returns {Promise<{ sent: number, remaining: number, skipped?: boolean }>}
  */
 export async function flush(sendTextFn, transcribeAndSendFn) {
@@ -97,8 +99,8 @@ export async function flush(sendTextFn, transcribeAndSendFn) {
       let failed = false;
       for (const item of items) {
         try {
-          if (item.type === 'text') await sendTextFn(item.text, item.source);
-          else if (item.type === 'audio') await transcribeAndSendFn(item.blob, item.mimeType, item.id, !!item.autoSend, !!item.toComposer, item.durationMs);
+          if (item.type === 'text') await sendTextFn(item.text, item.source, item);
+          else if (item.type === 'audio') await transcribeAndSendFn(item.blob, item.mimeType, item.id, !!item.autoSend, !!item.toComposer, item.durationMs, item);
           await reqP(tx(db, 'readwrite').delete(item.id));
           sent++;
           processed = true;

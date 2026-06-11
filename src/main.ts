@@ -2633,48 +2633,28 @@ async function boot() {
       barInsertBefore: mount?.insertBefore || null,
       barRightBtn: btnMic || null,
       onCommit: async (blob, reason) => {
-        // Post the blob to /transcribe (mirrors the memo path) and route
-        // the resulting transcript through composer.appendText +
-        // composer.submit — same canonical send path as the user typing
-        // a message + hitting Enter. Auto-send is ALWAYS on for Listen.
+        // Durable-first: the committed turn rides the same IDB outbox as
+        // memos/dictation — memoOutbox owns transcribe (with keyterms +
+        // chunking + timeout budgets), sendword strip, and auto-send.
+        // The previous inline fetch here had NO timeout and NO
+        // persistence: a dead connection mid-call hung the turn and
+        // ending the call evaporated it (2026-06-10 field report).
+        // chatId captured now so a late flush never sends cross-chat.
         try {
-          const res = await fetch(apiUrl('/transcribe'), {
-            method: 'POST',
-            headers: { 'Content-Type': blob.type || 'audio/webm' },
-            body: blob,
-          });
-          const data = await res.json().catch(() => ({} as any));
-          let text = String((data && data.transcript) || '').trim();
-          // Strip the trailing sendword (only when sendword actually
-          // triggered the commit — silence-triggered commits keep the
-          // full transcript). Pulls the live setting so a renamed
-          // sendword takes effect on next turn. Allows trailing
-          // punctuation; case-insensitive.
-          if (text && reason === 'sendword') {
-            // Same matchSendword regex used by both audio modes — keep
-            // the strip in lockstep with the detector.
-            const { sendwordPhrase } = handsfree.getHandsfreeConfig();
-            const m = handsfree.matchSendword(text, sendwordPhrase);
-            if (m.matched) text = m.cleaned;
-          }
-          if (!text) {
-            log('listen: empty transcript, skipping send');
-            return;
-          }
           const chatId = resolveOrMintSendChatId();
-          listenReply.markAwaitingReply(chatId);
-          composer.appendText(text);
-          composer.submit();
+          await memoOutbox.transcribeListenTurn(blob, reason, chatId);
         } catch (e: any) {
-          diag('listen: /transcribe failed', e?.message);
+          diag('listen: turn enqueue failed', e?.message);
         }
       },
       onCommitText: async (text, reason) => {
         // LOCAL streamingEngine path — turnbased.ts already ran Web
         // Speech in-browser and accumulated the transcript. No
-        // /transcribe call. Same sendword strip + composer
-        // append/submit as the server path so downstream behaviour is
-        // identical from the user's perspective.
+        // /transcribe call, so the transcript can't be lost to a failed
+        // upload — but the SEND still can. Sendword is stripped here
+        // (text is final at commit time), then the body rides the same
+        // durable outbox as server-engine turns so a dead connection
+        // retains it for retry instead of evaporating it.
         let body = text;
         if (body && reason === 'sendword') {
           const { sendwordPhrase } = handsfree.getHandsfreeConfig();
@@ -2685,10 +2665,12 @@ async function boot() {
           log('listen: empty local transcript, skipping send');
           return;
         }
-        const chatId = resolveOrMintSendChatId();
-        listenReply.markAwaitingReply(chatId);
-        composer.appendText(body);
-        composer.submit();
+        try {
+          const chatId = resolveOrMintSendChatId();
+          await memoOutbox.sendListenText(body, chatId);
+        } catch (e: any) {
+          diag('listen: text turn enqueue failed', e?.message);
+        }
       },
       onCancel: () => {
         listenActive = false;

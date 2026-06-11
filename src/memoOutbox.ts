@@ -26,6 +26,9 @@ import * as queue from './queue.ts';
 import * as voiceMemos from './voiceMemos.ts';
 import * as memoCard from './memoCard.ts';
 import * as webrtcControls from './audio/realtime/controls.ts';
+import * as turnbased from './audio/turn-based/turnbased.ts';
+import * as handsfree from './audio/shared/handsfree.ts';
+import * as listenReply from './listenReplyState.ts';
 import { playFeedback } from './audio/shared/feedback.ts';
 import {
   needsChunking, decodeToMono16k, slicePcm, encodeWav, stitchTranscripts,
@@ -87,11 +90,48 @@ async function chunkedTranscribe(blob: Blob, url: string, toComposer: boolean): 
   return stitchTranscripts(parts);
 }
 
+/** Final routing for a Listen-turn's text, shared by the audio lane
+ *  (transcript arrives at flush time) and the text lane (local engine
+ *  committed text directly). Auto-sends only while the user is still in
+ *  the chat the turn was committed to; a late recovery after switching
+ *  chats lands in the composer for review instead. Reply TTS only fires
+ *  while the call is still live. */
+function routeListenTurnText(body: string, item: any): void {
+  if (!body) {
+    status.setStatus('No speech detected', null);
+    return;
+  }
+  const current = backend.getCurrentSessionId?.() ?? null;
+  if (item.chatId && current && current !== item.chatId) {
+    composer.appendText(body);
+    status.setStatus('Recovered voice turn — review & send', null);
+    return;
+  }
+  if (turnbased.getState() !== 'idle') {
+    listenReply.markAwaitingReply(item.chatId ?? current);
+  }
+  composer.appendText(body);
+  composer.submit();
+  status.setStatus('', null);
+}
+
 /** Flush queued audio items — update the corresponding memo cards with transcripts. */
 export async function flushOutbox() {
   const result = await queue.flush(
-    async (text) => { backend.sendMessage(text); },
-    async (blob, mimeType, id, autoSend, toComposer, durationMs) => {
+    async (text, _source, item) => {
+      if (item && item.listenTurn) {
+        // The send IS the risky step for text-lane turns (no upload
+        // first to prove the link is alive, and composer.submit
+        // silently no-ops when the gateway is down) — throw so the
+        // queue retains the item and the retry poller re-delivers.
+        if (!backend.isConnected()) throw new Error('offline');
+        routeListenTurnText(text, item);
+        return;
+      }
+      backend.sendMessage(text);
+    },
+    async (blob, mimeType, id, autoSend, toComposer, durationMs, item) => {
+      const listenTurn = !!(item && item.listenTurn);
       // Per-user keyterm biasing for batch transcribe. Same IDB list the
       // WebRTC offer ships; bridge accepts repeated `?keyterms=…&keyterms=…`
       // and merges into the Deepgram spec like the streaming path does.
@@ -171,7 +211,11 @@ export async function flushOutbox() {
             // from evaporating, so we just narrate "will retry" and keep
             // the blob; a poller drains it when signal returns.
             log('transcribe timeout — blob stays queued for retry');
-            if (toComposer) {
+            if (listenTurn) {
+              // No card, no composer ghost line — the durable queue holds
+              // the turn and the header pill narrates the queued count.
+              status.setStatus('Voice turn queued — will send when connected');
+            } else if (toComposer) {
               composer.setInterim('Dictation queued — will retry when connected');
             } else {
               const transcriptEl = document.getElementById('transcript');
@@ -186,6 +230,11 @@ export async function flushOutbox() {
         if (e instanceof PermanentTranscribeError) {
           const err = e.message;
           log('transcribe: permanent failure, dropping blob:', err);
+          if (listenTurn) {
+            status.setStatus('Voice turn unprocessable — dropped', 'err');
+            playFeedback('error');
+            return;  // don't throw — queue.flush will drop the item
+          }
           if (toComposer) {
             // Dictation has no card — just clear the progress line and
             // narrate softly. The blob drops from the queue (return, no
@@ -215,6 +264,12 @@ export async function flushOutbox() {
       // isn't left staring at an orphan row. Persist the status so a
       // reload doesn't restore it as pending again.
       if (!text) {
+        if (listenTurn) {
+          // Mirrors the old inline listen path's "empty transcript,
+          // skipping send" — nothing to send, drop quietly.
+          status.setStatus('No speech detected', null);
+          return;
+        }
         if (toComposer) {
           // Dictation: no card to annotate — clear the ghost line and
           // tell the user softly. Item drops from queue (return, no throw).
@@ -225,6 +280,22 @@ export async function flushOutbox() {
         const note = '(no speech detected)';
         if (card) memoCard.update(card, { transcript: note, status: 'failed' });
         await voiceMemos.update(id, { transcript: note, status: 'failed' });
+        return;
+      }
+
+      if (listenTurn) {
+        // Committed Listen turn riding the durable queue (was a bare
+        // fetch that evaporated on a dead connection, 2026-06-10).
+        // Strip the trailing sendword only when sendword triggered the
+        // commit — pulls the LIVE config so a renamed sendword still
+        // strips correctly on a late retry.
+        let body = text;
+        if (item.commitReason === 'sendword') {
+          const { sendwordPhrase } = handsfree.getHandsfreeConfig();
+          const m = handsfree.matchSendword(body, sendwordPhrase);
+          if (m.matched) body = m.cleaned;
+        }
+        routeListenTurnText(body, item);
         return;
       }
 
@@ -444,6 +515,66 @@ export async function transcribeToComposer(audioBlob: Blob | null, durationMs?: 
   // Online: drain now. flushOutbox handles success (appendText), timeout
   // (keeps queued + "will retry" ghost line), permanent failure (drops +
   // narrates), and empty transcript — all via the toComposer branches.
+  flushOutbox().catch(() => {});
+}
+
+/** Committed Listen (turn-based call) utterance: persist to the durable
+ *  outbox BEFORE any network, then transcribe + auto-send via flushOutbox.
+ *
+ *  Replaces the bare fetch('/transcribe') that lived in main.ts's
+ *  onCommit — that fetch had no timeout and no persistence, so a dead
+ *  connection mid-call hung the turn and ending the call evaporated it
+ *  (2026-06-10 field report). Riding the queue also picks up keyterm
+ *  biasing, chunking, and the retry pollers that memos already have.
+ *
+ *  chatId is captured at COMMIT time; the flush branch auto-sends only
+ *  while the user is still in that chat (composer review otherwise). */
+export async function transcribeListenTurn(
+  audioBlob: Blob | null,
+  reason: 'silence' | 'sendword' | 'barge' | undefined,
+  chatId: string | null,
+): Promise<void> {
+  if (!audioBlob || audioBlob.size === 0) return;
+  const MEMO_MAX_BYTES = 24 * 1024 * 1024;
+  if (audioBlob.size > MEMO_MAX_BYTES) {
+    const mb = (audioBlob.size / (1024 * 1024)).toFixed(1);
+    status.setStatus(`Recording too long (${mb}MB) — dropped.`, 'err');
+    try { playFeedback('error'); } catch {}
+    return;
+  }
+
+  await queue.enqueue({
+    type: 'audio', blob: audioBlob, mimeType: audioBlob.type,
+    listenTurn: true, commitReason: reason || 'silence', chatId,
+  });
+  log('listen: queued turn blob (' + Math.round(audioBlob.size / 1024) + 'KB) reason=' + (reason || 'silence'));
+
+  const offline = navigator.onLine === false || !backend.isConnected();
+  if (offline) {
+    status.setStatus('Voice turn queued — will send when connected');
+    return;
+  }
+  flushOutbox().catch(() => {});
+}
+
+/** Text-lane twin of transcribeListenTurn for the LOCAL streaming engine
+ *  (Web Speech): the transcript is already final at commit time, so there
+ *  is no /transcribe upload to protect — but the SEND itself can still be
+ *  lost on a dead connection. Riding the durable queue gives the text the
+ *  same retained-and-retried guarantee. Sendword stripping happens in
+ *  main.ts onCommitText before this is called (text is final there), so
+ *  the flush path routes it without re-stripping. */
+export async function sendListenText(text: string, chatId: string | null): Promise<void> {
+  const body = (text || '').trim();
+  if (!body) return;
+  await queue.enqueue({
+    type: 'text', text: body, source: 'listen', listenTurn: true, chatId,
+  });
+  const offline = navigator.onLine === false || !backend.isConnected();
+  if (offline) {
+    status.setStatus('Voice turn queued — will send when connected');
+    return;
+  }
   flushOutbox().catch(() => {});
 }
 
