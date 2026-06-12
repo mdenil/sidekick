@@ -256,11 +256,19 @@ export function stop(): void {
   stopRequested = true;
   if (restartTimer) { clearTimeout(restartTimer); restartTimer = null; }
   fedMode = false;
+  // Clear opts BEFORE sr.stop(): unlike abort(), a graceful stop can
+  // flush pending results through onresult — a sendword in that flush
+  // must not fire onMatch after the caller asked us to stop.
+  opts = null;
   if (sr) {
-    try { sr.abort(); } catch { /* noop */ }
+    // stop() (graceful) instead of abort(): on iOS, starting a new SR
+    // session ~2s after abort() froze the WebView main thread for ~8s
+    // while the native speech service recovered (device log
+    // 2026-06-11T22-18-40, listen toggle). A wound-down session leaves
+    // the service ready for an instant restart.
+    try { sr.stop(); } catch { /* noop */ }
     sr = null;
   }
-  opts = null;
 }
 
 /** Update the phrase on the fly without restarting the SR session.
