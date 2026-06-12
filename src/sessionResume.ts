@@ -38,6 +38,7 @@ import * as switchCtl from './switchController.ts';
 import * as backend from './backend.ts';
 import * as transcriptStore from './transcript/store.ts';
 import * as sessionCache from './sessionCache.ts';
+import * as windowCache from './drillWindowCache.ts';
 import { rerenderActive } from './transcript/index.ts';
 import { getScrollPosition } from './chatScrollPositions.ts';
 
@@ -535,65 +536,112 @@ export async function drillToMessageInViewedSession(
 // pulls more in by scrolling (gated loadEarlier/loadLater).
 const DRILL_AROUND_LIMIT = 40;
 let aroundDrillInFlight: { key: string; promise: Promise<boolean> } | null = null;
+
+/** Render a bounded around-window into the transcript and scroll/flash
+ *  the target. Shared by the cache-first paint and the server pass of
+ *  drillViaAroundWindow. Returns the target element, or null when the
+ *  target didn't land in the DOM (caller falls back). */
+async function renderAroundWindow(
+  chatId: string,
+  targetMessageId: string,
+  messages: any[],
+  pagination: windowCache.WindowPagination,
+  opts: { skipScroll?: boolean } = {},
+): Promise<HTMLElement | null> {
+  const transcriptEl = document.getElementById('transcript');
+  if (!transcriptEl) return null;
+  // Arm the lazy-load suppress window BEFORE any render/scroll. The
+  // bounded window lands the target mid-transcript, so the render +
+  // scroll below can fire a scroll that would otherwise trip
+  // maybeLoadEarlier/maybeLoadLater into a wasteful ?before=/?after=
+  // page right after the drill. Setting it here (not after the scroll)
+  // closes that leak.
+  chat.suppressLazyLoadFor(1200);
+  // We are jumping into the MIDDLE of the session — not at the live
+  // tail. Assert un-pinned BEFORE the render so autoScroll can't snap
+  // us to the window's bottom while it settles.
+  chat.setPinnedToBottom(false);
+  // Arm pagination BEFORE the store mutation: setDurable fires the
+  // reconciler synchronously, and chat's tail-invariant guards
+  // (persist/saveCurrentScrollPosition skip while hasMoreNewer) must
+  // already see the floating-window state when that render runs —
+  // otherwise a windowed snapshot could slip into IDB.
+  chat.setPaginationState(
+    pagination.firstId, pagination.hasMore,
+    pagination.lastId, pagination.hasMoreNewer,
+  );
+  transcriptStore.setDurable(chatId, messages, pagination);
+  rerenderActive();
+  // Persist is a no-op while the window floats (hasMoreNewer); it
+  // only writes once loadLater connects the run to the tail.
+  persistGrownTranscript(chatId);
+  await new Promise<void>(r => requestAnimationFrame(() => requestAnimationFrame(() => r())));
+  const found = transcriptEl.querySelector(
+    `[data-key="${CSS.escape(targetMessageId)}"]`,
+  ) as HTMLElement | null;
+  if (!found) return null;
+  if (!opts.skipScroll) {
+    found.classList.add('search-target-flash');
+    drillScrollTo(found);
+    setTimeout(() => found.classList.remove('search-target-flash'), 1500);
+  }
+  return found;
+}
+
 function drillViaAroundWindow(chatId: string, targetMessageId: string): Promise<boolean> {
   const key = `${chatId}::${targetMessageId}`;
   if (aroundDrillInFlight?.key === key) return aroundDrillInFlight.promise;
   const promise = (async (): Promise<boolean> => {
-    const transcriptEl = document.getElementById('transcript');
-    if (!transcriptEl) return false;
+    if (!document.getElementById('transcript')) return false;
+    // #214 TFC-C: cache-first. A window fetched by a previous drill to
+    // this same anchor paints instantly from IDB; the server fetch below
+    // STILL runs and re-renders (reconciling any drift and refreshing
+    // the record's LRU recency via putWindow).
+    const drillStartedAt = Date.now();
+    let cacheRendered = false;
+    try {
+      const cached = await windowCache.getWindow(chatId, targetMessageId);
+      if (cached && switchCtl.viewedId() === chatId) {
+        cacheRendered = !!(await renderAroundWindow(
+          chatId, targetMessageId, cached.messages, cached.pagination));
+        if (cacheRendered) log(`[cmdk] drill painted ${targetMessageId} from window cache; server reconcile in flight`);
+      }
+    } catch { /* cache problems → plain server drill */ }
     try {
       const around: any = await backend.fetchMessagesAround(chatId, targetMessageId, DRILL_AROUND_LIMIT);
       if (switchCtl.viewedId() !== chatId) {
         log(`[cmdk] drill aborted — session changed during around fetch`);
-        return false;
+        return cacheRendered;
       }
       if (!(around?.targetFound && Array.isArray(around.messages) && around.messages.length)) {
-        return false;
+        // Server can't find the target (deleted?). If the cache already
+        // painted it, keep that view rather than crawling older pages.
+        return cacheRendered;
       }
-      // Arm the lazy-load suppress window BEFORE any render/scroll. The
-      // bounded window lands the target mid-transcript, so the render +
-      // scrollToKey below can fire a scroll that would otherwise trip
-      // maybeLoadEarlier/maybeLoadLater into a wasteful ?before=/?after=
-      // page right after the drill. Setting it here (not after the scroll)
-      // closes that leak.
-      chat.suppressLazyLoadFor(1200);
-      // We are jumping into the MIDDLE of the session — not at the live
-      // tail. Assert un-pinned BEFORE the render so autoScroll can't snap
-      // us to the window's bottom while it settles.
-      chat.setPinnedToBottom(false);
-      // Arm pagination BEFORE the store mutation: setDurable fires the
-      // reconciler synchronously, and chat's tail-invariant guards
-      // (persist/saveCurrentScrollPosition skip while hasMoreNewer) must
-      // already see the floating-window state when that render runs —
-      // otherwise a windowed snapshot could slip into IDB.
-      chat.setPaginationState(
-        around.firstId ?? null, !!around.hasMore,
-        around.lastId ?? null, !!around.hasMoreNewer,
-      );
-      transcriptStore.setDurable(chatId, around.messages, {
+      const pagination: windowCache.WindowPagination = {
         firstId: around.firstId ?? null,
         hasMore: !!around.hasMore,
         lastId: around.lastId ?? null,
         hasMoreNewer: !!around.hasMoreNewer,
-      });
-      rerenderActive();
-      // Persist is a no-op while the window floats (hasMoreNewer); it
-      // only writes once loadLater connects the run to the tail.
-      persistGrownTranscript(chatId);
-      await new Promise<void>(r => requestAnimationFrame(() => requestAnimationFrame(() => r())));
-      const found = transcriptEl.querySelector(
-        `[data-key="${CSS.escape(targetMessageId)}"]`,
-      ) as HTMLElement | null;
+      };
+      void windowCache.putWindow(chatId, targetMessageId, around.messages, pagination);
+      // After a cache paint on a slow link the user may already be
+      // reading — don't re-yank the viewport if they've gestured since.
+      const skipScroll = cacheRendered && chat.lastUserScrollGestureAt() > drillStartedAt;
+      const found = await renderAroundWindow(
+        chatId, targetMessageId, around.messages, pagination, { skipScroll });
       if (!found) {
+        if (cacheRendered) return true;
         log(`[cmdk] around window returned but ${targetMessageId} not in DOM — serial fallback`);
         return false;
       }
       log(`[cmdk] drill found ${targetMessageId} via bounded around window (1 round trip)`);
-      found.classList.add('search-target-flash');
-      drillScrollTo(found);
-      setTimeout(() => found.classList.remove('search-target-flash'), 1500);
       return true;
     } catch (e: any) {
+      if (cacheRendered) {
+        diag(`[cmdk] around fetch failed after cache paint — keeping cached window: ${e?.message || e}`);
+        return true;
+      }
       diag(`[cmdk] around-window drill failed: ${e?.message || e} — serial fallback`);
       return false;
     }
