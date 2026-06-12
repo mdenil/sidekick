@@ -1725,7 +1725,18 @@ async function resume(id: string, targetMessageId?: string) {
       // what we persist, so the cache GROWS to the whole transcript instead
       // of churning the newest page — the cache grows to the whole
       // transcript so deep pins are instant on revisit.
-      const cacheFuller = cacheRendered && !!cached && cached.messages.length > messages.length;
+      // Same no-hole rule as fetchAndMergeNewestPage: only merge when
+      // the server page OVERLAPS the cache. Delta resume keeps the page
+      // contiguous with the cached tail, but its fallback (cache >600
+      // rows behind, or a fetch error mid-walk) returns the bare newest
+      // ~200-row page — against a deep-scrollback cache that page may
+      // share no ids, and merging would splice a permanent hole.
+      // Dropping the deep history is the lesser evil: load-earlier can
+      // re-fetch it; nothing can heal a hole.
+      const reconCachedIds = new Set(
+        cached ? cached.messages.map((m: any) => String(m?.id)) : []);
+      const reconOverlaps = messages.some((row: any) => row?.id != null && reconCachedIds.has(String(row.id)));
+      const cacheFuller = cacheRendered && !!cached && cached.messages.length > messages.length && reconOverlaps;
       const merged = cacheFuller ? sessionCache.mergeNewestPage(cached!.messages, messages) : messages;
       const mergedPagination = cacheFuller ? cached!.pagination : pagination;
       const capped = sessionCache.capTranscript(merged, mergedPagination);
