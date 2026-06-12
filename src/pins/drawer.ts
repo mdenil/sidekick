@@ -3,7 +3,7 @@
 // clear pattern: create a module, register it below, and listen for its
 // store-change event here.
 
-import { totalPinCount } from './store.ts';
+import { totalPinCount, hydrate as hydratePins } from './store.ts';
 import { log } from '../util/log.ts';
 import { createRightDrawerHost, type RightDrawerHost } from '../rightDrawer/host.ts';
 import { hydrate as hydrateActivity, unresolvedApprovalCount, unreadActivityCount } from '../notifications/activityStore.ts';
@@ -102,6 +102,14 @@ export function initPinDrawer(opts: {
     return;
   }
   hydrateActivity();
+  // Pins must hydrate BEFORE the host below runs its initial render
+  // (host.select at create time, plus an immediate onOpen render when
+  // the expanded pref restores the drawer open). chat.ts also calls
+  // hydratePins, but only after an awaited IDB read — too late for this
+  // first paint, which is how the pin bar booted empty until toggled
+  // (field bug 2026-06-12, CAP). hydrate() is idempotent; the sync
+  // localStorage load runs before any await.
+  void hydratePins();
 
   drawerHost = createRightDrawerHost({
     drawerId: 'pin-drawer',

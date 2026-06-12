@@ -106,6 +106,7 @@ export class ServerBackedStore<T> {
   private mutationEpoch = 0;
   private pendingWrites = 0;
   private writesSettled = 0;
+  private hydrateRetries = 0;
   private readonly cfg: ServerBackedStoreConfig<T>;
 
   constructor(cfg: ServerBackedStoreConfig<T>) {
@@ -136,6 +137,12 @@ export class ServerBackedStore<T> {
     if (this.hydrated) return false;
     this.hydrated = true;
     this.loadFromStorage();
+    // A cache load must notify: UI that rendered before hydrate painted
+    // from an empty store, and if the server snapshot later equals the
+    // cache the diff-aware refresh stays silent — so without this event
+    // that UI never repaints (field bug 2026-06-12: pin bar empty on
+    // boot until manually toggled).
+    if (this.items.size > 0) this.notifyChange();
     try { this.cfg.onFirstHydrate?.(); } catch (e: any) { this.cfg.log?.(`onFirstHydrate failed: ${e?.message ?? e}`); }
     return true;
   }
@@ -165,7 +172,7 @@ export class ServerBackedStore<T> {
     const settledAtFetch = this.writesSettled;
     try {
       const r = await (this.cfg.fetchImpl ?? fetch)(apiUrl(this.cfg.endpoint), this.cfg.fetchInit);
-      if (!r.ok) return;
+      if (!r.ok) { this.scheduleHydrateRetry(`HTTP ${r.status}`); return; }
       const data = await r.json();
       if (this.mutationEpoch !== epochAtFetch || this.pendingWrites > 0 || this.writesSettled !== settledAtFetch) {
         this.cfg.log?.(`refresh discarded: raced a local write (epoch ${epochAtFetch}→${this.mutationEpoch}, pendingWrites ${this.pendingWrites}, settled ${settledAtFetch}→${this.writesSettled})`);
@@ -187,8 +194,24 @@ export class ServerBackedStore<T> {
       this.persist();
       this.notifyChange();
     } catch (e: any) {
-      if (!this.serverHydrated) this.cfg.log?.(`server hydrate failed: ${e?.message ?? e}`);
+      this.scheduleHydrateRetry(e?.message ?? String(e));
     }
+  }
+
+  /** Bounded retry for the BOOT server hydrate only. Without it a
+   *  transient failure (proxy restarting, radio not up yet on a CAP
+   *  cold launch) left the store on stale cache until the next external
+   *  trigger. Once the first snapshot lands, later failures are left to
+   *  the normal triggers (serverChangeEvent / visibilitychange). */
+  private scheduleHydrateRetry(reason: string): void {
+    if (this.serverHydrated || this.hydrateRetries >= 3) {
+      if (!this.serverHydrated) this.cfg.log?.(`server hydrate failed (${reason}) — retries exhausted`);
+      return;
+    }
+    this.hydrateRetries++;
+    const delay = (this.cfg.debounceMs ?? 200) * 2 ** this.hydrateRetries;
+    this.cfg.log?.(`server hydrate failed (${reason}) — retry ${this.hydrateRetries}/3 in ${delay}ms`);
+    setTimeout(() => { if (!this.serverHydrated) void this.refreshFromServer(); }, delay);
   }
 
   /** Debounced refresh — coalesces bursts of cross-device sync envelopes

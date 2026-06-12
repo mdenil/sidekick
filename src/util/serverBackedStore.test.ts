@@ -196,6 +196,84 @@ describe('ServerBackedStore stale-snapshot guards', () => {
     assert.ok(logs.some((l) => l.includes('refresh applied')));
   });
 
+  it('non-empty cache hydrate notifies so pre-hydrate UI repaints (#205)', async () => {
+    // Field bug 2026-06-12: pin bar booted empty until toggled. The
+    // cache loaded silently and the server snapshot equaled it, so the
+    // diff-aware refresh never notified either.
+    const storage = new Map<string, string>();
+    (globalThis as any).localStorage = {
+      getItem: (k: string) => storage.get(k) ?? null,
+      setItem: (k: string, v: string) => { storage.set(k, String(v)); },
+      removeItem: (k: string) => { storage.delete(k); },
+    };
+    try {
+      storage.set('test.items', JSON.stringify([{ id: 'a' }, { id: 'b' }]));
+      const { calls, fetchImpl } = fetchController();
+      const store = makeStore(fetchImpl, [], { storageKey: 'test.items' });
+      let notified = 0;
+      store.notifyChange = () => { notified++; };
+      store.hydrate();
+      assert.deepEqual([...store.items.keys()].sort(), ['a', 'b']);
+      assert.equal(notified, 1, 'cache hydrate must fire the change event');
+      // Server snapshot equals the cache → silent (no second notify)…
+      calls[0].d.resolve(snapshot([{ id: 'a' }, { id: 'b' }]));
+      await tick();
+      assert.equal(notified, 1, 'equal server snapshot stays silent');
+    } finally {
+      delete (globalThis as any).localStorage;
+    }
+  });
+
+  it('empty cache hydrate stays silent', async () => {
+    const { fetchImpl } = fetchController();
+    const store = makeStore(fetchImpl, [], { storageKey: null });
+    let notified = 0;
+    store.notifyChange = () => { notified++; };
+    store.hydrate();
+    assert.equal(notified, 0, 'nothing to paint — no event');
+  });
+
+  it('failed boot hydrate retries (bounded) and converges once the server answers', async () => {
+    const { calls, fetchImpl } = fetchController();
+    const logs: string[] = [];
+    const store = makeStore(fetchImpl, logs);
+
+    const p = store.refreshFromServer();
+    calls[0].d.reject(new Error('boom'));
+    await p;
+    await tick(10); // retry 1 fires after debounceMs * 2 = 2ms
+    assert.equal(calls.length, 2, 'failed boot hydrate must schedule a retry');
+    assert.ok(logs.some((l) => l.includes('retry 1/3')));
+
+    // !ok responses retry too (proxy up but plugin still starting).
+    calls[1].d.resolve({ ok: false, status: 503 } as unknown as Response);
+    await tick(10); // retry 2 after 4ms
+    assert.equal(calls.length, 3, 'HTTP-error boot hydrate must also retry');
+
+    calls[2].d.resolve(snapshot([{ id: 'a' }]));
+    await tick(20);
+    assert.deepEqual([...store.items.keys()], ['a'], 'retry converged on the server snapshot');
+    assert.equal(calls.length, 3, 'no further retries once server-hydrated');
+  });
+
+  it('boot hydrate retries are bounded at 3', async () => {
+    const { calls, fetchImpl } = fetchController();
+    const logs: string[] = [];
+    const store = makeStore(fetchImpl, logs);
+
+    const p = store.refreshFromServer();
+    calls[0].d.reject(new Error('down'));
+    await p;
+    for (let i = 1; i <= 3; i++) {
+      await tick(25); // covers the 2/4/8ms backoff steps
+      assert.equal(calls.length, i + 1, `retry ${i} fired`);
+      calls[i].d.reject(new Error('down'));
+    }
+    await tick(40);
+    assert.equal(calls.length, 4, 'no retries past the cap');
+    assert.ok(logs.some((l) => l.includes('retries exhausted')));
+  });
+
   it('reconcile returning "skip" aborts the apply', async () => {
     const { calls, fetchImpl } = fetchController();
     const logs: string[] = [];
