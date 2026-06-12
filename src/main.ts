@@ -1476,6 +1476,12 @@ async function boot() {
     // Network dropped a connected call (not a user hangup) — show a
     // distinct banner with one-tap reconnect. See showCallDroppedBanner.
     onCallDropped: (reason) => showCallDroppedBanner(reason),
+    // Dictation opens the WebRTC peer from btn-mic; recovery visuals
+    // (pulsing-amber reconnecting) belong on the mic then, not btn-call.
+    // Same discriminator syncCallButtonVisual uses for .active. Lazy
+    // closure: dictateActive is declared later in this scope but state
+    // transitions only fire after a user opens a voice path.
+    isMicOwnedCall: () => dictateActive,
   });
 
   // ── Call-dropped banner ───────────────────────────────────────────────

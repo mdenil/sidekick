@@ -49,6 +49,13 @@ export interface ControlsOpts {
    *  banner with a Reconnect affordance. `reason` is the close reason from
    *  realtime.ts (e.g. 'net-failed', 'net-disconnect'). */
   onCallDropped?: (reason: string) => void;
+  /** True when the OPEN WebRTC peer was mic-initiated (realtime dictation
+   *  drives the composer mic, btn-mic), not call-initiated (btn-call).
+   *  Routes call-lifecycle visuals — e.g. the pulsing-amber `reconnecting`
+   *  state — onto the button the user actually tapped. Field nit
+   *  2026-06-12: low-network recovery during dictation flashed btn-call
+   *  orange while the red mic stayed untouched. */
+  isMicOwnedCall?: () => boolean;
 }
 
 let opts: ControlsOpts | null = null;
@@ -78,12 +85,17 @@ export function init(o: ControlsOpts) {
     // the mic button visually — it's the one that animates the spin
     // during initial setup; harmless when call mode owns the actual
     // visual state through btn-call.
+    // Whose button shows call-lifecycle visuals: dictation opens the
+    // same WebRTC peer but from btn-mic, so recovery states belong on
+    // the mic, not the (inactive) call button.
+    const micOwned = !!opts?.isMicOwnedCall?.();
     const mic = btnEl('btn-mic');
     if (mic) {
       mic.classList.toggle(
         'connecting',
         state === 'requesting-mic' || state === 'connecting',
       );
+      mic.classList.toggle('reconnecting', state === 'reconnecting' && micOwned);
       // Clear the "actually listening" pulse when the call closes.
       // The bridge's {type:'listening'} envelope adds it; we clear here
       // so the visual reflects state immediately on close instead of
@@ -104,8 +116,9 @@ export function init(o: ControlsOpts) {
       call.classList.toggle('disabled', transient);
       // Reconnecting stays tappable (tap = cancel/hang up) and gets a
       // distinct pulsing-yellow visual so the user knows recovery is in
-      // progress — see .icon-btn-plain.reconnecting in app.css.
-      call.classList.toggle('reconnecting', state === 'reconnecting');
+      // progress — see .icon-btn-plain.reconnecting in app.css. Mic-owned
+      // calls (dictation) show it on btn-mic instead — see above.
+      call.classList.toggle('reconnecting', state === 'reconnecting' && !micOwned);
     }
     // Reset the dictation state machine whenever a call ends so a
     // pending utterance buffer or silence timer doesn't leak across
