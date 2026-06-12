@@ -24,6 +24,7 @@ import * as switchCtl from './switchController.ts';
 import * as badge from './notifications/badge.ts';
 import * as inAppBanner from './notifications/inAppBanner.ts';
 import * as activityStore from './notifications/activityStore.ts';
+import * as chat from './chat.ts';
 
 /** Push notification handler — cron output, /background results,
  *  scheduled reminders. Backends that support out-of-band push (today:
@@ -120,6 +121,9 @@ export function handleNotification({ chatId, kind, content, sidekickId, isReplay
       content: displayText,
       sidekick_id: typeof sidekickId === 'string' ? sidekickId : undefined,
     });
+    // Live notification landing in a scrolled-up viewport = one unread.
+    // No sidekickId → no stable dedup key → skip (noteLiveMessage no-ops).
+    if (!replay) chat.noteLiveMessage(chatId, typeof sidekickId === 'string' ? sidekickId : null);
     void badge.clearUnread(chatId);
   }
 }
@@ -139,7 +143,7 @@ export function handleNotification({ chatId, kind, content, sidekickId, isReplay
  *  conversation is explicitly different from the viewed one. When
  *  getViewed() is null (boot races), render — there's no on-screen
  *  session to protect. */
-export function handleUserMessage({ conversation, text, messageId }: any): void {
+export function handleUserMessage({ conversation, text, messageId, isReplay }: any): void {
   if (!messageId || !conversation) return;
   // Defensive: empty text must not wipe an existing bubble. Production
   // envelopes always carry text; future metadata-only pings shouldn't
@@ -156,6 +160,13 @@ export function handleUserMessage({ conversation, text, messageId }: any): void 
     message_id: messageId,
     text,
   });
+  // Unread badge: a CROSS-DEVICE user message is an unread; the
+  // originator's own echo (matched by its pendingSend, cleared just
+  // below) is not — they typed it. Replays (SSE reconnect re-emits
+  // user_message envelopes) never count.
+  const isOwnEcho = transcriptStore.getState(conversation).pendingSends
+    .some(p => p.messageId === messageId);
+  if (isReplay !== true && !isOwnEcho) chat.noteLiveMessage(conversation, String(messageId));
   // Clear the matching pendingSend on the originator — projection
   // dedups against inflight regardless, but cleaning up keeps the
   // store hygienic.

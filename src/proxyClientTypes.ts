@@ -132,7 +132,7 @@
  *   may have rolled over. The shell handles this the same way as a
  *   drawer-click resume (clear + re-render); other adapters can leave
  *   it unset.
- * @property {(e: {conversation: string; text: string; messageId: string}) => void} [onUserMessage]
+ * @property {(e: {conversation: string; text: string; messageId: string; isReplay?: boolean}) => void} [onUserMessage]
  *   Cross-device user-message broadcast. Fires when the upstream
  *   announces that a user dispatched a message in `conversation`. The
  *   originating device dedups against its optimistic bubble via

@@ -31,6 +31,7 @@ import { attachCard } from './cards/attach.ts';
 import { parseCardsFromText, extractImageBlocks } from './cards/fallback.ts';
 import * as transcriptStore from './transcript/store.ts';
 import * as listenReply from './listenReplyState.ts';
+import * as chat from './chat.ts';
 
 // ─── Activity handler ───────────────────────────────────────────────────────
 
@@ -82,6 +83,9 @@ export function handleReplyDelta({ replyId, cumulativeText, conversation, messag
       text: cumulativeText,
       edit: true,
     });
+    // Unread badge: one live reply = one unread, deduped by message_id
+    // inside noteLiveMessage (also gated there on viewed chat + pinned).
+    if (!isReplay) chat.noteLiveMessage(conversation, String(messageId));
   }
   // Audio + feedback side effects are scoped to the on-screen chat.
   const viewed = switchCtl.viewedId();
@@ -257,6 +261,9 @@ export function handleReplyFinal({ replyId, text, content = [], conversation, me
       message_id: messageId,
       text: text || undefined,
     });
+    // Final-only replies (no preceding delta) still count as one unread;
+    // delta-then-final dedups via noteLiveMessage's per-id set.
+    if (!isReplay) chat.noteLiveMessage(conversation, String(messageId));
     // Reply_final = whole turn ack'd; drop any remaining optimistic
     // pending sends for this chat (defensive — user_message echo
     // normally clears them earlier).

@@ -782,7 +782,7 @@ function handleEnvelope(type: string, env: any, chatId: string): void {
       const messageId = typeof env?.message_id === 'string' ? env.message_id : '';
       if (!messageId) return;
       const isReplay = env?._replay === true;
-      subs?.onUserMessage?.({ conversation: chatId, text, messageId });
+      subs?.onUserMessage?.({ conversation: chatId, text, messageId, isReplay });
       // Drawer ordering — skip on replay (see reply_final's matching
       // guard). Server replays N user_message envelopes per chat on
       // every reconnect; without this gate that triggers N drawer

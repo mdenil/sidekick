@@ -55,6 +55,13 @@ const foldStateByMsgId = new Map<string, 'expanded' | 'collapsed'>();
  *  Drawer reads it back after boot via getViewedSessionId() — survives
  *  page reload because we persist it in the chat snapshot. */
 export function trackViewedSession(id: string | null) {
+  if (id !== viewedSessionIdRef) {
+    // Unread badge is per-viewed-chat — don't leak a count (or the
+    // counted-id dedup set) across a session switch.
+    missedWhileScrolled = 0;
+    unreadSeenIds.clear();
+    updateButton();
+  }
   viewedSessionIdRef = id;
   persist();  // update the snapshot so reload picks it up
 }
@@ -78,6 +85,12 @@ const PINNED_THRESHOLD_PX = 300;
 
 let pinnedToBottom = true;
 let missedWhileScrolled = 0;
+/** Message ids already counted toward (or exempt from) the unread badge.
+ *  Dedups the many envelopes one message produces (delta…delta…final…
+ *  durable echo) down to one badge unit. Ids first seen while PINNED are
+ *  also recorded — the user watched that message arrive, so deltas that
+ *  keep streaming after they scroll up must not count it. */
+const unreadSeenIds = new Set<string>();
 
 /** When true, the transcript `scroll` listener skips its
  *  saveCurrentScrollPosition() write. Set briefly by the switch-then-load
@@ -213,6 +226,27 @@ function updateButton(): void {
   }
 }
 
+/** #214 TFC-badge: the jump-to-latest badge counts UNREADS — live
+ *  messages (reply / notification / cross-device send) that arrived while
+ *  the user was scrolled up — not "rows appended while not pinned". The
+ *  counter used to live in autoScroll's else-branch, so every render
+ *  pass, dictation interim update, batch flush, and resume reconcile
+ *  bumped it (field 2026-06-12: badge "happens without a fresh reply,
+ *  and is inconsistent"). Live ingestion sites (backendEventHandlers /
+ *  backendEvents) call this instead, already replay-guarded. */
+export function noteLiveMessage(chatId: string | null | undefined, messageId: string | null | undefined): void {
+  const key = messageId ? String(messageId) : '';
+  if (!key) return;
+  // The badge belongs to the on-screen transcript. Null viewed (boot
+  // race) renders to the only transcript there is — count it too.
+  if (!chatId || (viewedSessionIdRef && chatId !== viewedSessionIdRef)) return;
+  if (unreadSeenIds.has(key)) return;
+  unreadSeenIds.add(key);
+  if (pinnedToBottom) return;
+  missedWhileScrolled++;
+  updateButton();
+}
+
 /** Missing-suffix indicator (#214 TFC-D). While a floating deep window is
  *  open (hasMoreNewer=true) the transcript on screen does NOT reach the
  *  session's end, but nothing in the old UI said so — the user read the
@@ -346,9 +380,11 @@ export function autoScroll(): void {
     const tail = shAfter - stAfter - ch;
     diag(`[autoscroll] pinned scrollTop ${stBefore}→${stAfter} scrollHeight ${shBefore}→${shAfter} ch=${ch} tail=${tail} burst=${inBurst}`);
   } else {
-    missedWhileScrolled++;
-    diag(`[autoscroll] skipped (not pinned) scrollTop=${stBefore} scrollHeight=${shBefore} ch=${ch} missed=${missedWhileScrolled}`);
-    updateButton();
+    // No badge bump here: autoScroll fires for every appended/updated row
+    // (render passes, dictation interim, batch flushes, replays), which
+    // made the unread badge count garbage. Live ingestion sites call
+    // noteLiveMessage instead.
+    diag(`[autoscroll] skipped (not pinned) scrollTop=${stBefore} scrollHeight=${shBefore} ch=${ch}`);
   }
 }
 
@@ -1388,6 +1424,9 @@ export function clear(): void {
   viewedSessionIdRef = null;
   restoredViewedSessionId = null;
   foldStateByMsgId.clear();
+  missedWhileScrolled = 0;
+  unreadSeenIds.clear();
+  updateButton();
   clearSnapshot().catch(() => {});
 }
 
