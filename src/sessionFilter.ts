@@ -31,6 +31,10 @@ export type SessionRow = {
   title?: string | null;
   snippet?: string | null;
   source?: string | null;
+  /** Space-joined raw hermes session ids rolled up into this row.
+   *  Lets a pasted session id (e.g. 20260611_223425_98bd2b) match
+   *  even though the row's own id is the sidekick:<uuid> chat id. */
+  sessionIds?: string | null;
   [k: string]: any;
 };
 
@@ -76,7 +80,7 @@ function globToRegex(glob: string): RegExp {
  *  the Info panel exposes. Single string, lower-cased once, so each term
  *  check is a simple `.includes()`. */
 function haystack(s: SessionRow): string {
-  return [s.title, s.snippet, s.source, s.id]
+  return [s.title, s.snippet, s.source, s.id, s.sessionIds]
     .filter((v) => v != null && v !== '')
     .join('\u0001')
     .toLowerCase();

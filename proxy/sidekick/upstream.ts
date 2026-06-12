@@ -52,6 +52,11 @@ export interface ConversationSummary {
     tool_count?: number;
     last_active_at: number;
     first_user_message: string | null;
+    /** Space-joined raw hermes session ids (root + rotated children)
+     *  rolled up into this conversation, so the client's session
+     *  filter can match a pasted session id. Optional — older
+     *  plugins don't emit it. */
+    session_ids?: string;
   };
 }
 

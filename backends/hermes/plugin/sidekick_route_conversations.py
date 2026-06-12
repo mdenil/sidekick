@@ -70,8 +70,11 @@ def _summaries_by_user_id(
 
     Returns ``[(chat_id, source, chat_type, title, message_count,
     turn_count, tool_count, last_active_at, created_at,
-    first_user_message), …]`` sorted most-recently-active first,
-    bounded by ``limit``.
+    first_user_message, session_ids), …]`` sorted most-recently-active
+    first, bounded by ``limit``. ``session_ids`` is a space-joined
+    string of every hermes session id that rolls up into the row
+    (root + rotated/compacted children) so clients can match raw
+    session ids in their session filter.
 
     ``turn_count`` is user-role messages (the user's mental model of
     "how many times have I said something"); ``tool_count`` is the
@@ -181,7 +184,8 @@ def _summaries_by_user_id(
                  AND sr3.root_source = sr.root_source
                  AND m.role = 'user'
                ORDER BY m.timestamp ASC, m.id ASC LIMIT 1
-            ) AS first_user_message
+            ) AS first_user_message,
+            GROUP_CONCAT(s.id, ' ') AS session_ids
         FROM session_root sr
         JOIN sessions s ON s.id = sr.id
         WHERE sr.root_source IN ({src_csv})
@@ -197,7 +201,7 @@ def _summaries_by_user_id(
         rows = conn.execute(sql, params).fetchall()
     out = []
     for (user_id, source, created_at, last_active_at, mcount,
-         turn_count, tool_count, title, first_user) in rows:
+         turn_count, tool_count, title, first_user, session_ids) in rows:
         if not user_id:
             continue
         first_user_truncated = (first_user or "")[:80] or None
@@ -206,7 +210,7 @@ def _summaries_by_user_id(
             user_id, source, "dm", display_title, int(mcount or 0),
             int(turn_count or 0), int(tool_count or 0),
             float(last_active_at or 0), float(created_at or 0),
-            first_user_truncated,
+            first_user_truncated, session_ids or "",
         ))
     return out
 
@@ -241,11 +245,13 @@ async def handle_list(adapter, request: "web.Request") -> "web.Response":
                 "tool_count": tool_count,
                 "last_active_at": int(last_active_at),
                 "first_user_message": first_user_message,
+                "session_ids": session_ids,
             },
         }
         for (chat_id, _source, _chat_type, title, message_count,
              turn_count, tool_count,
-             last_active_at, created_at, first_user_message) in rows
+             last_active_at, created_at, first_user_message,
+             session_ids) in rows
     ]
     return web.json_response({"object": "list", "data": data})
 
@@ -302,11 +308,13 @@ async def handle_list_gateway(adapter, request: "web.Request") -> "web.Response"
                 # that need to display or correlate the platform-
                 # native identifier (e.g. WhatsApp @lid badge, debug).
                 "native_chat_id": chat_id,
+                "session_ids": session_ids,
             },
         }
         for (chat_id, source, chat_type, title, message_count,
              turn_count, tool_count,
-             last_active_at, created_at, first_user_message) in rows
+             last_active_at, created_at, first_user_message,
+             session_ids) in rows
     ]
     return web.json_response({"object": "list", "data": data})
 

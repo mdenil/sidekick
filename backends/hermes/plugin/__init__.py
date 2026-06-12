@@ -1298,11 +1298,28 @@ class SidekickAdapter(BasePlatformAdapter):
                 # the cmd+K palette keeps showing the cached session-filter
                 # results above.
                 rows = []
+            id_rows = self._session_id_matches(conn, q)
 
         # Group by (chat_id, source) for the sessions list. Best rank
         # wins for ordering; preserve hit order in the flat list.
+        # Session-ID matches go FIRST: when the query looks like a
+        # hermes session id (FTS can't see those — they never appear
+        # in message text), the resolved conversation is almost
+        # certainly what the user wants.
         hits: List[Dict[str, Any]] = []
         sessions_by_key: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        for (chat_id, source, session_title) in id_rows:
+            key = (chat_id, source)
+            if key in sessions_by_key:
+                continue
+            sessions_by_key[key] = {
+                "id": _format_gateway_id(source, chat_id),
+                "source": source,
+                "title": session_title or None,
+                "snippet": None,
+                "messageCount": None,
+                "lastMessageAt": None,
+            }
         for (message_id, session_id, role, snippet, timestamp,
              chat_id, source, session_title) in rows:
             prefixed_id = _format_gateway_id(source, chat_id)
@@ -1327,6 +1344,65 @@ class SidekickAdapter(BasePlatformAdapter):
                 }
 
         return list(sessions_by_key.values()), hits
+
+    @staticmethod
+    def _session_id_matches(
+        conn: "sqlite3.Connection", q: str,
+    ) -> List[Tuple[str, str, str]]:
+        """Match `q` as a hermes session-id substring → owning chats.
+
+        FTS can't find session ids (they never appear in message
+        text), so searching `20260611_223425_98bd2b` returned nothing
+        even though the session exists. This pass LIKE-matches
+        sessions.id and resolves each hit to its root conversation.
+
+        Rotated/compacted child sessions have user_id=NULL — walk
+        parent_session_id up (bounded, same pattern as
+        _session_belongs_to_chat) until a user_id-bearing root is
+        found, and filter on the ROOT's source so child rows with
+        NULL source still resolve.
+
+        Only runs for queries that plausibly are id fragments: a
+        single [A-Za-z0-9_] token of >= 4 chars. `_` is a LIKE
+        single-char wildcard, so the pattern is escaped.
+
+        Returns [(chat_id, source, title)] — at most a handful.
+        """
+        token = q.strip()
+        if (len(token) < 4 or not token.replace("_", "").isalnum()
+                or any(c.isspace() for c in token)
+                or not all(ord(c) < 128 for c in token)):
+            return []
+        escaped = (token.replace("\\", "\\\\")
+                        .replace("%", "\\%")
+                        .replace("_", "\\_"))
+        sql = f"""
+            WITH RECURSIVE walk(start_id, cur_user_id, cur_source,
+                                cur_title, parent_id, depth) AS (
+                SELECT s.id, s.user_id, s.source, COALESCE(s.title, ''),
+                       s.parent_session_id, 0
+                  FROM sessions s
+                 WHERE s.id LIKE ? ESCAPE '\\'
+                UNION ALL
+                SELECT w.start_id, p.user_id, p.source,
+                       COALESCE(p.title, ''), p.parent_session_id,
+                       w.depth + 1
+                  FROM walk w
+                  JOIN sessions p ON p.id = w.parent_id
+                 WHERE w.cur_user_id IS NULL AND w.depth < 20
+            )
+            SELECT DISTINCT w.cur_user_id, w.cur_source, w.cur_title
+              FROM walk w
+             WHERE w.cur_user_id IS NOT NULL
+               AND w.cur_source IN ({",".join("?" for _ in GATEWAY_DRAWER_SOURCES)})
+             LIMIT 10
+        """
+        try:
+            return conn.execute(
+                sql, ["%" + escaped + "%", *GATEWAY_DRAWER_SOURCES],
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return []
 
     @staticmethod
     def _fts5_query_for(q: str) -> str:

@@ -99,4 +99,28 @@ describe('sessionFilter.applyFilter', () => {
     assert.equal(out.length, 1);
     assert.equal(out[0].id, 'sidekick-1234');
   });
+
+  it('matches raw hermes session ids via sessionIds', () => {
+    // Field bug 2026-06-11: the row's own id is the sidekick:<uuid>
+    // chat id, so pasting a raw hermes session id (incl. a rotated
+    // child's) matched nothing. sessionIds carries the space-joined
+    // raw ids from the backend listing.
+    const rows = [
+      { id: 'sidekick:c31cd523', title: 'Investor Call', snippet: '', source: 'sidekick',
+        sessionIds: '20260601_120000_aaaaaa 20260611_223425_98bd2b' },
+      { id: 'sidekick:other', title: 'Other', snippet: '', source: 'sidekick',
+        sessionIds: '20260530_090000_cccccc' },
+    ];
+    const out = applyFilter(rows, parseQuery('20260611_223425_98bd2b'));
+    assert.equal(out.length, 1);
+    assert.equal(out[0].id, 'sidekick:c31cd523');
+    // Fragment matches too (substring semantics).
+    const frag = applyFilter(rows, parseQuery('98bd2b'));
+    assert.equal(frag.length, 1);
+    assert.equal(frag[0].id, 'sidekick:c31cd523');
+    // Rows without sessionIds still work.
+    const none = applyFilter([{ id: 'x', title: 't', snippet: null, source: 's' }],
+      parseQuery('98bd2b'));
+    assert.deepEqual(none, []);
+  });
 });

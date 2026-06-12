@@ -267,7 +267,7 @@ def test_drawer_aggregate_one_row_per_user_id(plugin, state_db):
 
     assert len(rows) == 1
     (chat_id, source, chat_type, title, mcount, _turn, _tool,
-     last_active, created, first) = rows[0]
+     last_active, created, first, _sids) = rows[0]
     assert chat_id == chat
     assert source == "sidekick"
     assert chat_type == "dm"
@@ -412,7 +412,7 @@ def test_drawer_includes_compression_forks_via_user_id(plugin, state_db):
     adapter = _make_adapter(plugin, state_db)
     rows = adapter._summaries_by_user_id(("sidekick",), 50)
     assert len(rows) == 1
-    chat_id, _src, _ctype, title, mcount, _turn, _tool, last_active, created, _first = rows[0]
+    chat_id, _src, _ctype, title, mcount, _turn, _tool, last_active, created, _first, _sids = rows[0]
     assert chat_id == "u"
     assert title == "fork"  # latest started_at
     assert mcount == 2
@@ -472,7 +472,7 @@ def test_drawer_rolls_up_compacted_null_user_id_child(plugin, state_db):
     adapter = _make_adapter(plugin, state_db)
     rows = adapter._summaries_by_user_id(("sidekick",), 50)
     assert len(rows) == 1
-    chat_id, _src, _ctype, title, mcount, _turn, _tool, last_active, created, _first = rows[0]
+    chat_id, _src, _ctype, title, mcount, _turn, _tool, last_active, created, _first, _sids = rows[0]
     assert chat_id == "u"
     assert title == "root #2"  # latest started_at wins
     assert mcount == 5  # 2 root + 3 compacted child
@@ -505,7 +505,7 @@ def test_drawer_excludes_delegate_subtask_with_different_prompt(plugin, state_db
     adapter = _make_adapter(plugin, state_db)
     rows = adapter._summaries_by_user_id(("sidekick",), 50)
     assert len(rows) == 1
-    _chat_id, _src, _ctype, _title, mcount, _turn, _tool, _last, _created, _first = rows[0]
+    _chat_id, _src, _ctype, _title, mcount, _turn, _tool, _last, _created, _first, _sids = rows[0]
     assert mcount == 2, (
         f"delegate sub-task messages must not be counted; expected 2 "
         f"(root only), got {mcount}"
@@ -601,7 +601,7 @@ def test_drawer_accepts_compacted_child_with_appended_prompt(plugin, state_db):
     adapter = _make_adapter(plugin, state_db)
     rows = adapter._summaries_by_user_id(("sidekick",), 50)
     assert len(rows) == 1
-    _chat_id, _src, _ctype, _title, mcount, _turn, _tool, _last, _created, _first = rows[0]
+    _chat_id, _src, _ctype, _title, mcount, _turn, _tool, _last, _created, _first, _sids = rows[0]
     assert mcount == 3, (
         f"compaction child with appended prompt must be rolled up "
         f"(prefix-match); got mcount={mcount}"
@@ -636,9 +636,10 @@ def test_drawer_first_user_message_truncated_to_80_chars(plugin, state_db):
     adapter = _make_adapter(plugin, state_db)
     rows = adapter._summaries_by_user_id(("sidekick",), 50)
     assert len(rows) == 1
-    # Index 9 = first_user_truncated in the 10-tuple shape
+    # Index 9 = first_user_truncated in the 11-tuple shape
     # (chat_id, source, chat_type, title, message_count, turn_count,
-    #  tool_count, last_active_at, created_at, first_user_message).
+    #  tool_count, last_active_at, created_at, first_user_message,
+    #  session_ids).
     first_user = rows[0][9]
     assert first_user is not None
     assert len(first_user) == 80
@@ -654,6 +655,90 @@ def test_drawer_excludes_null_user_id_sessions(plugin, state_db):
     adapter = _make_adapter(plugin, state_db)
     rows = adapter._summaries_by_user_id(("sidekick",), 50)
     assert [r[0] for r in rows] == ["u"]
+
+
+def test_drawer_session_ids_includes_rotated_children(plugin, state_db):
+    """The drawer row carries a space-joined list of EVERY hermes
+    session id that rolls up into it (root + compacted children), so
+    the client's session filter can match a pasted raw session id —
+    including a rotated child's id, which is exactly what the user
+    pastes from agent output (field bug 2026-06-11: a rotated child's
+    id matched nothing in the Filter Sessions box)."""
+    _insert_session(state_db, "20260601_root", "sidekick", "u", 1000.0,
+                    system_prompt=_SIDEKICK_PROMPT)
+    _insert_message(state_db, "20260601_root", "user", "hi", 1001.0)
+    _insert_session(state_db, "20260611_223425_98bd2b", "sidekick", None,
+                    2000.0, parent="20260601_root",
+                    system_prompt=_SIDEKICK_PROMPT)
+    _insert_message(state_db, "20260611_223425_98bd2b", "user", "more", 2001.0)
+
+    adapter = _make_adapter(plugin, state_db)
+    rows = adapter._summaries_by_user_id(("sidekick",), 50)
+    assert len(rows) == 1
+    session_ids = rows[0][10]
+    ids = set(session_ids.split(" "))
+    assert ids == {"20260601_root", "20260611_223425_98bd2b"}
+
+
+# ── _session_id_matches (cmd+K search by raw session id) ─────────────
+
+
+def _id_matches(plugin, state_db, q):
+    conn = sqlite3.connect(state_db)
+    try:
+        return plugin.SidekickAdapter._session_id_matches(conn, q)
+    finally:
+        conn.close()
+
+
+def test_session_id_search_resolves_null_user_id_child(plugin, state_db):
+    """Searching a rotated child's session id (user_id=NULL) resolves
+    to the ROOT conversation's (chat_id, source) by walking
+    parent_session_id — the exact field-bug case."""
+    _insert_session(state_db, "20260601_root", "sidekick", "u", 1000.0,
+                    title="Root Chat")
+    _insert_session(state_db, "20260611_223425_98bd2b", "sidekick", None,
+                    2000.0, parent="20260601_root")
+
+    rows = _id_matches(plugin, state_db, "20260611_223425_98bd2b")
+    assert rows == [("u", "sidekick", "Root Chat")]
+    # Fragment of the id matches too (substring semantics).
+    rows = _id_matches(plugin, state_db, "98bd2b")
+    assert rows == [("u", "sidekick", "Root Chat")]
+
+
+def test_session_id_search_escapes_like_underscore(plugin, state_db):
+    """`_` in the query is a literal underscore, not a LIKE
+    single-char wildcard. "2026x611" must NOT match "20260611_x"
+    via an unescaped `_` in a query like "2026_611"."""
+    _insert_session(state_db, "20260611_abc", "sidekick", "u1", 1000.0,
+                    title="T")
+    rows = _id_matches(plugin, state_db, "0611_abc")
+    assert [(r[0]) for r in rows] == ["u1"]
+    # Underscore must not act as a wildcard: "0611Xabc" has no
+    # underscore at that position and must not match.
+    assert _id_matches(plugin, state_db, "0611Xabc") == []
+
+
+def test_session_id_search_skips_non_id_queries(plugin, state_db):
+    """Multi-word, short, and non-alnum queries skip the id pass."""
+    _insert_session(state_db, "20260611_abc", "sidekick", "u1", 1000.0)
+    assert _id_matches(plugin, state_db, "two words") == []
+    assert _id_matches(plugin, state_db, "ab") == []
+    assert _id_matches(plugin, state_db, "foo-bar") == []
+
+
+def test_session_id_search_dedupes_multiple_children(plugin, state_db):
+    """Two rotated children of the same root resolving to the same
+    chat collapse to one result row."""
+    _insert_session(state_db, "20260601_root", "sidekick", "u", 1000.0,
+                    title="Root")
+    _insert_session(state_db, "20260611_aaa", "sidekick", None, 2000.0,
+                    parent="20260601_root")
+    _insert_session(state_db, "20260611_bbb", "sidekick", None, 3000.0,
+                    parent="20260601_root")
+    rows = _id_matches(plugin, state_db, "20260611")
+    assert rows == [("u", "sidekick", "Root")]
 
 
 # ── Gateway id encoding (contract uniqueness across sources) ─────────

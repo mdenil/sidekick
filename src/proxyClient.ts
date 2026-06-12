@@ -242,6 +242,10 @@ interface SessionsResponse {
      *  is empty (hermes hasn't generated one yet — model error or
      *  race). Replaced once a `session_changed` envelope arrives. */
     first_user_message?: string | null;
+    /** Space-joined raw hermes session ids (root + rotated children)
+     *  rolled up into this conversation. Fed into the session-filter
+     *  haystack so pasting a raw session id finds its chat. */
+    session_ids?: string;
   }>;
   unconfigured?: boolean;
 }
@@ -1117,6 +1121,7 @@ export const proxyClientAdapter = {
         // are present, falls back to "{messageCount} msgs" otherwise.
         turnCount: e.turn_count,
         toolCount: e.tool_count,
+        sessionIds: e.session_ids,
       };
     });
 
@@ -1149,6 +1154,7 @@ export const proxyClientAdapter = {
         messageCount: 0,
         turnCount: undefined,
         toolCount: undefined,
+        sessionIds: undefined,
       });
     }
     // Resort: server may already be sorted but the appended local-only
@@ -1185,6 +1191,7 @@ export const proxyClientAdapter = {
         messageCount: 0,
         turnCount: undefined,
         toolCount: undefined,
+        sessionIds: undefined,
       });
     }
     return merged;

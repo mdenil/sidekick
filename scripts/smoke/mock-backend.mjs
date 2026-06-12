@@ -199,6 +199,7 @@ export async function installMockBackend(page) {
         message_count: messageCount,
         created_at: new Date(c.lastActiveAt).toISOString(),
         first_user_message: firstUserMessage,
+        session_ids: c.sessionIds || undefined,
       };
     });
     sessions.sort((a, b) => (b.last_active_at || '').localeCompare(a.last_active_at || ''));
@@ -869,6 +870,9 @@ export async function installMockBackend(page) {
         title: opts.title ?? 'Mock chat',
         messages: opts.messages || [],
         lastActiveAt: opts.lastActiveAt || Date.now(),
+        // Space-joined raw hermes session ids (mirrors the plugin's
+        // session_ids metadata) — session-id filter tests set this.
+        sessionIds: opts.sessionIds || '',
       });
     },
     /** Push a reply envelope as if the agent generated it. The active

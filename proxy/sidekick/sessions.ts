@@ -42,6 +42,9 @@ interface SidekickSessionRow {
    *  (model error / blip / race). Null when no user message exists
    *  on disk yet. */
   first_user_message: string | null;
+  /** Space-joined raw hermes session ids rolled up into this row,
+   *  for session-id matching in the client filter. Optional. */
+  session_ids?: string;
 }
 
 /** GET /api/sidekick/sessions
@@ -215,6 +218,7 @@ function gatewayRowToSidekickRow(
       ? new Date(row.created_at * 1000).toISOString()
       : null,
     first_user_message: m.first_user_message,
+    session_ids: m.session_ids,
   };
 }
 
@@ -241,5 +245,6 @@ function channelRowToSidekickRow(
       ? new Date(row.created_at * 1000).toISOString()
       : null,
     first_user_message: m.first_user_message,
+    session_ids: m.session_ids,
   };
 }

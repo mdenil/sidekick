@@ -335,6 +335,22 @@ async function runUnifiedSearch(q: string) {
   }
 }
 
+/** Compact date+time for a message hit's meta line. Unix-seconds in,
+ *  "Jun 11, 10:34 PM" out (year added when not the current year).
+ *  Empty string for missing/zero timestamps — old backends or
+ *  DOM-rebuilt hits don't carry one. */
+function formatHitTime(ts: number): string {
+  if (!ts) return '';
+  const d = new Date(ts * 1000);
+  if (isNaN(d.getTime())) return '';
+  const sameYear = d.getFullYear() === new Date().getFullYear();
+  const date = d.toLocaleDateString(undefined, {
+    month: 'short', day: 'numeric', ...(sameYear ? {} : { year: 'numeric' }),
+  });
+  const time = d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  return `${date}, ${time}`;
+}
+
 function renderMessageRow(h: ServerMessageHit): HTMLLIElement {
   const li = document.createElement('li');
   li.className = 'cmdk-row';
@@ -353,6 +369,8 @@ function renderMessageRow(h: ServerMessageHit): HTMLLIElement {
   if (h.session_title) parts.push(h.session_title);
   if (h.session_source) parts.push(h.session_source);
   if (h.role) parts.push(h.role);
+  const when = formatHitTime(h.timestamp);
+  if (when) parts.push(when);
   meta.textContent = parts.join(' · ');
   li.appendChild(title);
   li.appendChild(meta);
