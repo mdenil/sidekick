@@ -3110,9 +3110,15 @@
     display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px;
   }
   .line .line-attachments img {
-    max-width: 200px; max-height: 200px; object-fit: cover;
+    /* Fixed box (#202): thumbnails are lazy-loaded and measured 0x0 until
+       decode, so an auto-sized box reflows the transcript when the image
+       lands — shifting the reading position on slow links (iOS WebKit has
+       no native scroll anchoring to compensate). A reserved 4:3 box keeps
+       layout stable from first paint; object-fit: cover crops to fill. */
+    width: 200px; max-width: 100%; aspect-ratio: 4 / 3; object-fit: cover;
     border-radius: 8px; border: 1px solid var(--border); cursor: zoom-in;
     display: block;
+    background: var(--surface-2, var(--surface));
   }
   .line .line-attachments video {
     max-width: 280px; max-height: 200px;

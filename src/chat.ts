@@ -165,6 +165,17 @@ export function restoreDomAnchor(anchor: { key: string; offsetPx: number }): boo
   return true;
 }
 
+/** User-gesture guard (#202, field 2026-06-12): a wheel/touch/pointer
+ *  gesture on the transcript marks the scroll position as user-owned.
+ *  Any in-flight anchor-restore convergence loop is cancelled (gen bump)
+ *  so it can't fight the user's scrolling, and resume paths consult the
+ *  timestamp to skip saved-position restores that would yank the view
+ *  while the user is actively reading/scrolling (slow-link server
+ *  callbacks arrive seconds after the cache render). */
+let lastUserGestureAt = 0;
+export function lastUserScrollGestureAt(): number { return lastUserGestureAt; }
+export function cancelPendingScrollRestores(): void { _restoreAnchorGen++; }
+
 export function saveCurrentScrollPosition(): void {
   if (!transcriptEl || !viewedSessionIdRef) return;
   // Capture the anchor (first-visible bubble key + offset) alongside raw
@@ -479,6 +490,14 @@ export async function init(el: HTMLElement | null): Promise<boolean> {
       if (pinnedToBottom && !wasPinned) missedWhileScrolled = 0;
       updateButton();
     }, { passive: true });
+    // #202: real input events (NOT 'scroll', which JS writes also fire)
+    // mark the position as user-owned and cancel in-flight restores.
+    for (const evt of ['wheel', 'touchstart', 'pointerdown'] as const) {
+      transcriptEl.addEventListener(evt, () => {
+        lastUserGestureAt = Date.now();
+        cancelPendingScrollRestores();
+      }, { passive: true });
+    }
   }
 
   try {
@@ -1211,11 +1230,22 @@ export function onJumpToLatest(cb: () => void) {
  *  preserved at the top of the transcript. */
 export function prependHistory(renderFn: () => void) {
   if (!transcriptEl) { renderFn(); return; }
+  // Anchor-based preservation (#202, field 2026-06-12): the old
+  // scrollHeight-diff math is open-loop — prepended rows measure as 100px
+  // `content-visibility` placeholders and not-yet-decoded images as 0px at
+  // this point, so the diff undershoots their settled heights and the view
+  // jumps as they render (worst on slow links / iOS WebKit, which has no
+  // native scroll anchoring). Instead, re-seat the first-visible bubble at
+  // its exact viewport offset; restoreDomAnchor's convergence loop absorbs
+  // the placeholder settles (and a user gesture cancels it). The diff math
+  // remains only as the fallback when no anchor exists.
+  const anchor = getDomAnchor();
   const oldScrollTop = transcriptEl.scrollTop;
   const oldScrollHeight = transcriptEl.scrollHeight;
   renderFn();
-  const newScrollHeight = transcriptEl.scrollHeight;
-  transcriptEl.scrollTop = oldScrollTop + (newScrollHeight - oldScrollHeight);
+  if (!(anchor && restoreDomAnchor(anchor))) {
+    transcriptEl.scrollTop = oldScrollTop + (transcriptEl.scrollHeight - oldScrollHeight);
+  }
   persist();
 }
 

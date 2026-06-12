@@ -267,6 +267,15 @@ export function replaySessionMessages(
     // those paths don't pass preserveScrollIfLive, so their restore below
     // still runs.
     if (chat.isPinnedToBottom()) chat.forceScrollToBottom();
+  } else if (sameSession && Date.now() - chat.lastUserScrollGestureAt() < 1500 && !targetMessageId) {
+    // #202 (field 2026-06-12): a same-session re-resume (server callback
+    // landing seconds after the cache render on a slow link) must NOT
+    // re-apply the saved position while the user is actively scrolling —
+    // the restore yanks the view out from under their finger. The live
+    // on-screen position IS the user's position; leave it alone. A fresh
+    // navigation (different session) still restores: the gesture happened
+    // in the sidebar, not the transcript, so this gate doesn't fire.
+    log('[chat-resume] skip saved-position restore — user gesture <1.5s ago');
   } else if (saved && !targetMessageId) {
     const el = document.getElementById('transcript');
     if (el) {
