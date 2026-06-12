@@ -627,39 +627,116 @@ export function scheduleRefresh(): void {
 const PREFETCH_TOP_N = 8;
 let prefetchDone = false;
 
+/** Fetch a session's newest window in the background and merge it into
+ *  its cached transcript. `existing` is the (possibly fuller) cache
+ *  entry to MERGE into rather than overwrite — a stale cache can hold
+ *  deep scroll-back history the newest page doesn't cover, and
+ *  clobbering it would re-truncate that loaded history. The background
+ *  fetch yields to any in-flight user drill (and does not itself count
+ *  as foreground) so it never saturates a high-latency link out from
+ *  under an active pin/activity jump. */
+async function fetchAndMergeNewestPage(
+  id: string,
+  existing: sessionCache.CachedMessages | null,
+): Promise<void> {
+  const r: any = await backend.fetchSessionMessagesBackground(id);
+  const page = Array.isArray(r?.messages) ? r.messages : [];
+  if (page.length === 0) return;
+  const cacheFuller = !!existing && existing.messages.length > page.length;
+  const merged = cacheFuller ? sessionCache.mergeNewestPage(existing!.messages, page) : page;
+  // `partial: true` — this is a tiny prefetch window, not a full
+  // newest page. Delta resume (#191) must not use it as a tail
+  // cursor or a 12-row cache would render as the whole transcript.
+  const pagination = cacheFuller
+    ? existing!.pagination
+    : { firstId: r.firstId ?? null, hasMore: !!r.hasMore, partial: true };
+  const capped = sessionCache.capTranscript(merged, pagination);
+  await sessionCache.putMessagesCache(id, capped.messages, capped.pagination);
+}
+
 async function warmPrefetch(top: any[]): Promise<void> {
   for (const s of top) {
     if (!s?.id) continue;
     // Skip if a fresh cache entry already exists (resume() may have
-    // populated it just now). Cheap probe: 60s freshness window. Keep a
-    // reference to a stale-but-possibly-fuller entry so we MERGE the
-    // fetched newest page into it rather than overwrite — a stale cache
-    // can hold deep scroll-back history the newest page doesn't cover,
-    // and clobbering it would re-truncate that loaded history.
+    // populated it just now). Cheap probe: 60s freshness window.
     let existing: sessionCache.CachedMessages | null = null;
     try {
       existing = await sessionCache.getMessagesCache(s.id);
       if (existing && Date.now() - existing.updatedAt < 60_000) continue;
     } catch { /* keep going on errors */ }
     try {
-      // Yields to any in-flight user drill before each fetch (and does not
-      // itself count as foreground) so this serial prefetch never saturates
-      // a high-latency link out from under an active pin/activity jump.
-      const r: any = await backend.fetchSessionMessagesBackground(s.id);
-      const page = Array.isArray(r?.messages) ? r.messages : [];
-      if (page.length > 0) {
-        const cacheFuller = !!existing && existing.messages.length > page.length;
-        const merged = cacheFuller ? sessionCache.mergeNewestPage(existing!.messages, page) : page;
-        // `partial: true` — this is a tiny prefetch window, not a full
-        // newest page. Delta resume (#191) must not use it as a tail
-        // cursor or a 12-row cache would render as the whole transcript.
-        const pagination = cacheFuller
-          ? existing!.pagination
-          : { firstId: r.firstId ?? null, hasMore: !!r.hasMore, partial: true };
-        const capped = sessionCache.capTranscript(merged, pagination);
-        await sessionCache.putMessagesCache(s.id, capped.messages, capped.pagination);
-      }
+      await fetchAndMergeNewestPage(s.id, existing);
     } catch { /* silent — cache miss path still works on click */ }
+  }
+}
+
+/** #214 TFC-B: background tail refresh for sessions whose drawer row
+ *  shows newer activity than their cached transcript's tail. Without
+ *  this, a chat that advanced on another device (or while this tab's
+ *  SSE was down) keeps serving its stale cached tail on switch — the
+ *  field symptom "session transcripts stale until refresh". The resume
+ *  reconcile does eventually fix it, but only AFTER painting the stale
+ *  tail and paying the server round trip; this sweep refreshes the
+ *  cache while the user is still elsewhere, so the next switch paints
+ *  current. */
+const STALE_TAIL_TOP_N = 10;
+const STALE_TAIL_RETRY_MS = 30_000;
+// lastMessageAt is floor()'d server seconds; message timestamps are
+// float seconds. Slack absorbs the truncation + activity-vs-message
+// timestamp jitter so a freshly-reconciled tail doesn't re-trigger.
+const STALE_TAIL_SLACK_SEC = 2;
+// Per-chat: the drawer lastMessageAt we last reconciled against. Each
+// distinct activity timestamp triggers at most ONE background fetch —
+// without this, a lastMessageAt bumped by non-message activity (no new
+// rows to advance the tail) would refetch on every list poll.
+const staleTailHandled = new Map<string, number>();
+const staleTailAttemptAt = new Map<string, number>();
+let staleTailSweepRunning = false;
+
+function newestMessageSec(messages: any[]): number | null {
+  let max: number | null = null;
+  for (const m of messages) {
+    const raw = m?.timestamp ?? m?.created_at;
+    if (typeof raw !== 'number') continue;
+    // < 1e12 → unix seconds (hermes); ≥ 1e12 → ms (openclaw).
+    const sec = raw < 1e12 ? raw : raw / 1000;
+    if (max == null || sec > max) max = sec;
+  }
+  return max;
+}
+
+async function refreshStaleTails(sessions: any[]): Promise<void> {
+  if (staleTailSweepRunning) return;
+  staleTailSweepRunning = true;
+  try {
+    for (const s of sessions.slice(0, STALE_TAIL_TOP_N)) {
+      if (!s?.id || typeof s.lastMessageAt !== 'number' || !s.lastMessageAt) continue;
+      // The viewed chat's tail is owned by the live SSE pipeline +
+      // resume reconcile — refreshing its cache here could fight an
+      // in-flight turn.
+      if (s.id === switchCtl.viewedId()) continue;
+      if ((staleTailHandled.get(s.id) || 0) >= s.lastMessageAt) continue;
+      const lastTry = staleTailAttemptAt.get(s.id) || 0;
+      if (Date.now() - lastTry < STALE_TAIL_RETRY_MS) continue;
+      let cached: sessionCache.CachedMessages | null = null;
+      try { cached = await sessionCache.getMessagesCache(s.id); } catch { /* miss */ }
+      // Cold cache = warmPrefetch's territory; nothing stale to fix.
+      if (!cached || cached.messages.length === 0) continue;
+      const tailSec = newestMessageSec(cached.messages);
+      if (tailSec == null || s.lastMessageAt <= tailSec + STALE_TAIL_SLACK_SEC) {
+        staleTailHandled.set(s.id, s.lastMessageAt);
+        continue;
+      }
+      staleTailAttemptAt.set(s.id, Date.now());
+      try {
+        await fetchAndMergeNewestPage(s.id, cached);
+        staleTailHandled.set(s.id, s.lastMessageAt);
+        diag(`sessionDrawer: TFC-B refreshed stale tail for ${s.id} `
+          + `(drawer ${s.lastMessageAt}s > cached ${Math.floor(tailSec)}s)`);
+      } catch { /* retry next sweep after STALE_TAIL_RETRY_MS */ }
+    }
+  } finally {
+    staleTailSweepRunning = false;
   }
 }
 
@@ -786,6 +863,10 @@ async function doRefresh() {
       prefetchDone = true;
       void warmPrefetch(sessions.slice(0, PREFETCH_TOP_N));
     }
+    // #214 TFC-B: every successful list reconcile also sweeps for
+    // sessions whose server-side activity has moved past their cached
+    // tail and refreshes those caches in the background.
+    void refreshStaleTails(sessions);
   } catch (e: any) {
     diag(`sessionDrawer: list failed: ${e.message}`);
     if (!cached?.sessions?.length) {
