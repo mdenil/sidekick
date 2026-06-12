@@ -56,7 +56,15 @@ const DB_VERSION = 1;
 //        as the whole transcript and skip the full newest-page fetch.
 //        v4 prefetch records are unflagged and indistinguishable from
 //        full pages, so they must be dropped.
-export const CACHE_SCHEMA_VERSION = 5;
+//   v6 — bumped 2026-06-12 (missing-user-bubble field bug). The TFC-B
+//        stale-tail sweep merged the 12-row prefetch window into caches
+//        it did NOT overlap (chat advanced by >12 rows), splicing a
+//        permanent mid-transcript hole that delta resume can't heal
+//        (the holed cache is non-partial and its tail id is already
+//        current). The write path now requires id overlap before
+//        merging, but holed records already on disk look healthy —
+//        drop them all so the next open does a full fetch.
+export const CACHE_SCHEMA_VERSION = 6;
 
 /** True when a stored cache record's shape is current. A missing or
  *  mismatched `schemaVersion` means the record was written by an older

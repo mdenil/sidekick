@@ -642,7 +642,18 @@ async function fetchAndMergeNewestPage(
   const r: any = await backend.fetchSessionMessagesBackground(id);
   const page = Array.isArray(r?.messages) ? r.messages : [];
   if (page.length === 0) return;
-  const cacheFuller = !!existing && existing.messages.length > page.length;
+  // The merge is only safe when the fetched window OVERLAPS the cache:
+  // mergeNewestPage is an id-keyed upsert+append with no contiguity
+  // check, so splicing a non-overlapping window onto the cached tail
+  // leaves a permanent mid-transcript hole that delta resume (#191)
+  // can never heal — its after-cursor is already at the new tail.
+  // Field bug 2026-06-12: a chat gained 34 rows on another device; the
+  // 12-row prefetch window skipped 22 of them (including a user
+  // bubble) and the merged cache rendered with the middle missing.
+  // String(id) — one chat can mix numeric and ms-timestamp id spaces.
+  const cachedIds = new Set((existing?.messages ?? []).map((m: any) => String(m?.id)));
+  const overlaps = page.some((row: any) => row?.id != null && cachedIds.has(String(row.id)));
+  const cacheFuller = !!existing && existing.messages.length > page.length && overlaps;
   const merged = cacheFuller ? sessionCache.mergeNewestPage(existing!.messages, page) : page;
   // `partial: true` — this is a tiny prefetch window, not a full
   // newest page. Delta resume (#191) must not use it as a tail
