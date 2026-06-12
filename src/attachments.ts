@@ -33,6 +33,69 @@ const MAX_BYTES = 100_000_000;
 // 50 MB cap even after base64 inflation, while avoiding an extra HTTP
 // round-trip for the common small-photo case.
 const UPLOAD_THRESHOLD = 5_000_000;
+// Field bug #224 (2026-06-12): a native-res iPhone photo (HEIC→JPEG
+// transcoded at pick, often 3-6MB — just under UPLOAD_THRESHOLD) rode
+// the inline base64 path as a ~5MB+ JSON POST with no timeout/retry;
+// one socket stall on bad wifi = "Send failed." Models don't benefit
+// from >2048px input anyway, so downscale photos client-side before
+// they enter the queue: a 12MP photo becomes a few-hundred-KB JPEG
+// that survives bad links.
+const DOWNSCALE_THRESHOLD = 1_000_000;
+const DOWNSCALE_MAX_DIM = 2048;
+// Quality walk: most photos land well under 1MB at the first step;
+// pathological high-entropy images (dense texture) step down until the
+// wire payload is small enough to survive a flaky link.
+const DOWNSCALE_JPEG_QUALITIES = [0.85, 0.7, 0.55, 0.4];
+
+/** Downscale a large still image to ≤DOWNSCALE_MAX_DIM on the long edge.
+ *  Skips gif/svg (animation / vector). Returns the original file when
+ *  it's already small, decoding fails, or the re-encode isn't smaller
+ *  (never make things worse). PNG stays PNG (screenshots with text);
+ *  everything else re-encodes as JPEG. */
+async function maybeDownscaleImage(file: File): Promise<File> {
+  if (file.size <= DOWNSCALE_THRESHOLD) return file;
+  if (file.type === 'image/gif' || file.type === 'image/svg+xml') return file;
+  let bitmap;
+  try {
+    // 'from-image' bakes in EXIF rotation so the canvas copy isn't
+    // sideways; some engines reject the option — fall back to plain.
+    bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' })
+      .catch(() => createImageBitmap(file));
+  } catch {
+    return file;
+  }
+  if (!bitmap) return file;
+  try {
+    const { width, height } = bitmap;
+    const scale = Math.min(1, DOWNSCALE_MAX_DIM / Math.max(width, height));
+    const w = Math.max(1, Math.round(width * scale));
+    const h = Math.max(1, Math.round(height * scale));
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return file;
+    ctx.drawImage(bitmap, 0, 0, w, h);
+    const outType = file.type === 'image/png' ? 'image/png' : 'image/jpeg';
+    let blob: Blob | null = null;
+    if (outType === 'image/png') {
+      blob = await new Promise((resolve) => canvas.toBlob(resolve, outType));
+    } else {
+      for (const q of DOWNSCALE_JPEG_QUALITIES) {
+        blob = await new Promise((resolve) => canvas.toBlob(resolve, outType, q));
+        if (blob && blob.size <= DOWNSCALE_THRESHOLD) break;
+      }
+    }
+    if (!blob || blob.size >= file.size) return file;
+    const name = outType === file.type
+      ? file.name
+      : (file.name || 'image').replace(/\.[a-z0-9]+$/i, '') + '.jpg';
+    log(`attachment downscaled: ${file.name} ${width}×${height} ${file.size}B → ${w}×${h} ${blob.size}B`);
+    return new File([blob], name, { type: outType });
+  } finally {
+    try { bitmap.close(); } catch {}
+  }
+}
 
 /** Stream a large file's raw bytes to the staging endpoint; returns the
  *  upload_id the message send references. No base64, no multipart — the
@@ -152,6 +215,7 @@ export async function add(file) {
     return;
   }
   try {
+    if (isImage) file = await maybeDownscaleImage(file);
     const kindLabel = isVideo ? 'video' : (isPdf ? 'document' : 'image');
     const ext = isPdf
       ? 'pdf'

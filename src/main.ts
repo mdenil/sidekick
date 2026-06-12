@@ -35,6 +35,7 @@ import * as badge from './notifications/badge.ts';
 import { loadMutes } from './notifications/mutes.ts';
 import { initVisibilityReporting } from './notifications/visibility.ts';
 import * as status from './status.ts';
+import { toast } from './toast.ts';
 import * as settings from './settings.ts';
 import * as sessionPins from './sessionPins.ts';
 import * as sessionIdentity from './sessionIdentity.ts';
@@ -1921,9 +1922,9 @@ async function boot() {
         // before send, so building the payload is async. toSendPayload
         // snapshots the pending list synchronously, so the clear() below
         // can't race the in-flight uploads. An upload failure flips the
-        // bubble to failed (Retry restores text + re-attaches nothing —
-        // the user re-picks the file, an acceptable edge for a rare
-        // upload error).
+        // bubble to failed; Retry restores text + re-attaches inline
+        // (data:) attachments, and toasts a re-attach notice for large
+        // (blob:) ones whose previews were revoked at send time.
         attachments.toSendPayload()
           .then((att) => { sendOpts.attachments = att; return backend.sendMessage(text, sendOpts); })
           .catch((e) => failBubble((e as Error)?.message || String(e)));
@@ -1987,11 +1988,21 @@ async function boot() {
   // on click. Restore the composer with the original text + drop
   // the failed pendingSend so the user can re-send. Mirrors the old
   // chat.markBubbleFailed onRetry callback the reconciler replaces.
-  document.addEventListener('sidekick:retry-send', (ev) => {
+  //
+  // Field bug #224 (2026-06-12): Retry restored the TEXT but silently
+  // dropped the attachment — the user re-sent a photo-less message
+  // without noticing. Inline (data:) echo attachments survive in the
+  // pendingSend, so rebuild Files from them and re-queue. Large
+  // (blob:) previews were revoked by attachments.clear() at send time
+  // and can't be restored — tell the user to re-attach those.
+  document.addEventListener('sidekick:retry-send', async (ev) => {
     const detail = (ev as CustomEvent).detail || {};
     const text = typeof detail.text === 'string' ? detail.text : '';
     const messageId = typeof detail.messageId === 'string' ? detail.messageId : '';
     const chatId = switchCtl.viewedId();
+    const pendingAtts = (chatId && messageId)
+      ? (transcriptStore.getPendingSend(chatId, messageId)?.attachments ?? [])
+      : [];
     if (chatId && messageId) {
       transcriptStore.clearPendingSend(chatId, messageId);
     }
@@ -1999,6 +2010,22 @@ async function boot() {
       composerInput.value = text;
       composerInput.dispatchEvent(new Event('input'));  // triggers autoResize + updateSendButtonState
       composerInput.focus();
+    }
+    let lost = 0;
+    for (const a of pendingAtts) {
+      if (typeof a?.dataUrl === 'string' && a.dataUrl.startsWith('data:')) {
+        try {
+          const blob = await (await fetch(a.dataUrl)).blob();
+          await attachments.add(new File([blob], a.fileName || 'attachment', {
+            type: a.mimeType || blob.type,
+          }));
+        } catch { lost += 1; }
+      } else {
+        lost += 1;
+      }
+    }
+    if (lost > 0) {
+      toast(`${lost > 1 ? `${lost} attachments` : 'Attachment'} couldn't be restored — please re-attach`, 'err');
     }
   });
   // Slash-command popover. Backend-declared registry, frontend-rendered

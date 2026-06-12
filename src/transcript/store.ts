@@ -249,6 +249,12 @@ export function updatePendingSend(chatId: string, messageId: string, text: strin
   notify(chatId);
 }
 
+/** Read a pending send (e.g. to restore attachments on Retry). */
+export function getPendingSend(chatId: string, messageId: string): PendingSend | null {
+  const s = getState(chatId);
+  return s.pendingSends.find(p => p.messageId === messageId) ?? null;
+}
+
 export function markPendingSendFailed(chatId: string, messageId: string): void {
   const s = getState(chatId);
   const p = s.pendingSends.find(p => p.messageId === messageId);
