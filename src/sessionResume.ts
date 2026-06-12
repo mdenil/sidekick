@@ -561,16 +561,21 @@ function drillViaAroundWindow(chatId: string, targetMessageId: string): Promise<
       // tail. Assert un-pinned BEFORE the render so autoScroll can't snap
       // us to the window's bottom while it settles.
       chat.setPinnedToBottom(false);
+      // Arm pagination BEFORE the store mutation: setDurable fires the
+      // reconciler synchronously, and chat's tail-invariant guards
+      // (persist/saveCurrentScrollPosition skip while hasMoreNewer) must
+      // already see the floating-window state when that render runs —
+      // otherwise a windowed snapshot could slip into IDB.
+      chat.setPaginationState(
+        around.firstId ?? null, !!around.hasMore,
+        around.lastId ?? null, !!around.hasMoreNewer,
+      );
       transcriptStore.setDurable(chatId, around.messages, {
         firstId: around.firstId ?? null,
         hasMore: !!around.hasMore,
         lastId: around.lastId ?? null,
         hasMoreNewer: !!around.hasMoreNewer,
       });
-      chat.setPaginationState(
-        around.firstId ?? null, !!around.hasMore,
-        around.lastId ?? null, !!around.hasMoreNewer,
-      );
       rerenderActive();
       // Persist is a no-op while the window floats (hasMoreNewer); it
       // only writes once loadLater connects the run to the tail.

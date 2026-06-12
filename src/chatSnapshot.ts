@@ -46,7 +46,13 @@ const SNAPSHOT_KEY = 'current';
 //                the store state lets cold-load restore via the projection
 //                + reconciler pipeline — same path as a normal resume,
 //                rendered through the virtualizer.
-const SCHEMA_VERSION = '2026-05-25-virt-state-snapshot';
+//   2026-06-12 — tail invariant (#214): persist() now refuses to snapshot
+//                a floating deep-jump window (hasMoreNewer=true). Bump
+//                wipes any windowed snapshot already on disk — boot would
+//                innerHTML-restore the mid-session slice, then the resume
+//                upsert would graft the tail onto it with a silently
+//                missing middle. No shape change; the bump is the purge.
+const SCHEMA_VERSION = '2026-06-12-tail-anchored-snapshot';
 const SCHEMA_VERSION_KEY = 'sidekick.idb-schema-version';
 
 /** Snapshot record persisted to IDB.

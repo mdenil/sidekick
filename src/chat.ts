@@ -178,6 +178,11 @@ export function cancelPendingScrollRestores(): void { _restoreAnchorGen++; }
 
 export function saveCurrentScrollPosition(): void {
   if (!transcriptEl || !viewedSessionIdRef) return;
+  // Tail invariant: positions inside a floating deep window are
+  // ephemeral — its anchors/offsets are meaningless against the
+  // tail-anchored transcript the next resume renders. Keep the last
+  // tail-anchored position instead of overwriting it.
+  if (paginationHasMoreNewer) return;
   // Capture the anchor (first-visible bubble key + offset) alongside raw
   // scrollTop. The anchor is the user-meaningful position: restore puts
   // the same message back at the same offset even as off-screen content
@@ -634,6 +639,14 @@ export async function init(el: HTMLElement | null): Promise<boolean> {
  *  `role='assistant' (tool_calls JSON)` rows. Follow-up. */
 function persist(): void {
   if (!transcriptEl) return;
+  // Tail invariant (#214, field 2026-06-12): NEVER snapshot a floating
+  // deep window. The DOM on screen is a disjoint mid-session slice; if it
+  // were persisted, the next boot would innerHTML-restore it, the boot
+  // resume would upsert the tail page INTO it, and the user would see
+  // window+tail concatenated with a silently missing middle ("the UI
+  // forgot the end of the session"). Skipping keeps the last
+  // tail-anchored snapshot; boot always paints the session end.
+  if (paginationHasMoreNewer) return;
   const clone = transcriptEl.cloneNode(true) as HTMLElement;
   clone.querySelectorAll('.activity-row').forEach((el) => el.remove());
   const html = clone.innerHTML;
