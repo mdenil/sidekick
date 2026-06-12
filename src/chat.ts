@@ -674,6 +674,30 @@ function formatTime(ts: number | Date | string): string {
   return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
 }
 
+// Desktop-only hover open/close for the caret menu. Gated on pointer
+// capability (same pattern as the copy-icon hover gate) so touch stays
+// click-only. Close is delayed so the pointer can travel caret → menu.
+const msgMenuHoverCapable = () => typeof window !== 'undefined'
+  && window.matchMedia?.('(hover: hover) and (pointer: fine)').matches === true;
+const MSG_MENU_HOVER_OPEN_MS = 120;
+const MSG_MENU_HOVER_CLOSE_MS = 250;
+let msgMenuHoverOpenTimer: number | null = null;
+let msgMenuHoverCloseTimer: number | null = null;
+
+function cancelMsgMenuHoverOpen(): void {
+  if (msgMenuHoverOpenTimer !== null) { clearTimeout(msgMenuHoverOpenTimer); msgMenuHoverOpenTimer = null; }
+}
+function cancelMsgMenuHoverClose(): void {
+  if (msgMenuHoverCloseTimer !== null) { clearTimeout(msgMenuHoverCloseTimer); msgMenuHoverCloseTimer = null; }
+}
+function scheduleMsgMenuHoverClose(): void {
+  cancelMsgMenuHoverClose();
+  msgMenuHoverCloseTimer = window.setTimeout(() => {
+    msgMenuHoverCloseTimer = null;
+    closeAllMsgMenus();
+  }, MSG_MENU_HOVER_CLOSE_MS);
+}
+
 /** Open the per-message action menu anchored to `line`. The menu reuses the
  *  existing copy/pin/play buttons (kept in the DOM but hidden via CSS) by
  *  synthesizing `.click()` on them — so all their handler logic, the
@@ -681,6 +705,7 @@ function formatTime(ts: number | Date | string): string {
  *  untouched. Only "Mark unread" carries its own logic. */
 function openMsgMenu(line: HTMLElement): void {
   closeAllMsgMenus();
+  cancelMsgMenuHoverClose();
   const menu = document.createElement('div');
   menu.className = 'msg-menu';
   const isAgent = line.classList.contains('agent');
@@ -746,6 +771,10 @@ function openMsgMenu(line: HTMLElement): void {
   }
 
   menu.addEventListener('click', (e) => e.stopPropagation());
+  if (msgMenuHoverCapable()) {
+    menu.addEventListener('pointerenter', cancelMsgMenuHoverClose);
+    menu.addEventListener('pointerleave', scheduleMsgMenuHoverClose);
+  }
   line.classList.add('menu-open');
   line.appendChild(menu);
   setTimeout(() => {
@@ -986,10 +1015,26 @@ export function addLine(speaker: string, text: string, cls = '', opts: {
   caretBtn.innerHTML = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6l4 4 4-4"/></svg>`;
   caretBtn.onclick = (e) => {
     e.stopPropagation();
+    cancelMsgMenuHoverOpen();
     const existing = div.querySelector('.msg-menu');
     if (existing) { closeAllMsgMenus(); return; }  // toggle closed
     openMsgMenu(div);
   };
+  if (msgMenuHoverCapable()) {
+    caretBtn.addEventListener('pointerenter', () => {
+      cancelMsgMenuHoverClose();
+      if (div.querySelector('.msg-menu')) return;
+      cancelMsgMenuHoverOpen();
+      msgMenuHoverOpenTimer = window.setTimeout(() => {
+        msgMenuHoverOpenTimer = null;
+        if (!div.querySelector('.msg-menu')) openMsgMenu(div);
+      }, MSG_MENU_HOVER_OPEN_MS);
+    });
+    caretBtn.addEventListener('pointerleave', () => {
+      cancelMsgMenuHoverOpen();
+      if (div.querySelector('.msg-menu')) scheduleMsgMenuHoverClose();
+    });
+  }
   div.appendChild(caretBtn);
 
   // All links in rendered markdown open in new tab
