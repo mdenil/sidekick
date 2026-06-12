@@ -197,16 +197,26 @@ export default async function run({ page, log, mock }) {
   await setLastPcState('failed');
   assert(await waitForState('reconnecting'), 'part2: never entered reconnecting');
 
-  // Drive successive re-open attempts to failure. Poll for a new PC after
-  // each failure (backoff means there's a short delay), then fail it.
-  let guard = 0;
-  while ((await dropped()).length === 0 && guard < 10) {
-    guard++;
-    const cur = await pcCount();
-    const grew = await waitForPcCount(cur + 1, 2500);
-    if (!grew) break; // no further attempt scheduled → budget spent
-    await setLastPcState('failed');
-    await page.waitForTimeout(50);
+  // Drive successive re-open attempts to failure. Attempt 1 fires with a
+  // 0ms backoff, and since #197 (mic acquire parallelized with signaling)
+  // its PC is constructed ~1ms into open() — so a count-relative wait
+  // sampled AFTER observing 'reconnecting' can already be one PC behind
+  // and would idle forever. Fail by identity instead: whenever the newest
+  // PC hasn't been driven to failed/closed yet, fail it. (PC construction
+  // and the `active` assignment happen in one synchronous task in open(),
+  // so an evaluate() can never observe the half-initialized gap.)
+  const deadline = Date.now() + 8_000;
+  while ((await dropped()).length === 0 && Date.now() < deadline) {
+    const didFail = await page.evaluate(() => {
+      const pcs = (window).__TEST_FAKE_PCS__;
+      const last = pcs[pcs.length - 1];
+      if (last && last.connectionState !== 'failed' && last.connectionState !== 'closed') {
+        last._setConnectionState('failed');
+        return true;
+      }
+      return false;
+    });
+    await page.waitForTimeout(didFail ? 50 : 100);
   }
 
   // Give-up should have fired: call-dropped chime + drop signal + idle.

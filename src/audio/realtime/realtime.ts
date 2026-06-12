@@ -229,6 +229,11 @@ let reconnectStartedAt = 0;
 let lastOpenArgs: { mode: CallMode; opts: { sessionId?: string | null; chatId?: string | null } } | null = null;
 let reconnectGiveUpTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnectRetryTimer: ReturnType<typeof setTimeout> | null = null;
+// Settled-tracking for the in-flight mic acquire (parallelized with
+// signaling since #197). close() must await this before the next open()
+// re-acquires, or capture's pendingOwner reservation makes the reconnect
+// reopen throw "already held by webrtc" and burn the retry budget.
+let activeMicAcquire: Promise<void> | null = null;
 
 export function isReconnecting(): boolean {
   return reconnecting;
@@ -536,6 +541,7 @@ export async function open(
     noiseSuppression: false,
     autoGainControl: false,
   });
+  activeMicAcquire = micPromise.then(() => undefined, () => undefined);
 
   setState('connecting');
 
@@ -1034,6 +1040,17 @@ export async function close(
   // sync close step (dataChannel.close, pc.close, etc.).
   const tStart = performance.now();
   try { audioPlatform.releaseMicStream('webrtc'); } catch { /* ignore */ }
+  // If the mic acquire is still in flight (capture holds a pendingOwner
+  // reservation), the release above no-oped. Wait for it to settle, then
+  // release defensively — otherwise a reconnect reopen's getMicStream
+  // throws "already held by webrtc". The stale-mic handler in open()
+  // usually releases first (active is already null here), so this is a
+  // belt-and-braces second release; release() is idempotent.
+  if (activeMicAcquire) {
+    await activeMicAcquire;
+    activeMicAcquire = null;
+    try { audioPlatform.releaseMicStream('webrtc'); } catch { /* ignore */ }
+  }
   const tMicReleased = performance.now();
   if (session.dataChannel) {
     try { session.dataChannel.close(); } catch { /* ignore */ }
