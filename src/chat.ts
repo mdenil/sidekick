@@ -569,6 +569,27 @@ export async function init(el: HTMLElement | null): Promise<boolean> {
         cancelPendingScrollRestores();
       }, { passive: true });
     }
+    // #214 TFC-E: lazy-load NEWER on a pull-up gesture at the bottom of a
+    // floating window. maybeLoadLater otherwise only runs on scroll
+    // events — at the window's bottom edge scrollTop is already at max,
+    // so a wheel/drag toward newer produces NO scroll event and the next
+    // page never loads (field: "when i drag down it doesn't load"). The
+    // gates inside maybeLoadLater (hasMoreNewer, in-flight, ≤150px from
+    // bottom, drill suppression) make this a cheap no-op everywhere else.
+    transcriptEl.addEventListener('wheel', (e) => {
+      if (e.deltaY > 0) maybeLoadLater();
+    }, { passive: true });
+    let lastTouchMoveY: number | null = null;
+    transcriptEl.addEventListener('touchstart', (e) => {
+      lastTouchMoveY = e.touches[0]?.clientY ?? null;
+    }, { passive: true });
+    transcriptEl.addEventListener('touchmove', (e) => {
+      const y = e.touches[0]?.clientY ?? null;
+      const prev = lastTouchMoveY;
+      lastTouchMoveY = y;
+      // Finger moving UP drags content up = pulling toward newer.
+      if (prev != null && y != null && y < prev - 2) maybeLoadLater();
+    }, { passive: true });
   }
 
   try {
