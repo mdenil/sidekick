@@ -89,6 +89,24 @@ let reconcileTimer: ReturnType<typeof setTimeout> | null = null;
  *  a large gap when the next forceReconnect fires (Date.now() minus the
  *  previous reconnect time). */
 let lastReconnectAt = 0;
+/** Reconcile debt (#204, field 2026-06-12): a gap-triggered transcript
+ *  reconcile that FAILS must stay owed until one succeeds. Without
+ *  this, the failure path was terminal: visibility-visible fired a
+ *  reconcile while the radio was still down, the fetch failed, and the
+ *  'online' event 3s later was skipped by the <10s gap check — leaving
+ *  a stale transcript with nothing left to retry. `reconcileOwed`
+ *  bypasses the gap check on subsequent lifecycle events, and a
+ *  bounded backoff retry covers the case where no further lifecycle
+ *  event arrives at all. */
+let reconcileOwed = false;
+let reconcileRetries = 0;
+let reconcileRetryTimer: ReturnType<typeof setTimeout> | null = null;
+
+function clearReconcileDebt(): void {
+  reconcileOwed = false;
+  reconcileRetries = 0;
+  if (reconcileRetryTimer) { clearTimeout(reconcileRetryTimer); reconcileRetryTimer = null; }
+}
 /** Wall-clock of the most recent envelope (any type) the SSE stream
  *  delivered. Powers the shell's "weakSignal / stalled" status states
  *  — formerly tracked off the openclaw WS's lastInboundAt cursor.
@@ -368,6 +386,18 @@ function startStreamChannel(): void {
                    'conversation_deleted']) {
     streamES.addEventListener(t, onEvent as any);
   }
+  // #204: the server emits replay_gap when our cursor predates its
+  // 128-entry ring (entries evicted, or the server restarted and reset
+  // its id counter) — ring replay CANNOT cover what we missed, so a
+  // transcript refetch is owed regardless of how short the reconnect
+  // gap looked. The ring is global (not per-chat), so this can
+  // false-positive onto a chat that missed nothing; the refetch is
+  // idempotent, so that's just a wasted fetch.
+  streamES.addEventListener('replay_gap', (ev: MessageEvent) => {
+    diag(`proxy-client: server signalled replay gap (${ev.data}) → reconcile owed`);
+    reconcileOwed = true;
+    scheduleReconcile(RECONCILE_GAP_MS);
+  });
   // Stream-open is the source of truth for "connected" (see connect()):
   // the EventSource successfully opening means the gateway is reachable
   // AND its ring replay is now flowing, so this is the moment to report
@@ -463,19 +493,25 @@ function scheduleReconcile(gapMs: number): void {
  *  knows how to reconcile a fresh transcript dump, so we don't need an
  *  incremental diff; the brief "loading…" flash is acceptable for the
  *  rare iOS-backgrounding case. */
-async function reconcileActiveChat(gapMs: number): Promise<void> {
+async function reconcileActiveChat(gapMs: number, isRetry = false): Promise<void> {
   if (!activeChatId || !subs?.onResume) return;
-  if (gapMs < RECONCILE_GAP_MS) {
+  if (gapMs < RECONCILE_GAP_MS && !reconcileOwed) {
     diag(`proxy-client: reconcile skipped (gap ${gapMs}ms < ${RECONCILE_GAP_MS}ms)`);
     return;
   }
-  log(`proxy-client: reconciling active chat ${activeChatId} after ${gapMs}ms gap`);
+  // A fresh big-gap lifecycle event resets the retry budget — each
+  // foreground transition gets its own bounded retry run.
+  if (!isRetry && gapMs >= RECONCILE_GAP_MS) reconcileRetries = 0;
+  const owedRun = gapMs < RECONCILE_GAP_MS;
+  reconcileOwed = true;
+  log(`proxy-client: reconciling active chat ${activeChatId} after ${gapMs}ms gap${owedRun ? ' (owed)' : ''}`);
   try {
     const r = await fetch(
       `${apiBase()}/sessions/${encodeURIComponent(activeChatId)}/messages`,
     );
     if (!r.ok) {
       diag(`proxy-client: reconcile HTTP ${r.status}`);
+      scheduleReconcileRetry(`HTTP ${r.status}`);
       return;
     }
     const d = await r.json();
@@ -489,9 +525,32 @@ async function reconcileActiveChat(gapMs: number): Promise<void> {
       firstId: d.firstId ?? null,
       hasMore: !!d.hasMore,
     });
+    clearReconcileDebt();
   } catch (e: any) {
     diag(`proxy-client: reconcile fetch failed: ${e.message}`);
+    scheduleReconcileRetry(e?.message || 'network error');
   }
+}
+
+/** Bounded backoff retry for a failed owed reconcile (2s/4s/8s). After
+ *  the budget is spent the debt stays set, so the NEXT lifecycle event
+ *  (online, visibility, pageshow) re-runs the reconcile regardless of
+ *  its gap. */
+function scheduleReconcileRetry(reason: string): void {
+  if (reconcileRetryTimer) return;
+  if (reconcileRetries >= 3) {
+    diag(`proxy-client: reconcile failed (${reason}) — retries exhausted, debt held for next lifecycle event`);
+    return;
+  }
+  reconcileRetries++;
+  const delay = 2000 * 2 ** (reconcileRetries - 1);
+  diag(`proxy-client: reconcile failed (${reason}) — retry ${reconcileRetries}/3 in ${delay}ms`);
+  reconcileRetryTimer = setTimeout(() => {
+    reconcileRetryTimer = null;
+    reconcileActiveChat(0, true).catch((e: any) => {
+      diag(`proxy-client: reconcile retry failed: ${e.message}`);
+    });
+  }, delay);
 }
 
 /** External "should-stay-alive" hint. Consumers register a getter that
@@ -889,14 +948,25 @@ export const proxyClientAdapter = {
       diag('proxy-client.sendMessage: DROPPED (not connected)');
       throw new Error('Sidekick proxy not connected');
     }
-    // Lazy-allocate: first send under no active chat_id mints one.
-    // Drawer entries created by the user clicking "new chat" go via
-    // newSession() below.
-    if (!activeChatId) {
-      const conv = await conversations.getOrCreateActive();
-      activeChatId = conv.chat_id;
+    // Explicit target override — approval actions (and any other
+    // send whose owning chat is pinned at tap time) must NOT follow
+    // activeChatId: a mid-flight session switch re-aims the module-
+    // level id and the command lands in whatever chat the user
+    // switched to (field bug 2026-06-12: /approve ×5 into the wrong
+    // session while switching on CAP).
+    let chatId: string;
+    if (typeof opts.chatId === 'string' && opts.chatId) {
+      chatId = opts.chatId;
+    } else {
+      // Lazy-allocate: first send under no active chat_id mints one.
+      // Drawer entries created by the user clicking "new chat" go via
+      // newSession() below.
+      if (!activeChatId) {
+        const conv = await conversations.getOrCreateActive();
+        activeChatId = conv.chat_id;
+      }
+      chatId = activeChatId!;
     }
-    const chatId = activeChatId!;
     // Lazy-allocate from newSession() leaves no IDB row; first send
     // is the moment we know the chat is "real". Hydrate creates the
     // conversations row if missing so the drawer's listSessions
@@ -1238,7 +1308,13 @@ export const proxyClientAdapter = {
     // continue the chat — better than a hard error toast for what is
     // strictly enrichment. Delta-aware: with a cached tail in IDB only
     // the rows past it are fetched (#191).
-    return fetchSessionMessagesDelta(id, 'proxy-client.resumeSession');
+    const result = await fetchSessionMessagesDelta(id, 'proxy-client.resumeSession');
+    // A successful full resume IS a reconcile for the (new) active
+    // chat — clear any outstanding reconcile debt so a stale owed flag
+    // from a previous chat doesn't trigger a redundant refetch on the
+    // next lifecycle event.
+    if (!(result as any)?.error) clearReconcileDebt();
+    return result;
   },
 
   /** Fetch a session transcript without changing activeChatId or IDB

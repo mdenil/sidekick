@@ -513,6 +513,16 @@ export function handleSidekickStream(req, res): void {
   const lastEventId = cursorRaw ? Number.parseInt(cursorRaw, 10) : NaN;
   const replayFrom = Number.isFinite(lastEventId) ? lastEventId : -1;
   if (!liveOnly) {
+    // #204: if the client's cursor predates the ring's oldest retained
+    // entry (cap-evicted) — or comes from a previous server life
+    // (cursor beyond our monotonic counter after a restart) — the
+    // replay below CANNOT cover what the client missed. Say so
+    // explicitly: the PWA reacts by refetching the active transcript.
+    // No `id:` field, so the control frame never disturbs the cursor.
+    const oldestRetained = recent.length > 0 ? recent[0].id : lastId + 1;
+    if (replayFrom >= 0 && (replayFrom < oldestRetained - 1 || replayFrom > lastId)) {
+      res.write(`event: replay_gap\ndata: ${JSON.stringify({ cursor: replayFrom, oldest: oldestRetained, last: lastId })}\n\n`);
+    }
     for (const entry of recent) {
       if (entry.id <= replayFrom) continue;
       if (chatId && entry.env.chat_id !== chatId) continue;

@@ -821,7 +821,11 @@ async function boot() {
       transcriptStore.markPendingSendFailed(chatId, userMessageId);
     };
     try {
-      const p = backend.sendMessage(cmd, { userMessageId });
+      // chatId pinned at tap time: without it sendMessage targets the
+      // module-level active chat, so switching sessions while the
+      // drill above is in flight routed /approve into the wrong chat
+      // (field bug 2026-06-12, CAP).
+      const p = backend.sendMessage(cmd, { userMessageId, chatId });
       if (p && typeof (p as any).catch === 'function') {
         (p as Promise<unknown>).catch((e) => failBubble((e as Error)?.message || String(e)));
       }
@@ -1239,6 +1243,23 @@ async function boot() {
           const pinnedTop = sessionPins.topPinned();
           const sid = urlChatId || restoredSid || pinnedTop || backend.getCurrentSessionId?.();
           let bootRendered = false;
+          // #204 (field 2026-06-12, CAP): resumeSession NEVER throws —
+          // failures come back as `result.error` with an empty
+          // transcript, so the try/catch around the boot resume was
+          // dead code and an errored fetch (radio not up yet at cold
+          // launch) silently left the cached snapshot on screen with
+          // nothing retrying. Retry with backoff before giving up.
+          const resumeWithRetry = async (sessionId: string): Promise<any> => {
+            let result: any = await backend.resumeSession(sessionId);
+            for (let attempt = 1; attempt <= 2 && result?.error; attempt++) {
+              const delay = 1000 * 2 ** (attempt - 1);
+              diag(`boot: resume ${sessionId} failed (${result.error}) — retry ${attempt}/2 in ${delay}ms`);
+              await new Promise((r) => setTimeout(r, delay));
+              result = await backend.resumeSession(sessionId);
+            }
+            if (result?.error) diag(`boot: resume ${sessionId} still failing after retries: ${result.error}`);
+            return result;
+          };
           if (sid) {
             // Seed the drawer highlight immediately — before
             // resumeSession's network fetch resolves — so it doesn't
@@ -1258,7 +1279,7 @@ async function boot() {
               sessionDrawer.setViewed(restoredSid);
             }
             try {
-              const result: any = await backend.resumeSession(sid);
+              const result: any = await resumeWithRetry(sid);
               const messages = result.messages || [];
               if (messages.length) {
                 // Pass urlMsgId as targetMessageId so the existing
@@ -1302,7 +1323,7 @@ async function boot() {
               if (sessions.length > 0) {
                 const mostRecent = sessions[0];
                 diag(`boot: no rendered session, picking most recent: ${mostRecent.id}`);
-                const result: any = await backend.resumeSession(mostRecent.id);
+                const result: any = await resumeWithRetry(mostRecent.id);
                 replaySessionMessages(
                   mostRecent.id,
                   result.messages || [],
