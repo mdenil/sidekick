@@ -213,6 +213,36 @@ function updateButton(): void {
   }
 }
 
+/** Missing-suffix indicator (#214 TFC-D). While a floating deep window is
+ *  open (hasMoreNewer=true) the transcript on screen does NOT reach the
+ *  session's end, but nothing in the old UI said so — the user read the
+ *  window's last bubble as "the UI forgot the end of the session". This
+ *  pill makes the truncation explicit; tapping it re-resumes to the live
+ *  tail (same action as the jump-to-bottom chevron in windowed state).
+ *  Created lazily on first use; toggled from setPaginationState, the
+ *  single mutation point of paginationHasMoreNewer. */
+let gapNewerEl: HTMLButtonElement | null = null;
+function updateGapIndicator(): void {
+  const parent = transcriptEl?.parentElement;
+  if (!parent) return;
+  if (!gapNewerEl) {
+    if (!paginationHasMoreNewer) return; // don't create until first needed
+    gapNewerEl = document.createElement('button');
+    gapNewerEl.id = 'transcript-gap-newer';
+    gapNewerEl.className = 'transcript-gap-newer';
+    gapNewerEl.type = 'button';
+    gapNewerEl.title = 'Jump to latest';
+    gapNewerEl.textContent = '⋯ newer messages';
+    gapNewerEl.addEventListener('click', () => {
+      if (jumpToLatestCb) jumpToLatestCb();
+      else forceScrollToBottom();
+    });
+    parent.appendChild(gapNewerEl);
+  }
+  gapNewerEl.classList.toggle('visible', paginationHasMoreNewer);
+  gapNewerEl.setAttribute('aria-hidden', paginationHasMoreNewer ? 'false' : 'true');
+}
+
 /** Unconditional scroll to the live edge. Used by initial loads,
  *  user-initiated jump-to-bottom, and anywhere we deliberately want to
  *  override the "user scrolled up" state.
@@ -1214,6 +1244,7 @@ export function setPaginationState(
   paginationNewestId = newestId;
   paginationHasMoreNewer = hasMoreNewer;
   paginationLoadingNewer = false;
+  updateGapIndicator();
 }
 
 /** Register the cursor-to-messages callback. Called once on boot; the cb

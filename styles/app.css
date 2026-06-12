@@ -3944,6 +3944,28 @@
   }
   .scroll-to-bottom.has-unread .scroll-to-bottom-badge { display: block; }
 
+  /* Missing-suffix indicator (#214 TFC-D) — shown while the transcript on
+     screen is a floating deep window (hasMoreNewer): the session continues
+     below what's loaded. Sits directly above the jump-to-bottom chevron;
+     both are visible in windowed state and both jump to the live tail. */
+  .transcript-gap-newer {
+    position: absolute;
+    bottom: calc(var(--composer-height, 64px) + 64px + 46px);
+    left: 50%; transform: translateX(-50%) translateY(8px) scale(0.95);
+    padding: 5px 14px; border-radius: 999px;
+    background: var(--surface); border: 1px solid var(--border);
+    color: var(--muted); cursor: pointer;
+    font: 500 12px/1.4 var(--font-sans); white-space: nowrap;
+    opacity: 0;
+    transition: opacity .15s ease, transform .15s ease, color .15s;
+    pointer-events: none; z-index: 15;
+    box-shadow: 0 4px 14px -6px rgba(0,0,0,0.25);
+  }
+  .transcript-gap-newer.visible {
+    opacity: 1; transform: translateX(-50%); pointer-events: auto;
+  }
+  .transcript-gap-newer:hover { color: var(--fg); border-color: var(--border-strong); }
+
   /* ── Inline attachments on agent bubbles ── */
   .line-cards {
     display: flex; flex-direction: column; gap: 12px;
