@@ -11,6 +11,11 @@
 //      line below for the reply.
 //   4. Select a SECOND passage, quote again, and assert both quotes
 //      accumulate as distinct `> ` blocks in the one composer message.
+//   5. Pre-fill the composer and park the caret mid-text, quote again, and
+//      assert the block lands AT THE CARET (not appended at the bottom)
+//      with blank-line padding and the caret parked after the block.
+//   6. Park the caret between two paragraphs and assert the existing blank
+//      line is reused (no stacked double blanks).
 
 import { waitForReady, openSidebar, clickRow, assert } from './lib.mjs';
 
@@ -122,4 +127,61 @@ export default async function run({ page, log }) {
   assert(quoteLines >= 2, `expected ≥2 quote lines after accumulating, got ${quoteLines}: ${JSON.stringify(afterSecond)}`);
   assert(afterSecond.includes('my reply to the first'), 'reply text between quotes was lost');
   log('second quote accumulated into the same message ✓');
+
+  // Cursor-position insertion: caret parked mid-text → quote lands there,
+  // not at the bottom.
+  await page.evaluate(() => {
+    const el = document.getElementById('composer-input');
+    el.value = 'before after';
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.focus();
+    el.setSelectionRange(7, 7); // between "before " and "after"
+    el.blur();
+  });
+  const third = await selectInBubble(page, 35, 8); // "lazy dog"
+  assert(third === 'lazy dog', `unexpected third selection: "${third}"`);
+  await pressQuoteFab(page);
+
+  await page.waitForFunction(
+    () => (document.getElementById('composer-input')?.value || '').includes('> lazy dog'),
+    null, { timeout: 3_000, polling: 50 },
+  );
+  const cursorState = await page.evaluate(() => {
+    const el = document.getElementById('composer-input');
+    return { value: el.value, ss: el.selectionStart, se: el.selectionEnd, focused: document.activeElement === el };
+  });
+  assert(cursorState.value === 'before \n\n> lazy dog\n\nafter',
+    `quote should land at the caret with blank-line padding: ${JSON.stringify(cursorState.value)}`);
+  const expectedCaret = cursorState.value.indexOf('after', 8);
+  assert(cursorState.ss === expectedCaret && cursorState.se === expectedCaret,
+    `caret should sit after the inserted block (want ${expectedCaret}, got ${cursorState.ss}..${cursorState.se})`);
+  assert(cursorState.focused, 'composer should be focused after quote insertion');
+  log('quote inserted at caret with padding, caret parked below ✓');
+
+  // Between paragraphs: the existing blank line is reused, no double blanks.
+  await page.evaluate(() => {
+    const el = document.getElementById('composer-input');
+    el.value = 'para1\n\npara2';
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.focus();
+    el.setSelectionRange(5, 5); // end of "para1"
+    el.blur();
+  });
+  const fourth = await selectInBubble(page, 16, 3); // "fox"
+  assert(fourth === 'fox', `unexpected fourth selection: "${fourth}"`);
+  await pressQuoteFab(page);
+
+  await page.waitForFunction(
+    () => (document.getElementById('composer-input')?.value || '').includes('> fox'),
+    null, { timeout: 3_000, polling: 50 },
+  );
+  const paraState = await page.evaluate(() => {
+    const el = document.getElementById('composer-input');
+    return { value: el.value, ss: el.selectionStart };
+  });
+  assert(paraState.value === 'para1\n\n> fox\n\npara2',
+    `expected single blank lines around quote between paragraphs: ${JSON.stringify(paraState.value)}`);
+  assert(paraState.ss === paraState.value.indexOf('para2'),
+    `caret should sit before "para2" (got ${paraState.ss})`);
+  log('between-paragraph insertion reuses blank lines, no stacking ✓');
 }

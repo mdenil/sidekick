@@ -181,22 +181,32 @@ export function formatQuoteBlock(quoted: string, existing: string): { value: str
   return { value, caret: value.length };
 }
 
-/** Insert a selected passage as a markdown blockquote and park the caret
- *  below it for the reply. Trims the selection, formats via formatQuoteBlock,
- *  updates the textarea, focuses it, and fires 'input' so autoResize +
- *  send-button-state react as if typed. Used by select-to-quote. */
+/** Insert a selected passage as a markdown blockquote at the composer's
+ *  caret (replacing any selected range) and park the caret below it for the
+ *  reply. formatQuoteBlock supplies the lead separator (blank line unless at
+ *  start-of-text / already after one) and the trailing blank line; when text
+ *  already follows the caret its leading newlines count toward that blank
+ *  line, so inserting between paragraphs doesn't stack double blanks. Goes
+ *  through insertAtCursor so undo survives and 'input' fires for autoResize +
+ *  send-button-state. A never-focused textarea reports its caret at the end,
+ *  so the old append-at-bottom behavior still falls out naturally. */
 export function appendQuote(quoted: string) {
-  if (!inputEl) return;
+  const el = inputEl;
+  if (!el) return;
   const t = quoted.trim();
   if (!t) return;
-  const existing = inputEl.value;
-  const { value } = formatQuoteBlock(t, existing);
-  const insert = value.slice(existing.length); // separator + blockquote
-  // Append at the end: park the caret after any existing content so
-  // execCommand inserts the quote block there (preserving undo).
-  inputEl.focus();
-  inputEl.setSelectionRange(existing.length, existing.length);
-  insertAtCursor(insert, value.length);
+  const val = el.value;
+  const start = el.selectionStart ?? val.length;
+  const end = el.selectionEnd ?? val.length;
+  const before = val.slice(0, start);
+  const after = val.slice(end);
+  const { value } = formatQuoteBlock(t, before);
+  let insert = value.slice(before.length); // separator + blockquote + '\n\n'
+  const afterNl = after.match(/^\n{1,2}/)?.[0].length ?? 0;
+  if (afterNl) insert = insert.slice(0, insert.length - afterNl);
+  const caret = start + insert.length + afterNl;
+  insertAtCursor(insert, caret);
+  el.setSelectionRange(caret, caret);
   diag('composer quote:', JSON.stringify({ len: t.length, text: t.slice(0, 60) }));
 }
 
