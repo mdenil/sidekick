@@ -11,7 +11,7 @@
  * network-first, so first-load pulls anything missed and caches on the
  * way through.
  */
-const CACHE_NAME = 'v0.600';
+const CACHE_NAME = 'v0.601';
 
 // Dedicated cache for VAD assets. Key insight: VAD assets are 14.7 MB
 // and don't change with every app deploy — the Silero model is
@@ -72,10 +72,18 @@ const APP_SHELL = [
 
 self.addEventListener('install', (e) => {
   // Per-entry add with Promise.allSettled so a single 404 doesn't fail
-  // the whole install. Any rejection is logged but does not block
-  // skipWaiting → activate → controllerchange → page reload. The
-  // network-first /build/* handler will fill in any module misses on
-  // first request.
+  // the whole install. The network-first /build/* handler will fill in
+  // any module misses on first request.
+  //
+  // NO skipWaiting here (#225): install used to auto-activate, so a
+  // PASSIVE update check (visibilitychange / 5-min interval in
+  // index.html) yanked live sessions through controllerchange → reload
+  // with zero user action — mid-text-selection in the field. An updated
+  // SW now parks in `waiting` ("· update ready" on the version label)
+  // until the page's explicit Refresh flow posts SKIP_WAITING below, or
+  // the next app launch activates it. Code delivery doesn't wait on
+  // this: hashed /build/* modules and the revalidating app shell flow
+  // through the OLD worker.
   e.waitUntil(
     caches.open(CACHE_NAME)
       .then(async cache => {
@@ -88,8 +96,7 @@ self.addEventListener('install', (e) => {
             console.warn(`[sw] install: skipping ${APP_SHELL[i]}: ${r.reason}`);
           }
         }
-      })
-      .then(() => self.skipWaiting()),
+      }),
   );
 });
 
@@ -256,10 +263,10 @@ self.addEventListener('message', (e) => {
   if (e.data?.type === 'get-version') {
     e.source?.postMessage({ type: 'version', version: CACHE_NAME });
   }
-  // Refresh button on the page postMessages us after reg.update() if a
-  // new SW is sitting in 'waiting' state. install() already calls
-  // skipWaiting() defensively, but if a previous SW shipped without it,
-  // honour the message so users can unstick a stale install.
+  // The ONLY activation path for an updated SW while the app stays open
+  // (#225): the page's Refresh flow postMessages this after reg.update()
+  // finds a new SW in 'waiting'. User-initiated by construction — the
+  // controllerchange → reload that follows never fires spontaneously.
   if (e.data?.type === 'SKIP_WAITING') {
     self.skipWaiting();
   }

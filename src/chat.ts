@@ -43,6 +43,17 @@ let speakerCount = 0;
  *  reload can restore the drawer highlight to the right row. */
 let viewedSessionIdRef: string | null = null;
 
+/** localStorage key holding the id of the session currently on screen.
+ *  #225: the id used to live only inside the IDB snapshot, which is
+ *  unreliable across exactly the reloads that need it — persist() is
+ *  debounced + refused while a floating drill window is up, and
+ *  ensureSchemaFresh nukes the snapshot DB on the first boot after a
+ *  schema bump (i.e. on the reload a deploy forces). Written
+ *  synchronously on every switch so ANY reload lands on the chat the
+ *  user was actually viewing instead of falling through to the
+ *  most-recent/pinned chat. */
+const VIEWED_SESSION_LS_KEY = 'sidekick.viewed-session-id';
+
 /** Per-msgId fold state. The "Show more / Show less" toggle on long
  *  bubbles needs to survive virt unmount/remount: a bubble scrolled
  *  outside the visible window is destroyed, its expanded class lost.
@@ -63,6 +74,12 @@ export function trackViewedSession(id: string | null) {
     updateButton();
   }
   viewedSessionIdRef = id;
+  // Synchronous write — survives any reload (SW update, crash, schema-bump
+  // IDB nuke) even when the async/refusable snapshot persist below lags.
+  try {
+    if (id) localStorage.setItem(VIEWED_SESSION_LS_KEY, id);
+    else localStorage.removeItem(VIEWED_SESSION_LS_KEY);
+  } catch { /* private mode */ }
   persist();  // update the snapshot so reload picks it up
 }
 
@@ -592,9 +609,17 @@ export async function init(el: HTMLElement | null): Promise<boolean> {
     }, { passive: true });
   }
 
+  // #225: the synchronously-written viewed-session id is the source of
+  // truth for WHERE the user was; the IDB snapshot only supplies cached
+  // pixels, and only when it belongs to that same chat. A snapshot for a
+  // DIFFERENT chat (persist() refused while a drill window floated, or a
+  // debounced write lost to a reload) must not hijack the landing.
+  let lastViewed: string | null = null;
+  try { lastViewed = localStorage.getItem(VIEWED_SESSION_LS_KEY); } catch { /* private mode */ }
   try {
     const saved = await loadSnapshot();
-    if (saved && transcriptEl && saved.state && saved.sessionId) {
+    const snapshotMatchesViewed = !lastViewed || !saved?.sessionId || saved.sessionId === lastViewed;
+    if (saved && transcriptEl && saved.state && saved.sessionId && snapshotMatchesViewed) {
       // Virt-path cold-load: inject the persisted store state and
       // let the projection + reconciler render. The active chat-id is
       // claimed here (so concurrent backfill / boot's most-recent
@@ -625,7 +650,7 @@ export async function init(el: HTMLElement | null): Promise<boolean> {
       else forceScrollToBottom();
       return true;
     }
-    if (saved && transcriptEl && saved.html) {
+    if (saved && transcriptEl && saved.html && snapshotMatchesViewed) {
       transcriptEl.innerHTML = saved.html;
       restoredViewedSessionId = saved.sessionId || null;
       viewedSessionIdRef = restoredViewedSessionId;
@@ -705,6 +730,13 @@ export async function init(el: HTMLElement | null): Promise<boolean> {
       return true;
     }
   } catch {}
+  // No usable snapshot (nuked by a schema bump, or it belongs to a
+  // different chat). Still restore the viewed-session id so boot lands
+  // on the right chat; the transcript paints from the server fetch.
+  if (lastViewed) {
+    restoredViewedSessionId = lastViewed;
+    viewedSessionIdRef = lastViewed;
+  }
   return false;
 }
 
@@ -1444,6 +1476,7 @@ export function clear(): void {
   if (transcriptEl) transcriptEl.innerHTML = '';
   viewedSessionIdRef = null;
   restoredViewedSessionId = null;
+  try { localStorage.removeItem(VIEWED_SESSION_LS_KEY); } catch { /* private mode */ }
   foldStateByMsgId.clear();
   missedWhileScrolled = 0;
   unreadSeenIds.clear();

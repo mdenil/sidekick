@@ -728,12 +728,18 @@
 
 <script type="module" src="/build/main.mjs"></script>
 <script>
-// Service worker with auto-reload on update — makes iOS PWA actually
-// pick up new code without the user killing the app.
+// Service worker bootstrap. Updates are detected passively (visibility
+// + interval checks below) but NEVER auto-activate (#225): sw.js's
+// install no longer calls skipWaiting, so a new SW parks in `waiting`
+// ("· update ready" on the version label) until the user's explicit
+// Refresh posts SKIP_WAITING — only then does controllerchange fire and
+// the reload below pick up the new shell. A reload must never happen
+// without user action; code itself still flows through the old worker
+// (hashed /build/* modules + revalidating shell).
 (() => {
   if (!('serviceWorker' in navigator)) return;
   let refreshing = false;
-  // When a new SW takes control (skipWaiting + clients.claim in sw.js),
+  // When a new SW takes control (the user-initiated SKIP_WAITING flow),
   // reload the page so we load the new cached assets. Gate with a flag
   // so we don't loop on first install.
   navigator.serviceWorker.addEventListener('controllerchange', () => {
