@@ -3957,16 +3957,18 @@
   /* #226 UX: scroll-triggered pagination loader. A small ring spinner
      pinned to the edge being loaded (top = older history, bottom = newer)
      so a scroll into a page-load gives immediate "you triggered something"
-     feedback. The .visible rule delays the fade-in 150ms so an instant
-     cache hit completes before the spinner ever shows (no flash); removing
-     .visible fades out immediately (no delay). */
+     feedback. #230b field fix: the spinner must be an INSTANT, reliable
+     "loading from server" signal — show it the moment a server fetch is
+     in flight with no fade-in delay (the old 150ms delay made it blink in
+     and out and feel flaky on slow links). Fade-OUT stays quick so a cache
+     hit that resolves immediately doesn't leave a lingering ring. */
   .transcript-edge-loader {
     position: absolute;
     left: 50%; transform: translateX(-50%);
     width: 22px; height: 22px;
     opacity: 0;
     pointer-events: none; z-index: 15;
-    transition: opacity .15s ease;
+    transition: opacity .12s ease;
   }
   .transcript-edge-loader.at-top { top: 12px; }
   .transcript-edge-loader.at-bottom {
@@ -3974,7 +3976,7 @@
   }
   .transcript-edge-loader.visible {
     opacity: 0.75;
-    transition: opacity .15s ease .15s;
+    transition: opacity .05s ease;
   }
   .transcript-edge-spinner {
     display: block; width: 22px; height: 22px;

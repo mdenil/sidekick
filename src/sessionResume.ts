@@ -642,6 +642,16 @@ function drillViaAroundWindow(chatId: string, targetMessageId: string): Promise<
         if (cacheRendered) log(`[cmdk] drill painted ${targetMessageId} from window cache; server reconcile in flight`);
       }
     } catch { /* cache problems → plain server drill */ }
+    // #232 field fix: a deep drill that misses the window cache waits 5-20s
+    // on the around-window fetch with NO feedback (the bubble isn't in the
+    // DOM yet so there's nothing to flash). Show the centered transcript
+    // spinner over the current view for the duration of the server fetch.
+    // A cache hit already painted, so skip the spinner there (no flash).
+    // rerenderInto clears `.transcript-loading` on the first non-empty render
+    // when the window lands; the finally below guarantees removal on every
+    // early return / failure path.
+    const drillSpinnerEl = !cacheRendered ? document.getElementById('transcript') : null;
+    drillSpinnerEl?.classList.add('transcript-loading');
     try {
       const around: any = await backend.fetchMessagesAround(chatId, targetMessageId, DRILL_AROUND_LIMIT);
       if (switchCtl.viewedId() !== chatId) {
@@ -679,6 +689,11 @@ function drillViaAroundWindow(chatId: string, targetMessageId: string): Promise<
       }
       diag(`[cmdk] around-window drill failed: ${e?.message || e} — serial fallback`);
       return false;
+    } finally {
+      // Guarantee the drill spinner clears on every exit (success, target
+      // missing, session-changed, fetch failure) — rerenderInto only clears
+      // it when a non-empty window actually rendered.
+      drillSpinnerEl?.classList.remove('transcript-loading');
     }
   })();
   aroundDrillInFlight = { key, promise };

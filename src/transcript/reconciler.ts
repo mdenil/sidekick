@@ -512,37 +512,66 @@ function renderToolEntry(t: ActivityTool): HTMLElement {
   summary.className = 'tool-row-summary';
   summary.innerHTML = `${ICON_TOOL}${toolTitleHtml(t)}<span class="tool-row-meta"></span>`;
   details.appendChild(summary);
+  // #229 field fix: the args/result <pre> blocks are the bulk of the render
+  // cost and DOM bytes in tool-heavy histories (~88% of history rows are
+  // tool rows), yet stay hidden until the user opens this specific row. The
+  // collapsed summary (name + detail + duration) is enough to scan the turn;
+  // build the body containers EMPTY and hydrate them lazily on first expand.
   const argsBlock = document.createElement('div');
   argsBlock.className = 'tool-args-block';
-  argsBlock.innerHTML = `<pre>${escapeHtml(formatArgs(t.args))}</pre>`;
   details.appendChild(argsBlock);
   const resultEl = document.createElement('div');
   resultEl.className = 'tool-result-block';
   resultEl.style.display = 'none';
   details.appendChild(resultEl);
   wrap.appendChild(details);
-  if (t.result !== undefined) writeToolResult(wrap, t);
+  (wrap as any)._tool = t;
+  // Duration is part of the collapsed summary line, so set it eagerly.
+  updateToolMeta(wrap, t);
+  details.addEventListener('toggle', () => {
+    if (details.open) hydrateToolBody(wrap);
+  });
   return wrap;
 }
 
 function updateToolEntry(wrap: HTMLElement, t: ActivityTool): void {
+  (wrap as any)._tool = t;
   // Tool name (rarely changes, but tool_result can rename '(unknown)'
   // to a real name when call envelope was missed).
   const titleEl = wrap.querySelector('.tool-title') as HTMLElement | null;
   const nextTitle = toolTitleHtml(t);
   if (titleEl && titleEl.outerHTML !== nextTitle) titleEl.outerHTML = nextTitle;
-  // Result block appears once t.result is populated.
-  if (t.result !== undefined) writeToolResult(wrap, t);
+  updateToolMeta(wrap, t);
+  // Only re-render the (expensive) body if this row is currently expanded;
+  // a collapsed row re-hydrates fresh the next time it's opened.
+  const details = wrap.querySelector('.tool-row-details') as HTMLDetailsElement | null;
+  if (details?.open) hydrateToolBody(wrap);
 }
 
-function writeToolResult(wrap: HTMLElement, t: ActivityTool): void {
+/** Set the duration shown in the collapsed tool-row summary. Cheap, so it
+ *  always runs eagerly (unlike the body, which is deferred to #229). */
+function updateToolMeta(wrap: HTMLElement, t: ActivityTool): void {
+  const meta = wrap.querySelector('.tool-row-meta') as HTMLElement | null;
+  if (!meta) return;
+  const dur = fmtDurationMs(t.durationMs || 0);
+  meta.textContent = dur ? ` · ${dur}` : '';
+}
+
+/** Build the args + result <pre> body for a tool row on demand (#229).
+ *  Called from the details `toggle` handler (open) and from updateToolEntry
+ *  for rows that are already open. Reads the latest spec stashed on `_tool`. */
+function hydrateToolBody(wrap: HTMLElement): void {
+  const t = (wrap as any)._tool as ActivityTool | undefined;
+  if (!t) return;
+  const argsBlock = wrap.querySelector('.tool-args-block') as HTMLElement | null;
+  if (argsBlock) argsBlock.innerHTML = `<pre>${escapeHtml(formatArgs(t.args))}</pre>`;
+  writeToolResultBody(wrap, t);
+}
+
+function writeToolResultBody(wrap: HTMLElement, t: ActivityTool): void {
   const resultEl = wrap.querySelector('.tool-result-block') as HTMLElement | null;
   if (!resultEl) return;
-  const meta = wrap.querySelector('.tool-row-meta') as HTMLElement | null;
-  if (meta) {
-    const dur = fmtDurationMs(t.durationMs || 0);
-    meta.textContent = dur ? ` · ${dur}` : '';
-  }
+  if (t.result === undefined) return; // result not in yet — leave hidden
   if (t.result === null) {
     resultEl.style.display = '';
     resultEl.innerHTML = `<div class="tool-result-empty">no result</div>`;

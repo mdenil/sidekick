@@ -60,6 +60,13 @@ let activeChatId: string | null = null;
  *  there's no separate health route to mount. */
 let healthTimer: ReturnType<typeof setTimeout> | null = null;
 const HEALTH_INTERVAL_MS = 30_000;
+/** Page size for scroll-driven pagination (loadEarlier/loadLater). The
+ *  server defaults to 200 msgs/page when no limit is sent; in deep
+ *  tool-heavy histories that's ~1.3MB per page, which made scroll
+ *  pagination feel slow and the edge spinner blink in and out before a
+ *  page landed. A smaller, explicit page keeps each round trip light so
+ *  the spinner is a brief, reliable "loading from server" signal. */
+const PAGE_LIMIT = 60;
 /** Persistent stream EventSource — every adapter envelope arrives here.
  *  EventSource auto-reconnects on transient failures (5s retry hint set
  *  by the server), so we open once on connect() and let it handle redial.
@@ -1369,7 +1376,7 @@ export const proxyClientAdapter = {
     if (id.startsWith('__sidekick:hint:')) {
       return { messages: [], firstId: null, hasMore: false };
     }
-    const q = new URLSearchParams({ before: String(beforeId) });
+    const q = new URLSearchParams({ before: String(beforeId), limit: String(PAGE_LIMIT) });
     const r = await fetch(`${apiBase()}/sessions/${encodeURIComponent(id)}/messages?${q}`);
     if (!r.ok) throw new Error(`loadEarlier HTTP ${r.status}`);
     const d = await r.json();
@@ -1388,7 +1395,7 @@ export const proxyClientAdapter = {
     if (id.startsWith('__sidekick:hint:')) {
       return { messages: [], lastId: null, hasMoreNewer: false };
     }
-    const q = new URLSearchParams({ after: String(afterId) });
+    const q = new URLSearchParams({ after: String(afterId), limit: String(PAGE_LIMIT) });
     const r = await fetch(`${apiBase()}/sessions/${encodeURIComponent(id)}/messages?${q}`);
     if (!r.ok) throw new Error(`loadLater HTTP ${r.status}`);
     const d = await r.json();

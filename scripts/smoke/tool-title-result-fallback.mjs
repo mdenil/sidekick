@@ -49,7 +49,15 @@ export default async function run({ page, log }) {
   assert(title.includes('gog'), `expected fallback tool name gog, got ${JSON.stringify(title)}`);
   assert(title.includes('Google Workspace'), `expected fallback description, got ${JSON.stringify(title)}`);
   assert(!title.includes('undefined'), `tool title should not include undefined, got ${JSON.stringify(title)}`);
+  // #229: the args/result body is built lazily on the details `toggle`
+  // (open) event, which fires asynchronously — wait for the deferred
+  // hydration to land rather than reading synchronously after the click.
   await page.click('.tool-row-summary');
+  await page.waitForFunction(
+    (tail) => (document.querySelector('.tool-result-text')?.textContent || '').includes(tail),
+    LONG_RESULT_TAIL,
+    { timeout: 4_000, polling: 60 },
+  );
   const resultText = await page.evaluate(() => document.querySelector('.tool-result-text')?.textContent || '');
   assert(resultText.includes(LONG_RESULT_TAIL), 'expanded tool result should include the full long result tail');
   log('result-only tool row title used result.name + result.description and full expanded result text ✓');
