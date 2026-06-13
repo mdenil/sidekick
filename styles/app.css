@@ -3976,6 +3976,36 @@
   }
   .transcript-gap-newer:hover { color: var(--fg); border-color: var(--border-strong); }
 
+  /* #226 UX: scroll-triggered pagination loader. A small ring spinner
+     pinned to the edge being loaded (top = older history, bottom = newer)
+     so a scroll into a page-load gives immediate "you triggered something"
+     feedback. The .visible rule delays the fade-in 150ms so an instant
+     cache hit completes before the spinner ever shows (no flash); removing
+     .visible fades out immediately (no delay). */
+  .transcript-edge-loader {
+    position: absolute;
+    left: 50%; transform: translateX(-50%);
+    width: 22px; height: 22px;
+    opacity: 0;
+    pointer-events: none; z-index: 15;
+    transition: opacity .15s ease;
+  }
+  .transcript-edge-loader.at-top { top: 12px; }
+  .transcript-edge-loader.at-bottom {
+    bottom: calc(var(--composer-height, 64px) + 16px);
+  }
+  .transcript-edge-loader.visible {
+    opacity: 0.75;
+    transition: opacity .15s ease .15s;
+  }
+  .transcript-edge-spinner {
+    display: block; width: 22px; height: 22px;
+    border: 2px solid color-mix(in srgb, var(--muted) 35%, transparent);
+    border-top-color: var(--muted);
+    border-radius: 50%;
+    animation: transcript-spin 0.8s linear infinite;
+  }
+
   /* ── Inline attachments on agent bubbles ── */
   .line-cards {
     display: flex; flex-direction: column; gap: 12px;

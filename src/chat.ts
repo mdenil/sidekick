@@ -294,6 +294,29 @@ function updateGapIndicator(): void {
   gapNewerEl.setAttribute('aria-hidden', paginationHasMoreNewer ? 'false' : 'true');
 }
 
+/** Edge spinner shown while a scroll-triggered pagination load is in
+ *  flight, anchored to the edge being loaded (top = older history,
+ *  bottom = newer). Gives the user immediate "your scroll registered"
+ *  feedback. Lazily created; CSS delays the fade-in ~150ms so an instant
+ *  cache hit never flashes a spinner. */
+let edgeLoaderEl: HTMLDivElement | null = null;
+function setEdgeLoading(dir: 'earlier' | 'later' | null): void {
+  const parent = transcriptEl?.parentElement;
+  if (!parent) return;
+  if (!edgeLoaderEl) {
+    if (!dir) return; // don't create until first needed
+    edgeLoaderEl = document.createElement('div');
+    edgeLoaderEl.id = 'transcript-edge-loader';
+    edgeLoaderEl.className = 'transcript-edge-loader';
+    edgeLoaderEl.setAttribute('aria-hidden', 'true');
+    edgeLoaderEl.innerHTML = '<span class="transcript-edge-spinner"></span>';
+    parent.appendChild(edgeLoaderEl);
+  }
+  edgeLoaderEl.classList.toggle('at-top', dir === 'earlier');
+  edgeLoaderEl.classList.toggle('at-bottom', dir === 'later');
+  edgeLoaderEl.classList.toggle('visible', dir != null);
+}
+
 /** Unconditional scroll to the live edge. Used by initial loads,
  *  user-initiated jump-to-bottom, and anywhere we deliberately want to
  *  override the "user scrolled up" state.
@@ -1405,6 +1428,7 @@ async function maybeLoadEarlier() {
   if (!transcriptEl) return;
   if (transcriptEl.scrollTop > LOAD_EARLIER_THRESHOLD_PX) return;
   paginationLoading = true;
+  setEdgeLoading('earlier');
   const cursor = paginationOldestId;
   try {
     await paginationCb(cursor);
@@ -1412,6 +1436,7 @@ async function maybeLoadEarlier() {
     diag(`chat.loadEarlier failed: ${e?.message || e}`);
   } finally {
     paginationLoading = false;
+    setEdgeLoading(null);
   }
 }
 
@@ -1434,6 +1459,7 @@ async function maybeLoadLater() {
   const distance = transcriptEl.scrollHeight - transcriptEl.scrollTop - transcriptEl.clientHeight;
   if (distance > LOAD_LATER_THRESHOLD_PX) return;
   paginationLoadingNewer = true;
+  setEdgeLoading('later');
   const cursor = paginationNewestId;
   try {
     await paginationLaterCb(cursor);
@@ -1441,6 +1467,7 @@ async function maybeLoadLater() {
     diag(`chat.loadLater failed: ${e?.message || e}`);
   } finally {
     paginationLoadingNewer = false;
+    setEdgeLoading(null);
   }
 }
 
@@ -1480,6 +1507,7 @@ export function clear(): void {
   foldStateByMsgId.clear();
   missedWhileScrolled = 0;
   unreadSeenIds.clear();
+  setEdgeLoading(null);
   updateButton();
   clearSnapshot().catch(() => {});
 }
