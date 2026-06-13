@@ -60,6 +60,12 @@ function persistGrownTranscript(id: string): void {
   // run is contiguous-to-tail and safe to persist; it then grows the
   // cache so subsequent warm jumps within it hit IDB.
   if (s.pagination.hasMoreNewer) return;
+  // A buffer carrying a gap marker is a spliced pin-window-plus-tail with
+  // a KNOWN discontinuity in the middle; persisting it would write a
+  // multi-segment snapshot the cold-resume path isn't shaped to load.
+  // The drill window cache (drillWindowCache) already gives instant
+  // re-drill, so skip the IDB write while a gap is present.
+  if (s.durable.some(it => it.role === 'gap')) return;
   const capped = sessionCache.capTranscript(s.durable, s.pagination);
   void sessionCache.putMessagesCache(id, capped.messages, capped.pagination);
 }
@@ -483,7 +489,10 @@ async function drillToOlderMessage(
   // One bounded around-window fetch first (the 5–20s deep-pin lag fix);
   // fall through to the serial loadEarlier loop only when the target is
   // missing from the around result.
-  if (await drillViaAroundWindow(chatId, targetMessageId)) return;
+  if (await drillViaAroundWindow(chatId, targetMessageId)) {
+    await ensureTailAfterDrill(chatId);
+    return;
+  }
   await drillViaSerialOlderPages(chatId, targetMessageId, initialFirstId, initialHasMore);
 }
 
@@ -512,7 +521,10 @@ export async function drillToMessageInViewedSession(
     setTimeout(() => existing.classList.remove('search-target-flash'), 1500);
     return;
   }
-  if (await drillViaAroundWindow(chatId, targetMessageId)) return;
+  if (await drillViaAroundWindow(chatId, targetMessageId)) {
+    await ensureTailAfterDrill(chatId);
+    return;
+  }
   const s = transcriptStore.getState(chatId);
   await drillViaSerialOlderPages(
     chatId, targetMessageId, s.pagination.firstId, s.pagination.hasMore,
@@ -546,7 +558,7 @@ async function renderAroundWindow(
   targetMessageId: string,
   messages: any[],
   pagination: windowCache.WindowPagination,
-  opts: { skipScroll?: boolean } = {},
+  opts: { skipScroll?: boolean; mode?: 'replace' | 'splice' } = {},
 ): Promise<HTMLElement | null> {
   const transcriptEl = document.getElementById('transcript');
   if (!transcriptEl) return null;
@@ -561,16 +573,27 @@ async function renderAroundWindow(
   // tail. Assert un-pinned BEFORE the render so autoScroll can't snap
   // us to the window's bottom while it settles.
   chat.setPinnedToBottom(false);
-  // Arm pagination BEFORE the store mutation: setDurable fires the
-  // reconciler synchronously, and chat's tail-invariant guards
-  // (persist/saveCurrentScrollPosition skip while hasMoreNewer) must
-  // already see the floating-window state when that render runs —
-  // otherwise a windowed snapshot could slip into IDB.
-  chat.setPaginationState(
-    pagination.firstId, pagination.hasMore,
-    pagination.lastId, pagination.hasMoreNewer,
-  );
-  transcriptStore.setDurable(chatId, messages, pagination);
+  if (opts.mode === 'splice') {
+    // Splice the window ALONGSIDE the existing tail with a gap marker
+    // (issue #227): the tail stays in the buffer so scroll-to-bottom is
+    // instant, and the disjoint range shows a tappable "…". spliceWindow
+    // derives the resulting pagination (keeps the tail cursor); publish
+    // it AFTER so chat's guards see the real post-splice state.
+    transcriptStore.spliceWindow(chatId, messages, pagination);
+    const sp = transcriptStore.getState(chatId).pagination;
+    chat.setPaginationState(sp.firstId, sp.hasMore, sp.lastId, sp.hasMoreNewer);
+  } else {
+    // Arm pagination BEFORE the store mutation: setDurable fires the
+    // reconciler synchronously, and chat's tail-invariant guards
+    // (persist/saveCurrentScrollPosition skip while hasMoreNewer) must
+    // already see the floating-window state when that render runs —
+    // otherwise a windowed snapshot could slip into IDB.
+    chat.setPaginationState(
+      pagination.firstId, pagination.hasMore,
+      pagination.lastId, pagination.hasMoreNewer,
+    );
+    transcriptStore.setDurable(chatId, messages, pagination);
+  }
   rerenderActive();
   // Persist is a no-op while the window floats (hasMoreNewer); it
   // only writes once loadLater connects the run to the tail.
@@ -593,6 +616,18 @@ function drillViaAroundWindow(chatId: string, targetMessageId: string): Promise<
   if (aroundDrillInFlight?.key === key) return aroundDrillInFlight.promise;
   const promise = (async (): Promise<boolean> => {
     if (!document.getElementById('transcript')) return false;
+    // Decide ONCE, at drill start, whether to SPLICE the window alongside
+    // the current tail or REPLACE the buffer with a floating window. Splice
+    // only when the buffer already reaches the live tail (hasMoreNewer
+    // false) and isn't empty — then the tail is preserved and the pin
+    // window slots in above a gap marker (issue #227). Captured once so the
+    // cache-paint and server-reconcile passes agree (the second pass is a
+    // no-op against the spliced buffer). When the buffer is already a
+    // floating window, replace (old behavior).
+    const startState = transcriptStore.getState(chatId);
+    const mode: 'replace' | 'splice' =
+      !startState.pagination.hasMoreNewer && startState.durable.length > 0
+        ? 'splice' : 'replace';
     // #214 TFC-C: cache-first. A window fetched by a previous drill to
     // this same anchor paints instantly from IDB; the server fetch below
     // STILL runs and re-renders (reconciling any drift and refreshing
@@ -603,7 +638,7 @@ function drillViaAroundWindow(chatId: string, targetMessageId: string): Promise<
       const cached = await windowCache.getWindow(chatId, targetMessageId);
       if (cached && switchCtl.viewedId() === chatId) {
         cacheRendered = !!(await renderAroundWindow(
-          chatId, targetMessageId, cached.messages, cached.pagination));
+          chatId, targetMessageId, cached.messages, cached.pagination, { mode }));
         if (cacheRendered) log(`[cmdk] drill painted ${targetMessageId} from window cache; server reconcile in flight`);
       }
     } catch { /* cache problems → plain server drill */ }
@@ -629,7 +664,7 @@ function drillViaAroundWindow(chatId: string, targetMessageId: string): Promise<
       // reading — don't re-yank the viewport if they've gestured since.
       const skipScroll = cacheRendered && chat.lastUserScrollGestureAt() > drillStartedAt;
       const found = await renderAroundWindow(
-        chatId, targetMessageId, around.messages, pagination, { skipScroll });
+        chatId, targetMessageId, around.messages, pagination, { skipScroll, mode });
       if (!found) {
         if (cacheRendered) return true;
         log(`[cmdk] around window returned but ${targetMessageId} not in DOM — serial fallback`);
@@ -650,6 +685,41 @@ function drillViaAroundWindow(chatId: string, targetMessageId: string): Promise<
   return promise.finally(() => {
     if (aroundDrillInFlight?.key === key) aroundDrillInFlight = null;
   });
+}
+
+/** Option (2) guarantee (issue #227): a deep drill must never leave the
+ *  buffer as a bare "floating window" with the live tail evicted — that's
+ *  the "pin and tail are mutually exclusive" field complaint. When a drill
+ *  REPLACED the buffer with a window that doesn't reach the tail
+ *  (hasMoreNewer still true), fetch the newest page and SPLICE it alongside
+ *  the window with a gap marker, so scroll-to-bottom is instant and the deep
+ *  target stays visible. No-op when the buffer already reaches the tail
+ *  (the common splice-mode path) or already carries a spliced gap. */
+async function ensureTailAfterDrill(chatId: string): Promise<void> {
+  const st = transcriptStore.getState(chatId);
+  if (!st.pagination.hasMoreNewer) return;            // already at the tail
+  if (st.durable.some(it => it.role === 'gap')) return; // tail already spliced
+  try {
+    const result: any = await backend.resumeSession(chatId);
+    if (switchCtl.viewedId() !== chatId) return;
+    const tail = result.messages || [];
+    if (!tail.length) return;
+    const tailPagination: windowCache.WindowPagination = {
+      firstId: result.firstId ?? null,
+      hasMore: !!result.hasMore,
+      lastId: result.lastId ?? null,
+      hasMoreNewer: false,
+    };
+    const outcome = transcriptStore.spliceWindow(chatId, tail, tailPagination);
+    if (Array.isArray(result.inflight)) transcriptStore.setInflight(chatId, result.inflight);
+    const sp = transcriptStore.getState(chatId).pagination;
+    chat.setPaginationState(sp.firstId, sp.hasMore, sp.lastId, sp.hasMoreNewer);
+    rerenderActive();
+    persistGrownTranscript(chatId);
+    log(`[cmdk] ensureTailAfterDrill spliced live tail alongside drill window (${outcome})`);
+  } catch (e: any) {
+    diag(`[cmdk] ensureTailAfterDrill failed: ${e?.message || e}`);
+  }
 }
 
 async function drillViaSerialOlderPages(
@@ -765,6 +835,25 @@ export async function loadLaterHistory(afterId: number): Promise<void> {
     s.pagination.firstId, s.pagination.hasMore,
     s.pagination.lastId, s.pagination.hasMoreNewer,
   );
+  persistGrownTranscript(id);
+}
+
+/** Shrink/close a spliced-window gap from its OLDER edge. Wired to the
+ *  reconciler's inline `…` placeholder (sidekick:load-gap). Fetches the
+ *  page after the gap's fill cursor and hands it to fillGap, which either
+ *  connects the two runs (gap removed) or advances the gap cursor. Scroll
+ *  position is preserved via prependHistory's DOM-anchor because the gap
+ *  sits mid-transcript and inserting rows there shifts content below it. */
+export async function loadGapHistory(afterId: number): Promise<void> {
+  const id = viewedSessionForLoadEarlier;
+  if (!id || afterId == null) return;
+  const result: any = await backend.loadLater(id, afterId);
+  const rows = result.messages || [];
+  const reachedTail = !result.hasMoreNewer;
+  chat.prependHistory(() => {
+    transcriptStore.fillGap(id, afterId, rows, reachedTail);
+  });
+  rerenderActive();
   persistGrownTranscript(id);
 }
 

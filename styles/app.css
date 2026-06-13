@@ -3954,28 +3954,6 @@
   }
   .scroll-to-bottom.has-unread .scroll-to-bottom-badge { display: block; }
 
-  /* Missing-suffix indicator (#214 TFC-D) — shown while the transcript on
-     screen is a floating deep window (hasMoreNewer): the session continues
-     below what's loaded. Sits directly above the jump-to-bottom chevron;
-     both are visible in windowed state and both jump to the live tail. */
-  .transcript-gap-newer {
-    position: absolute;
-    bottom: calc(var(--composer-height, 64px) + 64px + 46px);
-    left: 50%; transform: translateX(-50%) translateY(8px) scale(0.95);
-    padding: 5px 14px; border-radius: 999px;
-    background: var(--surface); border: 1px solid var(--border);
-    color: var(--muted); cursor: pointer;
-    font: 500 12px/1.4 var(--font-sans); white-space: nowrap;
-    opacity: 0;
-    transition: opacity .15s ease, transform .15s ease, color .15s;
-    pointer-events: none; z-index: 15;
-    box-shadow: 0 4px 14px -6px rgba(0,0,0,0.25);
-  }
-  .transcript-gap-newer.visible {
-    opacity: 1; transform: translateX(-50%); pointer-events: auto;
-  }
-  .transcript-gap-newer:hover { color: var(--fg); border-color: var(--border-strong); }
-
   /* #226 UX: scroll-triggered pagination loader. A small ring spinner
      pinned to the edge being loaded (top = older history, bottom = newer)
      so a scroll into a page-load gives immediate "you triggered something"
@@ -4004,6 +3982,39 @@
     border-top-color: var(--muted);
     border-radius: 50%;
     animation: transcript-spin 0.8s linear infinite;
+  }
+
+  /* Inline discontinuity placeholder (#227) — a real durable row rendered
+     at a spliced-window gap (e.g. a pinned blob spliced alongside the live
+     tail). Tapping it fetches the page after the gap's older edge and
+     fillGap closes the gap once the runs connect. A thin centered divider
+     so it reads as "there's more between here" without shouting. */
+  .transcript-gap {
+    display: flex; align-items: center; justify-content: center;
+    margin: 14px 0; padding: 0 12px;
+  }
+  .transcript-gap-btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 4px 14px; border-radius: 999px;
+    background: var(--surface); border: 1px solid var(--border);
+    color: var(--muted); cursor: pointer;
+    font: 500 12px/1.4 var(--font-sans); white-space: nowrap;
+    transition: color .15s, border-color .15s, background .15s;
+  }
+  .transcript-gap-btn:hover { color: var(--fg); border-color: var(--border-strong); }
+  .transcript-gap-dots {
+    font-size: 14px; letter-spacing: 1px; line-height: 1;
+  }
+  .transcript-gap.loading .transcript-gap-btn {
+    pointer-events: none; opacity: 0.7;
+  }
+  .transcript-gap.loading .transcript-gap-dots {
+    display: inline-block; width: 13px; height: 13px; letter-spacing: 0;
+    border: 2px solid color-mix(in srgb, var(--muted) 35%, transparent);
+    border-top-color: var(--muted);
+    border-radius: 50%;
+    animation: transcript-spin 0.8s linear infinite;
+    font-size: 0;
   }
 
   /* ── Inline attachments on agent bubbles ── */

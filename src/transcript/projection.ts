@@ -90,8 +90,35 @@ export function project(state: ChatState): BubbleSpec[] {
   let currentTurnTs = 0;
 
   // ── 1. Durable rows
-  for (const item of state.durable) {
+  for (let di = 0; di < state.durable.length; di++) {
+    const item = state.durable[di];
     const ts = normalizeTimestamp(item);
+    if (item.role === 'gap') {
+      // Discontinuity marker spliced between two non-contiguous runs.
+      // Boundary ids come from the marker's explicit fields (set by the
+      // store's spliceWindow), falling back to the array neighbours for
+      // legacy / hand-built markers. Explicit fields are authoritative
+      // because durable is timestamp-sorted downstream — array position
+      // is NOT a reliable boundary signal. A gap with no neighbour on a
+      // side (head/tail of the buffer) carries null there.
+      const prev = di > 0 ? state.durable[di - 1] : null;
+      const next = di + 1 < state.durable.length ? state.durable[di + 1] : null;
+      const olderId = item.gap_older_id !== undefined
+        ? item.gap_older_id
+        : (prev ? String(prev.sidekick_id || prev.id) : null);
+      const newerId = item.gap_newer_id !== undefined
+        ? item.gap_newer_id
+        : (next ? String(next.sidekick_id || next.id) : null);
+      pushDurableSpec({
+        kind: 'gap',
+        key: `gap:${olderId ?? '∅'}:${newerId ?? '∅'}`,
+        timestamp: ts,
+        olderId,
+        newerId,
+        afterId: item.gap_after_id ?? null,
+      });
+      continue;
+    }
     if (item.role === 'user') {
       // Drop a near-simultaneous duplicate (double-write twin) — its winner
       // sibling renders + sets the turn key, so skip entirely.
@@ -532,6 +559,7 @@ function kindOrder(s: BubbleSpec): number {
     case 'activityRow': return 1;
     case 'assistant': return 2;
     case 'notification': return 3;
+    case 'gap': return 4;
   }
 }
 

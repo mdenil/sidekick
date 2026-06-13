@@ -80,7 +80,7 @@ export interface PendingSend {
  */
 export interface ConversationItem {
   id: number | string;
-  role: 'user' | 'assistant' | 'tool' | 'system' | 'notification';
+  role: 'user' | 'assistant' | 'tool' | 'system' | 'notification' | 'gap';
   content: string;
   /** Sidekick wire-shape id (umsg_… / msg_…). Optional; older plugin
    *  rows or legacy adapters omit it and we fall back to `id`. */
@@ -92,6 +92,15 @@ export interface ConversationItem {
   /** Notification discriminator (cron / reminder / approval). Surfaces
    *  the appropriate emoji + label in the projection. */
   kind?: string;
+  /** Gap-marker metadata (role==='gap' only). Explicit boundary ids so
+   *  the projection emits a stable GapBubbleSpec without depending on
+   *  the row's array neighbours (durable is timestamp-sorted downstream,
+   *  so array position is NOT a reliable boundary signal). `gap_after_id`
+   *  is the NUMERIC cursor the load-gap handler fetches AFTER to shrink
+   *  the gap from its older edge. */
+  gap_older_id?: string | null;
+  gap_newer_id?: string | null;
+  gap_after_id?: number | null;
   /** Timestamp — unix seconds (hermes) or ms (openclaw / openai-compat).
    *  Projection normalizes. */
   timestamp?: number;
@@ -129,7 +138,32 @@ export type BubbleSpec =
   | UserBubbleSpec
   | AssistantBubbleSpec
   | NotificationBubbleSpec
-  | ActivityRowSpec;
+  | ActivityRowSpec
+  | GapBubbleSpec;
+
+/**
+ * A discontinuity marker between two non-contiguous runs of durable
+ * rows. Produced when a deep-drill window is spliced alongside the tail
+ * (instead of replacing it), or when a merge can't prove two pages are
+ * adjacent. Renders as an inline "…" placeholder the user can tap (or
+ * scroll into) to load the missing range — making a true gap VISIBLE
+ * and recoverable instead of a silent hole (the #223 / missing-user-
+ * bubble class). When the range on either side becomes contiguous the
+ * gap row is dropped.
+ */
+export interface GapBubbleSpec {
+  kind: 'gap';
+  /** Stable reconcile key: `gap:${olderId}:${newerId}`. */
+  key: string;
+  timestamp: number;
+  /** Last id of the run ABOVE the gap (older side), or null at head. */
+  olderId: string | null;
+  /** First id of the run BELOW the gap (newer side), or null at tail. */
+  newerId: string | null;
+  /** Numeric cursor the load-gap handler fetches AFTER to shrink the gap
+   *  from its older edge (loadLater(afterId)). Null when unknown. */
+  afterId: number | null;
+}
 
 export interface UserBubbleSpec {
   kind: 'user';

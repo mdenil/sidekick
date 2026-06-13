@@ -148,7 +148,11 @@ export function prependDurable(
   pagination: { firstId: number | null; hasMore: boolean },
 ): void {
   const s = getState(chatId);
-  if (items.length) s.durable = items.concat(s.durable);
+  // Dedup against the existing buffer — a load-earlier page that overlaps
+  // the head (re-fetch, retry, racing merge) must not stack duplicate rows.
+  const existingIds = itemIdSet(s.durable);
+  const fresh = items.filter(it => !isDup(it, existingIds));
+  if (fresh.length) s.durable = fresh.concat(s.durable);
   s.pagination = { ...s.pagination, firstId: pagination.firstId, hasMore: pagination.hasMore };
   notify(chatId);
 }
@@ -165,9 +169,215 @@ export function appendDurable(
   pagination: { lastId: number | null; hasMoreNewer: boolean },
 ): void {
   const s = getState(chatId);
-  if (items.length) s.durable = s.durable.concat(items);
+  // Dedup against the existing buffer — symmetric to prependDurable.
+  const existingIds = itemIdSet(s.durable);
+  const fresh = items.filter(it => !isDup(it, existingIds));
+  if (fresh.length) s.durable = s.durable.concat(fresh);
   s.pagination = { ...s.pagination, lastId: pagination.lastId, hasMoreNewer: pagination.hasMoreNewer };
   notify(chatId);
+}
+
+// ── Gap-aware window splice (issue #227 / #1 missing-bubble) ─────────────
+//
+// A deep-pin / search drill used to REPLACE the buffer with a floating
+// ~40-row `around` window (setDurable, hasMoreNewer=true). That made the
+// pin and the live tail MUTUALLY EXCLUSIVE: jumping back to the bottom
+// re-fetched, and a non-overlapping merge could splice a SILENT hole
+// (the #223 / missing-user-bubble class). spliceWindow instead inserts
+// the window ALONGSIDE the existing tail with an explicit `role:'gap'`
+// marker at the discontinuity, so:
+//   - the tail stays in the buffer (scroll-to-bottom is instant), and
+//   - the missing range is VISIBLE as a tappable "…" the user can load.
+
+export type SpliceResult = 'replaced' | 'merged' | 'spliced' | 'noop';
+
+/** Splice a drill `around` window into the buffer next to the existing
+ *  run, marking any discontinuity with a gap row. See block comment above.
+ *
+ *  - Empty buffer → straight replace (floating window).
+ *  - Window already fully present → no-op (idempotent: the cache-paint and
+ *    server-reconcile passes of one drill both call this with the same
+ *    window; the second must not double-splice or revert the splice).
+ *  - Buffer already carries a gap (a PRIOR spliced window) → replace; v1
+ *    supports ONE window spliced alongside the tail.
+ *  - Window overlaps the existing run → contiguous merge (no gap).
+ *  - Window disjoint → splice with a gap marker between the two runs. The
+ *    older cursor moves to the window's; the tail cursor (lastId/
+ *    hasMoreNewer) is KEPT, so the buffer still reaches wherever it did. */
+export function spliceWindow(
+  chatId: string,
+  windowItems: ConversationItem[],
+  windowPagination: PaginationInput,
+): SpliceResult {
+  const s = getState(chatId);
+  const realWindow = windowItems.filter(it => it.role !== 'gap');
+  if (!realWindow.length) return 'noop';
+
+  if (s.durable.length === 0) {
+    s.durable = realWindow.slice();
+    s.pagination = fullPagination(windowPagination);
+    s.inflight = dropCompletedTurnEnvelopes(s.inflight, s.durable);
+    notify(chatId);
+    return 'replaced';
+  }
+
+  const existingIds = itemIdSet(s.durable);
+  if (realWindow.every(it => isDup(it, existingIds))) return 'noop';
+
+  if (s.durable.some(it => it.role === 'gap')) {
+    s.durable = realWindow.slice();
+    s.pagination = fullPagination(windowPagination);
+    s.inflight = dropCompletedTurnEnvelopes(s.inflight, s.durable);
+    notify(chatId);
+    return 'replaced';
+  }
+
+  const fresh = realWindow.filter(it => !isDup(it, existingIds));
+  const overlaps = fresh.length < realWindow.length;
+  const windowIsOlder = minNormTs(realWindow) <= minNormTs(s.durable);
+
+  if (overlaps) {
+    if (windowIsOlder) {
+      s.durable = fresh.concat(s.durable);
+      s.pagination = { ...s.pagination, firstId: windowPagination.firstId, hasMore: !!windowPagination.hasMore };
+    } else {
+      s.durable = s.durable.concat(fresh);
+      s.pagination = {
+        ...s.pagination,
+        lastId: windowPagination.lastId ?? s.pagination.lastId,
+        hasMoreNewer: !!windowPagination.hasMoreNewer,
+      };
+    }
+    notify(chatId);
+    return 'merged';
+  }
+
+  // Disjoint: insert a gap marker between the two runs.
+  if (windowIsOlder) {
+    const olderBoundary = pickByNormTs(fresh, 'max');         // window's newest row
+    const newerBoundary = pickByNormTs(s.durable, 'min');     // existing's oldest row
+    s.durable = fresh.concat([makeGap(olderBoundary, newerBoundary)], s.durable);
+    s.pagination = { ...s.pagination, firstId: windowPagination.firstId, hasMore: !!windowPagination.hasMore };
+  } else {
+    const olderBoundary = pickByNormTs(s.durable, 'max');     // existing's newest row
+    const newerBoundary = pickByNormTs(fresh, 'min');         // window's oldest row
+    s.durable = s.durable.concat([makeGap(olderBoundary, newerBoundary)], fresh);
+    s.pagination = {
+      ...s.pagination,
+      lastId: windowPagination.lastId ?? s.pagination.lastId,
+      hasMoreNewer: !!windowPagination.hasMoreNewer,
+    };
+  }
+  notify(chatId);
+  return 'spliced';
+}
+
+/** Shrink — and eventually close — a gap by inserting freshly-fetched rows
+ *  at its OLDER edge. `gapAfterId` identifies the gap (its fill cursor).
+ *  `rows` is the loadLater(gapAfterId) result; `reachedTail` is true when
+ *  the server can no longer page newer. The gap closes once the new rows
+ *  connect to the newer-side run (overlap), the fetch is exhausted, or the
+ *  server reports no more newer rows; otherwise the gap's cursor advances. */
+export function fillGap(
+  chatId: string,
+  gapAfterId: number,
+  rows: ConversationItem[],
+  reachedTail: boolean,
+): void {
+  const s = getState(chatId);
+  const gi = s.durable.findIndex(
+    it => it.role === 'gap' && Number(it.gap_after_id) === Number(gapAfterId),
+  );
+  if (gi < 0) return;
+  const gap = s.durable[gi];
+  const before = s.durable.slice(0, gi);
+  const after = s.durable.slice(gi + 1);
+  const existingIds = itemIdSet(before.concat(after));
+  const incoming = (rows || []).filter(it => it.role !== 'gap');
+  const fresh = incoming.filter(it => !isDup(it, existingIds));
+  const afterIds = itemIdSet(after);
+  const connected = incoming.some(it => isDup(it, afterIds)) || reachedTail || incoming.length === 0;
+  if (connected) {
+    s.durable = before.concat(fresh, after);
+  } else {
+    const lastFetched = fresh[fresh.length - 1];
+    if (lastFetched) {
+      gap.gap_older_id = String(lastFetched.sidekick_id || lastFetched.id);
+      gap.gap_after_id = Number(lastFetched.id);
+      gap.id = `gapmark_${gap.gap_older_id}_${gap.gap_newer_id ?? ''}`;
+    }
+    s.durable = before.concat(fresh, [gap], after);
+  }
+  notify(chatId);
+}
+
+function fullPagination(p: PaginationInput): ChatState['pagination'] {
+  return {
+    firstId: p.firstId,
+    hasMore: p.hasMore,
+    lastId: p.lastId ?? null,
+    hasMoreNewer: p.hasMoreNewer ?? false,
+  };
+}
+
+function makeGap(olderRow: ConversationItem, newerRow: ConversationItem): ConversationItem {
+  const olderId = String(olderRow.sidekick_id || olderRow.id);
+  const newerId = String(newerRow.sidekick_id || newerRow.id);
+  const mid = (normTs(olderRow) + normTs(newerRow)) / 2;
+  return {
+    id: `gapmark_${olderId}_${newerId}`,
+    role: 'gap',
+    content: '',
+    timestamp: denormTs(mid),
+    gap_older_id: olderId,
+    gap_newer_id: newerId,
+    gap_after_id: Number(olderRow.id),
+  };
+}
+
+function itemIdSet(items: ConversationItem[]): Set<string> {
+  const set = new Set<string>();
+  for (const it of items) {
+    set.add(String(it.id));
+    if (it.sidekick_id) set.add(it.sidekick_id);
+  }
+  return set;
+}
+
+function isDup(it: ConversationItem, ids: Set<string>): boolean {
+  if (ids.has(String(it.id))) return true;
+  if (it.sidekick_id && ids.has(it.sidekick_id)) return true;
+  return false;
+}
+
+/** Mirror of projection.ts normalizeTimestamp — seconds (<1e12) → ms. */
+function normTs(it: ConversationItem): number {
+  const raw = it.timestamp ?? it.created_at;
+  if (raw == null) return 0;
+  return raw < 1e12 ? raw * 1000 : raw;
+}
+
+/** Inverse of normTs: pick a raw value that normalizes back to `ms`, so a
+ *  synthetic gap timestamp sorts between its two neighbours regardless of
+ *  whether they're stored in seconds or ms. */
+function denormTs(ms: number): number {
+  return ms >= 1e12 ? ms : ms / 1000;
+}
+
+function minNormTs(items: ConversationItem[]): number {
+  let min = Infinity;
+  for (const it of items) { const t = normTs(it); if (t < min) min = t; }
+  return min === Infinity ? 0 : min;
+}
+
+function pickByNormTs(items: ConversationItem[], which: 'min' | 'max'): ConversationItem {
+  let best = items[0];
+  let bestTs = normTs(best);
+  for (const it of items) {
+    const t = normTs(it);
+    if (which === 'max' ? t > bestTs : t < bestTs) { best = it; bestTs = t; }
+  }
+  return best;
 }
 
 /** Merge inflight envelopes from a /messages response. The local store

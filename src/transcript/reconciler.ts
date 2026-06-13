@@ -30,7 +30,7 @@ import * as settings from '../settings.ts';
 import { getAgentLabel } from '../config.ts';
 import { applyBubbleState as applyReplyPlayerState } from '../audio/turn-based/replyPlayer.ts';
 import { rehydrateCards } from '../cards/attach.ts';
-import type { ActivityRowSpec, ActivityTool, AssistantBubbleSpec, BubbleSpec, NotificationBubbleSpec, UserBubbleSpec } from './types.ts';
+import type { ActivityRowSpec, ActivityTool, AssistantBubbleSpec, BubbleSpec, GapBubbleSpec, NotificationBubbleSpec, UserBubbleSpec } from './types.ts';
 
 const KEY_ATTR = 'data-key';
 
@@ -144,6 +144,7 @@ function createForSpec(spec: BubbleSpec, batch: boolean): HTMLElement | null {
     case 'assistant':  return createAssistant(spec, batch);
     case 'notification': return createNotification(spec, batch);
     case 'activityRow': return createActivityRow(spec);
+    case 'gap':        return createGap(spec);
   }
 }
 
@@ -272,7 +273,54 @@ function updateForSpec(el: HTMLElement, spec: BubbleSpec): void {
     case 'assistant':  return updateAssistant(el, spec);
     case 'notification': return updateNotification(el, spec);
     case 'activityRow': return updateActivityRow(el, spec);
+    case 'gap':        return updateGap(el, spec);
   }
+}
+
+// ── gap (discontinuity placeholder) ─────────────────────────────────────
+
+/** Inline "…" marker at a discontinuity between two non-contiguous runs
+ *  of loaded messages. Tapping it (or scrolling into it — wired in the
+ *  pagination layer) loads the missing range. Renders the visible gap
+ *  that replaces a SILENT hole, so a missing message is always
+ *  recoverable rather than lost (#223 / missing-user-bubble class). */
+function createGap(spec: GapBubbleSpec): HTMLElement {
+  const row = document.createElement('div');
+  row.className = 'transcript-gap';
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'transcript-gap-btn';
+  btn.innerHTML = '<span class="transcript-gap-dots">···</span><span class="transcript-gap-label">load messages</span>';
+  btn.addEventListener('click', () => {
+    if (row.classList.contains('loading')) return;
+    row.classList.add('loading');
+    // Read boundary/cursor from the dataset (kept current by updateGap)
+    // rather than the create-time closure, so a re-rendered gap dispatches
+    // its latest fill cursor.
+    const afterRaw = row.dataset.afterId;
+    row.dispatchEvent(new CustomEvent('sidekick:load-gap', {
+      bubbles: true,
+      detail: {
+        key: row.dataset.key || spec.key,
+        olderId: row.dataset.olderId || null,
+        newerId: row.dataset.newerId || null,
+        afterId: afterRaw ? Number(afterRaw) : null,
+      },
+    }));
+  });
+  row.appendChild(btn);
+  applyGapBoundary(row, spec);
+  return row;
+}
+
+function updateGap(el: HTMLElement, spec: GapBubbleSpec): void {
+  applyGapBoundary(el, spec);
+}
+
+function applyGapBoundary(el: HTMLElement, spec: GapBubbleSpec): void {
+  el.dataset.olderId = spec.olderId ?? '';
+  el.dataset.newerId = spec.newerId ?? '';
+  el.dataset.afterId = spec.afterId != null ? String(spec.afterId) : '';
 }
 
 function updateUser(el: HTMLElement, spec: UserBubbleSpec): void {

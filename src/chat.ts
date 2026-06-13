@@ -206,13 +206,25 @@ let lastUserGestureAt = 0;
 export function lastUserScrollGestureAt(): number { return lastUserGestureAt; }
 export function cancelPendingScrollRestores(): void { _restoreAnchorGen++; }
 
+/** #227: true when the on-screen transcript is NOT a clean tail-anchored
+ *  view — either a floating deep `around` window (hasMoreNewer) or a
+ *  SPLICED view (a drilled pin window retained alongside the tail with a
+ *  `…` gap row). In both cases the on-screen layout, scroll offset and
+ *  pinned-ness are meaningless against the tail-only snapshot the next boot
+ *  restores, so the persist/scroll-save/isPinned guards must keep the last
+ *  clean tail-anchored state instead of capturing the drilled one. */
+function transcriptNotTailAnchored(): boolean {
+  if (paginationHasMoreNewer) return true;
+  return !!transcriptEl?.querySelector('.transcript-gap');
+}
+
 export function saveCurrentScrollPosition(): void {
   if (!transcriptEl || !viewedSessionIdRef) return;
-  // Tail invariant: positions inside a floating deep window are
-  // ephemeral — its anchors/offsets are meaningless against the
-  // tail-anchored transcript the next resume renders. Keep the last
-  // tail-anchored position instead of overwriting it.
-  if (paginationHasMoreNewer) return;
+  // Tail invariant: positions inside a floating deep window OR a spliced
+  // pin+tail view are ephemeral — their anchors/offsets are meaningless
+  // against the tail-anchored transcript the next resume renders. Keep the
+  // last tail-anchored position instead of overwriting it.
+  if (transcriptNotTailAnchored()) return;
   // Capture the anchor (first-visible bubble key + offset) alongside raw
   // scrollTop. The anchor is the user-meaningful position: restore puts
   // the same message back at the same offset even as off-screen content
@@ -224,10 +236,11 @@ export function saveCurrentScrollPosition(): void {
 
 function isPinned(): boolean {
   if (!transcriptEl) return true;
-  // A floating deep window is never "at the live tail" — there's more
-  // content below than what's loaded, so live deltas must NOT stick to
-  // the window's bottom and the jump-to-bottom affordance stays visible.
-  if (paginationHasMoreNewer) return false;
+  // A floating deep window OR a spliced pin+tail view is never "at the live
+  // tail" in the user's frame — there's a discontinuity below the drilled
+  // position, so live deltas must NOT stick to its bottom and the
+  // jump-to-bottom affordance stays visible.
+  if (transcriptNotTailAnchored()) return false;
   const distance = transcriptEl.scrollHeight - transcriptEl.scrollTop - transcriptEl.clientHeight;
   return distance <= PINNED_THRESHOLD_PX;
 }
@@ -262,36 +275,6 @@ export function noteLiveMessage(chatId: string | null | undefined, messageId: st
   if (pinnedToBottom) return;
   missedWhileScrolled++;
   updateButton();
-}
-
-/** Missing-suffix indicator (#214 TFC-D). While a floating deep window is
- *  open (hasMoreNewer=true) the transcript on screen does NOT reach the
- *  session's end, but nothing in the old UI said so — the user read the
- *  window's last bubble as "the UI forgot the end of the session". This
- *  pill makes the truncation explicit; tapping it re-resumes to the live
- *  tail (same action as the jump-to-bottom chevron in windowed state).
- *  Created lazily on first use; toggled from setPaginationState, the
- *  single mutation point of paginationHasMoreNewer. */
-let gapNewerEl: HTMLButtonElement | null = null;
-function updateGapIndicator(): void {
-  const parent = transcriptEl?.parentElement;
-  if (!parent) return;
-  if (!gapNewerEl) {
-    if (!paginationHasMoreNewer) return; // don't create until first needed
-    gapNewerEl = document.createElement('button');
-    gapNewerEl.id = 'transcript-gap-newer';
-    gapNewerEl.className = 'transcript-gap-newer';
-    gapNewerEl.type = 'button';
-    gapNewerEl.title = 'Jump to latest';
-    gapNewerEl.textContent = '⋯ newer messages';
-    gapNewerEl.addEventListener('click', () => {
-      if (jumpToLatestCb) jumpToLatestCb();
-      else forceScrollToBottom();
-    });
-    parent.appendChild(gapNewerEl);
-  }
-  gapNewerEl.classList.toggle('visible', paginationHasMoreNewer);
-  gapNewerEl.setAttribute('aria-hidden', paginationHasMoreNewer ? 'false' : 'true');
 }
 
 /** Edge spinner shown while a scroll-triggered pagination load is in
@@ -786,9 +769,10 @@ function persist(): void {
   // were persisted, the next boot would innerHTML-restore it, the boot
   // resume would upsert the tail page INTO it, and the user would see
   // window+tail concatenated with a silently missing middle ("the UI
-  // forgot the end of the session"). Skipping keeps the last
-  // tail-anchored snapshot; boot always paints the session end.
-  if (paginationHasMoreNewer) return;
+  // forgot the end of the session"). The same holds for a SPLICED pin+tail
+  // view (#227): never snapshot the drilled window + `…` gap; keep the last
+  // clean tail-anchored snapshot so boot always paints the session end.
+  if (transcriptNotTailAnchored()) return;
   const clone = transcriptEl.cloneNode(true) as HTMLElement;
   clone.querySelectorAll('.activity-row').forEach((el) => el.remove());
   const html = clone.innerHTML;
@@ -1356,7 +1340,6 @@ export function setPaginationState(
   paginationNewestId = newestId;
   paginationHasMoreNewer = hasMoreNewer;
   paginationLoadingNewer = false;
-  updateGapIndicator();
 }
 
 /** Register the cursor-to-messages callback. Called once on boot; the cb

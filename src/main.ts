@@ -27,6 +27,7 @@ import {
   replaySessionMessages,
   loadEarlierHistory,
   loadLaterHistory,
+  loadGapHistory,
   jumpToLatest,
   drillToMessageInViewedSession,
 } from './sessionResume.ts';
@@ -951,6 +952,16 @@ async function boot() {
   chat.onLoadEarlier(loadEarlierHistory);
   chat.onLoadLater(loadLaterHistory);
   chat.onJumpToLatest(jumpToLatest);
+  // Inline gap placeholder (#227): the reconciler renders a tappable `…`
+  // row at a spliced-window discontinuity and dispatches sidekick:load-gap
+  // with the numeric fill cursor (afterId). Fetch the page after it and
+  // hand it to fillGap, which closes the gap once the runs connect.
+  document.addEventListener('sidekick:load-gap', (ev) => {
+    const detail = (ev as CustomEvent).detail || {};
+    const afterId = typeof detail.afterId === 'number' ? detail.afterId : null;
+    if (afterId == null) return;
+    loadGapHistory(afterId).catch(() => {});
+  });
   // Backfill ALWAYS runs on connect — dedup by text handles duplicates.
   // The snapshot lives in IndexedDB (survives tab close, PWA kills, and
   // cross-SW-version reloads); backfill plugs any residual gap on connect.

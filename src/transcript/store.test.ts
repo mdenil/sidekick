@@ -34,7 +34,10 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { getState, setDurable, appendInflight, clearInflightThroughReplyFinal } from './store.ts';
+import {
+  getState, setDurable, appendInflight, clearInflightThroughReplyFinal,
+  spliceWindow, fillGap, prependDurable, appendDurable,
+} from './store.ts';
 import type { ConversationItem, SidekickEnvelope } from './types.ts';
 
 const CHAT = 'orphan-test';
@@ -205,5 +208,139 @@ describe('store: targeted post-final inflight drain', () => {
 
     const s = getState(CHAT);
     assert.equal(s.inflight.length, 2);
+  });
+});
+
+// ── #227 / #1: gap-aware window splice + fill ───────────────────────────
+//
+// These exercise spliceWindow (drill a pin window alongside the tail with
+// a gap marker instead of replacing it) + fillGap (shrink/close the gap as
+// the user loads across it). The whole point is that the pin and the tail
+// stop being MUTUALLY EXCLUSIVE: after a drill the tail is STILL in the
+// buffer (hasMoreNewer stays false), so scroll-to-bottom is instant, and
+// the missing range is a VISIBLE gap, not a silent hole.
+
+const SEC = 1_779_120_000;
+function row(id: number, role: 'user' | 'assistant', content: string): ConversationItem {
+  return { id, sidekick_id: `s${id}`, role, content, timestamp: SEC + id };
+}
+function freshChat(name: string): string {
+  setDurable(name, [], { firstId: null, hasMore: false });
+  return name;
+}
+
+describe('store: spliceWindow (gap-aware drill)', () => {
+  it('replaces into an empty buffer (floating window)', () => {
+    const C = freshChat('splice-empty');
+    const win = [row(10, 'user', 'q'), row(11, 'assistant', 'a')];
+    const res = spliceWindow(C, win, { firstId: 9, hasMore: true, lastId: 11, hasMoreNewer: true });
+    assert.equal(res, 'replaced');
+    const s = getState(C);
+    assert.equal(s.durable.length, 2);
+    assert.equal(s.durable.some(r => r.role === 'gap'), false);
+    assert.equal(s.pagination.hasMoreNewer, true);
+  });
+
+  it('splices a disjoint OLDER window alongside the tail with a gap, KEEPING the tail cursor', () => {
+    const C = freshChat('splice-disjoint');
+    setDurable(C, [row(100, 'user', 'tq'), row(101, 'assistant', 'ta')],
+      { firstId: 100, hasMore: true, lastId: 101, hasMoreNewer: false });
+    const win = [row(10, 'user', 'wq'), row(11, 'assistant', 'wa')];
+    const res = spliceWindow(C, win, { firstId: 9, hasMore: true, lastId: 11, hasMoreNewer: true });
+    assert.equal(res, 'spliced');
+    const s = getState(C);
+    // [w10, w11, gap, t100, t101]
+    assert.equal(s.durable.length, 5);
+    const gap = s.durable[2];
+    assert.equal(gap.role, 'gap');
+    assert.equal(gap.gap_older_id, 's11', 'older boundary = window newest');
+    assert.equal(gap.gap_newer_id, 's100', 'newer boundary = tail oldest');
+    assert.equal(gap.gap_after_id, 11, 'fill cursor = numeric id of older boundary');
+    // Tail cursor preserved → buffer still reaches the live edge.
+    assert.equal(s.pagination.hasMoreNewer, false);
+    assert.equal(s.pagination.firstId, 9, 'older cursor moves to the window');
+  });
+
+  it('is idempotent — re-splicing the SAME window is a no-op (cache→server double render)', () => {
+    const C = freshChat('splice-idem');
+    setDurable(C, [row(100, 'user', 'tq'), row(101, 'assistant', 'ta')],
+      { firstId: 100, hasMore: true, lastId: 101, hasMoreNewer: false });
+    const win = [row(10, 'user', 'wq'), row(11, 'assistant', 'wa')];
+    spliceWindow(C, win, { firstId: 9, hasMore: true, lastId: 11, hasMoreNewer: true });
+    const res2 = spliceWindow(C, win, { firstId: 9, hasMore: true, lastId: 11, hasMoreNewer: true });
+    assert.equal(res2, 'noop');
+    const s = getState(C);
+    assert.equal(s.durable.length, 5, 'no duplicate rows or second gap');
+    assert.equal(s.durable.filter(r => r.role === 'gap').length, 1);
+  });
+
+  it('merges (no gap) when the window OVERLAPS the existing run', () => {
+    const C = freshChat('splice-overlap');
+    setDurable(C, [row(11, 'assistant', 'shared'), row(12, 'user', 'tq')],
+      { firstId: 11, hasMore: true, lastId: 12, hasMoreNewer: false });
+    const win = [row(10, 'user', 'wq'), row(11, 'assistant', 'shared')];
+    const res = spliceWindow(C, win, { firstId: 9, hasMore: true, lastId: 11, hasMoreNewer: true });
+    assert.equal(res, 'merged');
+    const s = getState(C);
+    assert.equal(s.durable.some(r => r.role === 'gap'), false);
+    assert.equal(s.durable.length, 3, 'shared row 11 deduped');
+    assert.equal(s.pagination.firstId, 9);
+  });
+});
+
+describe('store: fillGap (shrink/close a discontinuity)', () => {
+  function setupGap(name: string): string {
+    const C = freshChat(name);
+    setDurable(C, [row(100, 'user', 'tq'), row(101, 'assistant', 'ta')],
+      { firstId: 100, hasMore: true, lastId: 101, hasMoreNewer: false });
+    spliceWindow(C, [row(10, 'user', 'wq'), row(11, 'assistant', 'wa')],
+      { firstId: 9, hasMore: true, lastId: 11, hasMoreNewer: true });
+    return C;
+  }
+
+  it('closes the gap when fetched rows reach the newer-side run (overlap)', () => {
+    const C = setupGap('fill-overlap');
+    // loadLater(11) returns 12 then the tail boundary (100, already present).
+    fillGap(C, 11, [row(12, 'assistant', 'mid'), row(100, 'user', 'tq')], false);
+    const s = getState(C);
+    assert.equal(s.durable.some(r => r.role === 'gap'), false, 'gap closed');
+    assert.deepEqual(s.durable.map(r => r.id), [10, 11, 12, 100, 101], 'row 12 inserted, dup 100 dropped');
+  });
+
+  it('advances the cursor and KEEPS the gap when more newer rows remain', () => {
+    const C = setupGap('fill-partial');
+    fillGap(C, 11, [row(12, 'assistant', 'm1'), row(13, 'user', 'm2')], false);
+    const s = getState(C);
+    const gap = s.durable.find(r => r.role === 'gap')!;
+    assert.ok(gap, 'gap survives a partial fill');
+    assert.equal(gap.gap_after_id, 13, 'cursor advances to last fetched row');
+    assert.deepEqual(s.durable.map(r => r.id), [10, 11, 12, 13, gap.id, 100, 101]);
+  });
+
+  it('closes the gap when the server reports no more newer rows (reachedTail)', () => {
+    const C = setupGap('fill-tail');
+    fillGap(C, 11, [row(12, 'assistant', 'm1')], true);
+    const s = getState(C);
+    assert.equal(s.durable.some(r => r.role === 'gap'), false);
+    assert.deepEqual(s.durable.map(r => r.id), [10, 11, 12, 100, 101]);
+  });
+});
+
+describe('store: prepend/append dedup hygiene (#1 silent-hole guard)', () => {
+  it('prependDurable drops rows already in the buffer (no stacked duplicates)', () => {
+    const C = freshChat('prepend-dedup');
+    setDurable(C, [row(5, 'user', 'a'), row(6, 'assistant', 'b')], { firstId: 5, hasMore: true });
+    prependDurable(C, [row(4, 'user', 'z'), row(5, 'user', 'a')], { firstId: 4, hasMore: true });
+    const s = getState(C);
+    assert.deepEqual(s.durable.map(r => r.id), [4, 5, 6], 'dup row 5 not re-prepended');
+  });
+
+  it('appendDurable drops rows already in the buffer', () => {
+    const C = freshChat('append-dedup');
+    setDurable(C, [row(5, 'user', 'a'), row(6, 'assistant', 'b')],
+      { firstId: 5, hasMore: false, lastId: 6, hasMoreNewer: true });
+    appendDurable(C, [row(6, 'assistant', 'b'), row(7, 'user', 'c')], { lastId: 7, hasMoreNewer: false });
+    const s = getState(C);
+    assert.deepEqual(s.durable.map(r => r.id), [5, 6, 7], 'dup row 6 not re-appended');
   });
 });

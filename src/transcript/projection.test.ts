@@ -525,3 +525,59 @@ describe('notification update path renders markdown (not plaintext)', () => {
     assert.equal(miniMarkdown(empty || ''), '<p></p>');
   });
 });
+
+describe('project: gap (discontinuity placeholder)', () => {
+  // A `role:'gap'` durable row marks a KNOWN discontinuity between two
+  // non-contiguous runs (e.g. a pin window spliced alongside the tail).
+  // The projection must emit a 'gap' spec carrying the boundary ids so
+  // the reconciler can render an inline "…" the user can load — making
+  // the missing range VISIBLE instead of a silent hole (the #223 /
+  // missing-user-bubble class). Failing-first: before the projection
+  // learned about role:'gap', the marker fell through the durable walk
+  // and produced NO spec, so two non-adjacent turns rendered as if
+  // adjacent — exactly the lost-user-bubble symptom.
+  function gap(ts: number): ConversationItem {
+    return { id: `gapmark_${ts}`, role: 'gap', content: '', timestamp: ts };
+  }
+
+  it('emits a gap spec between two segments, carrying both boundary ids', () => {
+    const s = state({
+      durable: [
+        u('umsg_1', 'older q', T0),
+        a('msg_1', 'older a', T0 + 1),
+        gap(T0 + 2),
+        u('umsg_9', 'newer q', T0 + 3),
+        a('msg_9', 'newer a', T0 + 4),
+      ],
+    });
+    const out = project(s);
+    const kinds = out.map(x => x.kind);
+    assert.deepEqual(kinds, ['user', 'assistant', 'gap', 'user', 'assistant']);
+    const g = out.find(x => x.kind === 'gap');
+    assert.ok(g && g.kind === 'gap', 'a gap spec must be emitted');
+    assert.equal(g.olderId, 'msg_1', 'olderId = id of the run above the gap');
+    assert.equal(g.newerId, 'umsg_9', 'newerId = id of the run below the gap');
+    assert.equal(g.key, 'gap:msg_1:umsg_9');
+  });
+
+  it('gap at the head carries null olderId', () => {
+    const s = state({ durable: [gap(T0 - 1), u('umsg_1', 'q', T0), a('msg_1', 'a', T0 + 1)] });
+    const g = project(s).find(x => x.kind === 'gap');
+    assert.ok(g && g.kind === 'gap');
+    assert.equal(g.olderId, null);
+    assert.equal(g.newerId, 'umsg_1');
+  });
+
+  it('gap at the tail carries null newerId', () => {
+    const s = state({ durable: [u('umsg_1', 'q', T0), a('msg_1', 'a', T0 + 1), gap(T0 + 2)] });
+    const g = project(s).find(x => x.kind === 'gap');
+    assert.ok(g && g.kind === 'gap');
+    assert.equal(g.olderId, 'msg_1');
+    assert.equal(g.newerId, null);
+  });
+
+  it('no gap row → no gap spec (inert for the normal contiguous transcript)', () => {
+    const s = state({ durable: [u('umsg_1', 'q', T0), a('msg_1', 'a', T0 + 1)] });
+    assert.equal(project(s).some(x => x.kind === 'gap'), false);
+  });
+});

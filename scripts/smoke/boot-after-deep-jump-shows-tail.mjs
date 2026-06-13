@@ -1,34 +1,35 @@
-// Tail invariant (#214, field 2026-06-12): the boot snapshot must ALWAYS
-// be tail-anchored. Before the fix, chat.persist() serialized whatever
-// DOM was on screen — including a floating deep-jump `around` window.
-// On the next boot that windowed DOM was innerHTML-restored, then the
-// boot resume UPSERTED the newest page into it, grafting the tail onto
-// a mid-session slice with a silently missing middle. Symptom in the
-// field: "sessions don't look the same across devices or time — the UI
-// forgot the end of the session", with no gap indicator and a dead
-// drag-down (pagination armed as tail-anchored).
+// Tail invariant (#214, field 2026-06-12; updated for #227 splice model).
+// Field complaint: "sessions don't look the same across devices or time —
+// the UI forgot the end of the session", with no gap indicator and a dead
+// drag-down. The old deep-drill REPLACED the tail-anchored transcript with
+// a floating around-window, chat.persist() then serialized that windowed
+// DOM, and the next boot grafted the newest page onto a mid-session slice
+// with a SILENTLY missing middle.
 //
-// Fix under test: persist() + saveCurrentScrollPosition() skip writes
-// while hasMoreNewer=true, so the snapshot keeps the last tail-anchored
-// state and boot always paints the session end.
+// Under #227 a deep drill no longer replaces the tail: it SPLICES the pin
+// window alongside the retained tail with an explicit `…` gap row at the
+// discontinuity (see drill-splices-pin-alongside-tail). The boot snapshot
+// may therefore legitimately contain window + gap + tail. The surviving
+// invariant this test guards is twofold:
+//   (a) boot still lands at the live tail (the end is never forgotten), and
+//   (b) any discontinuity is ALWAYS marked by a tappable gap row — there is
+//       never a SILENT hole (window ∪ tail with nothing between them).
 //
 // Test plan (mocked):
-//   1. Seed a 120-msg chat (first page 30). Open it (tail snapshot
-//      persists), pin a DEEP message (idx 5, far outside the newest 30).
-//   2. Drill to the pin → floating around-window renders, tail absent.
-//      Wait past the 250ms snapshot-persist debounce so buggy code
-//      would have written the windowed DOM to IDB.
+//   1. Seed a 120-msg chat (first page 30). Open it tail-anchored
+//      (tail snapshot persists), pin a DEEP message (idx 5).
+//   2. Drill to the pin → splice. Assert deep target AND tail both render
+//      with exactly one gap row. Wait past the snapshot-persist debounce so
+//      the spliced DOM is written to IDB.
 //   3. Reload. After resume settles, assert:
-//      a. the tail message IS rendered,
-//      b. the deep target is NOT (a windowed snapshot would leave it),
-//      c. rendered indices form a CONTIGUOUS suffix ending at the tail
-//         (the graft bug yields window ∪ tail with a hole), and
-//      d. the view sits at the live edge (tail bubble in viewport).
+//      a. the tail message IS rendered and sits at the live edge, and
+//      b. the rendered suffix has NO silent hole — if indices are not
+//         contiguous, a `.transcript-gap` row is present to mark it.
 
 import { waitForReady, assert } from './lib.mjs';
 
 export const NAME = 'boot-after-deep-jump-shows-tail';
-export const DESCRIPTION = 'reload after a deep jump boots at the session tail — no windowed snapshot, no grafted gap';
+export const DESCRIPTION = 'reload after a deep jump boots at the session tail with the splice intact — never a silently-holed snapshot';
 export const STATUS = 'implemented';
 export const BACKEND = 'mocked';
 
@@ -75,6 +76,10 @@ function renderedKeys(page) {
       .map((el) => el.dataset.messageId));
 }
 
+const gapCount = (page) => page.evaluate(
+  () => document.querySelectorAll('#transcript .transcript-gap').length,
+);
+
 export default async function run({ page, log }) {
   await waitForReady(page);
   await openChat(page, CHAT_ID);
@@ -108,17 +113,22 @@ export default async function run({ page, log }) {
     deepMsg,
     { timeout: 8_000, polling: 60 },
   );
+  await page.waitForTimeout(400);
 
-  // Sanity: we're in a floating window — the tail must NOT be rendered,
-  // otherwise the reload assertions below are vacuous.
+  // Setup sanity: the drill SPLICED — deep target and live tail coexist
+  // with exactly one gap row. (Under the retired floating-window model the
+  // tail was absent here; under #227 it must remain, otherwise the reload
+  // assertions below would not be exercising the splice-snapshot path.)
   const inWindow = await renderedKeys(page);
   assert(inWindow.includes(deepMsg), `deep target ${deepMsg} should render after the drill`);
-  assert(!inWindow.includes(tailMsg),
-    `setup: tail ${tailMsg} must be outside the floating window (got it rendered)`);
-  log(`floating window on screen: ${inWindow.length} bubbles, tail absent ✓`);
+  assert(inWindow.includes(tailMsg),
+    `setup: live tail ${tailMsg} must REMAIN rendered after the drill (splice, not replace)`);
+  const drillGaps = await gapCount(page);
+  assert(drillGaps === 1, `setup: exactly one gap row expected after the splice (got ${drillGaps})`);
+  log(`splice on screen: ${inWindow.length} bubbles, deep + tail both present, ${drillGaps} gap ✓`);
 
-  // Let the 250ms snapshot-persist debounce (and any scroll-position
-  // write) fire — buggy code persists the windowed DOM right here.
+  // Let the snapshot-persist debounce (and any scroll-position write) fire —
+  // the spliced DOM (window + gap + tail) is written to IDB right here.
   await page.waitForTimeout(900);
 
   // Reload → boot restores the snapshot, resume reconciles.
@@ -137,23 +147,29 @@ export default async function run({ page, log }) {
     .map((k) => parseInt(k.slice('tailsnap-msg-'.length), 10))
     .filter((n) => Number.isFinite(n))
     .sort((a, b) => a - b);
-  log(`post-reload: ${indices.length} bubbles, range ${indices[0]}..${indices[indices.length - 1]}`);
+  const postReloadGaps = await gapCount(page);
+  log(`post-reload: ${indices.length} bubbles, range ${indices[0]}..${indices[indices.length - 1]}, ${postReloadGaps} gap(s)`);
 
-  // (a) tail rendered
+  // (a) tail rendered and the transcript ENDS at the tail.
   assert(indices.includes(TAIL_IDX), `tail message ${tailMsg} must render after reload`);
-  // (b) windowed snapshot would resurrect the deep slice
-  assert(!indices.includes(DEEP_IDX),
-    `deep-window message ${deepMsg} rendered after reload — the windowed DOM was snapshotted`);
-  // (c) contiguous suffix — the graft bug yields window ∪ tail with a hole
-  for (let i = 1; i < indices.length; i++) {
-    assert(indices[i] === indices[i - 1] + 1,
-      `transcript has a gap after reload: ...${indices[i - 1]} → ${indices[i]}... ` +
-      `(windowed snapshot grafted onto the tail page)`);
-  }
   assert(indices[indices.length - 1] === TAIL_IDX,
     `transcript must END at the tail (${TAIL_IDX}), got ${indices[indices.length - 1]}`);
 
-  // (d) view sits at the live edge: tail bubble intersects the viewport.
+  // (b) NO silent hole: if the rendered suffix is non-contiguous, an explicit
+  //     gap row must mark it (the field bug was a hole with no indicator).
+  let hasHole = false;
+  for (let i = 1; i < indices.length; i++) {
+    if (indices[i] !== indices[i - 1] + 1) { hasHole = true; break; }
+  }
+  if (hasHole) {
+    assert(postReloadGaps >= 1,
+      `transcript has an index discontinuity after reload but NO gap row — silently-holed snapshot regression`);
+    log('post-reload: discontinuity present and explicitly marked by a gap row ✓');
+  } else {
+    log('post-reload: contiguous suffix to the tail (snapshot reconciled to a single run) ✓');
+  }
+
+  // (c) view sits at the live edge: tail bubble intersects the viewport.
   const atEdge = await page.evaluate((mid) => {
     const t = document.getElementById('transcript');
     const el = document.querySelector(`#transcript .line[data-message-id="${CSS.escape(mid)}"]`);
@@ -164,5 +180,5 @@ export default async function run({ page, log }) {
   }, tailMsg);
   assert(atEdge, 'after reload the view should sit at the live tail (tail bubble in viewport)');
 
-  log('boot after deep jump lands at the tail, contiguous to the live edge ✓');
+  log('boot after deep jump lands at the tail with the splice intact — no silent hole ✓');
 }
