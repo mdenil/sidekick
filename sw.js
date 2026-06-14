@@ -11,7 +11,7 @@
  * network-first, so first-load pulls anything missed and caches on the
  * way through.
  */
-const CACHE_NAME = 'v0.601';
+const CACHE_NAME = 'v0.602';
 
 // Dedicated cache for VAD assets. Key insight: VAD assets are 14.7 MB
 // and don't change with every app deploy — the Silero model is
@@ -40,6 +40,24 @@ const VAD_CACHE = 'vad-assets-v4';
 // the current import map's URLs and we drop everything else.
 const BUILD_CACHE = 'build-hashed-v1';
 const HASHED_BUILD_RE = /^\/build\/.+\.[0-9a-f]{10}\.mjs$/;
+
+// Drop every cached copy of the navigation document (index.html) across
+// ALL caches so the next navigation falls through to the network for a
+// fresh index. Used by the stale-index self-heal below: a cached index
+// can advance (background revalidate) to a "phantom" generation whose
+// hashed modules were never cached and have since been purged from the
+// server — purging the stale shell lets the heal reload pull a fresh one.
+async function purgeCachedAppShell() {
+  const names = await caches.keys();
+  await Promise.all(names.map(async (n) => {
+    const c = await caches.open(n);
+    await Promise.all([
+      c.delete('/'),
+      c.delete('/index.html'),
+      c.delete(new Request(self.location.origin + '/')),
+    ]);
+  }));
+}
 
 // Minimum viable shell for offline boot. Bundle JS modules used to be
 // listed here too — that was the source of the 2026-05-01 cache.addAll
@@ -180,9 +198,41 @@ self.addEventListener('fetch', (e) => {
       caches.open(BUILD_CACHE).then(cache =>
         cache.match(e.request).then(cached => {
           if (cached) return cached;
-          return fetch(e.request).then(response => {
-            if (response.ok) cache.put(e.request, response.clone());
+          return fetch(e.request).then(async response => {
+            if (response.ok) {
+              cache.put(e.request, response.clone());
+              return response;
+            }
+            // A hashed module that is neither cached NOR on the server is
+            // a PURGED GENERATION: the cache-first index.html references a
+            // deploy whose /build modules build.mjs has since rm'd. Serving
+            // this 404 to a <script type=module> bricks boot ("stuck not
+            // loading", field 2026-06-14) and relaunching can't recover —
+            // the stale index just 404s the same module again. Self-heal:
+            // drop the stale cached navigation documents so the NEXT
+            // navigation pulls a FRESH index (whose hashed modules the
+            // server actually has), and hand back a tiny module that fires
+            // exactly one reload to get there. The sessionStorage guard
+            // makes it one-shot so a genuinely-broken deploy can't loop.
+            if (response.status === 404) {
+              await purgeCachedAppShell();
+              return new Response(
+                'if(!sessionStorage.getItem("sk-stale-heal")){' +
+                'sessionStorage.setItem("sk-stale-heal","1");' +
+                'location.reload();}',
+                { headers: { 'Content-Type': 'text/javascript' } },
+              );
+            }
             return response;
+          }).catch(async (err) => {
+            // Offline (fetch rejected, not a 404) — serve the cached copy
+            // if we have one. A purge-heal would be wrong here: the module
+            // isn't gone, the link is just down.
+            if (navigator.onLine === false) {
+              const c = await caches.match(e.request);
+              if (c) return c;
+            }
+            throw err;
           });
         }),
       ),
