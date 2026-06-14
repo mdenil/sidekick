@@ -13,7 +13,7 @@
  */
 
 import { log, diag } from './util/log.ts';
-import { replaySessionMessages, NO_REPLY_RE } from './sessionResume.ts';
+import { replaySessionMessages, persistGrownTranscript, NO_REPLY_RE } from './sessionResume.ts';
 import * as backend from './backend.ts';
 import * as sessionDrawer from './sessionDrawer.ts';
 import * as switchCtl from './switchController.ts';
@@ -176,6 +176,14 @@ function schedulePostFinalDurableRefresh(
         ) {
           transcriptStore.clearInflightThroughReplyFinal(chatId, messageId);
         }
+        // Write the just-promoted durable through to the messages cache.
+        // replaySessionMessages grew the in-memory durable past what the
+        // cache holds; the cache is otherwise only written by resume/
+        // loadEarlier/drill. Without this, a switch-away-and-back cache-
+        // paints the pre-reply rows (setDurable clobbers the in-memory
+        // reply, the inflight backup is already cleared above) and the
+        // reply vanishes until the slow server reconcile heals it (#235).
+        persistGrownTranscript(chatId);
         log(
           `post-final durable refresh chat=${chatId} msg=${messageId ?? '∅'} ` +
           `messages=${(result.messages || []).length} ` +

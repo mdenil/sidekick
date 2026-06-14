@@ -45,11 +45,16 @@ import { getScrollPosition } from './chatScrollPositions.ts';
 /** Persist the chat's now-grown in-memory transcript back to IDB so a
  *  later resume/drill reads the deeper history from cache instead of
  *  re-crawling the server page by page. Called after each loadEarlier
- *  prepend (scroll-back AND deep-pin drill). Fire-and-forget; the cap
- *  keeps a pathological session from eating disk. This is what makes
- *  deep pins "get faster warm" — without it IDB only ever holds the
- *  newest page. */
-function persistGrownTranscript(id: string): void {
+ *  prepend (scroll-back AND deep-pin drill), AND after the post-final
+ *  durable refresh promotes a live reply into the durable store — that
+ *  promotion grows the in-memory transcript past what the messages cache
+ *  holds, and without writing it through a switch-away-and-back would
+ *  cache-paint the pre-reply rows and the reply would vanish until the
+ *  (slow) server reconcile heals it (field bug 2026-06-14). Fire-and-
+ *  forget; the cap keeps a pathological session from eating disk. This is
+ *  also what makes deep pins "get faster warm" — without it IDB only ever
+ *  holds the newest page. */
+export function persistGrownTranscript(id: string): void {
   const s = transcriptStore.getState(id);
   // Caching invariant: only persist a run that
   // reaches the live tail. A floating deep `around` window
