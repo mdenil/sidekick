@@ -11,7 +11,7 @@
  * network-first, so first-load pulls anything missed and caches on the
  * way through.
  */
-const CACHE_NAME = 'v0.602';
+const CACHE_NAME = 'v0.603';
 
 // Dedicated cache for VAD assets. Key insight: VAD assets are 14.7 MB
 // and don't change with every app deploy — the Silero model is
@@ -58,6 +58,24 @@ async function purgeCachedAppShell() {
     ]);
   }));
 }
+
+// Timestamp of the last time we served a CACHED navigation document. The
+// stale-index brick only happens at boot: a cache-first index references a
+// purged generation, so its ENTRY <script type=module> 404s before the app
+// runs. That 404 lands within a beat of the cached-nav serve, so a short
+// window after it is the only time a 404-heal RELOAD is safe.
+//
+// Why this gate (field regression 2026-06-14): the heal originally reloaded
+// on ANY hashed-module 404. But the app code-splits — it lazily import()s
+// hashed /build chunks mid-session (e.g. speechVad when a dictation starts).
+// A routine deploy rm's + re-hashes every module, so an already-running
+// client that lazy-loads a chunk from the now-purged generation gets a 404.
+// Reloading on THAT is catastrophic: it refreshes the page out from under
+// an active user (data loss mid-dictation) and the post-reload boot can
+// mis-land on the most-recent session. Outside the boot window we instead
+// let the import reject so the running session survives untouched.
+let lastCachedNavServedAt = 0;
+const BOOT_HEAL_WINDOW_MS = 8000;
 
 // Minimum viable shell for offline boot. Bundle JS modules used to be
 // listed here too — that was the source of the 2026-05-01 cache.addAll
@@ -215,13 +233,23 @@ self.addEventListener('fetch', (e) => {
             // exactly one reload to get there. The sessionStorage guard
             // makes it one-shot so a genuinely-broken deploy can't loop.
             if (response.status === 404) {
+              // Always drop the stale shell so the NEXT navigation pulls a
+              // fresh index — this alone breaks the reinstall-only trap.
               await purgeCachedAppShell();
-              return new Response(
-                'if(!sessionStorage.getItem("sk-stale-heal")){' +
-                'sessionStorage.setItem("sk-stale-heal","1");' +
-                'location.reload();}',
-                { headers: { 'Content-Type': 'text/javascript' } },
-              );
+              // Only auto-reload when this 404 is the boot entry module of a
+              // just-served cached index (the brick). A mid-session lazy
+              // import 404 (routine deploy purged the running generation)
+              // must NOT reload — let it reject so the live session survives.
+              const inBootWindow =
+                Date.now() - lastCachedNavServedAt < BOOT_HEAL_WINDOW_MS;
+              if (inBootWindow) {
+                return new Response(
+                  'if(!sessionStorage.getItem("sk-stale-heal")){' +
+                  'sessionStorage.setItem("sk-stale-heal","1");' +
+                  'location.reload();}',
+                  { headers: { 'Content-Type': 'text/javascript' } },
+                );
+              }
             }
             return response;
           }).catch(async (err) => {
@@ -295,6 +323,13 @@ self.addEventListener('fetch', (e) => {
   // benefit outweighs staleness risk.
   e.respondWith(
     caches.match(e.request).then(cached => {
+      // Record cache-first navigation serves: a hashed-module 404 right
+      // after one is the boot-entry-module brick the heal targets (see
+      // BOOT_HEAL_WINDOW_MS). A network-fresh index can't reference a
+      // purged generation, so only the cached path arms the heal.
+      if (cached && e.request.mode === 'navigate') {
+        lastCachedNavServedAt = Date.now();
+      }
       const fetchPromise = fetch(e.request).then(response => {
         if (response.ok) {
           const clone = response.clone();
