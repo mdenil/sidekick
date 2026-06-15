@@ -1253,7 +1253,16 @@ async function boot() {
           // sits at index 0 (drag-reorder); there's no separate default-
           // session state.
           const pinnedTop = sessionPins.topPinned();
-          const sid = urlChatId || restoredSid || pinnedTop || backend.getCurrentSessionId?.();
+          // A DELIBERATE landing target — one the user (or a deep link)
+          // actually chose, as opposed to the adapter's bare default. When
+          // such a target exists but still ON-DISK we must honor it even if
+          // its boot resume comes back EMPTY (cold radio, a chat you just
+          // opened that's still empty, a transient server hiccup). #239
+          // residual #225: without this the empty-resume fall-through below
+          // yanks you to sessions[0] — the most-recently-active (often the
+          // busy agent) chat — instead of where you actually were.
+          const deliberateSid = urlChatId || restoredSid || pinnedTop || null;
+          const sid = deliberateSid || backend.getCurrentSessionId?.();
           let bootRendered = false;
           // #204 (field 2026-06-12, CAP): resumeSession NEVER throws —
           // failures come back as `result.error` with an empty
@@ -1333,11 +1342,23 @@ async function boot() {
             try {
               const sessions = await backend.listSessions(50);
               if (sessions.length > 0) {
-                const mostRecent = sessions[0];
-                diag(`boot: no rendered session, picking most recent: ${mostRecent.id}`);
-                const result: any = await resumeWithRetry(mostRecent.id);
+                // #239 residual #225: if the deliberate target (urlChatId /
+                // restoredSid / pinnedTop) STILL EXISTS in the session list,
+                // land on IT even though its resume came back empty — an
+                // empty transcript is a valid state, not a reason to abandon
+                // the chat the user was on. Only fall to most-recent when the
+                // deliberate target is GONE (deleted) or there was none at
+                // all (genuine fresh install with existing history).
+                const chosen = deliberateSid
+                  ? sessions.find((s: any) => String(s.id) === String(deliberateSid))
+                  : undefined;
+                const target = chosen || sessions[0];
+                diag(chosen
+                  ? `boot: empty resume, staying on deliberate target: ${target.id}`
+                  : `boot: no rendered session, picking most recent: ${target.id}`);
+                const result: any = await resumeWithRetry(target.id);
                 replaySessionMessages(
-                  mostRecent.id,
+                  target.id,
                   result.messages || [],
                   { firstId: result.firstId ?? null, hasMore: !!result.hasMore },
                   undefined,
