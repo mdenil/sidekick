@@ -35,6 +35,20 @@ import * as chat from './chat.ts';
  *  chats: bump the badge counter. */
 export function handleNotification({ chatId, kind, content, sidekickId, isReplay }: any): void {
   const replay = isReplay === true;
+  // Normalize the incoming chat_id shape. Post-v0.383 chat_ids are
+  // `sidekick:<uuid>`, but a producer can emit the bare uuid and the
+  // focused/viewed id may be either form. Compare on the bare id, and when
+  // this notification is for the chat that's currently on screen, adopt the
+  // app's canonical id (focusedId) so EVERY downstream site keys
+  // consistently — the tray upsert, the off-screen banner/badge gate, and
+  // the in-chat transcript appendInflight. Without this, a notification for
+  // the viewed chat with a mismatched prefix took the off-screen path
+  // (spurious banner, #234) AND failed to render its in-chat row.
+  const focusedAtEntry = switchCtl.focusedId();
+  const bareId = (id: any) => (id == null ? '' : String(id).replace(/^sidekick:/, ''));
+  if (chatId && focusedAtEntry && bareId(chatId) === bareId(focusedAtEntry)) {
+    chatId = focusedAtEntry;
+  }
   if (!replay && chatId && kind !== 'approval') {
     // Agent moved past the approval point with a different kind of
     // notification — mark resolved with outcome 'dismissed' (kept in
