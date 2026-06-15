@@ -21,40 +21,42 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     private var keepalivePlayer: AVAudioPlayerNode?
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
-        // Configure the shared AVAudioSession early so dictation/listen
-        // can survive the app being backgrounded:
-        //   - .playAndRecord: needed because the PWA also plays back TTS
-        //     replies; .record alone would block playback.
-        //   - .default mode (NOT .voiceChat): tried .voiceChat earlier
-        //     today but it killed TTS reply playback after the first
-        //     call — voiceChat optimizes for VoIP-style call audio
-        //     (HFP routing, output de-priority) and conflicts with
-        //     WebKit's HTMLAudioElement playback path. Reverted.
-        //     .default keeps the WebView's TTS reliable while still
-        //     supporting both record + playback.
-        //   - .allowBluetooth + .allowBluetoothA2DP: route through paired
-        //     headsets (the bike-ride use case — AirPods, Shokz, etc.).
-        //   - .defaultToSpeaker: when no headset is attached, output goes
-        //     to the loudspeaker rather than the earpiece. Without this,
-        //     iPhone defaults to the earpiece for .playAndRecord, which
-        //     surprises users who expect speakerphone.
+        // Configure the shared AVAudioSession early so TTS playback + the
+        // silent keepalive survive backgrounding. We launch in PLAYBACK,
+        // not .playAndRecord:
+        //   - Field bug: opening Sidekick while a podcast streamed over
+        //     Bluetooth A2DP (Meta glasses) dropped the BT route to the
+        //     mono call codec (HFP/SCO) and degraded the podcast — even
+        //     though the user never started a call/dictate/listen. Cause:
+        //     a record-capable category (.playAndRecord) forces BT to HFP
+        //     for the mic path the instant the session activates, and
+        //     .allowBluetoothA2DP only grants A2DP for OUTPUT — it does not
+        //     keep A2DP when the category itself is record-capable.
+        //   - .playback is output-only and A2DP-friendly, so launching in
+        //     it leaves the user's podcast on the high-quality stereo route.
+        //     The silent keepalive engine is output-only too, so it runs
+        //     fine under .playback (no input tap involved).
+        //   - When the user ACTUALLY starts an audio experience (call /
+        //     dictate / listen) the JS layer calls into AudioSessionPlugin
+        //     (beginCapture) which flips the category to .playAndRecord
+        //     just-in-time, then back to .playback on endCapture. First mic
+        //     tap after launch pays a one-time category switch + A2DP→HFP
+        //     flip (a fraction of a second) — an accepted tradeoff.
+        //   - .default mode (NOT .voiceChat): .voiceChat killed TTS reply
+        //     playback after the first call (HFP routing / output de-prio
+        //     conflicts with WebKit's HTMLAudioElement path). .default is
+        //     reliable for both record + playback.
+        //   - .allowBluetooth + .allowBluetoothA2DP: kept on the desired
+        //     category so the .playAndRecord flip still routes through
+        //     paired headsets (AirPods, Shokz, glasses) when capturing.
+        //   - .defaultToSpeaker: with no headset attached, output goes to
+        //     the loudspeaker rather than the earpiece during capture.
         //   - .mixWithOthers: don't kill other apps' audio (Spotify,
         //     podcast app, navigation). Sidekick coexists.
         // Pairs with the UIBackgroundModes=[audio] entry in Info.plist —
         // without that, iOS suspends the AVAudioSession on backgrounding
         // regardless of the category we set.
-        do {
-            let session = AVAudioSession.sharedInstance()
-            try session.setCategory(
-                .playAndRecord,
-                mode: .default,
-                options: [.allowBluetooth, .allowBluetoothA2DP, .defaultToSpeaker, .mixWithOthers]
-            )
-            try session.setActive(true)
-            NSLog("[Sidekick] AVAudioSession configured: playAndRecord/default, BT+speaker+mix")
-        } catch {
-            NSLog("[Sidekick] AVAudioSession setup failed: \(error.localizedDescription)")
-        }
+        applyDesiredCategory(activate: true)
 
         // Subscribe to interruption + route-change notifications. iOS fires
         // these on phone calls, headphone unplug, BT (dis)connect, Siri
@@ -74,6 +76,31 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         // a JS bridge with platform-neutral events from shared code.
         CallControls.shared.setActive()
         return true
+    }
+
+    /// Apply the currently-desired AVAudioSession category (tracked by
+    /// AudioSessionController) and optionally (re)activate the session.
+    /// Launch + route-change + interruption-end all funnel through here so
+    /// they re-assert whatever category the app currently wants (.playback
+    /// at rest, .playAndRecord while capturing) rather than unconditionally
+    /// forcing .playAndRecord — which is what dragged Bluetooth onto the
+    /// low-sample HFP codec at launch.
+    private func applyDesiredCategory(activate: Bool) {
+        let session = AVAudioSession.sharedInstance()
+        let desired = AudioSessionController.shared.desiredCategory
+        do {
+            try session.setCategory(
+                desired,
+                mode: .default,
+                options: AudioSessionController.options(for: desired)
+            )
+            if activate {
+                try session.setActive(true)
+            }
+            NSLog("[Sidekick] AVAudioSession category=\(desired == .playAndRecord ? "playAndRecord" : "playback") active=\(activate)")
+        } catch {
+            NSLog("[Sidekick] AVAudioSession apply failed: \(error.localizedDescription)")
+        }
     }
 
     /// Start the silent-audio keepalive. Builds a 1-second silent PCM
@@ -120,12 +147,11 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         case .began:
             NSLog("[Sidekick] audio interruption began (phone call / Siri / etc.)")
         case .ended:
-            NSLog("[Sidekick] audio interruption ended — reactivating session + keepalive")
-            do {
-                try AVAudioSession.sharedInstance().setActive(true)
-            } catch {
-                NSLog("[Sidekick] session reactivate failed: \(error.localizedDescription)")
-            }
+            NSLog("[Sidekick] audio interruption ended — reasserting category + keepalive")
+            // Re-assert the CURRENT desired category (not unconditionally
+            // .playAndRecord) so an interruption while at rest doesn't drag
+            // Bluetooth back onto the HFP codec.
+            applyDesiredCategory(activate: true)
             // Restart keepalive playback if it stopped during the interruption.
             if let player = keepalivePlayer, !player.isPlaying {
                 player.play()
@@ -142,13 +168,10 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         NSLog("[Sidekick] audio route changed (reason: \(reason.rawValue))")
         // Headphone unplug = .oldDeviceUnavailable — iOS may auto-pause us.
         // BT (dis)connect = .newDeviceAvailable / .oldDeviceUnavailable.
-        // Re-activate the session + nudge keepalive so we don't end up
-        // silently dead after a route flip.
-        do {
-            try AVAudioSession.sharedInstance().setActive(true)
-        } catch {
-            NSLog("[Sidekick] session reactivate failed (route change): \(error.localizedDescription)")
-        }
+        // Re-assert the CURRENT desired category (.playback at rest) + nudge
+        // keepalive so we don't end up silently dead after a route flip —
+        // and so a BT connect while idle doesn't get pulled onto HFP.
+        applyDesiredCategory(activate: true)
         if let player = keepalivePlayer, !player.isPlaying {
             player.play()
         }
