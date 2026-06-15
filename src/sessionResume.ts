@@ -39,6 +39,7 @@ import * as backend from './backend.ts';
 import * as transcriptStore from './transcript/store.ts';
 import * as sessionCache from './sessionCache.ts';
 import * as windowCache from './drillWindowCache.ts';
+import { listAllPins } from './pins/store.ts';
 import { rerenderActive } from './transcript/index.ts';
 import { getScrollPosition } from './chatScrollPositions.ts';
 
@@ -554,6 +555,103 @@ export async function drillToMessageInViewedSession(
 const DRILL_AROUND_LIMIT = 40;
 let aroundDrillInFlight: { key: string; promise: Promise<boolean> } | null = null;
 
+// Shared single-flight for the bounded ?around= fetch, keyed
+// `${chatId}::${targetMessageId}`. Both the pin prewarm (#243) and a user
+// drill route their around fetch through here, so a drill that races a
+// just-fired prewarm — or a prewarm that races a drill — reuses the ONE
+// in-flight request instead of issuing a redundant ~290KB round trip on a
+// slow link (the double-fetch drill-prefetch-gate would otherwise count).
+// The resolved window is written to drillWindowCache exactly once.
+const aroundFetchInFlight = new Map<string, Promise<any>>();
+
+function fetchAroundWindowOnce(chatId: string, targetMessageId: string): Promise<any> {
+  const key = `${chatId}::${targetMessageId}`;
+  const existing = aroundFetchInFlight.get(key);
+  if (existing) return existing;
+  const p = (async () => {
+    const around: any = await backend.fetchMessagesAround(chatId, targetMessageId, DRILL_AROUND_LIMIT);
+    if (around?.targetFound && Array.isArray(around.messages) && around.messages.length) {
+      void windowCache.putWindow(chatId, targetMessageId, around.messages, {
+        firstId: around.firstId ?? null,
+        hasMore: !!around.hasMore,
+        lastId: around.lastId ?? null,
+        hasMoreNewer: !!around.hasMoreNewer,
+      });
+    }
+    return around;
+  })();
+  aroundFetchInFlight.set(key, p);
+  void p.catch(() => {}).finally(() => {
+    if (aroundFetchInFlight.get(key) === p) aroundFetchInFlight.delete(key);
+  });
+  return p;
+}
+
+// #243 — pin around-window prewarm.
+//
+// A pinned message's deep `around` window only lands in drillWindowCache
+// AFTER the user's first manual drill to it (drillViaAroundWindow →
+// putWindow). So the FIRST click on each pin pays the full cold ?around=
+// round trip — the "ages"-long spinner on a slow link — and only after
+// cycling every pin once did they all turn instant (Jonathan, CAP,
+// 2026-06-15). warmPrefetch warms top-recent session TAILS, not pin
+// around-windows, so it never closed this gap. Fix: warm each pinned
+// message's window in the background — on boot (after pins hydrate) and on
+// pin-add — so the first real click is a cache hit. Bounded: one ?around=
+// per pin, serial and yielding to any active drill so a speculative
+// prewarm never steals bandwidth from a user-initiated one.
+//
+// prewarmedPinKeys remembers keys fetched (or being fetched) this
+// app-session so the repeated `sidekick:pins-changed` events (boot
+// hydrate, server reconcile, cross-device sync) don't re-issue work for
+// windows already warm. A transient fetch failure deletes its key so a
+// later trigger retries.
+const prewarmedPinKeys = new Set<string>();
+let prewarmRunning = false;
+let prewarmDirty = false;
+
+export async function prewarmPinnedWindows(): Promise<void> {
+  // Single-flight: a trigger arriving mid-run sets dirty so we re-loop
+  // once (picks up a pin added during the run) instead of overlapping.
+  if (prewarmRunning) { prewarmDirty = true; return; }
+  prewarmRunning = true;
+  try {
+    do {
+      prewarmDirty = false;
+      for (const pin of listAllPins()) {
+        const key = `${pin.chatId}::${pin.msgId}`;
+        if (prewarmedPinKeys.has(key)) continue;
+        // Yield to a user-initiated drill in flight — its window matters
+        // more than a speculative prewarm, and they'd compete for the link.
+        if (aroundDrillInFlight) await aroundDrillInFlight.promise.catch(() => {});
+        // Already cached from a previous drill/prewarm? Mark + skip the fetch.
+        const cached = await windowCache.getWindow(pin.chatId, pin.msgId);
+        if (cached) { prewarmedPinKeys.add(key); continue; }
+        prewarmedPinKeys.add(key);
+        try {
+          // Routes through the shared single-flight so a concurrent user
+          // drill to the same pin reuses this fetch (and vice-versa); the
+          // helper writes the window to drillWindowCache on success.
+          const around: any = await fetchAroundWindowOnce(pin.chatId, pin.msgId);
+          if (around?.targetFound && Array.isArray(around.messages) && around.messages.length) {
+            diag(`[pin-prewarm] warmed ${key} (n=${around.messages.length})`);
+          } else {
+            diag(`[pin-prewarm] ${key} target not found; skipping`);
+          }
+        } catch (e: any) {
+          // Transient failure — allow a later trigger to retry this key.
+          prewarmedPinKeys.delete(key);
+          diag(`[pin-prewarm] ${key} fetch failed: ${e?.message ?? e}`);
+        }
+        // Breathe between fetches so a burst of pins doesn't saturate the link.
+        await new Promise<void>(r => setTimeout(r, 0));
+      }
+    } while (prewarmDirty);
+  } finally {
+    prewarmRunning = false;
+  }
+}
+
 /** Render a bounded around-window into the transcript and scroll/flash
  *  the target. Shared by the cache-first paint and the server pass of
  *  drillViaAroundWindow. Returns the target element, or null when the
@@ -658,7 +756,10 @@ function drillViaAroundWindow(chatId: string, targetMessageId: string): Promise<
     const drillSpinnerEl = !cacheRendered ? document.getElementById('transcript') : null;
     drillSpinnerEl?.classList.add('transcript-loading');
     try {
-      const around: any = await backend.fetchMessagesAround(chatId, targetMessageId, DRILL_AROUND_LIMIT);
+      // Route through the shared single-flight so a concurrent prewarm of
+      // this same pin reuses this fetch (and vice-versa); the helper writes
+      // the window to drillWindowCache on success.
+      const around: any = await fetchAroundWindowOnce(chatId, targetMessageId);
       // #241 instrumentation: log what session the server actually scoped the
       // around-window to. If `requested` ≠ the chat_id stamped on the returned
       // rows, the wrong-session render is server-side (data-model), not client.
@@ -681,7 +782,7 @@ function drillViaAroundWindow(chatId: string, targetMessageId: string): Promise<
         lastId: around.lastId ?? null,
         hasMoreNewer: !!around.hasMoreNewer,
       };
-      void windowCache.putWindow(chatId, targetMessageId, around.messages, pagination);
+      // (putWindow now happens inside fetchAroundWindowOnce.)
       // After a cache paint on a slow link the user may already be
       // reading — don't re-yank the viewport if they've gestured since.
       const skipScroll = cacheRendered && chat.lastUserScrollGestureAt() > drillStartedAt;

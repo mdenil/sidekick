@@ -30,6 +30,7 @@ import {
   loadGapHistory,
   jumpToLatest,
   drillToMessageInViewedSession,
+  prewarmPinnedWindows,
 } from './sessionResume.ts';
 import { initNotifications } from './notifications/index.ts';
 import * as badge from './notifications/badge.ts';
@@ -848,6 +849,17 @@ async function boot() {
     onActivityOpen: (chatId, msgId) => drillToChatMessage(chatId, msgId, { validateExists: true }),
     onApprovalAction: (chatId, action, msgId) => { void sendApprovalAction(chatId, action, msgId); },
   });
+  // #243 — warm each pinned message's deep around-window into
+  // drillWindowCache in the background so the FIRST click on a pin is a
+  // cache hit instead of paying the cold ?around= round trip (the
+  // "ages"-long spinner on a slow link). `sidekick:pins-changed` fires on
+  // boot hydrate, pin-add, and cross-device sync, so one listener covers
+  // every trigger; prewarmPinnedWindows dedups already-warm windows so the
+  // repeat fires are cheap. initPinDrawer's synchronous localStorage
+  // hydrate already dispatched the boot event before this listener
+  // attached, so kick once directly to cover pins restored from cache.
+  window.addEventListener('sidekick:pins-changed', () => { void prewarmPinnedWindows(); });
+  void prewarmPinnedWindows();
   inAppBanner.init({
     onOpen: (chatId, msgId) => { void drillToChatMessage(chatId, msgId); },
     onAction: (chatId, action, msgId) => { void sendApprovalAction(chatId, action, msgId); },
