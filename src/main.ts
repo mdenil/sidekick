@@ -733,6 +733,14 @@ async function boot() {
     chatId: string, msgId: string | null,
     opts: { validateExists?: boolean } = {},
   ): Promise<boolean> => {
+    // #241 instrumentation: capture the chatId/msgId the surface (pin /
+    // activity / banner) actually handed in, alongside the live view state,
+    // so a field repro of "pin opens the WRONG session" tells us whether the
+    // pin carried a stale chatId (data-model bug) or the render diverged from
+    // a correct chatId (server/race). Pair with the [chat-resume] enter and
+    // `sessionDrawer: resumed` render-side logs.
+    diag(`[drill #241] invoked chatId=${chatId} msgId=${msgId ?? '∅'} `
+      + `viewed=${switchCtl.viewedId() ?? '∅'} optimistic=${switchCtl.optimisticId() ?? '∅'}`);
     if (opts.validateExists) {
       // Stale-link guard for activity items. The cheap path: the session
       // is in the drawer's already-loaded list — then it exists, skip the

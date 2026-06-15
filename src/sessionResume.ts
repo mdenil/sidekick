@@ -659,6 +659,13 @@ function drillViaAroundWindow(chatId: string, targetMessageId: string): Promise<
     drillSpinnerEl?.classList.add('transcript-loading');
     try {
       const around: any = await backend.fetchMessagesAround(chatId, targetMessageId, DRILL_AROUND_LIMIT);
+      // #241 instrumentation: log what session the server actually scoped the
+      // around-window to. If `requested` ≠ the chat_id stamped on the returned
+      // rows, the wrong-session render is server-side (data-model), not client.
+      const sampleChatId = Array.isArray(around?.messages) && around.messages.length
+        ? (around.messages[0]?.chat_id ?? around.messages[0]?.conversation ?? '∅') : '∅';
+      diag(`[drill #241] around requested=${chatId} target=${targetMessageId} `
+        + `targetFound=${!!around?.targetFound} n=${(around?.messages || []).length} rowChatId=${sampleChatId}`);
       if (switchCtl.viewedId() !== chatId) {
         log(`[cmdk] drill aborted — session changed during around fetch`);
         return cacheRendered;
