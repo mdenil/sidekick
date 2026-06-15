@@ -33,6 +33,7 @@ import { reportChatSwitch } from './notifications/visibility.ts';
 import { unreadFor } from './notifications/badge.ts';
 import * as activityStore from './notifications/activityStore.ts';
 import { showTranscriptLoading } from './transcript/index.ts';
+import * as transcriptStore from './transcript/store.ts';
 import * as switchCtl from './switchController.ts';
 import type { SwitchToken } from './switchController.ts';
 import * as sessionPins from './sessionPins.ts';
@@ -704,6 +705,17 @@ const staleTailHandled = new Map<string, number>();
 const staleTailAttemptAt = new Map<string, number>();
 let staleTailSweepRunning = false;
 
+// Chats whose IN-MEMORY transcriptStore is known to be behind the server.
+// The TFC-B sweep refreshes a stale chat's IDB cache (fetchAndMergeNewestPage
+// → putMessagesCache) but NOT its in-memory durable buffer — so a chat that
+// advanced off-screen (other device, or SSE down) has a fresh IDB tail and a
+// STALE in-memory tail. The switch-back fast paint reads the in-memory store;
+// if it fired here it would paint the stale tail. Marking the chat here makes
+// the fast paint skip it and fall back to the (fresh) IDB-cache paint. Cleared
+// once a resume re-renders the chat from fresh data (cache/server), which
+// brings the in-memory store current again.
+const memStaleChats = new Set<string>();
+
 function newestMessageSec(messages: any[]): number | null {
   let max: number | null = null;
   for (const m of messages) {
@@ -742,6 +754,10 @@ async function refreshStaleTails(sessions: any[]): Promise<void> {
       try {
         await fetchAndMergeNewestPage(s.id, cached);
         staleTailHandled.set(s.id, s.lastMessageAt);
+        // The IDB tail is now fresh but the in-memory buffer (if this chat
+        // is resident from an earlier visit) is still behind — flag it so
+        // switch-back paints from the fresh cache, not the stale memory.
+        if (transcriptStore.getState(s.id).durable.length > 0) memStaleChats.add(s.id);
         diag(`sessionDrawer: TFC-B refreshed stale tail for ${s.id} `
           + `(drawer ${s.lastMessageAt}s > cached ${Math.floor(tailSec)}s)`);
       } catch { /* retry next sweep after STALE_TAIL_RETRY_MS */ }
@@ -1628,6 +1644,19 @@ async function resume(id: string, targetMessageId?: string) {
   // the old one). The token authorizes every render below; superseded
   // continuations bail at switchCtl.isCurrent(tok).
   const tok = switchCtl.begin(id, targetMessageId);
+  // Switch-back fast paint: the in-memory transcriptStore retains this
+  // session's durable rows from an earlier visit this app-session (SSE
+  // keeps background chats current in place). When present AND tail-
+  // anchored, we paint from it SYNCHRONOUSLY below instead of blanking +
+  // arming the 200ms spinner and awaiting an async IDB read — the gap
+  // that made every CAP/WKWebView switch flash a spinner even though the
+  // bytes were already in memory. Gate on !hasMoreNewer: a floating drill
+  // window must NOT go through replaySessionMessages (it flattens the
+  // newer-cursor pagination → risks persisting a windowed snapshot, the
+  // TFC-A invariant / #223-class hole); those fall back to the blank+
+  // spinner + IDB-tail path. memRendered suppresses the now-redundant IDB
+  // cache re-render in the reconcile IIFE (server pass still runs).
+  let memRendered = false;
   // Capture the prior viewed id for the shell's onBeforeSwitch hook so it
   // can clean up empty/abandoned chats (the "New chat / 0 msgs" pollution
   // case). Skip when "navigating" to the same chat — that's a refresh,
@@ -1667,8 +1696,33 @@ async function resume(id: string, targetMessageId?: string) {
     // pitch-deck bounce, field 2026-05-26). The restore branches also cancel
     // it, but only AFTER the clear+render — too late to stop the wake.
     cancelAtBottomRepin();
-    showTranscriptLoading();
-    t?.trace('transcript-cleared');
+    const memState = transcriptStore.getState(id);
+    // Gate the synchronous mem paint on three conditions:
+    //   1. durable non-empty AND tail-anchored (!hasMoreNewer) — a floating
+    //      drill window must not go through replaySessionMessages (flattens
+    //      the newer cursor → TFC-A / #223-class hole).
+    //   2. no `role:'gap'` row — a deep-drill SPLICES a window alongside the
+    //      tail with a gap marker (#227). Painting that on switch-back would
+    //      keep the drilled window resident, but the canonical IDB snapshot
+    //      is tail-anchored; let those fall back to the IDB-tail paint so a
+    //      revisit lands at the tail (drill-window-cache contract).
+    //   3. not mem-stale — the TFC-B sweep refreshed this chat's IDB tail
+    //      but not its in-memory buffer; paint from the fresh cache instead.
+    const memHasGap = memState.durable.some(it => it.role === 'gap');
+    if (memState.durable.length > 0 && !memState.pagination.hasMoreNewer
+        && !memHasGap && !memStaleChats.has(id)
+        && switchCtl.isCurrent(tok)) {
+      // Synchronous repaint from the in-memory model — no blank frame, no
+      // spinner. Pass inflight=undefined to PRESERVE live inflight (same
+      // contract as the cache-render path). setViewed/render run inside
+      // replaySessionMessages, which also clears any stale .transcript-loading.
+      onResumeCb?.(id, memState.durable, memState.pagination, undefined, targetMessageId);
+      memRendered = true;
+      t?.trace('mem-render', `n=${memState.durable.length}`);
+    } else {
+      showTranscriptLoading();
+      t?.trace('transcript-cleared');
+    }
   }
   t?.trace('optimistic-set');
   const promise = (async () => {
@@ -1676,8 +1730,14 @@ async function resume(id: string, targetMessageId?: string) {
     t?.trace('cache-fetch-start');
     const cached = await sessionCache.getMessagesCache(id);
     t?.trace('cache-fetch-end', `hit=${!!cached?.messages?.length} n=${cached?.messages?.length ?? 0}`);
-    let cacheRendered = false;
-    if (cached?.messages?.length) {
+    // memRendered: the in-memory model already painted this view
+    // synchronously above. Treat it as a cache render so the merge /
+    // error-fallback logic behaves identically — but skip the redundant
+    // IDB re-render below (the bytes are already on screen). We STILL read
+    // the IDB `cached` above so the cache-fuller merge can recover deep
+    // scrollback the in-memory tail may not hold.
+    let cacheRendered = memRendered;
+    if (!memRendered && cached?.messages?.length) {
       if (switchCtl.isCurrent(tok)) {
         t?.trace('cache-render-start');
         log(`sessionDrawer: resumed ${id} from cache (${cached.messages.length} messages)`);
@@ -1690,6 +1750,9 @@ async function resume(id: string, targetMessageId?: string) {
         // viewed — passing [] would wipe in-flight bubbles for the
         // chat we're returning to.
         onResumeCb?.(id, cached.messages, cached.pagination, undefined, targetMessageId);
+        // The fresh IDB cache just repopulated the in-memory buffer via
+        // replaySessionMessages → setDurable; it's current again.
+        memStaleChats.delete(id);
         t?.trace('cache-render-end');
         scheduleRefresh();
         cacheRendered = true;
@@ -1774,6 +1837,8 @@ async function resume(id: string, targetMessageId?: string) {
       const inflight = Array.isArray(result.inflight) ? result.inflight : [];
       log(`sessionDrawer: resumed ${id} (${capped.messages.length} messages, ${inflight.length} inflight, hasMore=${capped.pagination.hasMore})`);
       onResumeCb?.(id, capped.messages, capped.pagination, inflight, targetMessageId);
+      // In-memory buffer is now reconciled to the server tail.
+      memStaleChats.delete(id);
       t?.trace('server-render-end');
       scheduleRefresh();
     } catch (e: any) {
