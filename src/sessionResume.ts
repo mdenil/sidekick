@@ -40,6 +40,7 @@ import * as transcriptStore from './transcript/store.ts';
 import * as sessionCache from './sessionCache.ts';
 import * as windowCache from './drillWindowCache.ts';
 import { listAllPins } from './pins/store.ts';
+import { listActivity } from './notifications/activityStore.ts';
 import { rerenderActive } from './transcript/index.ts';
 import { getScrollPosition } from './chatScrollPositions.ts';
 
@@ -649,6 +650,96 @@ export async function prewarmPinnedWindows(): Promise<void> {
     } while (prewarmDirty);
   } finally {
     prewarmRunning = false;
+  }
+}
+
+// Activity around-window prewarm — same class of fix as the pin prewarm
+// above, applied to the activity tray.
+//
+// Field report (CAP, 2026-06-15): a cron/agent_reply row arrives in the
+// activity tray; clicking it routes to the right session but the message
+// isn't there and loads ~20s later. Root cause is identical to the pin
+// case: an activity item carries BOTH a chatId and a messageId
+// (activityStore ActivityItem), and clicking the row drills via the
+// bounded ?around= window centered on that (often DEEP) messageId
+// (main.ts onActivityOpen → drillToChatMessage → drillViaAroundWindow).
+// That window only lands in drillWindowCache AFTER the first manual drill,
+// so the first click pays the full cold round trip.
+//
+// Fix: warm each activity item's around-window in the background — on boot
+// (after activity hydrates) and whenever the activity store changes
+// (`sidekick:activity-changed` + the server-reconcile
+// `sidekick:server-activity-changed`). The target (chatId, messageId) pair
+// is known at INGEST time, well before the click, so we can warm it ahead.
+//
+// Shares fetchAroundWindowOnce + drillWindowCache with the pin prewarm and
+// the live drill — keyed `${chatId}::${messageId}` — so a prewarmed
+// activity window is a cache HIT on click, and an activity item that points
+// at the SAME (chatId, messageId) as a pin reuses the one in-flight fetch
+// (no double round trip). prewarmedActivityKeys dedups repeated change
+// events this app-session; a transient fetch failure deletes its key so a
+// later trigger retries.
+//
+// Bounding: the activity store fetches up to 200 items. We cap to the most
+// recent ACTIVITY_PREWARM_CAP (listActivity is sorted newest-first, modulo
+// unresolved-approval priority) — the rows the user is realistically about
+// to tap. Items WITHOUT a messageId are skipped: their click resumes the
+// tail (no around-window), so there's nothing deep to warm. The
+// getWindow-skip + key dedup keep a near-tail messageId cheap (it just
+// produces a small contiguous window), so we don't try to guess depth.
+const ACTIVITY_PREWARM_CAP = 20;
+const prewarmedActivityKeys = new Set<string>();
+let prewarmActivityRunning = false;
+let prewarmActivityDirty = false;
+
+export async function prewarmActivityWindows(): Promise<void> {
+  // Single-flight: a trigger arriving mid-run sets dirty so we re-loop once
+  // (picks up an item ingested during the run) instead of overlapping.
+  if (prewarmActivityRunning) { prewarmActivityDirty = true; return; }
+  prewarmActivityRunning = true;
+  try {
+    do {
+      prewarmActivityDirty = false;
+      const items = listActivity().slice(0, ACTIVITY_PREWARM_CAP);
+      for (const item of items) {
+        const chatId = item.chatId;
+        const msgId = item.messageId;
+        // Skip rows that don't drill to a specific bubble: no chatId, or no
+        // messageId (those resume the tail, which warmPrefetch already
+        // covers — there's no deep around-window to prewarm).
+        if (!chatId || !msgId) continue;
+        const key = `${chatId}::${msgId}`;
+        if (prewarmedActivityKeys.has(key)) continue;
+        // Yield to a user-initiated drill in flight — its window matters
+        // more than a speculative prewarm, and they'd compete for the link.
+        if (aroundDrillInFlight) await aroundDrillInFlight.promise.catch(() => {});
+        // Already cached (by a previous drill, a pin prewarm, or an earlier
+        // activity prewarm)? Mark + skip the fetch.
+        const cached = await windowCache.getWindow(chatId, msgId);
+        if (cached) { prewarmedActivityKeys.add(key); continue; }
+        prewarmedActivityKeys.add(key);
+        try {
+          // Shared single-flight: a concurrent user drill (or pin prewarm)
+          // to the same (chatId, messageId) reuses this fetch and vice-
+          // versa; the helper writes the window to drillWindowCache on
+          // success.
+          const around: any = await fetchAroundWindowOnce(chatId, msgId);
+          if (around?.targetFound && Array.isArray(around.messages) && around.messages.length) {
+            diag(`[activity-prewarm] warmed ${key} (n=${around.messages.length})`);
+          } else {
+            diag(`[activity-prewarm] ${key} target not found; skipping`);
+          }
+        } catch (e: any) {
+          // Transient failure — allow a later trigger to retry this key.
+          prewarmedActivityKeys.delete(key);
+          diag(`[activity-prewarm] ${key} fetch failed: ${e?.message ?? e}`);
+        }
+        // Breathe between fetches so a burst of items doesn't saturate the link.
+        await new Promise<void>(r => setTimeout(r, 0));
+      }
+    } while (prewarmActivityDirty);
+  } finally {
+    prewarmActivityRunning = false;
   }
 }
 

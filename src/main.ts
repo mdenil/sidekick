@@ -31,6 +31,7 @@ import {
   jumpToLatest,
   drillToMessageInViewedSession,
   prewarmPinnedWindows,
+  prewarmActivityWindows,
 } from './sessionResume.ts';
 import { initNotifications } from './notifications/index.ts';
 import * as badge from './notifications/badge.ts';
@@ -859,7 +860,36 @@ async function boot() {
   // hydrate already dispatched the boot event before this listener
   // attached, so kick once directly to cover pins restored from cache.
   window.addEventListener('sidekick:pins-changed', () => { void prewarmPinnedWindows(); });
+  // Cold CAP boot: localStorage is empty, so the boot kick below sees
+  // listAllPins()==[] and warms nothing; pins then arrive FROM THE SERVER.
+  // On a fresh install the server snapshot lands via either the boot
+  // refreshFromServer (fires `sidekick:pins-changed` only when the diff
+  // actually applies) or the cross-device `pins_changed` stream envelope
+  // (proxyClient → `sidekick:server-pins-changed`, which the store turns
+  // into a DEBOUNCED refresh). Listening on the raw server event too gives
+  // prewarm an independent, earlier trigger that doesn't depend on the
+  // store's diff/debounce timing landing a `pins-changed` we don't miss —
+  // so pins warm in the background instead of staying cold until the first
+  // manual drill (field report: CAP fresh install, all 4 pins loaded only
+  // on the first click). Redundant fires are cheap: prewarmedPinKeys skips
+  // already-warm windows and prewarmRunning/prewarmDirty single-flights the
+  // run, so an extra kick that sees no new pins is a no-op.
+  window.addEventListener('sidekick:server-pins-changed', () => { void prewarmPinnedWindows(); });
   void prewarmPinnedWindows();
+  // Same fix for the activity tray: a cron/agent_reply row click drills via
+  // the bounded ?around= window centered on the item's (often DEEP)
+  // messageId, so the FIRST click pays the cold round trip and the message
+  // appears ~20s late (field report, CAP 2026-06-15). Warm each activity
+  // item's around-window in the background so the click is a cache hit. The
+  // (chatId, messageId) is known at ingest, well before the click.
+  // `sidekick:activity-changed` fires on boot hydrate + every local mutation;
+  // `sidekick:server-activity-changed` is the cross-device reconcile (mirror
+  // of the pins pattern). prewarmActivityWindows shares fetchAroundWindowOnce
+  // + drillWindowCache with the pin prewarm and the live drill, so redundant
+  // fires + pin/activity overlap are deduped and never double-fetch.
+  window.addEventListener('sidekick:activity-changed', () => { void prewarmActivityWindows(); });
+  window.addEventListener('sidekick:server-activity-changed', () => { void prewarmActivityWindows(); });
+  void prewarmActivityWindows();
   inAppBanner.init({
     onOpen: (chatId, msgId) => { void drillToChatMessage(chatId, msgId); },
     onAction: (chatId, action, msgId) => { void sendApprovalAction(chatId, action, msgId); },
