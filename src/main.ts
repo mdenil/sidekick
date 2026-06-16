@@ -15,6 +15,7 @@ import {
 } from './swLifecycle.ts';
 import { handleNotification, handleUserMessage } from './backendEvents.ts';
 import { initAppTooltip } from './util/tooltip.ts';
+import { initScrollDiag } from './scrollDiag.ts';
 import {
   initModelCapabilities,
   canAttachFiles,
@@ -1200,6 +1201,10 @@ async function boot() {
   // viewport-aware bubble that hides on iOS tap. See util/tooltip.ts.
   initAppTooltip();
 
+  // TEMPORARY: scroll-jump diagnostic (field report 2026-06-16). Inert
+  // unless localStorage 'sk-scroll-diag' === '1'. Remove once diagnosed.
+  initScrollDiag();
+
   // Crack A: transcript pipeline. Wires store mutations → projection
   // → reconciler for the active chat. From here on, every SSE
   // envelope / send / resume goes through `transcriptStore.*` and the
@@ -2365,11 +2370,29 @@ async function boot() {
         ? transcriptEl.querySelectorAll('.line.s0, .line.agent').length > 0
         : false;
       const hasActiveChat = !!backend.getCurrentSessionId?.();
-      if (hasActiveChat && !hasContent) {
+      // A session switch that hasn't committed/cleared yet has blanked the
+      // transcript behind a loading spinner — that's a LOADING state, not
+      // an empty active chat, so the no-op guard must not swallow the click
+      // (else the first New-chat press does nothing, the user waits out the
+      // spinner, sees the prior transcript, and has to click again — field
+      // bug 2026-06-16). optimisticId() is set at begin() and cleared on
+      // settle, so it's the in-flight-switch signal.
+      const switchInFlight = !!switchCtl.optimisticId();
+      if (hasActiveChat && !hasContent && !switchInFlight) {
         diag('new-chat: current chat empty, no-op');
         return;
       }
       diag('reset history: new-chat button');
+      // Supersede any in-flight resume BEFORE the rotation, mirroring
+      // deleteSessionAtomic. Without this, a session-switch resume() that's
+      // still awaiting its cache/server render lands seconds later (the
+      // server-render continuation is gated only by isCurrent(tok), and
+      // new-chat never bumped the generation), repaints the PRIOR session's
+      // transcript over the fresh new chat, and re-commits viewed. Bumping
+      // gen here makes that continuation bail; clearing optimistic re-points
+      // focusedId() at the new chat. Field bug 2026-06-16 (new-session glitch).
+      switchCtl.invalidate();
+      switchCtl.setOptimistic(null);
       // Intentionally do NOT stop streaming or cancel memo — new-chat is a
       // conversation rotation, not a full reset. Users expect to stay in
       // whatever audio mode they were in (streaming stays green, memo bar
