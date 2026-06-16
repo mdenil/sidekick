@@ -138,6 +138,52 @@ function dropCompletedTurnEnvelopes(
   return envs.slice(lastSafeIdx + 1);
 }
 
+/** Reconcile a freshly-fetched TAIL page into the buffer WITHOUT discarding
+ *  loaded-earlier history. The post-reply durable refresh
+ *  (schedulePostFinalDurableRefresh) and the disconnect reconcile both
+ *  refetch only the newest page; a wholesale setDurable(tailPage) would
+ *  throw away the pages the user scrolled up to load (field bug 2026-06-15:
+ *  "scrolled up to find something, the reply landed, the loaded history was
+ *  gone"). When the buffer holds rows OLDER than this tail page, keep that
+ *  head and splice the authoritative tail onto it; otherwise behave exactly
+ *  like setDurable. A gap-bearing buffer (a non-tail-anchored drill window)
+ *  replaces — a plain tail refresh can't reason across the gap. */
+export function mergeTailRefresh(
+  chatId: string,
+  tailItems: ConversationItem[],
+  tailPagination: PaginationInput,
+): void {
+  const s = getState(chatId);
+  const hasGap = s.durable.some((it) => it.role === 'gap');
+  if (s.durable.length === 0 || hasGap || tailItems.length === 0) {
+    setDurable(chatId, tailItems, tailPagination);
+    return;
+  }
+  // The tail page is authoritative for everything from its oldest row
+  // onward; keep only the strictly-older head and dedup the overlap away.
+  const tailMinTs = minNormTs(tailItems);
+  const tailIds = itemIdSet(tailItems);
+  const head = s.durable.filter(
+    (it) => it.role !== 'gap' && normTs(it) < tailMinTs && !isDup(it, tailIds),
+  );
+  if (head.length === 0) {
+    // No loaded-earlier history to protect — identical to a plain replace.
+    setDurable(chatId, tailItems, tailPagination);
+    return;
+  }
+  s.durable = head.concat(tailItems);
+  // Older cursor stays the buffer's (the head is preserved); newer cursor
+  // comes from the tail page (it reaches the live tail).
+  s.pagination = {
+    firstId: s.pagination.firstId,
+    hasMore: s.pagination.hasMore,
+    lastId: tailPagination.lastId ?? null,
+    hasMoreNewer: tailPagination.hasMoreNewer ?? false,
+  };
+  s.inflight = dropCompletedTurnEnvelopes(s.inflight, s.durable);
+  notify(chatId);
+}
+
 /** Prepend older rows from a load-earlier fetch. Only the older-cursor
  *  half (`firstId`/`hasMore`) moves; the newer cursor (lastId/
  *  hasMoreNewer) is untouched — prepending head rows can't change where

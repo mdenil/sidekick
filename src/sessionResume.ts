@@ -155,10 +155,22 @@ export function replaySessionMessages(
   // reconciler bring the DOM into agreement. NO clear/iterate loop —
   // the reconciler walks both old and new keys, updates in place,
   // removes orphans. NO divergence-heal — the store IS the source.
-  transcriptStore.setDurable(id, messages, {
-    firstId: pagination?.firstId ?? null,
-    hasMore: !!pagination?.hasMore,
-  });
+  if (opts?.preserveScrollIfLive && sameSession) {
+    // Background reconcile refetch of the ON-SCREEN chat (the post-reply
+    // durable refresh / disconnect reconcile) fetches only the TAIL page.
+    // Merge it so loaded-earlier history the user scrolled up to load
+    // survives (field bug 2026-06-15). A fresh navigation / boot resume —
+    // which doesn't pass preserveScrollIfLive — still replaces wholesale.
+    transcriptStore.mergeTailRefresh(id, messages, {
+      firstId: pagination?.firstId ?? null,
+      hasMore: !!pagination?.hasMore,
+    });
+  } else {
+    transcriptStore.setDurable(id, messages, {
+      firstId: pagination?.firstId ?? null,
+      hasMore: !!pagination?.hasMore,
+    });
+  }
   // Only clobber inflight when the caller explicitly passed an array.
   // The cache-render path in sessionDrawer.resume passes undefined so
   // the live inflight envelopes (user_message echo + reply_delta
@@ -223,7 +235,15 @@ export function replaySessionMessages(
   // nickname isn't immediately cancelled by the switch's TTS reset.
   sessionAnnounce.consume(id, sameSession);
 
-  chat.setPaginationState(pagination?.firstId ?? null, !!pagination?.hasMore);
+  // Read the cursors back from the store: a preserve-head merge (above)
+  // keeps the buffer's OLDER cursor rather than the tail page's, so the
+  // tail-page firstId here would be wrong (it would point load-earlier at
+  // the wrong place and re-fetch already-loaded rows). The store holds the
+  // authoritative cursors after the durable mutation.
+  const effPag = transcriptStore.getState(id).pagination;
+  chat.setPaginationState(
+    effPag.firstId, effPag.hasMore, effPag.lastId, effPag.hasMoreNewer,
+  );
   // If the resume was driven by a message-search hit, find the matching
   // bubble and scroll it into view + flash. Best-effort: if the hit
   // predates the initial replay window (older than the first ~200
