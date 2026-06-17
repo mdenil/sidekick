@@ -799,6 +799,33 @@ class SidekickAdapter(BasePlatformAdapter):
         )
         await self.handle_message(event)
 
+    @staticmethod
+    def _image_input_mode_is_native() -> bool:
+        """True when the active model takes images natively this turn.
+
+        Mirrors the gateway's ``_decide_image_input_mode`` (gateway/run.py):
+        reads the active provider/model + config.yaml and asks
+        ``agent.image_routing.decide_image_input_mode``. Falls back to
+        False (text-mode pre-analysis) on any error, so a missing/renamed
+        hermes module degrades to the prior behavior rather than dropping
+        the image enrichment entirely.
+        """
+        try:
+            from agent.image_routing import decide_image_input_mode
+            from agent.auxiliary_client import _read_main_model, _read_main_provider
+            from hermes_cli.config import load_config
+
+            cfg = load_config()
+            provider = _read_main_provider()
+            model = _read_main_model()
+            return decide_image_input_mode(provider, model, cfg) == "native"
+        except Exception as exc:
+            logger.debug(
+                "[sidekick] image_input_mode decision failed, enriching as text — %s",
+                exc,
+            )
+            return False
+
     async def _parallel_image_enrich(
         self,
         text: str,
@@ -828,7 +855,20 @@ class SidekickAdapter(BasePlatformAdapter):
         Non-image media (audio, video) is left in ``media_urls`` for the
         gateway to handle through its own enrichers — those run once per
         attachment and aren't a multi-page bottleneck.
+
+        NOTE: this pre-analysis only makes sense in TEXT image-input mode.
+        When the active model takes images natively (``image_input_mode:
+        native``), pre-analyzing here and stripping the images from
+        ``media_urls`` would silently defeat the gateway's native-image
+        path — the primary model would get a text description instead of
+        the pixels (field report 2026-06-17). In native mode we leave the
+        images untouched so the gateway attaches them natively; the serial
+        multi-page latency this method exists to avoid doesn't apply,
+        because native mode skips the vision-enrich loop entirely.
         """
+        if self._image_input_mode_is_native():
+            return text, media_urls, media_types, message_type
+
         from tools.vision_tools import vision_analyze_tool
 
         image_indices = [
