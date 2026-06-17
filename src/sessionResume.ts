@@ -442,6 +442,11 @@ function scheduleAtBottomRepin(): void {
   setTimeout(teardown, REPIN_WINDOW_MS);
 }
 
+// Let the jump-to-bottom button engage the same settle-window repin the
+// restore paths use. Registered at module init (sessionResume is imported
+// during boot) so the seam is live before the first chevron click.
+chat.registerAtBottomRepinScheduler(scheduleAtBottomRepin);
+
 // Crack A: renderHistoryMessage and its anchor helpers are GONE.
 // The projection + reconciler own per-row rendering from the canonical
 // ChatState. inflightSignalsMidTurn / bubbleIdFor / findReplayAnchor

@@ -332,13 +332,27 @@ export function forceScrollToBottom(): void {
   // fights an intentional reading position. A newer forceScrollToBottom
   // (chat switch, new turn) bumps the generation and supersedes us.
   const gen = ++_stickBottomGen;
+  // Bail the loop only on a REAL user gesture (wheel/touch/pointerdown),
+  // never on a transient `pinnedToBottom` flip. A scroll event fired by our
+  // own scrollTo recomputes isPinned() against the CURRENT scrollHeight — so
+  // if content below grows between the scrollTo and that event (image decode,
+  // play-bar attach, code reflow, deferred tool body), distance jumps past
+  // the threshold and `pinnedToBottom` latches false, which used to abort the
+  // loop mid-converge and strand the user above the true bottom (field
+  // 2026-06-17: "down arrow takes 2-3 clicks"). Distinguishing the two means
+  // content growth keeps the loop re-scrolling while a genuine scroll-up
+  // still yields.
+  const startGesture = lastUserGestureAt;
   let lastSh = -1;
   let stable = 0;
   let frames = 0;
   const step = () => {
     // Element swapped (chat switch tore down + rebuilt), superseded by a
-    // newer call, or the user scrolled up — stop and leave them be.
-    if (transcriptEl !== el || gen !== _stickBottomGen || !pinnedToBottom) return;
+    // newer call, or the user actively scrolled up — stop and leave them be.
+    if (transcriptEl !== el || gen !== _stickBottomGen || lastUserGestureAt > startGesture) return;
+    // This is a deliberate jump; keep ownership of the pinned state even if a
+    // growth-induced scroll event flipped it false a frame ago.
+    pinnedToBottom = true;
     const sh = el.scrollHeight;
     el.scrollTo({ top: sh, behavior: 'instant' as ScrollBehavior });
     // iOS PWA paint anchor: scrollTop reaches the right value but WebKit
@@ -482,6 +496,22 @@ export function cancelAtBottomRepin(): void {
   try { _atBottomRepinCanceller?.(); } catch { /* noop */ }
 }
 
+/** Symmetric seam: lets the jump-to-bottom button engage the same
+ *  settle-window re-pin ResizeObserver that sessionResume installs after a
+ *  restore-to-bottom. forceScrollToBottom's rAF loop only covers the first
+ *  ~0.5s; late async height (image decode, play-bars, code reflow, deferred
+ *  tool bodies) lands after it exits and would otherwise strand the user
+ *  above the true bottom (field 2026-06-17: "down arrow takes 2-3 clicks").
+ *  sessionResume owns the RO (it has the cancel-on-switch + isPinned-yield
+ *  semantics); routed through chat.ts to avoid an import cycle. */
+let _atBottomRepinScheduler: (() => void) | null = null;
+export function registerAtBottomRepinScheduler(fn: (() => void) | null): void {
+  _atBottomRepinScheduler = fn;
+}
+export function scheduleAtBottomRepin(): void {
+  try { _atBottomRepinScheduler?.(); } catch { /* noop */ }
+}
+
 /** Returns true if a transcript snapshot was restored. Caller may still
  *  run backfill — dedup on text handles overlap. Async because IDB reads
  *  can't be synchronous; the cold-boot flash is sub-frame on modern devices. */
@@ -555,7 +585,7 @@ export async function init(el: HTMLElement | null): Promise<boolean> {
       // of the partially-loaded window. Falls back to a plain scroll when
       // no jump-to-latest handler is registered.
       if (paginationHasMoreNewer && jumpToLatestCb) jumpToLatestCb();
-      else forceScrollToBottom();
+      else { forceScrollToBottom(); scheduleAtBottomRepin(); }
     });
   }
   if (transcriptEl) {
